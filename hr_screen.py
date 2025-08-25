@@ -1427,12 +1427,8 @@ class HRScreen(CTkFrame):
             messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลการเปรียบเทียบที่จะยืนยัน", parent=self)
             return
 
-        # --- START: จุดแก้ไขที่สำคัญ ---
-        # 1. กรองข้อมูลจาก "ตารางข้อมูล" (self.comparison_df) ไม่ใช่ "กรอบแสดงผล"
-        # 2. เลือกเฉพาะรายการที่มีสถานะ 'ผ่านเกณฑ์' ซึ่งพร้อมที่จะถูกส่งต่อ
         good_statuses = ["ผ่านเกณฑ์"]
         df_to_finalize = self.comparison_df[self.comparison_df['สถานะ'].isin(good_statuses)].copy()
-        # --- END: สิ้นสุดการแก้ไข ---
 
         if df_to_finalize.empty:
             messagebox.showinfo("ไม่พบรายการ", "ไม่พบรายการที่ 'ผ่านเกณฑ์' ที่จะส่งต่อได้ในขณะนี้", parent=self)
@@ -1442,12 +1438,17 @@ class HRScreen(CTkFrame):
 
         records_to_update = []
         for index, row in df_to_finalize.iterrows():
-            so_number = row['เลขที่ SO'] # <--- แก้ไขจุดที่ 1
+            # --- START: จุดที่แก้ไข ---
+            # 1. เปลี่ยน 'SO Number' เป็น 'เลขที่ SO' เพื่อให้ตรงกับชื่อคอลัมน์ที่แสดงผล
+            so_number = row['เลขที่ SO']
             
-            # ดึงข้อมูลจาก DataFrame ที่ merge แล้ว เพื่อให้ได้ข้อมูลครบถ้วน
-            full_row_data = self.comparison_df.loc[self.comparison_df['เลขที่ SO'] == so_number].iloc[0] # <--- แก้ไขจุดที่ 2
+            # 2. ใช้ 'เลขที่ SO' ในการค้นหาข้อมูลแถวเต็มเช่นกัน
+            full_row_data = self.comparison_df.loc[self.comparison_df['เลขที่ SO'] == so_number].iloc[0]
 
-            sales_db_pure = full_row_data.get('ยอดขาย/บริการ (ระบบ)', 0) # <--- แก้ไขจุดที่ 3
+            # 3. ใช้ชื่อคอลัมน์ภาษาไทยที่ถูกต้องในการดึงข้อมูล
+            sales_db_pure = full_row_data.get('ยอดขาย/บริการ (ระบบ)', 0)
+            # --- END: สิ้นสุดจุดที่แก้ไข ---
+
             sales_uploaded = full_row_data.get('ยอดขาย (Express)', 0)
             cost_db = full_row_data.get('ต้นทุน (ระบบ)', 0)
             cost_uploaded = full_row_data.get('ต้นทุน (Express)', 0)
@@ -1507,7 +1508,7 @@ class HRScreen(CTkFrame):
                     page_size=100
                 )
                 updated_rows = cursor.rowcount
-                conn.commit()
+            conn.commit()
             
             messagebox.showinfo("สำเร็จ", f"อัปเดตข้อมูล {updated_rows} รายการเป็น 'HR Verified' เรียบร้อยแล้ว", parent=self)
             
@@ -1882,8 +1883,17 @@ class HRScreen(CTkFrame):
         except Exception as e:
             messagebox.showerror("DB Error", f"เกิดข้อผิดพลาดในการค้นหางวดข้อมูล: {e}", parent=self)
     
+    # hr_screen.py
+
+# ... (โค้ดส่วนอื่น ๆ) ...
+
+    # hr_screen.py (ฟังก์ชันฉบับเต็มที่แก้ไขแล้ว)
+
+    # hr_screen.py (ฟังก์ชันฉบับเต็มที่แก้ไขแล้ว)
+
+    # hr_screen.py (ฉบับแก้ไขสมบูรณ์)
+
     def _calculate_commission_for_period(self, selected_period=None):
-        """ดึงข้อมูลและคำนวณค่าคอมตามงวดที่เลือก"""
         if selected_period is None:
             selected_period = self.process_period_var.get()
         
@@ -1902,17 +1912,25 @@ class HRScreen(CTkFrame):
         loading = self._show_loading(self.process_result_frame)
 
         try:
-            # (โค้ดส่วน Query ดึงข้อมูลเหมือนเดิม)
+            # <<< จุดแก้ไข 1: แก้ไข Query ให้ JOIN ตาราง PO เพื่อดึงต้นทุนค่าขนส่งมาด้วย >>>
             query_comm = """
                 SELECT 
-                    id, so_number, sale_key, commission_month, commission_year,
-                    difference_amount, final_sales_amount, final_cost_amount,
-                    sales_service_amount, payment_no_vat, shipping_cost,
-                    giveaways, brokerage_fee, transfer_fee,
-                    separate_shipping_charge, payment_before_vat
-                FROM commissions 
-                WHERE sale_key = %s AND status = 'HR Verified' AND payout_id IS NULL
-                AND commission_month = %s AND commission_year = %s
+                    c.*,
+                    COALESCE(po_costs.total_po_shipping_cost, 0) as total_po_shipping_cost
+                FROM commissions c
+                LEFT JOIN (
+                    SELECT 
+                        so_number,
+                        SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0)) as total_po_shipping_cost
+                    FROM purchase_orders
+                    WHERE status = 'Approved'
+                    GROUP BY so_number
+                ) po_costs ON c.so_number = po_costs.so_number
+                WHERE c.sale_key = %s 
+                  AND c.status = 'HR Verified' 
+                  AND c.payout_id IS NULL
+                  AND c.commission_month = %s 
+                  AND c.commission_year = %s
             """
             params = (sale_key, month_num, year_ad)
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
@@ -1925,23 +1943,26 @@ class HRScreen(CTkFrame):
                 CTkLabel(self.process_result_frame, text="ไม่พบข้อมูลในงวดที่เลือก").pack(pady=20)
                 return
             
-            # vvvvvvvvvvvvvv จุดสำคัญ vvvvvvvvvvvvvv
-            # เรียกใช้ business_logic เหมือนเดิม แต่จะเก็บผลลัพธ์ไว้
-            total_giveaways = 0.0
-            if 'giveaways' in self.current_comm_df.columns:
-                total_giveaways = self.current_comm_df['giveaways'].sum()
+            total_giveaways = self.current_comm_df['giveaways'].sum() if 'giveaways' in self.current_comm_df.columns else 0.0
 
             self.initial_commission_result = business_logic.calculate_monthly_commission(plan, self.current_comm_df)
             
-            # ถ้ามีตารางรายละเอียด (เป็น Plan A) ให้เก็บไว้
-            if self.initial_commission_result.get('type') == 'summary_plan_a':
-                self.commission_details_df = self.initial_commission_result.get('details')
-            else:
-                self.commission_details_df = None # เคลียร์ค่าถ้าไม่ใช่ Plan A
-            # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            # <<< จุดแก้ไข 2: ตรวจสอบผลลัพธ์ที่ได้จากการคำนวณ >>>
+            result_type = self.initial_commission_result.get('type')
+            
+            loading.destroy() # ปิด Loading ก่อนแสดงผล
 
-            loading.destroy()
-            self._create_hr_input_interface(auto_deduction_value=total_giveaways)
+            if result_type in ['no_commission', 'error']:
+                # ถ้าไม่จ่ายคอม หรือ Error ให้แสดงข้อความแจ้งเตือน
+                message = self.initial_commission_result.get('message', 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ')
+                CTkLabel(self.process_result_frame, text=message, font=self.label_font, text_color="orange", wraplength=600).pack(pady=30, padx=20)
+            else:
+                # ถ้าคำนวณสำเร็จ ให้สร้างหน้าจอสำหรับกรอกข้อมูลต่อ
+                if result_type == 'summary_plan_a':
+                    self.commission_details_df = self.initial_commission_result.get('details')
+                else:
+                    self.commission_details_df = None
+                self._create_hr_input_interface(auto_deduction_value=total_giveaways)
 
         except Exception as e:
             if loading.winfo_exists(): loading.destroy()

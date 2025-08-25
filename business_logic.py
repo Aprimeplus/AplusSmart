@@ -32,20 +32,18 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         
         # --- START: แก้ไขสูตรคำนวณกำไรเป็นเวอร์ชัน Final V2 ---
         # 2. คำนวณแต่ละส่วนของสูตร
-        multiplier = comm_df.get('cost_multiplier') if 'cost_multiplier' in comm_df else 1.03
-        if pd.isna(multiplier): multiplier = 1.03
         
-        # <<< START: โค้ดที่แก้ไข >>>
+        # <<< START: โค้ดที่แก้ไขข้อผิดพลาด ValueError >>>
+        multiplier = comm_df.get('cost_multiplier') if 'cost_multiplier' in comm_df else 1.03
+        if isinstance(multiplier, pd.Series):
+            multiplier = multiplier.fillna(1.03)
+        # <<< END: โค้ดที่แก้ไขข้อผิดพลาด ValueError >>>
+        
         # ตรวจสอบก่อนว่ามีคอลัมน์ coupon_fee หรือไม่ ถ้าไม่มีให้สร้างขึ้นมาใหม่เป็น 0
         if 'coupon_fee' not in comm_df.columns:
             comm_df['coupon_fee'] = 0
         coupon_fee = pd.to_numeric(comm_df['coupon_fee'], errors='coerce').fillna(0)
-        # <<< END: โค้ดที่แก้ไข >>>
 
-        # <<< จุดที่ 2: อัปเดตสูตร other_deductions ตามที่คุณต้องการ >>>
-        other_deductions = giveaways + brokerage + coupon_fee - difference_amount
-
-        # <<< จุดที่ 2: อัปเดตสูตร other_deductions ตามที่คุณต้องการ >>>
         other_deductions = giveaways + brokerage + coupon_fee - difference_amount
         
         # คำนวณส่วนของค่ารถตามสูตรใหม่
@@ -79,7 +77,6 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         # --- END: สิ้นสุดการแก้ไข ---
 
         # 8. สรุปยอด (เหมือนเดิม)
-        # ... (โค้ดส่วนสรุปยอดเหมือนเดิมทั้งหมด) ...
         OPERATING_FEE = 25000.00
         initial_commission = comm_df['commission_amount'].sum()
         calculated_commission = max(0, initial_commission - OPERATING_FEE)
@@ -106,19 +103,16 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
             'type': 'summary_plan_a', 
             'summary': summary_df, 
             'details': details_df,
-            'final_commission': calculated_commission # เพิ่ม key นี้เข้าไป
+            'final_commission': calculated_commission
         }
         
-    # --- PLAN B, C, D (เหมือนเดิม ไม่มีการเปลี่ยนแปลง) ---
     elif plan_name == 'Plan B':
         
         if comm_df.empty:
             summary_data = {'description': ["ยอดรวมค่าคอมมิชชั่นที่คำนวณได้"], 'value': [0.0]}
             return {'type': 'summary_other', 'data': pd.DataFrame(summary_data)}
         
-        # --- START: แก้ไข Plan B ตาม Logic ที่ถูกต้องสมบูรณ์ ---
-        
-        # Step 1: คำนวณ "กำไรสุทธิ" (Net Profit) และ Margin เพื่อใช้แบ่งกลุ่ม Normal / Below Tier
+        # Step 1: คำนวณค่าพื้นฐานและแยกประเภท Margin
         sales_raw = pd.to_numeric(comm_df.get('sales_service_amount', 0), errors='coerce').fillna(0)
         po_cost = pd.to_numeric(comm_df.get('final_cost_amount', 0), errors='coerce').fillna(0)
         giveaways = pd.to_numeric(comm_df.get('giveaways', 0), errors='coerce').fillna(0)
@@ -129,65 +123,67 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         so_shipping_cost = pd.to_numeric(comm_df.get('shipping_cost', 0), errors='coerce').fillna(0)
         
         multiplier = comm_df.get('cost_multiplier') if 'cost_multiplier' in comm_df else 1.03
-        if pd.isna(multiplier): multiplier = 1.03
-        
-        # <<< START: โค้ดที่แก้ไข >>>
-        # ตรวจสอบก่อนว่ามีคอลัมน์ coupon_fee หรือไม่ ถ้าไม่มีให้สร้างขึ้นมาใหม่เป็น 0
+        if isinstance(multiplier, pd.Series):
+            multiplier = multiplier.fillna(1.03)
+
         if 'coupon_fee' not in comm_df.columns:
             comm_df['coupon_fee'] = 0
         coupon_fee = pd.to_numeric(comm_df['coupon_fee'], errors='coerce').fillna(0)
-        # <<< END: โค้ดที่แก้ไข >>>
 
-        # <<< จุดที่ 2: อัปเดตสูตร other_deductions ตามที่คุณต้องการ >>>
         other_deductions = giveaways + brokerage + coupon_fee - difference_amount
-        
-        # <<< จุดที่ 2: อัปเดตสูตร other_deductions ตามที่คุณต้องการ >>>
-        other_deductions = giveaways + brokerage + coupon_fee - difference_amount
-        
         net_shipping_adjustment = (payment_before_vat - payment_no_vat) - so_shipping_cost
         
         comm_df['profit'] = (sales_raw - (po_cost * multiplier)) - other_deductions - net_shipping_adjustment
         comm_df['margin'] = (comm_df['profit'] / sales_raw.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
         
-        # Step 2: แยก DataFrame ตาม Margin
         standard_margin_df = comm_df[comm_df['margin'] >= 10]
         below_margin_df = comm_df[comm_df['margin'] < 10]
 
-        # Step 3: คำนวณคอมมิชชั่นส่วน Below Tier
-        total_profit_below = below_margin_df['net_profit'].sum()
-        below_tier_commission = total_profit_below * 0.005
-        
-        # Step 4: คำนวณคอมมิชชั่นส่วน Normal Tier
-        operating_fee = 100000.00
+        # Step 2: คำนวณยอดขายและกำไรแยกตามประเภท
         total_standard_sales = standard_margin_df['sales_service_amount'].sum()
-        total_monthly_sales = comm_df['sales_service_amount'].sum()
-
-        if total_monthly_sales < 500000:
-             return {'type': 'no_commission', 'message': f"ยอดขายรวม ({total_monthly_sales:,.2f}) ไม่ถึงเกณฑ์ 500,000 บาท"}
+        total_below_sales = below_margin_df['sales_service_amount'].sum()
+        total_monthly_sales = total_standard_sales + total_below_sales
+        total_profit_below = below_margin_df['profit'].sum() 
         
+        # --- START: โค้ด Plan B ฉบับสมบูรณ์ตาม Logic ล่าสุด ---
+        operating_fee = 100000.00
+        below_tier_commission = total_profit_below * 0.005
         commission_base = total_standard_sales - operating_fee
+
+        t1, t2, t3 = 0, 0, 0
         tier_commission = 0
-        
-        # <<< แก้ไข: ใช้ Logic การคำนวณ Tier แบบมีเงื่อนไขตามที่อธิบาย
-        if commission_base > 0:
-            if commission_base <= 2000000:
-                # กรณีฐานคอมน้อยกว่าหรือเท่ากับ 2 ล้าน (รวมกรณี 1-2 ล้าน)
-                # และฐานคอมต้องมากกว่า 1 ล้าน ถึงจะเริ่มคิด
-                if commission_base > 1000000:
-                    tier_commission = commission_base * 0.0125
-            else:
-                # กรณีฐานคอมมากกว่า 2 ล้าน (ใช้สูตรขั้นบันไดปกติ)
-                t1 = 1000000 * 0.0125
-                t2 = 1000000 * 0.0175
-                t3 = (commission_base - 2000000) * 0.0225
-                tier_commission = t1 + t2 + t3
+        calculated_commission = 0
 
-        # Step 5: รวมคอมมิชชั่นทั้งสองส่วน
-        calculated_commission = tier_commission + below_tier_commission
-        
-        # --- END: สิ้นสุดการแก้ไข ---
+        # 1. เช็คยอดขายดิบ "รวม" (Normal + Below Tier) ขั้นต่ำ 500,000
+        if total_monthly_sales >= 500000:
+            # 2. ถ้าผ่าน ให้คำนวณค่าคอมแบบขั้นบันได
+            remaining_base = commission_base if commission_base > 0 else 0
 
+            # T1: 1.25% on the first 1,000,000 of the base
+            amount_in_t1 = min(remaining_base, 1000000)
+            t1 = amount_in_t1 * 0.0125
+            remaining_base -= amount_in_t1
+
+            # T2: 1.75% on the next 1,000,000 of the base
+            if remaining_base > 0:
+                amount_in_t2 = min(remaining_base, 1000000)
+                t2 = amount_in_t2 * 0.0175
+                remaining_base -= amount_in_t2
+            
+            # T3: 2.25% on the rest of the base
+            if remaining_base > 0:
+                t3 = remaining_base * 0.0225
+
+            tier_commission = t1 + t2 + t3
+            calculated_commission = tier_commission + below_tier_commission
+        else:
+            # 3. ถ้าไม่ผ่านเงื่อนไข 500k ค่าคอมทั้งหมดเป็น 0
+            below_tier_commission = 0 # กำหนดให้เป็น 0 เพื่อการแสดงผล
+            calculated_commission = 0
+        # --- END: สิ้นสุดการปรับปรุงโค้ด ---
+
+        # Step 3: สรุปยอดสุดท้าย
         if incentives is None:
             incentives = {}
         total_incentives = sum(incentives.values())
@@ -201,8 +197,28 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
 
         withholding_tax = pre_tax_commission * 0.03
         net_commission = pre_tax_commission - withholding_tax
-        summary_desc = ["ยอดขายรวมทั้งเดือน", "ยอดขายปกติ (Standard Margin)", "(-) หัก ค่าดำเนินการ", "ฐานสำหรับคำนวณคอมมิชชั่น", "คอมมิชชั่นตาม Tier (Normal)", "คอมมิชชั่นนอกเงื่อนไข (Below Tier)", "ยอดคอมมิชชั่นที่คำนวณได้"]
-        summary_val = [total_monthly_sales, total_standard_sales, operating_fee, commission_base if commission_base > 0 else 0, tier_commission, below_tier_commission, calculated_commission]
+        
+        summary_desc = [
+            "ยอดขายรวม (สำหรับเช็คเงื่อนไข)",
+            "ยอดขายปกติ (สำหรับคำนวณฐานคอม)",
+            "(-) หัก ค่าดำเนินการ",
+            "ฐานสำหรับคำนวณคอมมิชชั่น",
+            "คอมมิชชั่น T1 (ฐานคอม 0 - 1M @ 1.25%)",
+            "คอมมิชชั่น T2 (ฐานคอม 1M - 2M @ 1.75%)",
+            "คอมมิชชั่น T3 (ฐานคอม > 2M @ 2.25%)",
+            "คอมมิชชั่นนอกเงื่อนไข (Below Tier)",
+            "ยอดคอมมิชชั่นที่คำนวณได้"
+        ]
+        summary_val = [
+            total_monthly_sales,
+            total_standard_sales,
+            operating_fee,
+            commission_base if commission_base > 0 else 0,
+            t1, t2, t3,
+            below_tier_commission,
+            calculated_commission
+        ]
+        
         for key, value in incentives.items(): summary_desc.append(f"(+) Incentive: {key}"); summary_val.append(value)
         summary_desc.append("ยอดคอมมิชชั่นขั้นต้น (Gross Commission)"); summary_val.append(gross_commission)
         for key, value in additional_deductions.items(): summary_desc.append(f"(-) หัก {key}"); summary_val.append(value)
@@ -212,9 +228,8 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         return {
             'type': 'summary_other', 
             'data': pd.DataFrame(summary_data),
-            'final_commission': calculated_commission  # เพิ่ม key นี้เข้าไป
+            'final_commission': calculated_commission
         }
-
 
     elif plan_name == 'Plan C':
         
@@ -235,17 +250,16 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         payment_no_vat = pd.to_numeric(comm_df.get('payment_no_vat', 0), errors='coerce').fillna(0)
         so_shipping_cost = pd.to_numeric(comm_df.get('shipping_cost', 0), errors='coerce').fillna(0)
         
+        # <<< START: โค้ดที่แก้ไขข้อผิดพลาด ValueError >>>
         multiplier = comm_df.get('cost_multiplier') if 'cost_multiplier' in comm_df else 1.03
-        if pd.isna(multiplier): multiplier = 1.03
-        
-        # <<< START: โค้ดที่แก้ไข >>>
-        # ตรวจสอบก่อนว่ามีคอลัมน์ coupon_fee หรือไม่ ถ้าไม่มีให้สร้างขึ้นมาใหม่เป็น 0
+        if isinstance(multiplier, pd.Series):
+            multiplier = multiplier.fillna(1.03)
+        # <<< END: โค้ดที่แก้ไขข้อผิดพลาด ValueError >>>
+
         if 'coupon_fee' not in comm_df.columns:
             comm_df['coupon_fee'] = 0
         coupon_fee = pd.to_numeric(comm_df['coupon_fee'], errors='coerce').fillna(0)
-        # <<< END: โค้ดที่แก้ไข >>>
 
-        # <<< จุดที่ 2: อัปเดตสูตร other_deductions ตามที่คุณต้องการ >>>
         other_deductions = giveaways + brokerage + coupon_fee - difference_amount
         net_shipping_adjustment = (payment_before_vat - payment_no_vat) - so_shipping_cost
         
@@ -311,18 +325,16 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         return {
             'type': 'summary_other', 
             'data': pd.DataFrame(summary_data),
-            'final_commission': calculated_commission  # เพิ่ม key นี้เข้าไป
+            'final_commission': calculated_commission
         }
     
     elif plan_name == 'Plan D':
         
         print("\n" + "="*20 + " DEBUG: Plan D " + "="*20)
         if comm_df.empty:
-            # ... (โค้ดส่วนนี้เหมือนเดิม) ...
             summary_data = {'description': ["ยอดรวมค่าคอมมิชชั่นที่คำนวณได้"], 'value': [0.0]}
             return {'type': 'summary_other', 'data': pd.DataFrame(summary_data)}
         
-        # ... (ส่วนคำนวณของ Plan D เหมือนเดิม) ...
         sales_raw = pd.to_numeric(comm_df.get('sales_service_amount', 0), errors='coerce').fillna(0)
         po_cost = pd.to_numeric(comm_df.get('final_cost_amount', 0), errors='coerce').fillna(0)
         giveaways = pd.to_numeric(comm_df.get('giveaways', 0), errors='coerce').fillna(0)
@@ -335,17 +347,16 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         payment_no_vat = pd.to_numeric(comm_df.get('payment_no_vat', 0), errors='coerce').fillna(0)
         so_shipping_cost = pd.to_numeric(comm_df.get('shipping_cost', 0), errors='coerce').fillna(0)
         
+        # <<< START: โค้ดที่แก้ไขข้อผิดพลาด ValueError >>>
         multiplier = comm_df.get('cost_multiplier') if 'cost_multiplier' in comm_df else 1.03
-        if pd.isna(multiplier): multiplier = 1.03
-        
-        # <<< START: โค้ดที่แก้ไข >>>
-        # ตรวจสอบก่อนว่ามีคอลัมน์ coupon_fee หรือไม่ ถ้าไม่มีให้สร้างขึ้นมาใหม่เป็น 0
+        if isinstance(multiplier, pd.Series):
+            multiplier = multiplier.fillna(1.03)
+        # <<< END: โค้ดที่แก้ไขข้อผิดพลาด ValueError >>>
+
         if 'coupon_fee' not in comm_df.columns:
             comm_df['coupon_fee'] = 0
         coupon_fee = pd.to_numeric(comm_df['coupon_fee'], errors='coerce').fillna(0)
-        # <<< END: โค้ดที่แก้ไข >>>
 
-        # <<< จุดที่ 2: อัปเดตสูตร other_deductions ตามที่คุณต้องการ >>>
         other_deductions = giveaways + brokerage + coupon_fee - difference_amount
         net_shipping_adjustment = (payment_before_vat - payment_no_vat) - so_shipping_cost
         
@@ -404,7 +415,6 @@ def calculate_monthly_commission(plan_name, comm_df, additional_deductions=None,
         print(f"[DEBUG] Final Calculated Commission: {calculated_commission:,.2f}")
         print("="*50 + "\n")
 
-        # ... (ส่วนสรุปและ return ของ Plan D เหมือนเดิม) ...
         if incentives is None: incentives = {}
         total_incentives = sum(incentives.values())
         gross_commission = calculated_commission + total_incentives
