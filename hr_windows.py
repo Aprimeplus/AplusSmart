@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, TclError 
 from customtkinter import (CTkToplevel, CTkTextbox, CTkScrollableFrame, CTkLabel, CTkFont, CTkFrame, CTkButton, CTkEntry, CTkRadioButton, CTkOptionMenu, CTkInputDialog)
 from tkinter import messagebox
 import json
@@ -610,9 +610,12 @@ class HRVerificationWindow(CTkToplevel):
         self.so_form_widgets['cash_required_total_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['cash_verification_result_var'] = tk.StringVar(value="-")
 
+    # hr_windows.py (ภายในคลาส HRVerificationWindow)
+
     def _view_so_data(self):
         if self.system_data and self.system_data.get('so_number'):
-            self.app_container.show_sales_data_viewer(self.system_data['so_number'])
+            # <<< แก้ไข: เรียกใช้ SODetailViewer ที่ถูกต้อง >>>
+            SODetailViewer(master=self, app_container=self.app_container, so_number=self.system_data['so_number'])
         else:
             messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบ SO Number สำหรับแสดงข้อมูล", parent=self)
 
@@ -1102,30 +1105,43 @@ class HRVerificationWindow(CTkToplevel):
 # อยู่ในไฟล์ hr_windows.py ภายในคลาส HRVerificationWindow
 
     def _recalculate_summaries(self):
-        """คำนวณค่าสรุปทั้งหมดและกำหนดค่าเริ่มต้นที่ถูกต้อง"""
-        # --- ส่วนคำนวณตัวเลขทั้งหมด ---
+        """
+        คำนวณค่าสรุปทั้งหมดและกำหนดค่าเริ่มต้นที่ถูกต้อง
+        (เวอร์ชันแก้ไข ไม่มีการนับค่าใช้จ่ายซ้ำซ้อน)
+        """
+        # --- คำนวณฝั่ง System ---
+        # 1. ดึงค่าต้นทุนพื้นฐานจากข้อมูล PO และ SO
+        # po_total_cost_base คือยอดรวมจาก PO ทั้งหมด ซึ่งรวมค่าสินค้าและค่าส่งใน PO มาแล้ว
+        po_total_cost_base = self.po_data['total_cost'].sum()
+        
+        # ดึงค่าใช้จ่ายอื่นๆ ที่อยู่นอก PO
+        po_relocation = self.po_data['relocation_cost'].sum() if 'relocation_cost' in self.po_data.columns else 0
+        brokerage_fee = float(self.system_data.get('brokerage_fee', 0) or 0)
+        transfer_fee = float(self.system_data.get('transfer_fee', 0) or 0)
+
+        # 2. ใช้ค่าที่ HR อาจจะแก้ไขเอง (Overrides) ถ้ามี
+        # <<< START: แก้ไข Logic การรวมยอด >>>
+        # ใช้ po_total_cost_base เป็นตัวหลัก และไม่นำค่า shipping มาบวกซ้ำ
+        cost_po_sys = float(self.cost_overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
+        cost_relocation_sys = float(self.cost_overrides.get('ต้นทุนค่าย้าย', po_relocation))
+        cost_brokerage_sys = float(self.cost_overrides.get('ต้นทุนค่านายหน้า', brokerage_fee))
+        cost_transfer_sys = float(self.cost_overrides.get('ต้นทุนค่าธรรมเนียมโอน', transfer_fee))
+
+        # 3. รวมเป็นต้นทุนสุดท้ายฝั่ง System ที่ถูกต้อง
+        total_cost_system = cost_po_sys + cost_relocation_sys + cost_brokerage_sys + cost_transfer_sys
+        # <<< END: สิ้นสุดการแก้ไข Logic >>>
+
+        # --- คำนวณฝั่ง Express และ Sales (เหมือนเดิม) ---
+        total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
+        total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
         total_sale_system = (
             float(self.system_data.get('sales_service_amount', 0) or 0) +
             float(self.system_data.get('cutting_drilling_fee', 0) or 0) +
             float(self.system_data.get('other_service_fee', 0) or 0) -
-            float(self.system_data.get('coupons', 0) or 0) # <--- หักคูปองออก
+            float(self.system_data.get('coupons', 0) or 0)
         )
-        po_shipping = self.po_data['shipping_to_stock_cost'].sum() + self.po_data['shipping_to_site_cost'].sum()
-        po_product_cost = self.po_data['total_cost'].sum()
-        po_relocation = self.po_data['relocation_cost'].sum() if 'relocation_cost' in self.po_data.columns else 0
-        cost_product_sys = float(self.cost_overrides.get('ต้นทุนค่าสินค้า/บริการ', po_product_cost))
-        cost_shipping_sys = float(self.cost_overrides.get('ต้นทุนค่าจัดส่ง', po_shipping))
-        cost_relocation_sys = float(self.cost_overrides.get('ต้นทุนค่าย้าย', po_relocation))
-        cost_brokerage_sys = float(self.cost_overrides.get('ต้นทุนค่านายหน้า', (self.system_data.get('brokerage_fee', 0) or 0)))
-        cost_transfer_sys = float(self.cost_overrides.get('ต้นทุนค่าธรรมเนียมโอน', (self.system_data.get('transfer_fee', 0) or 0)))
-        total_cost_system = cost_product_sys + cost_shipping_sys + cost_relocation_sys + cost_brokerage_sys + cost_transfer_sys
-        total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0) + \
-                           float(self.excel_data.get('shipping_cost_uploaded', 0) or 0)
-        total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0) + \
-                           float(self.excel_data.get('shipping_cost_uploaded', 0) or 0) + \
-                           float(self.excel_data.get('relocation_cost_uploaded', 0) or 0) + \
-                           float(self.excel_data.get('brokerage_fee_uploaded', 0) or 0) + \
-                           float(self.excel_data.get('transfer_fee_uploaded', 0) or 0)
+
+        # บันทึกค่าที่คำนวณได้ทั้งหมดไว้ในตัวแปรกลาง
         self.calculated_values = {
             'total_sale_system': total_sale_system,
             'total_sale_express': total_sale_express,
@@ -1133,12 +1149,15 @@ class HRVerificationWindow(CTkToplevel):
             'total_cost_express': total_cost_express
         }
 
-        # --- Logic การเลือกค่าเริ่มต้นที่ถูกต้องและสมบูรณ์ ---
-        saved_sale_source = self.system_data.get('hr_sale_source')
-        if saved_sale_source not in ['system', 'express']:
+        # Logic การเลือกค่าเริ่มต้น (เหมือนเดิม)
+        if self.system_data.get('hr_sale_source') in ['system', 'express']:
+            self.final_sale_source.set(self.system_data['hr_sale_source'])
+        else:
             self.final_sale_source.set("system")
-        saved_cost_source = self.system_data.get('hr_cost_source')
-        if saved_cost_source not in ['system', 'express']:
+
+        if self.system_data.get('hr_cost_source') in ['system', 'express']:
+            self.final_cost_source.set(self.system_data['hr_cost_source'])
+        else:
             self.final_cost_source.set("system")
     # --- END: สิ้นสุดโค้ดเวอร์ชันสมบูรณ์ ---
             
@@ -2130,3 +2149,404 @@ class PayoutCalculationViewer(CTkToplevel):
             if "หลังหัก" in desc: tags = ('final_row',)
             
             tree.insert("", "end", values=tuple(values_tuple), tags=tags)
+
+
+class CalculationDetailViewer(CTkToplevel):
+    def __init__(self, master, debug_df, so_breakdown_df, plan_name):
+        super().__init__(master)
+        self.app_container = master.app_container
+        self.title(f"รายละเอียดการคำนวณ - {plan_name}")
+        self.geometry("900x600")
+        
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.tab_view = ctk.CTkTabview(self, corner_radius=10)
+        self.tab_view.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        self.tab_1 = self.tab_view.add("ขั้นตอนการคำนวณ")
+        self.tab_2 = self.tab_view.add("รายละเอียดตาม SO")
+
+        # <<< START: แก้ไขให้เรียกใช้ฟังก์ชันที่ถูกต้องเพียงครั้งเดียว >>>
+        self._populate_calc_steps_tab(self.tab_1, debug_df)
+        self._populate_so_breakdown_tab(self.tab_2, so_breakdown_df)
+        # <<< END >>>
+
+        self.transient(master)
+        self.grab_set()
+    
+    def _on_so_row_double_click(self, event):
+        tree = event.widget
+        selected_item_iid = tree.focus()
+        if not selected_item_iid:
+            return
+        
+        try:
+            # ดึงค่าจากคอลัมน์แรก (SO Number)
+            so_number = tree.item(selected_item_iid, "values")[0]
+            if so_number:
+                # เปิดหน้าต่างใหม่
+                SODetailViewer(master=self, app_container=self.app_container, so_number=so_number)
+        except (IndexError, TclError) as e:
+            print(f"Could not get SO Number from selected row: {e}")
+    
+    def _populate_calc_steps_tab_v2(self, tab, df):
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+        tree_frame = CTkFrame(tab, fg_color="transparent")
+        tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        if df is None or df.empty:
+            CTkLabel(tree_frame, text="ไม่พบข้อมูลขั้นตอนการคำนวณ").pack(pady=20)
+            return
+
+        # --- 1. ตั้งค่า Style และ Theme ---
+        style = ttk.Style(self)
+        style.theme_use("clam") # ใช้ theme ที่ปรับแต่งได้ง่าย
+        
+        # Style สำหรับแถวข้อมูลปกติ
+        style.configure("Detail.Treeview", 
+                        rowheight=28, 
+                        font=CTkFont(size=12),
+                        background="#FFFFFF",
+                        fieldbackground="#FFFFFF",
+                        foreground="#1E293B")
+
+        # Style สำหรับหัวตาราง
+        style.configure("Detail.Treeview.Heading", 
+                        font=CTkFont(size=12, weight="bold"),
+                        background="#F1F5F9", # สีพื้นหลังหัวข้อ
+                        relief="flat")
+        
+        # ทำให้เส้นตารางแสดงผล (สำหรับบาง OS)
+        style.layout("Detail.Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
+
+        tree = ttk.Treeview(tree_frame, columns=("รายการ", "ค่า"), show="headings", style="Detail.Treeview")
+        tree.grid(row=0, column=0, sticky="nsew")
+        
+        tree.heading("รายการ", text="รายการ")
+        tree.column("รายการ", width=500, anchor="w")
+        tree.heading("ค่า", text="ค่า")
+        tree.column("ค่า", width=200, anchor="e")
+
+        # --- 2. กำหนด Tag สีสำหรับแถวพิเศษ ---
+        tree.tag_configure('header_row', background='#E2E8F0', font=CTkFont(size=13, weight="bold"))
+        tree.tag_configure('separator_row', background='#F8FAFC')
+        tree.tag_configure('summary_row', font=CTkFont(size=12, weight="bold"))
+        tree.tag_configure('final_summary_row', background='#D1FAE5', font=CTkFont(size=12, weight="bold"))
+
+        for i, row in df.iterrows():
+            item = row['รายการ']
+            value = row['ค่า']
+            tags = ()
+            
+            # ใช้ i % 2 เพื่อสลับสีแถว (ถ้าต้องการ)
+            # tags += ('oddrow',) if i % 2 != 0 else ()
+            
+            if str(item).startswith('##') and str(item).endswith('##'):
+                item = item.replace('##', '').strip()
+                tags += ('header_row',)
+            elif str(item) == '---':
+                item, value = '', ''
+                tags += ('separator_row',)
+            elif str(item).strip().startswith('='):
+                tags += ('summary_row',)
+            elif "ยอดรวมคอมมิชชั่น" in str(item):
+                tags += ('final_summary_row',)
+
+            value_str = f"{value:,.2f}" if isinstance(value, (int, float)) else value
+            
+            tree.insert("", "end", values=(item, value_str), tags=tags)
+            
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=vsb.set)
+
+    def _populate_calc_steps_tab(self, tab, df):
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+        tree_frame = CTkFrame(tab, fg_color="transparent")
+        tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        if df is None or df.empty:
+            CTkLabel(tree_frame, text="ไม่พบข้อมูลขั้นตอนการคำนวณ").pack(pady=20)
+            return
+
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        
+        style.configure("Detail.Treeview", 
+                        rowheight=28, 
+                        font=CTkFont(size=12),
+                        background="#FFFFFF",
+                        fieldbackground="#FFFFFF",
+                        foreground="#1E293B")
+        style.configure("Detail.Treeview.Heading", 
+                        font=CTkFont(size=12, weight="bold"),
+                        background="#F1F5F9",
+                        relief="flat")
+        style.layout("Detail.Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
+
+        tree = ttk.Treeview(tree_frame, columns=("รายการ", "ค่า"), show="headings", style="Detail.Treeview")
+        tree.grid(row=0, column=0, sticky="nsew")
+        
+        tree.heading("รายการ", text="รายการ")
+        tree.column("รายการ", width=500, anchor="w")
+        tree.heading("ค่า", text="ค่า")
+        tree.column("ค่า", width=200, anchor="e")
+
+        tree.tag_configure('header_row', background='#E2E8F0', font=CTkFont(size=13, weight="bold"))
+        tree.tag_configure('separator_row', background='#F8FAFC')
+        tree.tag_configure('summary_row', font=CTkFont(size=12, weight="bold"))
+        tree.tag_configure('final_summary_row', background='#D1FAE5', font=CTkFont(size=12, weight="bold"))
+
+        for i, row in df.iterrows():
+            item = row['รายการ']
+            value = row['ค่า']
+            tags = ()
+            
+            if str(item).startswith('##') and str(item).endswith('##'):
+                item = item.replace('##', '').strip()
+                tags += ('header_row',)
+            elif str(item) == '---':
+                item, value = '', ''
+                tags += ('separator_row',)
+            elif str(item).strip().startswith('='):
+                tags += ('summary_row',)
+            elif "ยอดรวมคอมมิชชั่น" in str(item):
+                tags += ('final_summary_row',)
+
+            value_str = f"{value:,.2f}" if isinstance(value, (int, float)) else value
+            
+            tree.insert("", "end", values=(item, value_str), tags=tags)
+            
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=vsb.set)
+
+
+    def _populate_so_breakdown_tab(self, tab, df):
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+        tree_frame = CTkFrame(tab, fg_color="transparent")
+        tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        if df is None or df.empty:
+            CTkLabel(tree_frame, text="ไม่พบข้อมูลรายละเอียด SO").pack(pady=20)
+            return
+
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Breakdown.Treeview.Heading", font=CTkFont(size=12, weight="bold"), background="#F1F5F9", relief="flat")
+        style.configure("Breakdown.Treeview", rowheight=28, font=CTkFont(size=12))
+        
+        columns = list(df.columns)
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", style="Breakdown.Treeview")
+        tree.grid(row=0, column=0, sticky="nsew")
+        
+        # --- 1. กำหนด Tag สีสำหรับสถานะ ---
+        tree.tag_configure('Normal (>=10%)', background='#F0FDF4') # สีเขียวอ่อน
+        tree.tag_configure('Below Tier (<10%)', background='#FEF2F2') # สีแดงอ่อน
+        # (เพิ่มสีสำหรับ Plan C เผื่อไว้)
+        tree.tag_configure('Below Tier (7.99-10%)', background='#FEFCE8') # สีเหลืองอ่อน
+        tree.tag_configure('Below Tier (<7.99%)', background='#FEF2F2') # สีแดงอ่อน
+
+
+        for col_id in columns:
+            anchor = 'w'
+            width = 150
+            if col_id not in ['PO Number', 'SO Number (Grouped)', 'Status']:
+                anchor = 'e'
+            if col_id == 'Status':
+                width = 200
+            
+            tree.heading(col_id, text=col_id)
+            tree.column(col_id, width=width, anchor=anchor)
+
+        for _, row in df.iterrows():
+            # --- 2. ใช้ค่าจากคอลัมน์ Status เป็น Tag โดยตรง ---
+            tag = row['Status'] 
+            values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in row]
+            tree.insert("", "end", values=tuple(values), tags=(tag,))
+
+        # --- 3. ผูก Event ดับเบิลคลิก (เหมือนเดิม) ---
+        tree.bind("<Double-1>", self._on_so_row_double_click)
+            
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=vsb.set)
+
+class SODetailViewer(CTkToplevel):
+    def __init__(self, master, app_container, so_number):
+        super().__init__(master)
+        self.app_container = app_container
+        self.so_number = so_number
+        
+        self.title(f"ข้อมูล SO: {so_number} และ PO ที่เกี่ยวข้อง")
+        self.geometry("800x600")
+        
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        header_frame = CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=20, pady=10, sticky="ew")
+        CTkLabel(header_frame, text=f"SO Number: {so_number}", font=CTkFont(size=18, weight="bold")).pack(side="left")
+
+        self.main_frame = CTkScrollableFrame(self)
+        self.main_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        
+        self.after(50, self._load_and_display_data)
+        
+        self.transient(master)
+        self.grab_set()
+
+    def _load_and_display_data(self):
+        try:
+            so_query = "SELECT * FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1"
+            so_df = pd.read_sql_query(so_query, self.app_container.pg_engine, params=(self.so_number,))
+            
+            # <<< START: แก้ไข Query ให้ดึง id ของ PO มาด้วย >>>
+            po_query = "SELECT id, po_number, supplier_name, status, total_cost FROM purchase_orders WHERE so_number = %s ORDER BY timestamp DESC"
+            # <<< END >>>
+            po_df = pd.read_sql_query(po_query, self.app_container.pg_engine, params=(self.so_number,))
+
+            if not so_df.empty:
+                self._display_so_details(so_df.iloc[0])
+            else:
+                CTkLabel(self.main_frame, text="ไม่พบข้อมูล SO นี้").pack(pady=10)
+
+            self._display_po_details(po_df)
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูลได้: {e}", parent=self)
+            self.destroy()
+
+    def _create_detail_section_frame(self, parent, title):
+        frame = CTkFrame(parent, corner_radius=10, border_width=1)
+        frame.pack(fill="x", pady=(10, 5), padx=5)
+        frame.grid_columnconfigure(1, weight=1)
+        CTkLabel(frame, text=title, font=CTkFont(size=16, weight="bold")).grid(
+            row=0, column=0, columnspan=2, padx=15, pady=(10, 5), sticky="w")
+        return frame
+    
+    def _add_detail_row(self, parent, row_index, label_text, value, sub_text=""):
+        if value is None or pd.isna(value):
+            value_text = "-"
+        elif isinstance(value, (int, float, np.floating)):
+            value_text = f"{value:,.2f}"
+        elif isinstance(value, (datetime, pd.Timestamp)):
+            value_text = value.strftime('%d/%m/%Y')
+        else:
+            value_text = str(value)
+
+        if sub_text:
+            value_text += f" ({sub_text})"
+            
+        CTkLabel(parent, text=label_text, font=CTkFont(size=14)).grid(
+            row=row_index, column=0, padx=(15, 10), pady=4, sticky="w")
+        CTkLabel(parent, text=value_text, font=CTkFont(size=14), wraplength=400, justify="left").grid(
+            row=row_index, column=1, padx=(10, 15), pady=4, sticky="ew")
+
+
+    def _display_so_details(self, so_data):
+        header_map = self.app_container.HEADER_MAP
+
+        # --- Section 1: รายละเอียดการขาย ---
+        f1 = self._create_detail_section_frame(self.main_frame, "รายละเอียดการขาย")
+        self._add_detail_row(f1, 1, header_map.get('bill_date', 'วันที่เปิด SO'), so_data.get('bill_date'))
+        self._add_detail_row(f1, 2, header_map.get('customer_name', 'ชื่อลูกค้า'), so_data.get('customer_name'))
+        self._add_detail_row(f1, 3, header_map.get('credit_term', 'เครดิต'), so_data.get('credit_term'))
+
+        # --- Section 2: ยอดขายและบริการ ---
+        f2 = self._create_detail_section_frame(self.main_frame, "ยอดขายและบริการ")
+        self._add_detail_row(f2, 1, header_map.get('sales_service_amount', 'ยอดขาย/บริการ'), so_data.get('sales_service_amount'), sub_text=so_data.get('sales_service_vat_option'))
+        self._add_detail_row(f2, 2, header_map.get('cutting_drilling_fee', 'ค่าบริการตัด/เจาะ'), so_data.get('cutting_drilling_fee'), sub_text=so_data.get('cutting_drilling_fee_vat_option'))
+        self._add_detail_row(f2, 3, header_map.get('other_service_fee', 'ค่าบริการอื่นๆ'), so_data.get('other_service_fee'), sub_text=so_data.get('other_service_fee_vat_option'))
+        
+        # --- Section 3: ค่าจัดส่ง ---
+        f3 = self._create_detail_section_frame(self.main_frame, "ค่าจัดส่ง")
+        self._add_detail_row(f3, 1, header_map.get('shipping_cost', 'ค่าขนส่ง'), so_data.get('shipping_cost'), sub_text=so_data.get('shipping_vat_option'))
+        self._add_detail_row(f3, 2, header_map.get('relocation_cost', 'ค่าย้าย'), so_data.get('relocation_cost'))
+
+        # --- Section 4: ค่าธรรมเนียมและส่วนลด ---
+        f4 = self._create_detail_section_frame(self.main_frame, "ค่าธรรมเนียมและส่วนลด")
+        self._add_detail_row(f4, 1, header_map.get('brokerage_fee', 'ค่านายหน้า'), so_data.get('brokerage_fee'))
+        self._add_detail_row(f4, 2, header_map.get('giveaways', 'ของแถม'), so_data.get('giveaways'))
+        self._add_detail_row(f4, 3, header_map.get('coupons', 'คูปอง'), so_data.get('coupons'))
+
+        # --- Section 5: สรุปข้อมูลที่ยืนยันโดย HR ---
+        f5 = self._create_detail_section_frame(self.main_frame, "สรุปข้อมูลที่ยืนยันโดย HR")
+        self._add_detail_row(f5, 1, 'ยอดขายสุดท้าย', so_data.get('final_sales_amount'))
+        self._add_detail_row(f5, 2, 'ต้นทุนสุดท้าย', so_data.get('final_cost_amount'))
+        self._add_detail_row(f5, 3, 'กำไร (GP)', so_data.get('final_gp'))
+        self._add_detail_row(f5, 4, 'Margin สุดท้าย (%)', so_data.get('final_margin'))
+        self._add_detail_row(f5, 5, 'สถานะล่าสุด', so_data.get('status'))
+    
+    def _on_po_row_double_click(self, event):
+        tree = event.widget
+        selected_item_iid = tree.focus()
+        if not selected_item_iid:
+            return
+        
+        try:
+            # ดึงค่าจากแถวที่เลือก
+            item_values = tree.item(selected_item_iid, "values")
+            # ค่าแรกสุด (index 0) คือ id ของ PO
+            po_id = int(float(item_values[0]))
+            
+            # เรียกใช้ฟังก์ชันเปิดหน้าต่างรายละเอียด PO ที่มีอยู่แล้ว
+            self.app_container.show_purchase_detail_window(po_id)
+        except (IndexError, ValueError, TclError) as e:
+            print(f"Could not get PO ID from selected row: {e}")
+
+    def _display_po_details(self, po_df):
+        po_frame = CTkFrame(self.main_frame, corner_radius=10)
+        po_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        po_frame.grid_rowconfigure(1, weight=1)
+        po_frame.grid_columnconfigure(0, weight=1)
+        
+        CTkLabel(po_frame, text="Purchase Orders ที่เกี่ยวข้อง (ดับเบิลคลิกเพื่อดูรายละเอียด)", font=CTkFont(size=16, weight="bold")).grid(row=0, column=0, sticky="w", padx=10, pady=5)
+
+        if po_df.empty:
+            CTkLabel(po_frame, text="- ไม่มี PO ที่เกี่ยวข้อง -").grid(row=1, column=0, pady=10)
+            return
+
+        tree_frame = CTkFrame(po_frame, fg_color="transparent")
+        tree_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("PO.Treeview.Heading", font=CTkFont(size=12, weight="bold"))
+        style.configure("PO.Treeview", rowheight=28, font=CTkFont(size=12))
+
+        # <<< START: แก้ไขการสร้างตาราง PO >>>
+        # รวม 'id' เข้ามาใน columns แต่ซ่อนไว้ไม่ให้ผู้ใช้เห็น
+        columns_with_id = list(po_df.columns)
+        columns_to_display = [col for col in columns_with_id if col != 'id']
+
+        tree = ttk.Treeview(tree_frame, columns=columns_with_id, displaycolumns=columns_to_display, show="headings", style="PO.Treeview")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        for col in columns_to_display: # วนลูปเฉพาะคอลัมน์ที่จะแสดงผล
+            tree.heading(col, text=col.replace('_', ' ').title())
+            tree.column(col, anchor='e' if 'cost' in col else 'w', width=150)
+
+        for _, row in po_df.iterrows():
+            values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in row]
+            tree.insert("", "end", values=tuple(values))
+
+        # ผูก Event การดับเบิลคลิกเข้ากับฟังก์ชันใหม่
+        tree.bind("<Double-1>", self._on_po_row_double_click)
+        # <<< END >>>
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=vsb.set)

@@ -21,6 +21,7 @@ import os
 import shutil
 from hr_windows import HRVerificationWindow, PayoutDetailWindow, PayoutCalculationViewer
 from tkinter import ttk, filedialog
+from hr_windows import CalculationDetailViewer
 
 
 import matplotlib
@@ -283,6 +284,7 @@ class HRScreen(CTkFrame):
         self.user_key = user_key
         self.user_name = user_name
         self.user_role = user_role # << เพิ่มบรรทัดนี้เพื่อเก็บค่า role ไว้
+        
 
         self.label_font = CTkFont(size=16, weight="bold", family="Roboto")
         self.entry_font = CTkFont(size=14, family="Roboto")
@@ -320,9 +322,46 @@ class HRScreen(CTkFrame):
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
     
-    # อยู่ในไฟล์ hr_screen.py ภายในคลาส HRScreen
-    
-    
+    def _on_tab_selected(self):
+        selected_tab_name = self.tab_view.get()
+        if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
+            self._update_dashboard()
+            self._dashboard_loaded = True
+        elif selected_tab_name == "วิเคราะห์เป้าการขาย" and not self._sales_target_loaded:
+            self._update_sales_target_dashboard()
+            self._sales_target_loaded = True
+        elif selected_tab_name == "จัดการผู้ใช้งาน" and not self._users_loaded:
+            self._populate_users_table()
+            self._users_loaded = True
+        elif selected_tab_name == "เปรียบเทียบ / ดูประวัติ" and not self._compare_commission_loaded:
+            self._compare_commission_loaded = True
+        elif selected_tab_name == "ประมวลผลและจ่ายค่าคอม" and not self._process_commission_loaded:
+            self._on_sale_selected_for_process()
+            self._process_commission_loaded = True
+        elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded:
+            self._load_payout_history()
+            self._payout_history_loaded = True
+        elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded:
+            self._populate_audit_log_table()
+            self._audit_log_loaded = True
+
+    def _show_calculation_details(self):
+        if self.initial_commission_result:
+            debug_df = self.initial_commission_result.get('debug_df')
+            so_breakdown_df = self.initial_commission_result.get('so_breakdown_df') # <-- ดึงข้อมูลใหม่
+            
+            sale_key = self.selected_sale_for_process.get()
+            plan_name = self.sales_user_info.get(sale_key, {}).get('plan', 'Unknown Plan')
+            
+            # ส่ง DataFrame ทั้งสองตัวไปที่หน้าต่าง Viewer
+            CalculationDetailViewer(
+                master=self, 
+                debug_df=debug_df, 
+                so_breakdown_df=so_breakdown_df, 
+                plan_name=plan_name
+            )
+        else:
+            messagebox.showinfo("ไม่มีข้อมูล", "ไม่พบข้อมูลการคำนวณ", parent=self)
 
     def _trial_export_data(self):
         """
@@ -1090,26 +1129,23 @@ class HRScreen(CTkFrame):
             
             loading_label.destroy()
 
-            # --- จุดที่แก้ไข: กำหนดชุดสีตามแผนก (Role) ---
             role_colors = {
-                "Sale": "#EFF6FF",               # สีฟ้าอ่อน (Theme ฝ่ายขาย)
-                "Sales Manager": "#DBEAFE",       # สีฟ้าเข้มขึ้น
-                "Purchasing Staff": "#F5F3FF",    # สีม่วงอ่อน (Theme ฝ่ายจัดซื้อ)
-                "Purchasing Manager": "#EDE9FE",  # สีม่วงเข้มขึ้น
-                "HR": "#F0FDF4",               # สีเขียวอ่อน (Theme HR)
-                "Director": "#F3F4F6",            # สีเทาอ่อน (สำหรับกรรมการ)
-                "กรรมการ": "#F3F4F6"
+                "Sale": "#EFF6FF", "Sales Manager": "#DBEAFE",
+                "Purchasing Staff": "#F5F3FF", "Purchasing Manager": "#EDE9FE",
+                "HR": "#F0FDF4", "Director": "#F3F4F6", "กรรมการ": "#F3F4F6"
             }
 
-            # --- จุดที่แก้ไข: ส่ง status_column และ status_colors เข้าไป ---
+            # <<< START: เพิ่ม iid_column เข้าไปตรงนี้ >>>
             self._create_styled_dataframe_table(
                 parent=table_frame, 
                 df=self.user_df, 
                 label_text="ข้อมูลผู้ใช้งาน", 
                 on_row_click=self._on_user_row_click_treeview,
-                status_column="ประเภท",      # บอกให้ใช้คอลัมน์ "ประเภท" เป็นเงื่อนไข
-                status_colors=role_colors   # บอกให้ใช้ชุดสีที่เพิ่งกำหนด
+                status_column="ประเภท",
+                status_colors=role_colors,
+                iid_column='User Key' # <-- เพิ่มบรรทัดนี้
             )
+            # <<< END >>>
             
             self.user_page_label.configure(text=f"Page {self.user_current_page + 1} / {max(1, total_pages)}")
             self.user_prev_button.configure(state="normal" if self.user_current_page > 0 else "disabled")
@@ -1120,15 +1156,16 @@ class HRScreen(CTkFrame):
     
     def _on_user_row_click_treeview(self, event, tree, df):
         try:
-            record_id = tree.focus()
+            record_id = tree.focus() # tree.focus() จะคืนค่า iid ที่เราตั้งไว้ (User Key)
             if not record_id:
                 return
 
+            # ค้นหาข้อมูลจาก DataFrame ด้วย User Key
             filtered_df = df.loc[df['User Key'] == record_id]
 
             if not filtered_df.empty:
                 row_data = filtered_df.iloc[0]
-                self._on_user_row_click(row_data)
+                self._on_user_row_click(row_data) # ส่งข้อมูลไปแสดงผลในฟอร์ม
         except Exception as e:
             print(f"An error occurred in _on_user_row_click_treeview: {e}")
 
@@ -1525,6 +1562,10 @@ class HRScreen(CTkFrame):
             if conn: self.app_container.release_connection(conn)
 
     def _calculate_final_pu_cost(self, row):
+        """
+        คำนวณต้นทุนรวมสุดท้ายจากฝั่งระบบ (PU) สำหรับใช้ในหน้าเปรียบเทียบข้อมูล
+        (เวอร์ชันแก้ไข ไม่มีการนับค่าจัดส่งซ้ำซ้อน)
+        """
         overrides = {}
         if pd.notna(row.get('hr_cost_overrides')):
             try:
@@ -1532,30 +1573,27 @@ class HRScreen(CTkFrame):
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        # --- START: แก้ไขวิธีจัดการค่าว่างให้ถูกต้อง ---
-        cogs_val = float(row.get('cogs_db', 0) or 0)
-        po_shipping_stock_val = float(row.get('po_shipping_stock', 0) or 0)
-        po_shipping_site_val = float(row.get('po_shipping_site', 0) or 0)
+        # 1. ดึงค่าต้นทุนพื้นฐานทั้งหมดจากข้อมูลที่ Query มา
+        # cogs_db คือ ยอดรวม total_cost จาก PO ทั้งหมด (ซึ่งรวมค่าส่งใน PO แล้ว)
+        po_total_cost_base = float(row.get('cogs_db', 0) or 0)
+        
+        # ค่าใช้จ่ายอื่นๆ ที่อยู่นอก PO
         po_relocation_val = float(row.get('po_relocation', 0) or 0)
         brokerage_fee_val = float(row.get('brokerage_fee', 0) or 0)
         transfer_fee_val = float(row.get('transfer_fee', 0) or 0)
 
-        # 2. คำนวณต้นทุนตั้งต้นจากข้อมูล PO
-        # ต้นทุนสินค้า = ยอดรวม PO - ค่าส่งทั้งหมดที่รวมอยู่ใน PO
-        po_product_cost = cogs_val - po_shipping_stock_val - po_shipping_site_val
-        po_shipping = po_shipping_stock_val + po_shipping_site_val
-        po_relocation = po_relocation_val
-        
-        # 3. ตรวจสอบค่าที่ถูกแก้ไขโดย HR (Overrides)
-        cost_product = float(overrides.get('ต้นทุนค่าสินค้า/บริการ', po_product_cost))
-        cost_shipping = float(overrides.get('ต้นทุนค่าจัดส่ง', po_shipping))
-        cost_relocation = float(overrides.get('ต้นทุนค่าย้าย', po_relocation))
+        # 2. ตรวจสอบว่ามีค่าที่ HR แก้ไขเอง (Overrides) หรือไม่
+        # <<< START: แก้ไข Logic การรวมยอด >>>
+        cost_po = float(overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
+        cost_relocation = float(overrides.get('ต้นทุนค่าย้าย', po_relocation_val))
         cost_brokerage = float(overrides.get('ต้นทุนค่านายหน้า', brokerage_fee_val))
         cost_transfer = float(overrides.get('ต้นทุนค่าธรรมเนียมโอน', transfer_fee_val))
+        # <<< END: สิ้นสุดการแก้ไข Logic >>>
 
-        # 4. รวมเป็นต้นทุนสุดท้าย
-        return cost_product + cost_shipping + cost_relocation + cost_transfer + cost_brokerage
-
+        # 3. รวมเป็นต้นทุนสุดท้ายที่ถูกต้อง
+        final_cost = cost_po + cost_relocation + cost_brokerage + cost_transfer
+        
+        return final_cost
     # อยู่ในไฟล์ hr_screen.py ภายในคลาส HRScreen
 
     def _compare_data(self):
@@ -1666,10 +1704,23 @@ class HRScreen(CTkFrame):
             # 3. เปลี่ยนชื่อคอลัมน์เป็นภาษาไทย
             self.comparison_df.rename(columns=display_order_map, inplace=True)
 
-            # (ลบบรรทัด self.comparison_df = merged_df[list...].copy() ที่ซ้ำซ้อนออกไปแล้ว)
             
             self.comparison_df.rename(columns=display_order_map, inplace=True)
+
+            numeric_cols = [
+            'ยอดขาย (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 
+                'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน'
+            ]
+            summary_data = self.comparison_df[numeric_cols].sum().to_dict()
             
+            # 2. สร้างแถวสรุป (Summary Row)
+            summary_row = pd.Series(summary_data)
+            summary_row['เลขที่ SO'] = 'ยอดรวม (Total)' # ใส่ข้อความในคอลัมน์แรก
+            summary_row['สถานะ'] = '' # ปล่อยคอลัมน์สถานะให้ว่าง
+            
+            # 3. เพิ่มแถวสรุปเข้าไปใน DataFrame หลัก
+            self.comparison_df = pd.concat([self.comparison_df, summary_row.to_frame().T], ignore_index=True)
+                
             status_colors = {
                 "ผ่านเกณฑ์": "#BBF7D0", 
                 "ยอดขายต่ำกว่า Express": "#FECACA", 
@@ -1905,32 +1956,25 @@ class HRScreen(CTkFrame):
         month_num = self.thai_month_map[month_name]
         year_ad = int(year_be_str) - 543
 
+        # <<< START: เพิ่มโค้ดดึงข้อมูล Sales Target และ Plan ตรงนี้ >>>
         plan_info = self.sales_user_info.get(sale_key, {})
         plan = plan_info.get('plan', 'Plan A')
+        sales_target = float(plan_info.get('target', 0.0))
+        # <<< END >>>
 
         for widget in self.process_result_frame.winfo_children(): widget.destroy()
         loading = self._show_loading(self.process_result_frame)
 
         try:
-            # <<< จุดแก้ไข 1: แก้ไข Query ให้ JOIN ตาราง PO เพื่อดึงต้นทุนค่าขนส่งมาด้วย >>>
             query_comm = """
-                SELECT 
-                    c.*,
-                    COALESCE(po_costs.total_po_shipping_cost, 0) as total_po_shipping_cost
+                SELECT c.*, COALESCE(po_costs.total_po_shipping_cost, 0) as total_po_shipping_cost
                 FROM commissions c
                 LEFT JOIN (
-                    SELECT 
-                        so_number,
-                        SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0)) as total_po_shipping_cost
-                    FROM purchase_orders
-                    WHERE status = 'Approved'
-                    GROUP BY so_number
+                    SELECT so_number, SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0)) as total_po_shipping_cost
+                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
-                WHERE c.sale_key = %s 
-                  AND c.status = 'HR Verified' 
-                  AND c.payout_id IS NULL
-                  AND c.commission_month = %s 
-                  AND c.commission_year = %s
+                WHERE c.sale_key = %s AND c.status = 'HR Verified' AND c.payout_id IS NULL
+                AND c.commission_month = %s AND c.commission_year = %s
             """
             params = (sale_key, month_num, year_ad)
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
@@ -1945,19 +1989,21 @@ class HRScreen(CTkFrame):
             
             total_giveaways = self.current_comm_df['giveaways'].sum() if 'giveaways' in self.current_comm_df.columns else 0.0
 
-            self.initial_commission_result = business_logic.calculate_monthly_commission(plan, self.current_comm_df)
+            # <<< START: แก้ไขการเรียกใช้ฟังก์ชัน ให้ส่ง sales_target ไปด้วย >>>
+            self.initial_commission_result = business_logic.calculate_monthly_commission(
+                plan_name=plan,
+                comm_df=self.current_comm_df,
+                sales_target=sales_target # <--- เพิ่ม parameter นี้
+            )
+            # <<< END >>>
             
-            # <<< จุดแก้ไข 2: ตรวจสอบผลลัพธ์ที่ได้จากการคำนวณ >>>
             result_type = self.initial_commission_result.get('type')
-            
-            loading.destroy() # ปิด Loading ก่อนแสดงผล
+            loading.destroy()
 
             if result_type in ['no_commission', 'error']:
-                # ถ้าไม่จ่ายคอม หรือ Error ให้แสดงข้อความแจ้งเตือน
                 message = self.initial_commission_result.get('message', 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ')
                 CTkLabel(self.process_result_frame, text=message, font=self.label_font, text_color="orange", wraplength=600).pack(pady=30, padx=20)
             else:
-                # ถ้าคำนวณสำเร็จ ให้สร้างหน้าจอสำหรับกรอกข้อมูลต่อ
                 if result_type == 'summary_plan_a':
                     self.commission_details_df = self.initial_commission_result.get('details')
                 else:
@@ -1972,31 +2018,28 @@ class HRScreen(CTkFrame):
     def _create_hr_input_interface(self, auto_deduction_value=0.0):
         """
         สร้างหน้าจอสำหรับกรอก Incentive/Deduction และแสดงผลสรุปค่าคอม
-        (ฉบับแก้ไข: ใช้ .grid() เพื่อควบคุม Layout ให้แม่นยำยิ่งขึ้น)
+        (ฉบับแก้ไข: เพิ่มปุ่ม 'แสดงการคิดแบบละเอียด')
         """
-        # --- START: โค้ดที่แก้ไข ---
-        # 1. ล้าง Frame เดิมและตั้งค่า Grid Layout ใหม่ให้ชัดเจน
         for widget in self.process_result_frame.winfo_children():
             widget.destroy()
 
-        # กำหนดให้แถวที่ 1 (แถวของตารางสรุป) เป็นแถวที่จะขยายตัว
         self.process_result_frame.grid_rowconfigure(1, weight=1)
         self.process_result_frame.grid_columnconfigure(0, weight=1)
 
         calculated_commission = self.initial_commission_result.get('final_commission', 0.0)
 
-        # 2. สร้าง Frame สำหรับกรอกข้อมูล (แถวบนสุด) และใช้ .grid()
         input_frame = CTkFrame(self.process_result_frame)
         input_frame.grid(row=0, column=0, pady=(10, 0), padx=10, sticky="ew")
         input_frame.grid_columnconfigure(1, weight=1)
 
-        # (โค้ดส่วนแสดงผลข้อมูลใน input_frame เหมือนเดิมทุกอย่าง)
         plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
         self.plan_display_label = CTkLabel(input_frame, text=f"แผนค่าคอมมิชชั่น: {plan_name}", font=self.header_font_table, text_color=self.theme["primary"])
         self.plan_display_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 5), sticky="w")
+
         CTkLabel(input_frame, text="ยอดคอมมิชชั่นที่คำนวณได้:", font=self.label_font).grid(row=1, column=0, padx=10, pady=5, sticky="w")
         self.calculated_commission_label = CTkLabel(input_frame, text=f"{calculated_commission:,.2f} บาท", font=self.header_font_table)
         self.calculated_commission_label.grid(row=1, column=1, padx=10, pady=5, sticky="w")
+
         stats_frame = CTkFrame(input_frame, fg_color="transparent")
         stats_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(5,0))
         stats_frame.grid_columnconfigure((1, 3), weight=1)
@@ -2004,31 +2047,45 @@ class HRScreen(CTkFrame):
         CTkLabel(stats_frame, text=f"{getattr(self, 'current_total_sales', 0.0):,.2f} บาท", font=self.entry_font).grid(row=0, column=1, padx=10, pady=5, sticky="w")
         CTkLabel(stats_frame, text="ต้นทุนรวม (ที่ใช้คำนวณ):", font=self.label_font, text_color="#D97706").grid(row=0, column=2, padx=(20, 10), pady=5, sticky="w")
         CTkLabel(stats_frame, text=f"{getattr(self, 'current_total_cost', 0.0):,.2f} บาท", font=self.entry_font).grid(row=0, column=3, padx=10, pady=5, sticky="w")
+
         CTkLabel(input_frame, text="(+) Incentive:", font=self.label_font).grid(row=3, column=0, padx=10, pady=10, sticky="w")
         self.incentive_entry = NumericEntry(input_frame, placeholder_text="0.00")
         self.incentive_entry.grid(row=3, column=1, padx=10, pady=10, sticky="ew")
+
         CTkLabel(input_frame, text="(-) หัก ค่าใช้จ่าย/ดำเนินการ:", font=self.label_font).grid(row=4, column=0, padx=10, pady=10, sticky="w")
         self.deduction_entry = NumericEntry(input_frame, placeholder_text="0.00")
         self.deduction_entry.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
         if auto_deduction_value > 0:
             self.deduction_entry.insert(0, f"{auto_deduction_value:,.2f}")
+
         CTkLabel(input_frame, text="หมายเหตุ/Incentive อื่นๆ:", font=self.label_font).grid(row=5, column=0, padx=10, pady=10, sticky="w")
         self.payout_notes_entry = CTkTextbox(input_frame, height=80)
         self.payout_notes_entry.grid(row=5, column=1, padx=10, pady=10, sticky="ew")
-        CTkButton(input_frame, text="คำนวณขั้นสุดท้ายและแสดงสรุป", command=self._perform_final_calculation, fg_color=self.theme["primary"]).grid(row=6, column=0, columnspan=2, pady=20)
+        
+        # --- Frame สำหรับปุ่มคำนวณและปุ่มแสดงรายละเอียด ---
+        calc_button_frame = CTkFrame(input_frame, fg_color="transparent")
+        calc_button_frame.grid(row=6, column=0, columnspan=2, pady=10, padx=10, sticky="ew")
+        calc_button_frame.grid_columnconfigure((0, 1), weight=1) # ทำให้ปุ่มขยายเท่าๆ กัน
+        
+        CTkButton(calc_button_frame, text="คำนวณขั้นสุดท้ายและแสดงสรุป", command=self._perform_final_calculation, fg_color=self.theme["primary"]).grid(row=0, column=0, padx=(0, 5), pady=10, sticky="ew")
+        
+        # <<< START: เพิ่มปุ่มใหม่ตรงนี้ >>>
+        self.detail_button = CTkButton(calc_button_frame, text="แสดงการคิดแบบละเอียด", command=self._show_calculation_details)
+        self.detail_button.grid(row=0, column=1, padx=(5, 0), pady=10, sticky="ew")
 
-        # 3. สร้าง Frame สำหรับตารางสรุป (แถวกลาง) และใช้ .grid()
-        #    - ทำให้เป็น CTkScrollableFrame เพื่อให้เลื่อนได้
-        #    - sticky="nsew" เพื่อให้มันขยายเต็มพื้นที่แถวที่ 1 ที่เรากำหนด weight ไว้
+        # ตรวจสอบว่ามีข้อมูล debug หรือไม่ ถ้าไม่มีให้ปิดปุ่ม
+        if not self.initial_commission_result.get('debug_df', pd.DataFrame()).empty:
+            self.detail_button.configure(state="normal")
+        else:
+            self.detail_button.configure(state="disabled")
+        # <<< END >>>
+
         self.final_summary_frame = CTkScrollableFrame(self.process_result_frame, fg_color="transparent")
         self.final_summary_frame.grid(row=1, column=0, pady=10, padx=10, sticky="nsew")
-
-        # 4. สร้าง Frame สำหรับปุ่มยืนยัน (แถวล่างสุด) และใช้ .grid()
-        #    - แถวนี้จะ "ไม่ขยาย" และจะอยู่ที่ด้านล่างเสมอ
+        
         bottom_action_frame = CTkFrame(self.process_result_frame, fg_color="transparent")
         bottom_action_frame.grid(row=2, column=0, pady=(0, 10), padx=10, sticky="ew")
-
-        # 5. สร้างปุ่มยืนยันให้อยู่ใน Frame ล่างสุด
+        
         self.confirm_payout_button = CTkButton(bottom_action_frame, text="✅ ยืนยันการจ่ายเงินและบันทึก",
                             command=self._confirm_payout_and_save,
                             fg_color="#16A34A", hover_color="#15803D",
@@ -2256,7 +2313,9 @@ class HRScreen(CTkFrame):
             if save_path: df_final_export.to_excel(save_path, index=False); messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้วที่:\n{save_path}", parent=self)
         except Exception as e: messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=self); traceback.print_exc()
 
-    def _create_styled_dataframe_table(self, parent, df, label_text="", on_row_click=None, status_colors=None, status_column=None):
+    # hr_screen.py (ภายในคลาส HRScreen)
+
+    def _create_styled_dataframe_table(self, parent, df, label_text="", on_row_click=None, status_colors=None, status_column=None, iid_column=None):
         for widget in parent.winfo_children():
             widget.destroy()
 
@@ -2279,48 +2338,37 @@ class HRScreen(CTkFrame):
 
         columns = df.columns.tolist()
         
-        # --- START: โค้ดส่วนสไตล์ที่ปรับปรุงใหม่ ---
         style = ttk.Style(self)
-        style.theme_use("clam") # <--- 1. ใช้ Theme 'clam' เพื่อให้ปรับแต่งได้เต็มที่
+        style.theme_use("clam")
 
-        # 2. ตั้งค่าสไตล์สำหรับ "หัวตาราง" (Header)
         style.configure("Modern.Treeview.Heading", 
                         font=self.header_font_table, 
-                        background=self.theme.get("header", "#1E40AF"), # สีพื้นหลังหัวตาราง
-                        foreground="white",                             # สีตัวอักษร
-                        relief="flat",                                  # ทำให้ขอบแบน
-                        padding=(10, 10))                               # เพิ่มช่องว่างภายในซ้ายขวาและบนล่าง
+                        background=self.theme.get("header", "#1E40AF"),
+                        foreground="white", relief="flat", padding=(10, 10))
         style.map("Modern.Treeview.Heading",
-                  background=[('active', self.theme.get("primary", "#3B82F6"))]) # สีตอนเอาเมาส์ไปชี้
-
-        # 3. ตั้งค่าสไตล์สำหรับ "แถวข้อมูล" (Rows)
+                background=[('active', self.theme.get("primary", "#3B82F6"))])
         style.configure("Modern.Treeview", 
-                        rowheight=32,                                   # <--- เพิ่มความสูงของแถวให้อ่านง่าย
-                        font=self.entry_font,
-                        background="#FFFFFF",                           # สีพื้นหลังปกติ
-                        fieldbackground="#FFFFFF",
-                        foreground="#111827")                           # สีตัวอักษรปกติ
-        
+                        rowheight=32, font=self.entry_font,
+                        background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#111827")
         style.map("Modern.Treeview",
-                  background=[('selected', self.theme.get("primary", "#3B82F6"))], # สีตอนที่เลือกแถว
-                  foreground=[('selected', "white")])
-        # --- END: สิ้นสุดโค้ดส่วนสไตล์ ---
+                background=[('selected', self.theme.get("primary", "#3B82F6"))],
+                foreground=[('selected', "white")])
 
-        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', style="Modern.Treeview") # <--- 4. เรียกใช้สไตล์ใหม่
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', style="Modern.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
         
-        # กำหนดสีพื้นหลังของแถวตามสถานะ (โค้ดส่วนนี้ทำงานเหมือนเดิม)
+        # <<< START: เพิ่ม Tag สำหรับแถวสรุป >>>
+        tree.tag_configure('summary_row', background='#E5E7EB', font=CTkFont(size=14, weight="bold"))
+        # <<< END >>>
+
         if status_colors:
             for tag_name, color in status_colors.items():
                 tree.tag_configure(tag_name, background=color)
 
-        # ตั้งค่าคอลัมน์และการจัดวางข้อมูล
         for col_id in columns:
-            tree.heading(col_id, text=col_id, anchor='center') # <--- จัดให้หัวข้ออยู่กึ่งกลาง
+            tree.heading(col_id, text=col_id, anchor='center')
             width = 150 
-            anchor = 'w' # การจัดวางข้อมูลปกติ (ชิดซ้าย)
-            
-            # จัดข้อมูลที่เป็นตัวเลขให้ชิดขวา
+            anchor = 'w'
             if any(s in col_id for s in ['ยอด', 'ต้นทุน', 'ผลต่าง', 'Margin']): 
                 width = 140
                 anchor = 'e'
@@ -2329,25 +2377,26 @@ class HRScreen(CTkFrame):
                 anchor = 'center'
             elif 'สถานะ' in col_id:
                 width = 200
-            
             tree.column(col_id, width=width, anchor=anchor)
 
-        # เพิ่มข้อมูลลงในตาราง (โค้ดส่วนนี้ทำงานเหมือนเดิม)
         for index, row in df.iterrows():
             tags_tuple = ()
-            if status_colors and status_column and status_column in df.columns:
+
+            # <<< START: ตรวจสอบและกำหนด Tag ให้กับแถวสรุป >>>
+            if row.get('เลขที่ SO') == 'ยอดรวม (Total)':
+                tags_tuple += ('summary_row',)
+            # <<< END >>>
+            elif status_colors and status_column and status_column in df.columns:
                 status_val = str(row.get(status_column, ''))
                 if status_val in status_colors:
                     tags_tuple = (status_val,)
-
+            
             values = []
             for col_name in columns:
                 value = row[col_name]
                 if pd.notna(value):
-                    # --- START: เพิ่มเงื่อนไขนี้เข้ามา ---
                     if isinstance(value, (datetime, pd.Timestamp)):
                         values.append(value.strftime('%d/%m/%Y %H:%M'))
-                    # --- END: สิ้นสุดส่วนที่เพิ่ม ---
                     elif isinstance(value, (float, np.floating)):
                         values.append(f"{value:,.2f}")
                     else:
@@ -2355,10 +2404,9 @@ class HRScreen(CTkFrame):
                 else:
                     values.append("")
 
-            row_id_for_iid = row.get('เลขที่ SO', str(index))
-            tree.insert("", "end", values=values, tags=tags_tuple, iid=str(row_id_for_iid))
+            iid_value = row[iid_column] if iid_column and iid_column in df.columns else str(index)
+            tree.insert("", "end", values=values, tags=tags_tuple, iid=str(iid_value))
         
-        # สร้าง Scrollbars (โค้ดส่วนนี้ทำงานเหมือนเดิม)
         v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
@@ -2366,7 +2414,7 @@ class HRScreen(CTkFrame):
         h_scroll.grid(row=1, column=0, sticky='ew')
         
         if on_row_click: 
-            tree.bind("<Double-1>", lambda e: on_row_click(e, tree, df))
+            tree.bind("<<TreeviewSelect>>", lambda e: on_row_click(e, tree, df))
 
     def _get_archive_date_range(self, year, month=None):
         """สร้างช่วงวันที่เริ่มต้นและสิ้นสุดสำหรับการ Archive"""

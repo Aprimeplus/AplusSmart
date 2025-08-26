@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from customtkinter import (CTkFrame, CTkLabel, CTkEntry, CTkFont, CTkButton,
                            CTkScrollableFrame, CTkOptionMenu, CTkCheckBox, CTkTabview, CTkComboBox,
-                           CTkToplevel, CTkRadioButton, CTkSegmentedButton)
+                           CTkToplevel, CTkRadioButton, CTkSegmentedButton, CTkInputDialog)
 from tkinter import messagebox
 from datetime import datetime
 import json
@@ -16,8 +16,10 @@ import numpy as np
 from PIL import Image, ImageTk
 import traceback
 import re
-from history_windows import SOPopupWindow 
+from history_windows import SOPopupWindow
+from hr_windows import SODetailViewer 
 from export_utils import export_approved_pos_to_excel
+
 
 # --- แก้ไข: ลบ import ที่เป็นปัญหาออก และย้าย Dialog class ไปไว้ในไฟล์ของตัวเอง (ถ้ามี) ---
 # from history_windows import SOPopupWindow 
@@ -118,31 +120,11 @@ class SubmitPODialog(CTkToplevel):
         conn = None
         try:
             conn = self.app_container.get_connection()
-            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor: # <<< เพิ่ม cursor_factory
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 
-                # --- START: เพิ่มโค้ดส่วนนี้ ---
-                # 1. เตรียม Dictionary สำหรับรวบรวมค่าขนส่งของแต่ละ SO
-                so_shipping_costs = {}
+                # --- START: แก้ไข Logic การอัปเดตค่าขนส่ง (ฉบับสมบูรณ์) ---
 
-                # 2. ดึงข้อมูลค่าขนส่งของ PO ที่เลือกทั้งหมด
-                for po_id, _ in selected_records:
-                    cursor.execute(
-                        "SELECT so_number, shipping_to_stock_cost, shipping_to_site_cost FROM purchase_orders WHERE id = %s",
-                        (po_id,)
-                    )
-                    po_data = cursor.fetchone()
-                    if po_data:
-                        so_number = po_data['so_number']
-                        total_shipping = (po_data['shipping_to_stock_cost'] or 0) + (po_data['shipping_to_site_cost'] or 0)
-                        
-                        # เพิ่มยอดรวมเข้าไปใน Dictionary
-                        if so_number in so_shipping_costs:
-                            so_shipping_costs[so_number] += total_shipping
-                        else:
-                            so_shipping_costs[so_number] = total_shipping
-                # --- END: สิ้นสุดโค้ดส่วนที่เพิ่ม ---
-
-                # 3. อัปเดตสถานะ PO (โค้ดเดิม)
+                # 1. อัปเดตสถานะ PO ที่เลือกทั้งหมดให้เป็น 'Pending Approval' ก่อน
                 ids_tuple = tuple(selected_ids)
                 update_query = """
                     UPDATE purchase_orders 
@@ -151,18 +133,31 @@ class SubmitPODialog(CTkToplevel):
                 """
                 cursor.execute(update_query, (ids_tuple,))
 
-                # --- START: เพิ่มโค้ดส่วนนี้ ---
-                # 4. วนลูปเพื่ออัปเดตค่า payment_before_vat ในตาราง commissions
-                for so_number, total_shipping_cost in so_shipping_costs.items():
-                    if total_shipping_cost > 0:
-                        cursor.execute("""
-                            UPDATE commissions
-                            SET payment_before_vat = COALESCE(payment_before_vat, 0) + %s
-                            WHERE so_number = %s AND is_active = 1
-                        """, (total_shipping_cost, so_number))
-                # --- END: สิ้นสุดโค้ดส่วนที่เพิ่ม ---
-                
-                # ... (ส่วนสร้าง Notification โค้ดเดิม) ...
+                # 2. รวบรวม SO ที่เกี่ยวข้องทั้งหมดจากการส่งครั้งนี้ (เพื่อไม่ให้ทำงานซ้ำซ้อน)
+                affected_so_numbers = list(set(rec['so_number'] for _, rec in selected_records))
+
+                # 3. วนลูปเพื่อ "คำนวณยอดรวมค่าขนส่งใหม่ทั้งหมด" ของแต่ละ SO
+                for so_number in affected_so_numbers:
+                    # 3.1 Query ยอดรวมค่าขนส่งจาก PO "ทุกใบ" (ที่อนุมัติแล้วหรือกำลังรออนุมัติ) ของ SO นี้
+                    cursor.execute("""
+                        SELECT SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0))
+                        FROM purchase_orders
+                        WHERE so_number = %s AND status IN ('Pending Approval', 'Approved')
+                    """, (so_number,))
+                    
+                    new_total_shipping_cost = cursor.fetchone()[0] or 0.0
+
+                    # 3.2 นำยอดรวมใหม่ "อัปเดตทับ" ค่าเก่าในตาราง commissions
+                    # วิธีนี้จะทำให้ข้อมูลถูกต้องเสมอ ไม่มีการบวกซ้ำ
+                    cursor.execute("""
+                        UPDATE commissions
+                        SET payment_before_vat = %s
+                        WHERE so_number = %s AND is_active = 1
+                    """, (new_total_shipping_cost, so_number))
+
+                # --- END: สิ้นสุดการแก้ไข Logic ---
+
+                # 4. สร้าง Notification (เหมือนเดิม)
                 cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Manager' AND status = 'Active'")
                 manager_keys = [row[0] for row in cursor.fetchall()]
 
@@ -187,6 +182,7 @@ class SubmitPODialog(CTkToplevel):
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการส่งข้อมูล: {e}", parent=self)
+            traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
 
@@ -770,6 +766,23 @@ class PurchasingScreen(CTkFrame):
         self._poll_and_update_tasks_badge()
         self.bind("<Destroy>", self._on_destroy)
     
+    def _lookup_so_details(self):
+        """
+        เปิดหน้าต่างให้ผู้ใช้กรอก SO Number เพื่อค้นหาและแสดงรายละเอียด
+        """
+        dialog = CTkInputDialog(text="กรุณาใส่ SO Number ที่ต้องการค้นหา:", title="ค้นหาข้อมูล Sales Order")
+        so_to_find = dialog.get_input()
+
+        if so_to_find and so_to_find.strip():
+            # เรียกใช้หน้าต่าง SODetailViewer ที่เราสร้างไว้ใน hr_windows.py
+            SODetailViewer(
+                master=self, 
+                app_container=self.app_container, 
+                so_number=so_to_find.strip().upper()
+            )   
+        elif so_to_find is not None: # ถ้าผู้ใช้กด OK แต่ไม่กรอกอะไร
+            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก SO Number", parent=self)
+
     def _update_summary(self, *args):
     # --- 1. คำนวณยอดรวมจากรายการสินค้า (Product Subtotal) ---
       product_subtotal = 0
@@ -928,23 +941,24 @@ class PurchasingScreen(CTkFrame):
 
         button_container = CTkFrame(header_frame, fg_color="transparent")
         button_container.pack(side="right")
+        
         self.tasks_button = CTkButton(button_container, text="My Tasks 🔔 (0)", command=self._open_my_tasks_window)
         self.tasks_button.pack(side="left", padx=(0, 5))
 
+        # <<< START: เพิ่มปุ่มใหม่ตรงนี้ >>>
+        CTkButton(button_container, text="🔍 ค้นหา SO", command=self._lookup_so_details, fg_color="#0891B2").pack(side="left", padx=5)
+        # <<< END >>>
+
         CTkButton(button_container, text="📖 ดูประวัติ PO", command=lambda: self.app_container.show_history_window(), fg_color="#64748B").pack(side="left", padx=5)
-
         CTkButton(button_container, text="🔧 จัดการสินค้า", command=self._open_product_management_window, fg_color="#6D28D9", hover_color="#5B21B6").pack(side="left", padx=5)
-
-        # --- START: เพิ่มปุ่ม Export กลับเข้ามาตรงนี้ ---
+        
+        # ... (โค้ดส่วนที่เหลือของฟังก์ชันเหมือนเดิม) ...
         CTkButton(button_container, text="Export PDF (PO อนุมัติ)", command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
         export_button = CTkButton(button_container, text="Export Excel (PO อนุมัติ)", command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B")
         export_button.pack(side="left", padx=5)
-        # --- END: สิ้นสุดส่วนที่เพิ่มกลับ ---
-
         CTkButton(button_container, text="(ล้างฟอร์ม PO)", command=self.handle_clear_button_press, fg_color="#E11D48").pack(side="left", padx=5)
         self.toggle_so_data_button = CTkButton(button_container, text="ดูข้อมูล SO", command=self._open_so_popup, fg_color=self.sale_theme.get("primary", "#3B82F6"))
         self.toggle_so_data_button.pack(side="left", padx=5)
-        
         CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="right", padx=(5, 0))
     
     def _open_so_selection_dialog(self):
@@ -1002,23 +1016,15 @@ class PurchasingScreen(CTkFrame):
             if conn: self.app_container.release_connection(conn)
 
     def _open_my_tasks_window(self):
-        # --- START: แก้ไข Indentation ---
-        # พยายามทำงานกับหน้าต่างที่มีอยู่ก่อน
         try:
-            # ตรวจสอบว่ามีออบเจ็กต์ และ วิดเจ็ตยังไม่ถูกทำลายใช่หรือไม่
             if self.tasks_window and self.tasks_window.winfo_exists():
-                self.tasks_window.lift()  # ดึงหน้าต่างขึ้นมาข้างบนสุด
-                self.tasks_window.focus() # โฟกัสไปที่หน้าต่างนั้น
-                return # ทำงานสำเร็จ, ออกจากฟังก์ชัน
-        except tk.TclError:
-            # หากเกิด Error (เช่น หน้าต่างเป็น "zombie") ให้ข้ามไป
-            # เพื่อสร้างหน้าต่างใหม่ด้านล่าง
-            pass
+                self.tasks_window.lift()
+                self.tasks_window.focus()
+                return
+        except (tk.TclError, AttributeError):
+            self.tasks_window = None
 
-        # หากไม่มีหน้าต่างที่ใช้งานได้อยู่ (ไม่มีอยู่แล้ว, ถูกปิดไป, หรือเกิด Error)
-        # ให้สร้างหน้าต่างขึ้นมาใหม่
         self.tasks_window = MyTasksWindow(self, purchasing_screen_instance=self)
-        # --- END: แก้ไข Indentation ---
 
     def _open_product_management_window(self):
         if self.product_management_window is None or not self.product_management_window.winfo_exists():
@@ -2226,3 +2232,5 @@ class PurchasingScreen(CTkFrame):
         except (ValueError, TypeError) as e:
             print(f"Error calculating payment from percentage: {e}")
             self._update_summary()
+
+    
