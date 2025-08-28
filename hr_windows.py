@@ -453,6 +453,7 @@ class HRVerificationWindow(CTkToplevel):
         super().__init__(master)
         self.master = master
         self.app_container = app_container
+        self.pg_engine = app_container.pg_engine
         self.system_data = system_data
         self.excel_data = excel_data
         self.po_data = po_data
@@ -537,7 +538,6 @@ class HRVerificationWindow(CTkToplevel):
     def _populate_po_cards(self):
         """สร้างการ์ดสำหรับ PO แต่ละใบ"""
         for widget in self.po_container_frame.winfo_children():
-            # ไม่ลบ Label หัวข้อ
             if isinstance(widget, CTkLabel) and "ใบสั่งซื้อ" in widget.cget("text"):
                 continue
             widget.destroy()
@@ -551,17 +551,29 @@ class HRVerificationWindow(CTkToplevel):
             po_card.pack(fill="x", expand=True, padx=0, pady=4)
             po_card.grid_columnconfigure(0, weight=1)
 
+            info_frame = CTkFrame(po_card, fg_color="transparent")
+            info_frame.grid(row=0, column=0, sticky="w", padx=10, pady=5)
+            
             info_text = f"PO: {row['po_number']}  |  Supplier: {row['supplier_name']}  |  ยอดรวม: {row.get('total_cost', 0):,.2f} บาท"
-            CTkLabel(po_card, text=info_text).grid(row=0, column=0, sticky="w", padx=10, pady=5)
+            CTkLabel(info_frame, text=info_text).pack(anchor="w")
             
             status_color = "#16A34A" if row['status'] == 'Approved' else 'gray'
-            CTkLabel(po_card, text=f"สถานะ: {row['status']}", text_color=status_color).grid(row=1, column=0, sticky="w", padx=10, pady=(0,5))
+            CTkLabel(info_frame, text=f"สถานะ: {row['status']}", text_color=status_color).pack(anchor="w")
+                
+            action_frame = CTkFrame(po_card, fg_color="transparent")
+            action_frame.grid(row=0, column=1, padx=10, pady=5, sticky="e")
 
-            detail_button = CTkButton(
-                po_card, text="ดูรายละเอียด", width=120,
-                command=lambda po_id=row['id']: self.app_container.show_purchase_detail_window(int(po_id))
+            # --- [แก้ไข] รวมปุ่มเหลือปุ่มเดียว ---
+            edit_button = CTkButton(
+                action_frame, 
+                text="ดูรายละเอียด / แก้ไข", 
+                width=150,
+                command=lambda po_id=row['id']: self.app_container.show_purchase_detail_window(
+                    int(po_id), 
+                    on_save_callback=self._update_all_calculations_and_ui # ส่งฟังก์ชัน refresh ไปด้วย
+                )
             )
-            detail_button.grid(row=0, rowspan=2, column=1, padx=10, pady=5)
+            edit_button.pack(pady=2, padx=2)
 
     def _create_summary_card(self, parent, title, card_type):
         """Helper function สำหรับสร้างการ์ดสรุป"""
@@ -588,6 +600,23 @@ class HRVerificationWindow(CTkToplevel):
             # self.cost_multiplier_var ถูกสร้างใน __init__ แล้ว
             self.cost_multiplier_menu = CTkOptionMenu(parent, variable=self.cost_multiplier_var, values=multiplier_options)
             self.cost_multiplier_menu.grid(row=4, column=0, padx=15, pady=(0, 10), sticky="w")
+
+    def _reload_data(self):
+        """ดึงข้อมูล SO และ PO ที่เกี่ยวข้องทั้งหมดจากฐานข้อมูลใหม่"""
+        try:
+            # ดึงข้อมูล SO (commissions)
+            so_df = pd.read_sql_query("SELECT c.*, u.sale_name FROM commissions c JOIN sales_users u ON c.sale_key = u.sale_key WHERE c.id = %s", self.pg_engine, params=(self.record_id,))
+            if not so_df.empty:
+                self.system_data = so_df.iloc[0].to_dict()
+
+            # ดึงข้อมูล POs
+            self.po_data = pd.read_sql_query("SELECT * FROM purchase_orders WHERE so_number = %s ORDER BY id", self.pg_engine, params=(self.so_number,))
+            print(f"Data reloaded for SO {self.so_number}. Found {len(self.po_data)} POs.")
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"ไม่สามารถรีโหลดข้อมูลได้: {e}", parent=self)
+            self.system_data = {}
+            self.po_data = pd.DataFrame()
 
     def _so_create_string_vars(self):
         """สร้าง StringVars ที่จำเป็นสำหรับ SOPopupWindow"""
@@ -820,6 +849,7 @@ class HRVerificationWindow(CTkToplevel):
         อัปเดตข้อมูลที่คำนวณได้ทั้งหมด และรีเฟรช UI ที่เกี่ยวข้อง
         (เวอร์ชันแก้ไขสำหรับ UI ใหม่)
         """
+        self._reload_data() # <-- เพิ่มบรรทัดนี้เพื่อดึงข้อมูลล่าสุดก่อน
         self._recalculate_summaries()
         self._populate_po_cards() # รีเฟรชรายการ PO
         self._update_selection_display() # อัปเดตการ์ดสรุปยอดขายและต้นทุน
@@ -866,95 +896,10 @@ class HRVerificationWindow(CTkToplevel):
         self.so_form_widgets['cash_verification_result_var'] = tk.StringVar(value="-")
 
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
-      """
-      Callback function ที่ SOPopupWindow จะเรียกใช้เพื่ออัปเดตข้อมูล
-      ฟังก์ชันนี้จะอัปเดตข้อมูลในหน่วยความจำ (Memory) เท่านั้น ยังไม่บันทึกลง DB
-    """
-    # <<< START: แก้ไขให้ครอบคลุมทุก Widget Type >>>
-
-    # 1. สร้าง Map ที่สมบูรณ์ขึ้น
-      key_map = {
-        # Numeric Entries
-        'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
-        'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
-        'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
-        'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
-        'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
-        'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
-        'cash_actual_payment_entry': 'cash_actual_payment', 'payment1_amount_entry': 'payment1_amount', # เพิ่ม payment เข้ามา
-        'payment2_amount_entry': 'payment2_amount', # เพิ่ม payment เข้ามา
-
-        'payment_before_vat_entry': 'payment_before_vat', 
-        'payment_no_vat_entry': 'payment_no_vat',
-
-        # Date Selectors
-        'bill_date_selector': 'bill_date', 'delivery_date_selector': 'delivery_date',
-        'payment_date_selector': 'payment_date', 'date_to_wh_selector': 'date_to_warehouse',
-        'date_to_customer_selector': 'date_to_customer',
-        
-
-        # Text Entries
-        'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id',
-        'credit_term_entry': 'credit_term', 'pickup_location_entry': 'pickup_location',
-        'pickup_rego_entry': 'pickup_registration',
-
-        # Option Menus / Radio Buttons (ใช้ StringVar)
-        'delivery_type_menu': 'delivery_type', 'sales_service_vat_option': 'sales_service_vat_option',
-        'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
-        'other_service_fee_vat_option': 'other_service_fee_vat_option',
-        'shipping_vat_option_var': 'shipping_vat_option',
-        'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option'
-    }
-
-    # 2. วนลูปเพื่อดึงค่าจาก Widget แต่ละประเภท
-      for widget_key, data_key in key_map.items():
-          value = None
-          if widget_key in current_popup_widgets_ref: # ถ้าเป็น Widget ที่สร้างใน Popup
-              widget = current_popup_widgets_ref[widget_key]
-              if not (widget and widget.winfo_exists()): continue
-
-              if isinstance(widget, (NumericEntry, CTkEntry)):
-                value = widget.get()
-              elif isinstance(widget, DateSelector):
-                value = widget.get_date()
-
-          elif widget_key in so_shared_vars_data: # ถ้าเป็น StringVar ที่ใช้ร่วมกัน
-              value = so_shared_vars_data[widget_key].get()
-
-        # 3. อัปเดตค่าลงใน self.system_data
-          if value is not None:
-            # แปลงค่าตัวเลขก่อนเก็บ
-              if isinstance(value, str) and data_key not in ['customer_name', 'customer_id', 'credit_term', 'pickup_location', 'pickup_registration', 'delivery_type'] and 'vat_option' not in data_key:
-                 self.system_data[data_key] = utils.convert_to_float(value)
-              else:
-                   self.system_data[data_key] = value
-
-    # 4. คำนวณยอดชำระรวมแยกต่างหาก
-      p1 = utils.convert_to_float(current_popup_widgets_ref.get('payment1_amount_entry').get())
-      p2 = utils.convert_to_float(current_popup_widgets_ref.get('payment2_amount_entry').get())
-      self.system_data['total_payment_amount'] = p1 + p2
-
-    # 5. Refresh หน้าจอหลัก
-      self._recalculate_summaries()
-      self._refresh_sales_comparison_table()
-      self._update_all_calculations_and_ui()
-
-      messagebox.showinfo("อัปเดตข้อมูล", "ข้อมูล SO ถูกอัปเดตในหน้าต่างนี้แล้ว\nกรุณากด 'บันทึกการแก้ไข' เพื่อบันทึกข้อมูลลงฐานข้อมูล", parent=self)
-    
-    def _open_so_editor_popup(self):
-        """เปิดหน้าต่าง SOPopupWindow สำหรับให้ HR แก้ไขข้อมูล SO โดยละเอียด"""
-        SOPopupWindow(
-            master=self, 
-            sales_data=self.system_data, 
-            so_shared_vars=self.so_form_widgets, 
-            sale_theme=self.sale_theme
-        )
-    
-    def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         """
-        Callback ที่ถูกเรียกจาก SOPopupWindow เมื่อมีการบันทึก
-        ฟังก์ชันนี้จะอัปเดตข้อมูลในหน่วยความจำ (Memory) ของหน้าต่างปัจจุบัน
+        [แก้ไข] รวบรวมข้อมูลจาก Popup, บันทึกลงฐานข้อมูลโดยตรง, และรีเฟรชหน้าจอหลัก
         """
+        updated_data = {}
         key_map = {
             'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
             'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
@@ -970,37 +915,65 @@ class HRVerificationWindow(CTkToplevel):
             'pickup_rego_entry': 'pickup_registration'
         }
 
-        # วนลูปเพื่อดึงค่าจาก Widget แต่ละประเภท
+        # 1. รวบรวมข้อมูลจาก Widgets
         for widget_key, data_key in key_map.items():
             value = None
             if widget_key in current_popup_widgets_ref:
                 widget = current_popup_widgets_ref[widget_key]
                 if not (widget and widget.winfo_exists()): continue
-
                 if isinstance(widget, (NumericEntry, CTkEntry)):
                     value = widget.get()
+                    if 'amount' in data_key or 'cost' in data_key or 'fee' in data_key:
+                        value = utils.convert_to_float(value)
                 elif isinstance(widget, DateSelector):
                     value = widget.get_date()
-            
             if value is not None:
-                # แปลงค่าตัวเลขก่อนเก็บ
-                if isinstance(value, str) and 'amount' in data_key or 'cost' in data_key or 'fee' in data_key:
-                    self.system_data[data_key] = utils.convert_to_float(value)
-                else:
-                    self.system_data[data_key] = value
+                updated_data[data_key] = value
 
-        # คำนวณยอดชำระรวมแยกต่างหาก
-        p1 = utils.convert_to_float(current_popup_widgets_ref.get('payment1_amount_entry').get())
-        p2 = utils.convert_to_float(current_popup_widgets_ref.get('payment2_amount_entry').get())
-        self.system_data['total_payment_amount'] = p1 + p2
+        p1_entry = current_popup_widgets_ref.get('payment1_amount_entry')
+        p2_entry = current_popup_widgets_ref.get('payment2_amount_entry')
+        p1 = utils.convert_to_float(p1_entry.get()) if p1_entry else 0.0
+        p2 = utils.convert_to_float(p2_entry.get()) if p2_entry else 0.0
+        updated_data['total_payment_amount'] = p1 + p2
 
-        # สั่งให้หน้าต่างหลักคำนวณและ Refresh UI ใหม่ทั้งหมด
-        self._update_all_calculations_and_ui()
+        # 2. บันทึกข้อมูลลงฐานข้อมูล
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                set_clauses = [f"{col} = %s" for col in updated_data.keys()]
+                params = list(updated_data.values())
+                params.append(so_id)
+                
+                update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
+                cursor.execute(update_query, tuple(params))
 
-        messagebox.showinfo("อัปเดตข้อมูล", 
-                            "ข้อมูล SO ถูกอัปเดตในหน้าต่างนี้แล้ว\n"
-                            "กรุณากด 'บันทึกการแก้ไข' เพื่อยืนยันการเปลี่ยนแปลงลงฐานข้อมูล", 
-                            parent=self)
+                log_details = {"message": f"SO edited by HR ({self.app_container.current_user_key})"}
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, ('SO Edited by HR', 'commissions', so_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข SO ลงฐานข้อมูลเรียบร้อยแล้ว", parent=self)
+            
+            # 3. รีเฟรชหน้าจอหลักของ HR
+            self._update_all_calculations_and_ui()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึกข้อมูล: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+            
+    def _open_so_editor_popup(self):
+        """เปิดหน้าต่าง SOPopupWindow สำหรับให้ HR แก้ไขข้อมูล SO โดยละเอียด"""
+        SOPopupWindow(
+            master=self, 
+            sales_data=self.system_data, 
+            so_shared_vars=self.so_form_widgets, 
+            sale_theme=self.sale_theme
+        )
 
     def _on_cell_double_click(self, event):
         """จัดการ Event เมื่อมีการดับเบิลคลิกที่เซลล์ในตาราง"""
@@ -1892,7 +1865,7 @@ class ComparisonHistoryWindow(CTkToplevel):
 
             if logs_df.empty:
                 self.all_logs_df = pd.DataFrame()
-                self._populate_treeview()
+                self._populate_treeview(self.all_logs_df) # <--- แก้ไขโดยส่ง df เข้าไป
                 return
 
             def safe_json_normalize(series):
@@ -2550,3 +2523,237 @@ class SODetailViewer(CTkToplevel):
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
+    
+class EditPOWindowByHR(CTkToplevel):
+    def __init__(self, master, app_container, po_id, on_close_callback=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.pg_engine = app_container.pg_engine
+        self.po_id = po_id
+        self.on_close_callback = on_close_callback
+        self.item_widgets = []
+
+        self.title(f"HR: แก้ไขข้อมูล PO ID: {self.po_id}")
+        self.geometry("900x600")
+
+        # --- [แก้ไข] ใช้ grid layout หลัก ---
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1) # แถวที่ 1 (ScrollFrame) จะขยาย
+
+        # --- สร้าง UI ของฟอร์ม ---
+        self._create_widgets()
+        
+        # --- โหลดข้อมูลมาใส่ฟอร์ม ---
+        self.after(50, self._load_data)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.transient(master)
+        self.grab_set()
+
+    def _load_data(self):
+        # โค้ดสำหรับดึงข้อมูล PO และ PO Items จากฐานข้อมูลมาใส่ในฟอร์ม
+        pass
+
+    def _save_changes(self):
+        # โค้ดสำหรับรวบรวมข้อมูลจากฟอร์มและบันทึกลงฐานข้อมูล
+        
+        # --- ตัวอย่าง Logic การบันทึก ---
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 1. อัปเดตข้อมูลหลักในตาราง purchase_orders
+                # (ตัวอย่าง: อัปเดตแค่ชื่อ Supplier)
+                # new_supplier = self.entry_supplier.get()
+                # cursor.execute("UPDATE purchase_orders SET supplier_name = %s WHERE id = %s", (new_supplier, self.po_id))
+
+                # 2. อัปเดตข้อมูลรายการสินค้าในตาราง purchase_order_items (ต้องวนลูป)
+                # for item in self.item_widgets:
+                #    new_qty = item['qty_entry'].get()
+                #    item_id = item['id']
+                #    cursor.execute("UPDATE purchase_order_items SET quantity = %s WHERE id = %s", (new_qty, item_id))
+
+                # 3. (สำคัญมาก) บันทึก Log ว่า HR เป็นคนแก้ไข
+                log_details = { "message": "Edited by HR", "po_id": self.po_id }
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, ('PO Edited by HR', 'purchase_orders', self.po_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข PO เรียบร้อยแล้ว", parent=self)
+            self._on_close()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _on_close(self):
+        if self.on_close_callback:
+            self.on_close_callback() # สั่งให้หน้าต่าง HRVerificationWindow รีเฟรชตัวเอง
+        self.destroy()
+
+class EditPOWindowByHR(CTkToplevel):
+    def __init__(self, master, app_container, po_id, on_close_callback=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.pg_engine = app_container.pg_engine
+        self.po_id = po_id
+        self.on_close_callback = on_close_callback
+        self.item_widgets = []
+
+        self.title(f"HR: แก้ไขข้อมูล PO ID: {self.po_id}")
+        self.geometry("900x600")
+
+        # --- [แก้ไข] ใช้ grid layout หลัก ---
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1) # แถวที่ 1 (ScrollFrame) จะขยาย
+
+        # --- สร้าง UI ของฟอร์ม ---
+        self._create_widgets()
+        
+        # --- โหลดข้อมูลมาใส่ฟอร์ม ---
+        self.after(50, self._load_data)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.transient(master)
+        self.grab_set()
+
+    def _create_widgets(self):
+        """สร้างองค์ประกอบ UI ทั้งหมดในหน้าต่าง"""
+        
+        # --- ส่วนข้อมูล PO หลัก (อยู่บนสุด) ---
+        header_frame = ctk.CTkFrame(self)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        header_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(header_frame, text="Supplier Name:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.entry_supplier = ctk.CTkEntry(header_frame)
+        self.entry_supplier.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+
+        ctk.CTkLabel(header_frame, text="PO Number:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.entry_po_number = ctk.CTkEntry(header_frame)
+        self.entry_po_number.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+
+        # --- ส่วนรายการสินค้า (Scrollable) ---
+        items_container = ctk.CTkScrollableFrame(self, label_text="รายการสินค้า (PO Items)")
+        items_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=0)
+        items_container.grid_columnconfigure((0, 1, 2), weight=1) # ให้คอลัมน์ขยายเท่าๆ กัน
+
+        # [แก้ไข] Frame สำหรับ Header และ Content ของตารางสินค้า
+        self.items_content_frame = ctk.CTkFrame(items_container, fg_color="transparent")
+        self.items_content_frame.pack(fill="both", expand=True)
+        self.items_content_frame.grid_columnconfigure(0, weight=4) # Product Name
+        self.items_content_frame.grid_columnconfigure(1, weight=1) # Quantity
+        self.items_content_frame.grid_columnconfigure(2, weight=2) # Unit Price
+
+        # [แก้ไข] สร้าง Header ของตารางด้วย grid
+        header = ctk.CTkFrame(self.items_content_frame, fg_color="#E5E7EB", corner_radius=0)
+        header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 2))
+        header.grid_columnconfigure(0, weight=4)
+        header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(2, weight=2)
+        ctk.CTkLabel(header, text="Product Name").grid(row=0, column=0, padx=5, sticky="w")
+        ctk.CTkLabel(header, text="Quantity").grid(row=0, column=1, padx=5)
+        ctk.CTkLabel(header, text="Unit Price").grid(row=0, column=2, padx=5)
+        
+        # --- [แก้ไข] ย้ายปุ่มออกมานอก ScrollFrame ---
+        button_frame = ctk.CTkFrame(self)
+        button_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+        button_frame.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkButton(button_frame, text="ยกเลิก", command=self._on_close, fg_color="gray").grid(row=0, column=0, padx=5, sticky="ew")
+        ctk.CTkButton(button_frame, text="บันทึกการแก้ไข", command=self._save_changes).grid(row=0, column=1, padx=5, sticky="ew")
+
+    def _load_data(self):
+        """ดึงข้อมูล PO และ Items จาก DB มาแสดงในฟอร์ม"""
+        try:
+            # ดึงข้อมูล PO หลัก
+            po_df = pd.read_sql("SELECT * FROM purchase_orders WHERE id = %s", self.pg_engine, params=(self.po_id,))
+            if po_df.empty:
+                messagebox.showerror("ผิดพลาด", "ไม่พบข้อมูล PO ที่ต้องการแก้ไข", parent=self)
+                self.destroy()
+                return
+            po_data = po_df.iloc[0]
+            self.entry_supplier.insert(0, po_data.get('supplier_name', ''))
+            self.entry_po_number.insert(0, po_data.get('po_number', ''))
+            
+            # ดึงข้อมูลรายการสินค้า
+            items_df = pd.read_sql("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(self.po_id,))
+            for _, item in items_df.iterrows():
+                self._add_item_row(item.to_dict())
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการโหลดข้อมูล: {e}", parent=self)
+
+    def _add_item_row(self, item_data):
+        row_index = len(self.item_widgets) + 1 # +1 เพราะแถว 0 คือ Header
+
+        # [แก้ไข] ใช้ grid ในการวาง widget ของแถว
+        entry_name = ctk.CTkEntry(self.items_content_frame)
+        entry_name.insert(0, item_data.get('product_name', ''))
+        entry_name.grid(row=row_index, column=0, padx=(0,2), pady=2, sticky="ew")
+
+        entry_qty = NumericEntry(self.items_content_frame)
+        entry_qty.insert(0, f"{item_data.get('quantity', 0):.2f}")
+        entry_qty.grid(row=row_index, column=1, padx=2, pady=2, sticky="ew")
+
+        entry_price = NumericEntry(self.items_content_frame)
+        entry_price.insert(0, f"{item_data.get('unit_price', 0):.2f}")
+        entry_price.grid(row=row_index, column=2, padx=2, pady=2, sticky="ew")
+        
+        self.item_widgets.append({
+            'id': item_data['id'],
+            'name_entry': entry_name,
+            'qty_entry': entry_qty,
+            'price_entry': entry_price
+        })
+        
+    def _save_changes(self):
+        """รวบรวมข้อมูลจากฟอร์มและบันทึกลงฐานข้อมูล"""
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 1. อัปเดตข้อมูลหลักในตาราง purchase_orders
+                new_supplier = self.entry_supplier.get()
+                new_po_number = self.entry_po_number.get()
+                cursor.execute("UPDATE purchase_orders SET supplier_name = %s, po_number = %s WHERE id = %s", 
+                               (new_supplier, new_po_number, self.po_id))
+
+                # 2. อัปเดตข้อมูลรายการสินค้าในตาราง purchase_order_items (วนลูป)
+                for item_row in self.item_widgets:
+                    item_id = item_row['id']
+                    new_name = item_row['name_entry'].get()
+                    new_qty = utils.convert_to_float(item_row['qty_entry'].get())
+                    new_price = utils.convert_to_float(item_row['price_entry'].get())
+                    new_total = new_qty * new_price
+                    
+                    cursor.execute("""
+                        UPDATE purchase_order_items 
+                        SET product_name = %s, quantity = %s, unit_price = %s, total_price = %s
+                        WHERE id = %s
+                    """, (new_name, new_qty, new_price, new_total, item_id))
+
+                # 3. บันทึก Log ว่า HR เป็นคนแก้ไข
+                log_details = { "message": f"Edited PO: {new_po_number} by HR" }
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, ('PO Edited by HR', 'purchase_orders', self.po_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข PO เรียบร้อยแล้ว", parent=self)
+            self._on_close()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _on_close(self):
+        if self.on_close_callback:
+            self.on_close_callback() # สั่งให้หน้าต่าง HRVerificationWindow รีเฟรชตัวเอง
+        self.destroy()

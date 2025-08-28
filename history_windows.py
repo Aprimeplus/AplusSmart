@@ -101,30 +101,66 @@ class SalesDataViewerWindow(CTkToplevel):
                     CTkLabel(self.main_frame, text=value_text, font=normal_font, wraplength=400, justify="left", anchor="w").grid(row=current_row, column=1, padx=10, pady=3, sticky="w")
                     current_row += 1
 
+# history_windows.py (นำไปวางทับคลาส PurchaseDetailWindow เดิมทั้งหมด)
+
 class PurchaseDetailWindow(CTkToplevel):
-    def __init__(self, master, app_container, purchase_id, approve_callback=None, reject_callback=None):
+    def __init__(self, master, app_container, purchase_id, approve_callback=None, reject_callback=None, on_save_callback=None):
         super().__init__(master)
-        self.title(f"รายละเอียดใบสั่งซื้อ (PO ID: {purchase_id})")
-        self.geometry("1100x750")
-        self.app_container, self.purchase_id = app_container, purchase_id
-        self.approve_callback = approve_callback
-        self.reject_callback = reject_callback
-        self.loading_label = CTkLabel(self, text="กำลังโหลดข้อมูล...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
-        self.key_map = {
-            "so_number": "SO Number", "po_number": "PO Number", "supplier_name": "ชื่อซัพพลายเออร์",
-            "credit_term": "Credit Term", "total_cost": "ยอดรวมต้นทุนสินค้า", "total_weight": "น้ำหนักรวม",
-            "wht_3_percent_amount": "หัก ณ ที่จ่าย 3%", "vat_7_percent_amount": "VAT 7%",
-            "grand_total": "ยอดรวมที่ต้องชำระ",
-            "shipping_to_stock_shipper": "ผู้จัดส่ง (สต๊อก)",
-            "shipping_to_site_shipper": "ผู้จัดส่ง (ไซต์)",
-            "shipping_to_stock_cost": "ค่าจัดส่งเข้าสต๊อก", "shipping_to_stock_vat_type": "ประเภท VAT (สต๊อก)",
-            "shipping_to_stock_date": "วันที่ส่งเข้าสต๊อก", "shipping_to_stock_notes": "หมายเหตุ (สต๊อก)",
-            "shipping_to_site_cost": "ค่าจัดส่งเข้าไซต์", "shipping_to_site_vat_type": "ประเภท VAT (ไซต์)",
-            "shipping_to_site_date": "วันที่ส่งเข้าไซต์", "shipping_to_site_notes": "หมายเหตุ (ไซต์)"
-        }
-        self.after(10, self._load_and_display_data)
+        self.title(f"รายละเอียด/แก้ไขใบสั่งซื้อ (PO ID: {purchase_id})")
+        self.geometry("900x700")
+        
+        self.app_container = app_container
+        self.purchase_id = purchase_id
+        self.on_save_callback = on_save_callback
+        
+        # ตัวแปรสำหรับเก็บ Widget ที่แก้ไขได้
+        self.po_entries = {}
+        self.item_widgets = []
+
+        # Layout หลัก
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.scroll_frame = CTkScrollableFrame(self)
+        self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.scroll_frame.grid_columnconfigure(0, weight=1)
+        
+        # สร้างปุ่ม Action ไว้ด้านล่างสุด
+        self._create_action_buttons()
+
+        self.after(50, self._load_and_display_data)
         self.transient(master)
         self.grab_set()
+
+    def _add_item_row(self, parent, item_data):
+        # row_index จะเริ่มที่ 2 เพราะ row 0 คือ Title, row 1 คือ Header
+        row_index = len(self.item_widgets) + 2
+
+        # --- [แก้ไข] สร้าง Frame และวางด้วย .grid() ---
+        row_frame = CTkFrame(parent, fg_color="transparent")
+        row_frame.grid(row=row_index, column=0, columnspan=3, sticky="ew", padx=5, pady=1)
+        row_frame.grid_columnconfigure(0, weight=4) # Name
+        row_frame.grid_columnconfigure(1, weight=1) # Qty
+        row_frame.grid_columnconfigure(2, weight=2) # Price
+        
+        entry_name = CTkEntry(row_frame)
+        entry_name.insert(0, item_data.get('product_name', ''))
+        entry_name.grid(row=0, column=0, padx=(0,2), sticky="ew")
+
+        entry_qty = NumericEntry(row_frame)
+        entry_qty.insert(0, f"{item_data.get('quantity', 0):.2f}")
+        entry_qty.grid(row=0, column=1, padx=2, sticky="ew")
+
+        entry_price = NumericEntry(row_frame)
+        entry_price.insert(0, f"{item_data.get('unit_price', 0):.2f}")
+        entry_price.grid(row=0, column=2, padx=(2,0), sticky="ew")
+        
+        self.item_widgets.append({
+            'id': item_data['id'],
+            'name_entry': entry_name,
+            'qty_entry': entry_qty,
+            'price_entry': entry_price
+        })
 
     # <<< START: แก้ไขการจัดย่อหน้าของฟังก์ชันทั้งหมดด้านล่างนี้ >>>
     def _handle_approve(self):
@@ -164,43 +200,67 @@ class PurchaseDetailWindow(CTkToplevel):
         self.loading_label.place_forget()
 
     def _load_and_display_data(self):
-        self._show_loading()
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute("SELECT * FROM purchase_orders WHERE id = %s", (self.purchase_id,))
                 po_data = cursor.fetchone()
-                if not po_data:
-                    messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูลสำหรับ PO ID: {self.purchase_id}", parent=self)
-                    self.after(100, self.destroy)
-                    return
                 cursor.execute("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", (self.purchase_id,))
                 items_data = cursor.fetchall()
                 cursor.execute("SELECT * FROM purchase_order_payments WHERE purchase_order_id = %s ORDER BY id", (self.purchase_id,))
                 payments_data = cursor.fetchall()
+            
+            if not po_data:
+                messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบ PO ID: {self.purchase_id}", parent=self)
+                self.destroy(); return
+
             self.create_formatted_view(po_data, items_data, payments_data)
+
         except Exception as e:
-            messagebox.showerror("Database Error", f"ไม่สามารถโหลดรายละเอียด PO ได้: {e}", parent=self)
-            self.after(100, self.destroy)
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
         finally:
-            self._hide_loading()
-            self.app_container.release_connection(conn)
+            if conn: self.app_container.release_connection(conn)
+
+    
+    def _create_editable_view(self, po_data, items_data):
+        """สร้าง UI ทั้งหมดในรูปแบบฟอร์มที่แก้ไขได้"""
+        # Section 1: ข้อมูลทั่วไป (ส่วนนี้ถูกต้องแล้ว)
+        info_frame = self._create_section(self.scroll_frame, "ข้อมูลทั่วไป")
+        self.po_entries['so_number'] = self._create_editable_row(info_frame, 1, "SO Number:", po_data.get('so_number'))
+        self.po_entries['po_number'] = self._create_editable_row(info_frame, 2, "PO Number:", po_data.get('po_number'))
+        self.po_entries['supplier_name'] = self._create_editable_row(info_frame, 3, "ชื่อซัพพลายเออร์:", po_data.get('supplier_name'))
+        self.po_entries['credit_term'] = self._create_editable_row(info_frame, 4, "Credit Term:", po_data.get('credit_term'))
+        
+        # --- [แก้ไข] Section 2: รายการสินค้า ---
+        items_frame = self._create_section(self.scroll_frame, "รายการสินค้า")
+        # กำหนด Grid ให้กับ items_frame เพื่อให้ Header และแถวข้อมูลเรียงกัน
+        items_frame.grid_columnconfigure(0, weight=4) # Name
+        items_frame.grid_columnconfigure(1, weight=1) # Qty
+        items_frame.grid_columnconfigure(2, weight=2) # Price
+        
+        # Header (ใช้ .grid() และกำหนด row=1 เพราะ row=0 คือ Title ของ Section)
+        header = CTkFrame(items_frame, fg_color="#E5E7EB", corner_radius=0)
+        header.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=(0, 2))
+        header.grid_columnconfigure(0, weight=4)
+        header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(2, weight=2)
+        CTkLabel(header, text="Product Name").grid(row=0, column=0, padx=5, sticky="w")
+        CTkLabel(header, text="Quantity").grid(row=0, column=1, padx=5)
+        CTkLabel(header, text="Unit Price").grid(row=0, column=2, padx=5)
+
+        # Item Rows (จะถูกเพิ่มด้วย grid ใน _add_item_row)
+        for item in items_data:
+            self._add_item_row(items_frame, item)
 
     def create_formatted_view(self, po_data, items_data, payments_data):
-        self.grid_rowconfigure(0, weight=1) # Configure grid for the window itself
-        self.grid_rowconfigure(1, weight=0)
-        self.grid_columnconfigure(0, weight=1)
-        scroll_frame = CTkScrollableFrame(self)
-        scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        scroll_frame.grid_columnconfigure(0, weight=1)
-
-        self._create_info_section(scroll_frame, po_data)
-        self._create_items_section(scroll_frame, items_data)
-        self._create_summary_section(scroll_frame, po_data)
-        self._create_payments_section(scroll_frame, payments_data)
-        self._create_shipping_section(scroll_frame, po_data)
-        self._create_action_buttons(self) # Actions buttons at the bottom of the main window
+        """สร้าง UI ทั้งหมดแบบละเอียด และเป็นฟอร์มที่แก้ไขได้"""
+        self._create_info_section(self.scroll_frame, po_data)
+        self._create_items_section(self.scroll_frame, items_data)
+        self._create_summary_section(self.scroll_frame, po_data)
+        self._create_payments_section(self.scroll_frame, payments_data)
+        self._create_shipping_section(self.scroll_frame, po_data)
 
     def _create_section(self, parent, title):
         section_frame = CTkFrame(parent, corner_radius=10, border_width=1)
@@ -209,6 +269,14 @@ class PurchaseDetailWindow(CTkToplevel):
         title_label = CTkLabel(section_frame, text=title, font=CTkFont(size=16, weight="bold"))
         title_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(5,10), sticky="w")
         return section_frame
+    
+    def _create_editable_row(self, parent, row, label, value, key):
+        """สร้างแถวข้อมูลที่แก้ไขได้ และเก็บ reference ไว้"""
+        CTkLabel(parent, text=label).grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        entry = CTkEntry(parent)
+        entry.insert(0, str(value) if value is not None else "")
+        entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries[key] = entry # เก็บ Widget ไว้สำหรับ Save
 
     def _create_info_row(self, parent, row, key, value, is_numeric=False):
         label_text, display_value = self.key_map.get(key, key), value
@@ -221,25 +289,40 @@ class PurchaseDetailWindow(CTkToplevel):
         val_entry = CTkEntry(parent, font=CTkFont(size=14))
         val_entry.insert(0, str(display_value))
         val_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries[key] = val_entry
 
     def _create_info_section(self, parent, data):
         info_frame = self._create_section(parent, "ข้อมูลทั่วไป")
-        self._create_info_row(info_frame, 1, "so_number", data.get("so_number", "N/A"))
-        self._create_info_row(info_frame, 2, "po_number", data.get("po_number", "N/A"))
-        self._create_info_row(info_frame, 3, "supplier_name", data.get("supplier_name", "N/A"))
-        self._create_info_row(info_frame, 4, "credit_term", data.get("credit_term", "N/A"))
+        self._create_editable_row(info_frame, 1, "SO Number:", data.get("so_number"), key="so_number")
+        self._create_editable_row(info_frame, 2, "PO Number:", data.get("po_number"), key="po_number")
+        self._create_editable_row(info_frame, 3, "ชื่อซัพพลายเออร์:", data.get("supplier_name"), key="supplier_name")
+        self._create_editable_row(info_frame, 4, "Credit Term:", data.get("credit_term"), key="credit_term")
 
     def _create_items_section(self, parent, items_list):
         items_frame = self._create_section(parent, "รายการสินค้า")
-        headers = ["รหัสสินค้า", "ชื่อสินค้า", "คลัง", "สถานะ", "จำนวน", "น้ำหนัก/หน่วย", "ราคา/หน่วย", "ส่วนลด", "น้ำหนักรวม", "ราคารวม"]
-        column_weights = [2, 4, 2, 1, 1, 1, 1, 2, 1, 2]
-        items_frame.grid_columnconfigure(tuple(range(len(headers))), weight=0)
-        for i, weight in enumerate(column_weights): items_frame.grid_columnconfigure(i, weight=weight)
-        for i, key in enumerate(headers): header_label = CTkLabel(items_frame, text=key, font=CTkFont(size=14, weight="bold"), fg_color="gray80"); header_label.grid(row=1, column=i, padx=1, pady=1, sticky="nsew")
-        if not items_list: CTkLabel(items_frame, text="ไม่มีรายการสินค้า").grid(row=2, column=0, columnspan=len(headers), pady=10); return
-        for r, item in enumerate(items_list):
-            discount_val = item.get("discount_value", 0); discount_type = item.get("discount_type", "บาท"); discount_text = f"{discount_val:,.2f} {discount_type}" if discount_val > 0 else "0.00 บาท"
-            self._create_item_cell(items_frame, r + 2, 0, item.get("product_code", "")); self._create_item_cell(items_frame, r + 2, 1, item.get("product_name", "")); self._create_item_cell(items_frame, r + 2, 2, item.get("warehouse", "")); self._create_item_cell(items_frame, r + 2, 3, item.get("status", "")); self._create_item_cell(items_frame, r + 2, 4, item.get("quantity", ""), True); self._create_item_cell(items_frame, r + 2, 5, item.get("weight_per_unit", ""), True); self._create_item_cell(items_frame, r + 2, 6, item.get("unit_price", ""), True); self._create_item_cell(items_frame, r + 2, 7, discount_text, True); self._create_item_cell(items_frame, r + 2, 8, item.get("total_weight", ""), True); self._create_item_cell(items_frame, r + 2, 9, item.get("total_price", ""), True)
+        
+        # --- [แก้ไข] กำหนด Grid ให้กับ items_frame ---
+        items_frame.grid_columnconfigure(0, weight=4) # Name
+        items_frame.grid_columnconfigure(1, weight=1) # Qty
+        items_frame.grid_columnconfigure(2, weight=2) # Price
+        
+        # --- [แก้ไข] Header (ใช้ .grid() และกำหนด row=1 เพราะ row=0 คือ Title ของ Section) ---
+        header = CTkFrame(items_frame, fg_color="#E5E7EB", corner_radius=0)
+        header.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=(0, 2))
+        header.grid_columnconfigure(0, weight=4)
+        header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(2, weight=2)
+        CTkLabel(header, text="Product Name").grid(row=0, column=0, padx=5, sticky="w")
+        CTkLabel(header, text="Quantity").grid(row=0, column=1, padx=5)
+        CTkLabel(header, text="Unit Price").grid(row=0, column=2, padx=5)
+
+        if not items_list:
+            CTkLabel(items_frame, text="ไม่มีรายการสินค้า").grid(row=2, column=0, columnspan=3, pady=10)
+            return
+        
+        # Item Rows (จะถูกเพิ่มด้วย grid ใน _add_item_row)
+        for item in items_list:
+            self._add_item_row(items_frame, item)
 
     def _create_item_cell(self, parent, row, col, value, is_numeric=False):
         bg_color, display_value, anchor = "#fcfcfc" if row % 2 == 0 else "#f0f0f0", value, "w"
@@ -252,32 +335,91 @@ class PurchaseDetailWindow(CTkToplevel):
         cell = CTkLabel(parent, text=str(display_value), fg_color=bg_color, corner_radius=0, anchor=anchor, padx=5); cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
 
     def _create_summary_section(self, parent, summary_data):
-        summary_frame = self._create_section(parent, "สรุปยอด"); self._create_info_row(summary_frame, 1, "total_cost", summary_data.get("total_cost"), True); self._create_info_row(summary_frame, 2, "total_weight", summary_data.get("total_weight"), True)
-        wht_text = f"มี ({summary_data.get('wht_3_percent_amount', 0.00):,.2f})" if summary_data.get('wht_3_percent_checked') else "ไม่มี"; self._create_info_row(summary_frame, 3, "wht_3_percent_amount", wht_text)
-        vat_text = f"มี ({summary_data.get('vat_7_percent_amount', 0.00):,.2f})" if summary_data.get('vat_7_percent_checked') else "ไม่มี"; self._create_info_row(summary_frame, 4, "vat_7_percent_amount", vat_text); self._create_info_row(summary_frame, 5, "grand_total", summary_data.get("grand_total"), True)
+        summary_frame = self._create_section(parent, "สรุปยอด")
+        self._create_editable_row(summary_frame, 1, "ยอดรวมต้นทุนสินค้า:", summary_data.get("total_cost"), key="total_cost")
+        self._create_editable_row(summary_frame, 2, "ยอดรวมที่ต้องชำระ:", summary_data.get("grand_total"), key="grand_total")
 
     def _create_payments_section(self, parent, payments_list):
         payments_frame = self._create_section(parent, "การชำระเงิน")
-        if not payments_list: CTkLabel(payments_frame, text="ไม่มีข้อมูลการชำระเงิน").grid(row=1, column=0, columnspan=2, pady=10); return
-        for i, payment in enumerate(payments_list): amount_val, amount_str = payment.get("amount"), f"{payment.get('amount'):,.2f}" if payment.get("amount") is not None else ""; date_val, date_str = payment.get("payment_date"), payment.get("payment_date").strftime('%Y-%m-%d') if payment.get("payment_date") else "N/A"; p_text = f"{payment.get('payment_type', 'N/A')}: {amount_str} (วันที่: {date_str})"; CTkLabel(payments_frame, text=p_text, font=CTkFont(size=14)).grid(row=i+1, column=0, columnspan=2, padx=10, pady=2, sticky="w")
+        if not payments_list:
+            CTkLabel(payments_frame, text="ไม่มีข้อมูลการชำระเงิน").grid(row=1, column=0, pady=10)
+        else:
+            for i, payment in enumerate(payments_list):
+                p_text = f"{payment.get('payment_type', 'N/A')}: {payment.get('amount'):,.2f} บาท (วันที่: {payment.get('payment_date')})"
+                CTkLabel(payments_frame, text=p_text).grid(row=i+1, column=0, padx=10, pady=2, sticky="w")
 
     def _create_shipping_section(self, parent, shipping_data):
         shipping_frame = self._create_section(parent, "ข้อมูลการจัดส่ง")
-        CTkLabel(shipping_frame, text="--- ส่วนที่ 1: การจัดส่งเข้าสต๊อก ---", font=CTkFont(size=14, weight="bold", slant="italic")).grid(row=1, column=0, columnspan=2, pady=(5,2), sticky="w", padx=10)
-        self._create_info_row(shipping_frame, 2, "shipping_to_stock_cost", shipping_data.get("shipping_to_stock_cost"), is_numeric=True)
-        self._create_info_row(shipping_frame, 3, "shipping_to_stock_vat_type", shipping_data.get("shipping_to_stock_vat_type"))
-        self._create_info_row(shipping_frame, 4, "shipping_to_stock_date", shipping_data.get("shipping_to_stock_date"))
-        self._create_info_row(shipping_frame, 5, "shipping_to_stock_shipper", shipping_data.get("shipping_to_stock_shipper"))
-        self._create_info_row(shipping_frame, 6, "shipping_to_stock_notes", shipping_data.get("shipping_to_stock_notes"))
-        CTkFrame(shipping_frame, height=1, fg_color="gray80").grid(row=7, column=0, columnspan=2, sticky="ew", pady=10, padx=10)
-        CTkLabel(shipping_frame, text="--- ส่วนที่ 2: การจัดส่งเข้าไซต์งาน ---", font=CTkFont(size=14, weight="bold", slant="italic")).grid(row=8, column=0, columnspan=2, pady=(5,2), sticky="w", padx=10)
-        self._create_info_row(shipping_frame, 9, "shipping_to_site_cost", shipping_data.get("shipping_to_site_cost"), is_numeric=True)
-        self._create_info_row(shipping_frame, 10, "shipping_to_site_vat_type", shipping_data.get("shipping_to_site_vat_type"))
-        self._create_info_row(shipping_frame, 11, "shipping_to_site_date", shipping_data.get("shipping_to_site_date"))
-        self._create_info_row(shipping_frame, 12, "shipping_to_site_shipper", shipping_data.get("shipping_to_site_shipper"))
-        self._create_info_row(shipping_frame, 13, "shipping_to_site_notes", shipping_data.get("shipping_to_site_notes"))
-    # <<< END: สิ้นสุดการแก้ไข >>>
+        # Shipping to Stock
+        CTkLabel(shipping_frame, text="--- การจัดส่งเข้าสต๊อก ---", font=CTkFont(slant="italic")).grid(row=1, column=0, columnspan=2, pady=(5,2), sticky="w", padx=10)
+        self._create_editable_row(shipping_frame, 2, "ค่าจัดส่ง (สต๊อก):", shipping_data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost")
+        # Shipping to Site
+        CTkLabel(shipping_frame, text="--- การจัดส่งเข้าไซต์งาน ---", font=CTkFont(slant="italic")).grid(row=3, column=0, columnspan=2, pady=(10,2), sticky="w", padx=10)
+        self._create_editable_row(shipping_frame, 4, "ค่าจัดส่ง (ไซต์):", shipping_data.get("shipping_to_site_cost"), key="shipping_to_site_cost")
     
+    def _create_action_buttons(self):
+        button_frame = CTkFrame(self)
+        button_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        button_frame.grid_columnconfigure(0, weight=1)
+        save_button = CTkButton(button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
+        save_button.pack(pady=10)
+
+    def _save_changes(self):
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 1. อัปเดตข้อมูล PO หลัก
+                cursor.execute("""
+                    UPDATE purchase_orders SET 
+                        so_number = %s, po_number = %s, supplier_name = %s, 
+                        credit_term = %s, total_cost = %s, grand_total = %s,
+                        shipping_to_stock_cost = %s, shipping_to_site_cost = %s
+                    WHERE id = %s
+                """, (
+                    self.po_entries['so_number'].get(), self.po_entries['po_number'].get(),
+                    self.po_entries['supplier_name'].get(), self.po_entries['credit_term'].get(),
+                    utils.convert_to_float(self.po_entries['total_cost'].get()),
+                    utils.convert_to_float(self.po_entries['grand_total'].get()),
+                    utils.convert_to_float(self.po_entries['shipping_to_stock_cost'].get()),
+                    utils.convert_to_float(self.po_entries['shipping_to_site_cost'].get()),
+                    self.purchase_id
+                ))
+
+                # 2. อัปเดตรายการสินค้า
+                for item_row in self.item_widgets:
+                    item_id = item_row['id']
+                    new_name = item_row['name_entry'].get()
+                    new_qty = utils.convert_to_float(item_row['qty_entry'].get())
+                    new_price = utils.convert_to_float(item_row['price_entry'].get())
+                    new_total = new_qty * new_price
+                    cursor.execute("""
+                        UPDATE purchase_order_items 
+                        SET product_name = %s, quantity = %s, unit_price = %s, total_price = %s
+                        WHERE id = %s
+                    """, (new_name, new_qty, new_price, new_total, item_id))
+
+                # 3. บันทึก Log
+                log_details = { "message": f"Edited PO: {self.po_entries['po_number'].get()} by HR ({self.app_container.current_user_key})" }
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, ('PO Edited by HR', 'purchase_orders', self.purchase_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข PO เรียบร้อยแล้ว", parent=self)
+            
+            if self.on_save_callback:
+                self.on_save_callback()
+            self.destroy()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+
 class PurchaseHistoryWindow(CTkToplevel):
 
     def _debounce_search(self, event=None):
@@ -289,7 +431,7 @@ class PurchaseHistoryWindow(CTkToplevel):
         # ตั้งเวลาเพื่อเรียกฟังก์ชันค้นหาจริงในอีก 500 มิลลิวินาที (0.5 วินาที)
         self._debounce_job = self.after(500, self._apply_filters)
 
-    def __init__(self, master, app_container, sale_key_filter, on_row_double_click=None):
+    def __init__(self, master, app_container, sale_key_filter=None, on_row_double_click=None):
         super().__init__(master)
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
@@ -321,10 +463,56 @@ class PurchaseHistoryWindow(CTkToplevel):
         # --- สร้าง UI Layout ใหม่ ---
         self._create_new_layout()
         
-        self.after(50, self._populate_history_table)
+        self.after(50, self._load_initial_data)
         self.transient(master)
         self.grab_set()
         self.focus()
+    
+    def _create_new_layout(self):
+        """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างประวัติ PO"""
+        # --- Top Frame (Filter & Pagination) ---
+        top_frame = CTkFrame(self, fg_color="transparent")
+        top_frame.grid(row=0, column=0, padx=10, pady=(10,0), sticky="ew")
+
+        # --- Filter Section ---
+        filter_frame = CTkFrame(top_frame, fg_color="transparent")
+        filter_frame.pack(side="left")
+
+        month_options = ["ทุกเดือน"] + self.thai_months
+        CTkOptionMenu(filter_frame, variable=self.month_var, values=month_options).pack(side="left", padx=5)
+
+        current_year = datetime.now().year
+        year_options = ["ทุกปี"] + [str(y) for y in range(current_year, current_year - 5, -1)]
+        CTkOptionMenu(filter_frame, variable=self.year_var, values=year_options).pack(side="left", padx=5)
+
+        self.search_entry = CTkEntry(filter_frame, placeholder_text="ค้นหา SO, PO, Supplier...")
+        self.search_entry.pack(side="left", padx=10, fill="x", expand=True)
+        # --- แก้ไข: เปลี่ยน event จาก KeyRelease เป็น Debounce เพื่อประสิทธิภาพที่ดีกว่า ---
+        self._debounce_job = None 
+        self.search_entry.bind("<KeyRelease>", self._debounce_search)
+
+        CTkButton(filter_frame, text="ค้นหา", command=self._apply_filters, width=80).pack(side="left")
+
+        # --- Pagination Section ---
+        pagination_frame = CTkFrame(top_frame, fg_color="transparent")
+        pagination_frame.pack(side="right")
+
+        self.prev_button = CTkButton(pagination_frame, text="<<", command=self._prev_page, width=50, state="disabled")
+        self.prev_button.pack(side="left", padx=5)
+        self.page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
+        self.page_label.pack(side="left", padx=5)
+        self.next_button = CTkButton(pagination_frame, text=">>", command=self._next_page, width=50, state="disabled")
+        self.next_button.pack(side="left", padx=5)
+
+        # --- Main Frame for the Treeview ---
+        # (เราจะสร้าง Treeview ข้างในฟังก์ชัน _update_treeview_display)
+        self.history_frame = CTkFrame(self)
+        self.history_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        self.history_frame.grid_rowconfigure(0, weight=1)
+        self.history_frame.grid_columnconfigure(0, weight=1)
+
+        # --- Loading Label ---
+        self.loading_label = CTkLabel(self, text="กำลังโหลดข้อมูล...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
 
     def _next_page(self):
         total_pages = (len(self.filtered_df) + self.rows_per_page - 1) // self.rows_per_page if hasattr(self, 'filtered_df') else 0
@@ -447,7 +635,7 @@ class PurchaseHistoryWindow(CTkToplevel):
 
 
 class CommissionHistoryWindow(CTkToplevel):
-    def __init__(self, master, app_container, sale_key_filter, on_row_double_click=None):
+    def __init__(self, master, app_container, sale_key_filter=None, on_row_double_click=None):
         super().__init__(master)
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
@@ -834,20 +1022,7 @@ class SOPopupWindow(CTkToplevel):
         CTkLabel(parent, text=label_text, font=CTkFont(size=14)).grid(row=row_index, column=0, padx=(15, 10), pady=4, sticky="w")
         widget.grid(row=row_index, column=1, columnspan=2, padx=(10, 15), pady=4, sticky="ew")
         self.popup_widgets[key] = widget
-
-    def _add_item_row_with_vat(self, parent, label_text, entry_key, radio_key, row_index):
-        entry_widget = NumericEntry(parent)
-        radio_var = self.so_shared_vars[radio_key]
-
-        CTkLabel(parent, text=label_text, font=CTkFont(size=14)).grid(row=row_index, column=0, padx=15, pady=5, sticky="w")
-        entry_widget.grid(row=row_index, column=1, padx=(10, 15), pady=5, sticky="ew")
-        
-        radio_frame = CTkFrame(parent, fg_color="transparent")
-        radio_frame.grid(row=row_index, column=2, padx=(10, 15), pady=5, sticky="w")
-        CTkRadioButton(radio_frame, text="VAT", variable=radio_var, value="VAT").pack(side="left", padx=5)
-        CTkRadioButton(radio_frame, text="NO VAT", variable=radio_var, value="NO VAT").pack(side="left", padx=5)
-        self.popup_widgets[entry_key] = entry_widget
-
+            
     def _create_so_data_form_content(self, parent_frame):
         # Section 1: Sales Details
         f1 = self._create_so_section_frame(parent_frame, "รายละเอียดการขาย")
@@ -1072,3 +1247,4 @@ class SOPopupWindow(CTkToplevel):
             messagebox.showerror("ข้อผิดพลาด", "ไม่มีข้อมูล SO ให้บันทึก", parent=self)
             return
         self.master._save_so_changes_from_popup(self.sales_data.get('id'), self.so_shared_vars, self.popup_widgets)
+

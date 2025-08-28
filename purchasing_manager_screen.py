@@ -3,12 +3,14 @@
 import tkinter as tk
 from tkinter import ttk
 from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
-                           CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkCheckBox, CTkEntry)
+                           CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkCheckBox, CTkEntry,
+                           CTkOptionMenu)
 from tkinter import messagebox
 import pandas as pd
 from datetime import datetime
 import psycopg2.errors
 import psycopg2.extras
+import json
 import traceback
 import matplotlib
 matplotlib.use('TkAgg')
@@ -285,6 +287,7 @@ class PurchasingManagerScreen(CTkFrame):
         conn = self.app_container.get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # ดึงข้อมูล PO ล่าสุด
                 cursor.execute("SELECT * FROM purchase_orders WHERE id = %s", (po_id,))
                 po = cursor.fetchone()
                 if not po:
@@ -296,6 +299,7 @@ class PurchasingManagerScreen(CTkFrame):
                 manager1_key = po['approver_manager1_key']
                 so_number = po['so_number']
                 
+                # ตรวจสอบการอนุมัติซ้ำซ้อน
                 if (current_status == 'Pending Mgr 2' and self.user_key == manager1_key):
                     messagebox.showwarning("เงื่อนไขผิดพลาด", "ผู้อนุมัติต้องเป็นคนละคนกันในแต่ละลำดับขั้น", parent=self)
                     return
@@ -303,34 +307,47 @@ class PurchasingManagerScreen(CTkFrame):
                 if not messagebox.askyesno("ยืนยันการอนุมัติ", f"คุณต้องการอนุมัติ PO ID: {po_id} ใช่หรือไม่?", parent=self):
                     return
 
+                # --- START: Logic การอนุมัติตามเงื่อนไขใหม่ ---
                 set_clauses, params, next_status = "", None, ""
                 is_final_approval = False
                 notification_needed = False
                 
                 if self.user_role == 'Purchasing Manager':
                     if current_status == 'Pending Mgr 1':
-                        if grand_total <= 500000:
+                        # --- Rule 1: ยอดซื้อ <= 200,000 (อนุมัติโดย Mgr 1 คนเดียว) ---
+                        if grand_total <= 200000:
                             next_status = "Approved"
                             set_clauses = "approver_manager1_key = %s, approval_date_manager1 = %s, last_modified_by = %s, approval_status = %s, status = %s"
                             params = (self.user_key, datetime.now(), self.user_key, next_status, next_status, po_id)
                             is_final_approval = True
+                        # --- ยอดซื้อ > 200,000 (ส่งต่อให้ Mgr 2) ---
                         else:
                             next_status = "Pending Mgr 2"
                             set_clauses = "approver_manager1_key = %s, approval_date_manager1 = %s, last_modified_by = %s, approval_status = %s"
                             params = (self.user_key, datetime.now(), self.user_key, next_status, po_id)
                     
                     elif current_status == 'Pending Mgr 2':
-                        next_status = "Pending Director"
-                        set_clauses = "approver_manager2_key = %s, approval_date_manager2 = %s, last_modified_by = %s, approval_status = %s"
-                        params = (self.user_key, datetime.now(), self.user_key, next_status, po_id)
-                        notification_needed = True
+                        # --- Rule 2: ยอดซื้อ 200,001 - 500,000 (อนุมัติโดย Mgr 2) ---
+                        if grand_total <= 500000:
+                            next_status = "Approved"
+                            set_clauses = "approver_manager2_key = %s, approval_date_manager2 = %s, last_modified_by = %s, approval_status = %s, status = %s"
+                            params = (self.user_key, datetime.now(), self.user_key, next_status, next_status, po_id)
+                            is_final_approval = True
+                        # --- Rule 3: ยอดซื้อ > 500,000 (ส่งต่อให้ Director) ---
+                        else:
+                            next_status = "Pending Director"
+                            set_clauses = "approver_manager2_key = %s, approval_date_manager2 = %s, last_modified_by = %s, approval_status = %s"
+                            params = (self.user_key, datetime.now(), self.user_key, next_status, po_id)
+                            notification_needed = True
 
                 elif self.user_role == 'Director':
+                    # --- Rule 3: อนุมัติโดย Director ---
                     if current_status == 'Pending Director':
                         next_status = "Approved"
                         set_clauses = "approver_director_key = %s, approval_date_director = %s, last_modified_by = %s, approval_status = %s, status = %s"
                         params = (self.user_key, datetime.now(), self.user_key, next_status, next_status, po_id)
                         is_final_approval = True
+                # --- END: Logic การอนุมัติตามเงื่อนไขใหม่ ---
 
                 if not set_clauses or not params:
                     messagebox.showinfo("ข้อมูลล่าสุด", f"PO นี้ไม่อยู่ในสถานะที่รออนุมัติจากคุณ (สถานะปัจจุบัน: {current_status})", parent=self)
@@ -340,6 +357,7 @@ class PurchasingManagerScreen(CTkFrame):
                 sql_query = f"UPDATE purchase_orders SET {set_clauses} WHERE id = %s"
                 cursor.execute(sql_query, params)
 
+                # สร้าง Notification หากจำเป็น (เช่น ส่งให้ Director)
                 if notification_needed:
                     cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Director' AND status = 'Active'")
                     director_keys = [row['sale_key'] for row in cursor.fetchall()]
@@ -350,6 +368,7 @@ class PurchasingManagerScreen(CTkFrame):
             conn.commit()
             messagebox.showinfo("สำเร็จ", "อนุมัติรายการเรียบร้อยแล้ว", parent=self)
             
+            # ตรวจสอบว่า SO นี้ควรส่งต่อให้ Sales Manager หรือยัง
             if is_final_approval and so_number:
                 self._check_and_forward_so_to_sale_manager(so_number)
             
@@ -436,17 +455,59 @@ class PurchasingManagerScreen(CTkFrame):
             cursor.execute("INSERT INTO notifications (user_key_to_notify, message, related_po_id) VALUES (%s, %s, %s)", (user_key, message, po_id))
 
     def _reject_po(self, po_id):
-        dialog = RejectionReasonDialog(self); self.wait_window(dialog); reason = getattr(dialog, '_reason_string', None)
-        if reason is None: return
+        # 1. เปิดหน้าต่างเพื่อให้กรอกเหตุผล
+        dialog = RejectionReasonDialog(self)
+        self.wait_window(dialog)
+        reason = getattr(dialog, '_reason_string', None)
+        if reason is None:
+            return
+
         conn = self.app_container.get_connection()
         try:
-            with conn.cursor() as cursor:
-                self._create_notification(cursor, po_id, "Rejected", reason=reason)
-                cursor.execute("UPDATE purchase_orders SET status = 'Rejected', approval_status = 'Rejected', rejection_reason = %s, last_modified_by = %s WHERE id = %s", (reason.strip(), self.user_key, po_id))
-            conn.commit(); messagebox.showinfo("สำเร็จ", "ปฏิเสธรายการเรียบร้อยแล้ว", parent=self); self._load_data()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                
+                # 2. อัปเดตสถานะ PO ให้เป็น 'Rejected' และบันทึกเหตุผล
+                cursor.execute("""
+                    UPDATE purchase_orders 
+                    SET status = 'Rejected', approval_status = 'Rejected', rejection_reason = %s, last_modified_by = %s
+                    WHERE id = %s
+                """, (reason.strip(), self.user_key, po_id))
+
+                # 3. สร้าง Notification ส่งกลับไปหาคนสร้าง PO
+                cursor.execute("SELECT user_key, po_number FROM purchase_orders WHERE id = %s", (po_id,))
+                po_info = cursor.fetchone()
+                if po_info:
+                    po_creator_key = po_info['user_key']
+                    po_number = po_info['po_number']
+                    message_to_pu = f"PO: {po_number} ของคุณถูกปฏิเสธโดย Manager\nเหตุผล: {reason.strip()}"
+                    
+                    cursor.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) 
+                        VALUES (%s, %s, FALSE, %s)
+                    """, (po_creator_key, message_to_pu, po_id))
+
+                    # 4. บันทึกเหตุการณ์ลงใน Audit Log พร้อม timestamp
+                    log_details = {
+                        'rejected_by': self.user_key,
+                        'reason': reason.strip()
+                    }
+                    cursor.execute("""
+                        INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) 
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """, 
+                        ('PO Rejected', 'purchase_orders', po_id, po_creator_key, json.dumps(log_details), datetime.now())
+                    )
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "ปฏิเสธ PO และส่งกลับให้ฝ่ายจัดซื้อเรียบร้อยแล้ว", parent=self)
+            self._load_data() # โหลดข้อมูลใหม่เพื่อรีเฟรชหน้าจอ
+
         except Exception as e:
-            if conn: conn.rollback(); messagebox.showerror("ผิดพลาด", f"ไม่สามารถปฏิเสธได้: {e}", parent=self)
-        finally: self.app_container.release_connection(conn)
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการปฏิเสธ PO: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
 
     def _on_destroy(self, event):
         if hasattr(event, 'widget') and event.widget is self: self._stop_polling()
@@ -461,20 +522,95 @@ class PurchasingManagerScreen(CTkFrame):
         self._load_pending_pos(); self.polling_job_id = self.after(30000, self._perform_polling)
         
     def _create_dashboard_view(self):
-        dashboard_frame = CTkFrame(self, corner_radius=10, border_width=1); dashboard_frame.grid(row=1, column=0, padx=20, pady=10, sticky="nsew"); dashboard_frame.grid_columnconfigure(0, weight=1); dashboard_frame.grid_rowconfigure(0, weight=1); self.rejection_chart_frame = dashboard_frame
+        dashboard_frame = CTkFrame(self, corner_radius=10, border_width=1)
+        dashboard_frame.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
         
+        # --- Frame สำหรับฟิลเตอร์ ---
+        filter_container = CTkFrame(dashboard_frame, fg_color="transparent")
+        filter_container.pack(fill="x", padx=10, pady=5, anchor="nw")
+
+        # --- เตรียมข้อมูลสำหรับ Dropdown ---
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
+        current_year = datetime.now().year
+        
+        # --- Dropdown เลือกเดือน ---
+        self.month_var = tk.StringVar(value="ทุกเดือน")
+        month_options = ["ทุกเดือน"] + self.thai_months
+        CTkLabel(filter_container, text="เดือน:").pack(side="left", padx=(10, 2))
+        CTkOptionMenu(filter_container, variable=self.month_var, values=month_options).pack(side="left", padx=(0, 10))
+
+        # --- Dropdown เลือกปี ---
+        self.year_var = tk.StringVar(value=str(current_year))
+        year_options = [str(y) for y in range(current_year, current_year - 5, -1)]
+        CTkLabel(filter_container, text="ปี:").pack(side="left", padx=(10, 2))
+        CTkOptionMenu(filter_container, variable=self.year_var, values=year_options).pack(side="left", padx=(0, 10))
+
+        # --- ปุ่มสำหรับกดค้นหา ---
+        CTkButton(filter_container, text="แสดงผล", command=self._update_manager_dashboard).pack(side="left", padx=10)
+
+        # --- Frame สำหรับแสดงกราฟ ---
+        self.rejection_chart_frame = CTkFrame(dashboard_frame)
+        self.rejection_chart_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
     def _update_manager_dashboard(self):
-        for widget in self.rejection_chart_frame.winfo_children(): widget.destroy()
-        loading_label = CTkLabel(self.rejection_chart_frame, text="กำลังโหลดข้อมูล Dashboard...", font=CTkFont(size=18, slant="italic"), text_color="gray50"); loading_label.pack(expand=True, pady=20); self.update_idletasks()
+        for widget in self.rejection_chart_frame.winfo_children():
+            widget.destroy()
+        loading_label = CTkLabel(self.rejection_chart_frame, text="กำลังโหลดข้อมูล Dashboard...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
+        loading_label.pack(expand=True, pady=20)
+        self.update_idletasks()
+        
         try:
-            self._create_rejection_bar_chart(self.rejection_chart_frame, self._get_rejection_summary())
-        except Exception as e: messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการอัปเดต Dashboard: {e}", parent=self)
-        finally:
-            if loading_label.winfo_exists(): loading_label.destroy()
+            # --- ดึงค่าจาก Dropdown ---
+            selected_year_str = self.year_var.get()
+            selected_month_str = self.month_var.get()
+
+            # --- แปลงค่าเป็นตัวเลขสำหรับส่งเข้า Query ---
+            year_to_query = int(selected_year_str)
+            month_to_query = self.thai_month_map.get(selected_month_str, None) # ถ้าเลือก "ทุกเดือน" จะได้ None
+
+            # --- เรียกใช้ฟังก์ชันดึงข้อมูลพร้อมกับส่งค่าที่เลือก ---
+            rejection_data = self._get_rejection_summary(year=year_to_query, month=month_to_query)
             
-    def _get_rejection_summary(self):
-        try: return pd.read_sql_query("SELECT su.sale_name, COUNT(po.id) as rejection_count FROM purchase_orders po JOIN sales_users su ON po.user_key = su.sale_key WHERE po.status = 'Rejected' GROUP BY su.sale_name ORDER BY rejection_count DESC", self.pg_engine)
-        except Exception as e: messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลสรุปการตีกลับได้: {e}", parent=self); return pd.DataFrame(columns=['sale_name', 'rejection_count'])
+            # --- สร้างกราฟจากข้อมูลที่ได้มา ---
+            self._create_rejection_bar_chart(self.rejection_chart_frame, rejection_data)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการอัปเดต Dashboard: {e}", parent=self)
+        finally:
+            if loading_label.winfo_exists():
+                loading_label.destroy()
+                
+    def _get_rejection_summary(self, year, month):
+        try:
+            # Query ใหม่เพื่อนับจาก audit_log
+            sql_where_clause = "WHERE log.action = 'PO Rejected' AND log.table_name = 'purchase_orders'"
+            params = []
+
+            if year:
+                sql_where_clause += " AND EXTRACT(YEAR FROM log.timestamp::timestamp) = %s"
+                params.append(year)
+            
+            if month:
+                sql_where_clause += " AND EXTRACT(MONTH FROM log.timestamp::timestamp) = %s"
+                params.append(month)
+
+            # เราจะ JOIN กับ sales_users เพื่อเอาชื่อของ PU ที่เป็นคนทำ PO (เก็บไว้ใน user_info)
+            query = f"""
+                SELECT 
+                    su.sale_name, 
+                    COUNT(log.id) as rejection_count 
+                FROM audit_log log
+                JOIN sales_users su ON log.user_info = su.sale_key 
+                {sql_where_clause}
+                GROUP BY su.sale_name 
+                ORDER BY rejection_count DESC
+            """
+            return pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลสรุปการตีกลับได้: {e}", parent=self)
+            return pd.DataFrame(columns=['sale_name', 'rejection_count'])
         
     def _create_rejection_bar_chart(self, parent_frame, data_df):
         if hasattr(self, 'rejection_chart_canvas') and self.rejection_chart_canvas: self.rejection_chart_canvas.get_tk_widget().destroy()

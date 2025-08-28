@@ -17,6 +17,7 @@ import ctypes
 from sqlalchemy import create_engine
 import pandas as pd
 import traceback
+from hr_windows import EditPOWindowByHR
 
 # --- START: เพิ่ม Import ที่จำเป็น ---
 from so_selection_dialog import SOSelectionDialog
@@ -196,6 +197,18 @@ class AppContainer(CTk):
         self._create_initial_db_tables()
         self.show_login_screen()
 
+    def show_po_edit_window_for_hr(self, po_id, refresh_callback):
+        """เปิดหน้าต่างสำหรับให้ HR แก้ไขข้อมูล PO โดยเฉพาะ"""
+        try:
+            edit_window = EditPOWindowByHR(
+                master=self,
+                app_container=self,
+                po_id=po_id,
+                on_close_callback=refresh_callback
+            )
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข PO ได้: {e}")
+            traceback.print_exc()
     
     def _run_background_task(self, task_function, interval_seconds):
         while not self.stop_background_threads.is_set():
@@ -404,15 +417,19 @@ class AppContainer(CTk):
             win = PurchaseHistoryWindow(master=self, app_container=self)
             return win
 
-    def show_purchase_detail_window(self, purchase_id, approve_callback=None, reject_callback=None): # <<< แก้ไข: เพิ่ม callbacks
-     from history_windows import PurchaseDetailWindow
-     PurchaseDetailWindow(
-        master=self, 
-        app_container=self, 
-        purchase_id=purchase_id,
-        approve_callback=approve_callback, # <<< เพิ่ม: ส่ง callback ไปยังหน้าต่าง
-        reject_callback=reject_callback   # <<< เพิ่ม: ส่ง callback ไปยังหน้าต่าง
-    )
+    def show_purchase_detail_window(self, purchase_id, approve_callback=None, reject_callback=None, on_save_callback=None):
+        """
+        แสดงหน้าต่างรายละเอียด PO ซึ่งสามารถแก้ไขได้และรับ callback สำหรับการบันทึก
+        """
+        from history_windows import PurchaseDetailWindow
+        PurchaseDetailWindow(
+            master=self, 
+            app_container=self, 
+            purchase_id=purchase_id,
+            approve_callback=approve_callback,
+            reject_callback=reject_callback,
+            on_save_callback=on_save_callback  # <-- เพิ่มการส่งต่อ callback ที่ขาดไป
+        )
 
     def show_edit_commission_window(self, data, refresh_callback, user_role=None):
         from edit_commission_window import EditCommissionWindow
