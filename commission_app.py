@@ -258,7 +258,7 @@ class SubmitSODialog(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
 
 class CommissionApp(CTkFrame):
-    def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True):
+    def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None):
         super().__init__(master, corner_radius=0, fg_color=app_container.THEME["sale"]["bg"])
         self.master = master
         self.app_container = app_container

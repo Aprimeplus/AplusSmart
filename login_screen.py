@@ -101,18 +101,19 @@ class LoginScreen(CTkFrame):
                     user_name, user_role, stored_hash = result['sale_name'], result['role'], result['password_hash']
                     
                     if stored_hash and bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
+                        # --- [แก้ไข] เพิ่ม user_role=user_role เข้าไปในทุกเงื่อนไข ---
                         if user_role == 'Sale':
-                            self.app_container.show_main_app(sale_key=user_key, sale_name=user_name)
+                            self.app_container.show_main_app(sale_key=user_key, sale_name=user_name, user_role=user_role)
                         elif user_role in ['Purchasing Staff', 'ฝ่ายจัดซื้อ']:
-                            self.app_container.show_purchasing_screen(user_key=user_key, user_name=user_name)
+                            self.app_container.show_purchasing_screen(user_key=user_key, user_name=user_name, user_role=user_role)
                         elif user_role == 'Purchasing Manager':
                             self.app_container.show_purchasing_manager_screen(user_key=user_key, user_name=user_name, user_role=user_role)
                         elif user_role == 'Director':
                             self.app_container.show_director_screen(user_key, user_name, user_role)
-                        elif user_role == 'Sales Manager': # <--- เพิ่มเงื่อนไขนี้
-                            self.app_container.show_sales_manager_screen(user_key, user_name, user_role) # <--- เรียกฟังก์ชันใหม่
+                        elif user_role == 'Sales Manager':
+                            self.app_container.show_sales_manager_screen(user_key, user_name, user_role)
                         elif user_role == 'HR':
-                            self.app_container.show_hr_screen(user_key=user_key, user_name=user_name)
+                            self.app_container.show_hr_screen(user_key=user_key, user_name=user_name, user_role=user_role)
                         else:
                             messagebox.showerror("ข้อผิดพลาด", f"ไม่รู้จักประเภทผู้ใช้: {user_role}", parent=self)
                     else:
@@ -124,6 +125,6 @@ class LoginScreen(CTkFrame):
                     self.password_entry.delete(0, tk.END)
 
         except (Exception, psycopg2.Error) as e:
-             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}", parent=self)
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}", parent=self)
         finally:
             self.app_container.release_connection(conn)

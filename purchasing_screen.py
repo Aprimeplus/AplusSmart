@@ -705,7 +705,7 @@ class ProductEditDialog(CTkToplevel):
 # PurchasingScreen Main Class
 # ==============================================================================
 class PurchasingScreen(CTkFrame):
-    def __init__(self, master, user_key=None, user_name=None):
+    def __init__(self, master, user_key=None, user_name=None, user_role=None, initial_so_number=None):
         self.master, self.app_container = master, master
         self.user_key, self.user_name = user_key, user_name
         self.theme = self.app_container.THEME["purchasing"]

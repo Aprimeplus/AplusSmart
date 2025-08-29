@@ -225,38 +225,64 @@ class AppContainer(CTk):
             conn = self.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
-                cursor.execute("SELECT id, so_number, user_key FROM commissions WHERE status = 'PO In Progress' AND claim_timestamp < %s", (twenty_four_hours_ago,))
-                overdue_sos = cursor.fetchall()
-                if not overdue_sos:
-                    print("No overdue SOs found.")
+                
+                # --- START: แก้ไข Query ตรงนี้ ---
+                # เปลี่ยนจากการใช้ claim_timestamp มาเป็น timestamp ของ po โดยตรง
+                # และ JOIN ตาราง commissions เพื่อหา user_key ที่เป็นคน Claim
+                cursor.execute("""
+                    SELECT po.id, po.so_number, po.po_number 
+                    FROM purchase_orders po
+                    JOIN commissions c ON po.so_number = c.so_number
+                    WHERE po.status = 'Draft' AND c.status = 'PO In Progress' 
+                    AND c.claim_timestamp < %s
+                """, (twenty_four_hours_ago,))
+                overdue_pos = cursor.fetchall()
+
+                if not overdue_pos:
+                    print("No overdue POs found.")
                     return
-                for so in overdue_sos:
-                    so_number = so['so_number']
-                    print(f"Found overdue SO: {so_number}. Submitting related draft POs...")
-                    cursor.execute("SELECT id, po_number FROM purchase_orders WHERE so_number = %s AND status = 'Draft'", (so_number,))
-                    draft_pos = cursor.fetchall()
-                    if not draft_pos:
-                        print(f"No draft POs found for overdue SO: {so_number}. Skipping.")
-                        continue
-                    draft_po_ids = [po['id'] for po in draft_pos]
-                    psycopg2.extras.execute_values(cursor, "UPDATE purchase_orders SET status = 'Pending Approval', approval_status = 'Pending Mgr 1' WHERE id IN %s", [(draft_po_ids,)])
-                    cursor.execute("UPDATE commissions SET status = 'PO Sent' WHERE id = %s", (so['id'],))
+
+                overdue_po_ids = [po['id'] for po in overdue_pos]
+                print(f"Found overdue POs: {overdue_po_ids}. Submitting...")
+
+                # --- START: แก้ไข Logic การ Update ---
+                # แปลง List ของ ID ให้เป็น Tuple สำหรับใช้กับ IN clause
+                ids_tuple = tuple(overdue_po_ids)
+                
+                # ใช้ IN clause ที่ถูกต้อง (ไม่ใช้ execute_values สำหรับ UPDATE)
+                # ตรวจสอบให้แน่ใจว่า ids_tuple ไม่ใช่ Tuple ว่าง
+                if ids_tuple:
+                    update_query = "UPDATE purchase_orders SET status = 'Pending Approval', approval_status = 'Pending Mgr 1' WHERE id IN %s"
+                    cursor.execute(update_query, (ids_tuple,))
+                # --- END: สิ้นสุดการแก้ไข ---
+
+                    # อัปเดตสถานะ commissions ที่เกี่ยวข้อง (ถ้าต้องการ)
+                    affected_so_numbers = tuple(set(po['so_number'] for po in overdue_pos))
+                    if affected_so_numbers:
+                        cursor.execute("UPDATE commissions SET status = 'PO Sent' WHERE so_number IN %s", (affected_so_numbers,))
+
+                    # สร้าง Notification (เหมือนเดิม)
                     cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Manager' AND status = 'Active'")
                     manager_keys = [row['sale_key'] for row in cursor.fetchall()]
+                    
                     notif_data = []
-                    for po in draft_pos:
+                    for po in overdue_pos:
                         message = f"AUTO-SUBMIT: PO ({po['po_number']}) ถูกส่งอัตโนมัติเนื่องจากเกินกำหนด 24 ชม."
                         for manager_key in manager_keys:
                             notif_data.append((manager_key, message, False, po['id']))
+                    
                     if notif_data:
                         psycopg2.extras.execute_values(cursor, "INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES %s", notif_data)
+                    
                     conn.commit()
-                    print(f"Successfully auto-submitted {len(draft_po_ids)} POs for SO: {so_number}.")
+                    print(f"Successfully auto-submitted {len(overdue_po_ids)} POs.")
+
         except Exception as e:
             print(f"Error during auto-submission of overdue POs: {e}")
             if conn: conn.rollback()
         finally:
             self.release_connection(conn)
+
 
     def _check_for_notifications(self):
         if not self.current_user_key: return
@@ -365,6 +391,7 @@ class AppContainer(CTk):
         loading_win = LoadingWindow(self)
         self.update_idletasks()
         self.current_user_key = kwargs.get('user_key')
+        self.current_user_role = kwargs.get('user_role')
         if self.notification_poll_id:
            self.after_cancel(self.notification_poll_id)
         self.after(5000, self._check_for_notifications)
@@ -384,17 +411,17 @@ class AppContainer(CTk):
         from login_screen import LoginScreen
         self.show_screen(LoginScreen, app_container=self)
 
-    def show_main_app(self, sale_key, sale_name): 
+    def show_main_app(self, sale_key, sale_name, user_role): 
         from commission_app import CommissionApp
-        self.show_screen(CommissionApp, sale_key=sale_key, sale_name=sale_name, app_container=self, show_logout_button=True)
+        self.show_screen(CommissionApp, sale_key=sale_key, sale_name=sale_name, app_container=self, show_logout_button=True, user_role=user_role)
 
-    def show_hr_screen(self, user_key, user_name):
+    def show_hr_screen(self, user_key, user_name, user_role):
         from hr_screen import HRScreen
-        self.show_screen(HRScreen, app_container=self, user_key=user_key, user_name=user_name)
+        self.show_screen(HRScreen, app_container=self, user_key=user_key, user_name=user_name, user_role=user_role)
 
-    def show_purchasing_screen(self, user_key, user_name): 
+    def show_purchasing_screen(self, user_key, user_name, user_role): 
         from purchasing_screen import PurchasingScreen
-        self.show_screen(PurchasingScreen, user_key=user_key, user_name=user_name)
+        self.show_screen(PurchasingScreen, user_key=user_key, user_name=user_name, user_role=user_role)
 
     def show_purchasing_manager_screen(self, user_key, user_name, user_role):
         from purchasing_manager_screen import PurchasingManagerScreen

@@ -499,6 +499,48 @@ class HRVerificationWindow(CTkToplevel):
         header_frame = CTkFrame(self, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
         CTkLabel(header_frame, text=f"SO Number: {self.so_number}", font=CTkFont(size=20, weight="bold")).pack(side="left")
+
+        detail_button_frame = CTkFrame(header_frame, fg_color="transparent")
+        detail_button_frame.pack(side="right")
+        CTkButton(detail_button_frame, text="ดูข้อมูล SO", command=self._view_so_data).pack(side="left", padx=(0, 5))
+        CTkButton(detail_button_frame, text="✏️ แก้ไขข้อมูล SO", command=self._open_so_editor_popup).pack(side="left", padx=(5, 0))
+
+        # --- Main Scrollable Frame ---
+        scroll_frame = CTkScrollableFrame(self, fg_color="#F0F2F5") # สีพื้นหลังอ่อนๆ
+        scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        scroll_frame.grid_columnconfigure(0, weight=1)
+        scroll_frame.grid_columnconfigure(1, weight=1)
+
+        # ### UI ใหม่สำหรับแสดงผลสรุป ###
+        sales_card = CTkFrame(scroll_frame, corner_radius=10)
+        sales_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self._create_summary_card(sales_card, "ยอดขายรวมสุดท้าย (Final Sales)", "sales")
+
+        cost_card = CTkFrame(scroll_frame, corner_radius=10)
+        cost_card.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        self._create_summary_card(cost_card, "ยอดต้นทุนรวมสุดท้าย (Final Cost)", "cost")
+
+        # ### UI ใหม่สำหรับแสดงรายการ PO ###
+        self.po_container_frame = CTkFrame(scroll_frame, fg_color="transparent")
+        self.po_container_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+        self.po_container_frame.grid_columnconfigure(0, weight=1)
+        CTkLabel(self.po_container_frame, text="ใบสั่งซื้อ (PO) ที่เกี่ยวข้อง", font=CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(0, 5))
+
+        # --- Action Buttons Frame (ด้านล่างสุด) ---
+        action_frame = CTkFrame(self, fg_color="transparent")
+        action_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=(10, 15))
+        action_frame.grid_columnconfigure((0,1,2), weight=1)
+
+        CTkButton(action_frame, text="ตีกลับให้ฝ่ายจัดซื้อ (Reject)", height=40, fg_color="#F97316", hover_color="#EA580C", command=self._reject_to_purchasing).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        CTkButton(action_frame, text="บันทึกการแก้ไข", height=40, fg_color="#3B82F6", hover_color="#2563EB", command=self._save_intermediate_changes).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        CTkButton(action_frame, text="ยืนยันข้อมูลถูกต้อง (Verify Data)", height=40, fg_color="#16A34A", hover_color="#15803D", command=self._verify_and_save_data).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+
+    def _create_new_ui_layout(self):
+        """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างนี้"""
+        # --- Header ---
+        header_frame = CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
+        CTkLabel(header_frame, text=f"SO Number: {self.so_number}", font=CTkFont(size=20, weight="bold")).pack(side="left")
         
         detail_button_frame = CTkFrame(header_frame, fg_color="transparent")
         detail_button_frame.pack(side="right")
