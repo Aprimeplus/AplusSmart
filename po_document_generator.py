@@ -12,6 +12,38 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.lib.pagesizes import A4
+import sys
+import os
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+# --- ทำการลงทะเบียนฟอนต์ทั้งหมดที่ใช้ในโปรเจกต์ ---
+try:
+    # ใช้ resource_path เพื่อให้หาไฟล์เจอไม่ว่าจะรันจาก .py หรือ .exe
+    font_path = resource_path("THSarabunNew.ttf")
+    font_bold_path = resource_path("THSarabunNew Bold.ttf")
+    # (ถ้ามีฟอนต์ Italic หรือ BoldItalic ก็เพิ่มได้เลย)
+    # font_italic_path = resource_path("THSarabunNew Italic.ttf")
+    # font_bold_italic_path = resource_path("THSarabunNew BoldItalic.ttf")
+
+    # ลงทะเบียนฟอนต์กับ reportlab
+    pdfmetrics.registerFont(TTFont('THSarabunNew', font_path))
+    pdfmetrics.registerFont(TTFont('THSarabunNew-Bold', font_bold_path))
+    # pdfmetrics.registerFont(TTFont('THSarabunNew-Italic', font_italic_path))
+    # pdfmetrics.registerFont(TTFont('THSarabunNew-BoldItalic', font_bold_italic_path))
+
+    print("Fonts registered successfully for PDF generation.")
+except Exception as e:
+    print(f"ERROR: Could not register fonts for PDF generation: {e}")
 
 def register_thai_fonts():
     """Registers Thai fonts for ReportLab."""

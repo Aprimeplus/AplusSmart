@@ -89,81 +89,57 @@ class DateRangeDialog(CTkToplevel):
 
 def export_approved_pos_to_excel(parent_window, pg_engine):
     """
-    Export ข้อมูล Purchase Orders (PO) ที่มีสถานะ 'Approved' ออกเป็นไฟล์ Excel
-    โดยมีการกรองข้อมูลตามช่วงเวลา
+    (เวอร์ชันแก้ไข) Export ข้อมูล PO ที่มีสถานะ 'Approved' ทั้งหมด
+    พร้อมข้อมูล SO ที่เชื่อมกัน ออกเป็นไฟล์ Excel
     """
-    # --- START: เรียกใช้หน้าต่างเลือกเวลา ---
     dialog = DateRangeDialog(parent_window)
-    parent_window.wait_window(dialog) # รอจนกว่าหน้าต่างเลือกเวลาจะปิด
+    parent_window.wait_window(dialog)
 
     start_date = dialog.start_date
     end_date = dialog.end_date
 
     if not start_date or not end_date:
         print("Export canceled by user.")
-        return # ผู้ใช้กดยกเลิก
-    # --- END: เรียกใช้หน้าต่างเลือกเวลา ---
+        return
 
     try:
-        # --- START: แก้ไข Query เพื่อเพิ่มเงื่อนไขวันที่ ---
+        # --- [แก้ไข] ใช้ Query ที่ JOIN ตารางสมบูรณ์แล้ว ---
         query = """
-            SELECT 
-                so.so_number,
-                po.po_number,
-                po.po_mode,
-                po.rr_number,
-                po.timestamp AS po_date,
-                po.supplier_name,
-                po.grand_total AS po_total_payable,
-                po.user_key AS po_creator_key,
-                so.bill_date AS so_date,
-                so.customer_name,
-                u.sale_name,
-                (COALESCE(so.sales_service_amount, 0) + COALESCE(so.product_vat_7, 0)) AS so_grand_total
-            FROM 
-                purchase_orders po
-            LEFT JOIN 
-                commissions so ON po.so_number = so.so_number
-            LEFT JOIN 
-                sales_users u ON so.sale_key = u.sale_key
-            WHERE 
-                po.status = 'Approved'
-                AND po.timestamp BETWEEN %s AND %s
-            ORDER BY
-                po.timestamp DESC;
+        SELECT
+            po.*,
+            c.bill_date,
+            c.customer_name,
+            c.customer_type,
+            c.sales_service_amount,
+            c.sale_key,
+            su.sale_name
+        FROM
+            purchase_orders po
+        LEFT JOIN
+            commissions c ON po.so_number = c.so_number AND c.is_active = 1
+        LEFT JOIN
+            sales_users su ON c.sale_key = su.sale_key
+        WHERE
+            po.status = 'Approved'
+            AND po.timestamp::date BETWEEN %s AND %s
+        ORDER BY
+            po.timestamp DESC;
         """
-        # --- END: แก้ไข Query เพื่อเพิ่มเงื่อนไขวันที่ ---
-        
+
         df = pd.read_sql_query(query, pg_engine, params=(start_date, end_date))
-        
+
         if df.empty:
             messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูล PO ที่อนุมัติแล้วในช่วงเวลาที่เลือก", parent=parent_window)
             return
 
-        header_map = {
-            'so_number': 'เลขที่ SO',
-            'po_number': 'เลขที่ PO',
-            'po_mode': 'ประเภท PO',
-            'rr_number': 'เลขที่ RR', 
-            'po_date': 'วันที่สร้าง PO',
-            'supplier_name': 'ชื่อซัพพลายเออร์', 
-            'po_total_payable': 'ยอดชำระ PO (บาท)',
-            'po_creator_key': 'รหัสผู้สร้าง PO', 
-            'so_date': 'วันที่เปิด SO', 
-            'customer_name': 'ชื่อลูกค้า',
-            'sale_name': 'พนักงานขาย', 
-            'so_grand_total': 'ยอดขาย SO (บาท)'
-        }
-        df.rename(columns=header_map, inplace=True)
+        # (แนะนำ) ดึง Header Map ตัวหลักมาจาก AppContainer เพื่อให้เป็นมาตรฐานเดียวกัน
+        header_map = {}
+        if hasattr(parent_window, 'app_container') and hasattr(parent_window.app_container, 'HEADER_MAP'):
+             header_map = parent_window.app_container.HEADER_MAP
         
-        ordered_columns = [
-            'เลขที่ SO', 'เลขที่ PO', 'ประเภท PO', 'เลขที่ RR',
-            'วันที่สร้าง PO', 'ชื่อซัพพลายเออร์', 'ยอดชำระ PO (บาท)',
-            'รหัสผู้สร้าง PO', 'วันที่เปิด SO', 'ชื่อลูกค้า',
-            'พนักงานขาย', 'ยอดขาย SO (บาท)'
-        ]
-        df = df[ordered_columns]
-        
+        # แปลงชื่อคอลัมน์ทั้งหมดเท่าที่มีใน Map
+        df.rename(columns=lambda c: header_map.get(c, c), inplace=True)
+
         default_filename = f"approved_po_export_{datetime.now().strftime('%Y%m%d')}.xlsx"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
@@ -175,7 +151,7 @@ def export_approved_pos_to_excel(parent_window, pg_engine):
 
         if save_path:
             df.to_excel(save_path, index=False)
-            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้วที่:\n{save_path}", parent=parent_window)
+            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลทั้งหมดเรียบร้อยแล้วที่:\n{save_path}", parent=parent_window)
 
     except Exception as e:
         messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)

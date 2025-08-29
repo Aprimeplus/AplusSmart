@@ -659,34 +659,58 @@ class CommissionHistoryWindow(CTkToplevel):
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถยกเลิกรายการได้: {e}", parent=self)
 
     def _export_history(self):
-        """Export ข้อมูลที่แสดงอยู่ในตารางปัจจุบันเป็นไฟล์ Excel"""
+        """
+        (เวอร์ชันอัปเกรด) Export ข้อมูลทั้งหมดในช่วงเวลาที่เลือก
+        """
+        # --- เรียกใช้หน้าต่างเลือกเวลา ---
+        from export_utils import DateRangeDialog # Import เข้ามาเฉพาะกิจ
+        dialog = DateRangeDialog(self)
+        self.wait_window(dialog)
+
+        start_date = dialog.start_date
+        end_date = dialog.end_date
+
+        if not start_date or not end_date:
+            print("Export canceled by user.")
+            return
+
         try:
-            if self.df is None or self.df.empty:
-                messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูลสำหรับ Export", parent=self)
+            # --- สร้าง Query เพื่อดึงข้อมูลทั้งหมดในช่วงเวลาที่เลือก ---
+            query = """
+            SELECT * FROM commissions 
+            WHERE sale_key = %s 
+              AND is_active = 1
+              AND timestamp::date BETWEEN %s AND %s
+            ORDER BY timestamp DESC
+            """
+            
+            # ใช้ pg_engine และ params ในการดึงข้อมูล
+            df_to_export = pd.read_sql_query(query, self.pg_engine, params=(self.sale_key_filter, start_date, end_date))
+
+            if df_to_export.empty:
+                messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูล Commission ในช่วงเวลาที่เลือก", parent=self)
                 return
 
-            default_filename = f"commission_history_{self.sale_key_filter}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            # --- ส่วนที่เหลือคือการจัดรูปแบบและบันทึกไฟล์ ---
+            default_filename = f"commission_full_history_{self.sale_key_filter}_{datetime.now().strftime('%Y%m%d')}.xlsx"
             save_path = filedialog.asksaveasfilename(
                 defaultextension=".xlsx",
                 filetypes=[("Excel files", "*.xlsx")],
-                title="บันทึกไฟล์ประวัติ Commission",
+                title="บันทึกไฟล์ประวัติ Commission ทั้งหมด",
                 initialfile=default_filename,
                 parent=self
             )
 
             if not save_path:
-                return # ผู้ใช้กดยกเลิก
+                return
 
-            # เตรียมข้อมูลสำหรับ Export
-            df_to_export = self.df.copy()
-
-            # เปลี่ยนชื่อคอลัมน์เป็นภาษาไทยที่อ่านง่าย
+            # แปลงชื่อคอลัมน์ทั้งหมดเป็นภาษาไทยโดยใช้ HEADER_MAP ตัวหลัก
             header_map = self.app_container.HEADER_MAP
             df_to_export.rename(columns=lambda c: header_map.get(c, c), inplace=True)
 
             # บันทึกเป็นไฟล์ Excel
             df_to_export.to_excel(save_path, index=False)
-            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้วที่:\n{save_path}", parent=self)
+            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลทั้งหมดเรียบร้อยแล้วที่:\n{save_path}", parent=self)
 
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=self)
