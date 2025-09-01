@@ -1113,52 +1113,72 @@ class SOPopupWindow(CTkToplevel):
 
         def get_float_from_entry(entry_key):
             entry_widget = w_widgets.get(entry_key)
-            if entry_widget:
-                if hasattr(entry_widget, '_entry') and entry_widget._entry.winfo_exists():
-                    try: return utils.convert_to_float(entry_widget.get())
-                    except (tk.TclError, ValueError): return 0.0
-                else: return 0.0
+            if entry_widget and entry_widget.winfo_exists():
+                try:
+                    return utils.convert_to_float(entry_widget.get())
+                except (tk.TclError, ValueError):
+                    return 0.0
             return 0.0
 
+        # --- 1. ดึงข้อมูลตัวเลขจากฟอร์มทั้งหมด ---
         sales = get_float_from_entry('sales_amount_entry')
         shipping = get_float_from_entry('shipping_cost_entry')
         card_fee = get_float_from_entry('credit_card_fee_entry')
         cutting_drilling = get_float_from_entry('cutting_drilling_fee_entry')
         other_service = get_float_from_entry('other_service_fee_entry')
         
-        total_vatable_subtotal, total_cashable_services_and_fees = 0.0, 0.0
+        # [สำคัญ] ดึงข้อมูลรายการลดหย่อนทั้งหมด
+        brokerage = get_float_from_entry('brokerage_fee_entry')
+        coupons = get_float_from_entry('coupon_value_entry')
+        giveaways = get_float_from_entry('giveaway_value_entry')
+        wht = get_float_from_entry('wht_fee_entry')
         
-        items_to_process = [(sales, w_vars['sales_service_vat_option'].get()), (cutting_drilling, w_vars['cutting_drilling_fee_vat_option'].get()), (other_service, w_vars['other_service_fee_vat_option'].get()), (shipping, w_vars['shipping_vat_option_var'].get()), (card_fee, w_vars['credit_card_fee_vat_option_var'].get())]
+        # --- 2. แยกรายการที่ต้องคิด VAT ---
+        total_vatable_revenue = 0.0
+        total_cashable_services_and_fees = 0.0
+        items_to_process = [
+            (sales, w_vars['sales_service_vat_option'].get()),
+            (cutting_drilling, w_vars['cutting_drilling_fee_vat_option'].get()),
+            (other_service, w_vars['other_service_fee_vat_option'].get()),
+            (shipping, w_vars['shipping_vat_option_var'].get()),
+            (card_fee, w_vars['credit_card_fee_vat_option_var'].get())
+        ]
         for amount, option in items_to_process:
-            if option == "VAT": total_vatable_subtotal += amount
-            else: total_cashable_services_and_fees += amount
-            
-        so_grand_total = total_vatable_subtotal * 1.07
-        w_vars['so_grand_total_var'].set(f"{so_grand_total:,.2f}")
+            if option == "VAT":
+                total_vatable_revenue += amount
+            else: 
+                total_cashable_services_and_fees += amount
+                
+        # --- 3. [แก้ไข] ใช้สูตรคำนวณเดียวกับแอปฝ่ายขายเพื่อให้ผลลัพธ์ตรงกัน ---
+        total_deductions = brokerage + coupons + giveaways + wht
+        
+        # สูตรของฝ่ายขาย: (ยอดขาย VAT + ยอดหัก) * 1.07 แล้วค่อยลบยอดหักออก
+        subtotal_for_vat_calc = total_vatable_revenue + total_deductions
+        total_with_vat = subtotal_for_vat_calc * 1.07
+        final_grand_total = total_with_vat - total_deductions
 
+        w_vars['so_grand_total_var'].set(f"{final_grand_total:,.2f}")
+
+        # --- 4. คำนวณส่วนต่างการชำระ ---
         payment1 = get_float_from_entry('payment1_amount_entry')
         payment2 = get_float_from_entry('payment2_amount_entry')
-        so_vs_payment_diff = (payment1 + payment2) - so_grand_total
+        so_vs_payment_diff = (payment1 + payment2) - final_grand_total
         w_vars['difference_amount_var'].set(f"{so_vs_payment_diff:,.2f}")
 
+        # --- 5. อัปเดต UI แสดงผล ---
         def set_check_result(label_widget_key, var, diff_val, plus_text, minus_text):
             label_widget_ref = w_widgets.get(label_widget_key)
+            if not (label_widget_ref and label_widget_ref.winfo_exists()): return
             color_map = {"-": ("gray85", "black"), "ok": ("#BBF7D0", "#15803D"), "bad": ("#FECACA", "#B91C1C")}
             if abs(diff_val) < 0.01: state, text = "ok", "ถูกต้อง"
             elif diff_val > 0: state, text = "ok", f"{plus_text} (+{abs(diff_val):,.2f})"
-            else: state, text = "bad", f"{minus_text} (-{abs(diff_val):,.2f})"
-            if label_widget_ref and label_widget_ref.winfo_exists():
-                var.set(text)
-                if isinstance(label_widget_ref, CTkLabel): label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1], text=text)
-                elif isinstance(label_widget_ref, CTkEntry):
-                    current_state = label_widget_ref.cget("state")
-                    if current_state == "readonly": label_widget_ref.configure(state="normal")
-                    label_widget_ref.delete(0, "end"); label_widget_ref.insert(0, text)
-                    label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1])
-                    if current_state == "readonly": label_widget_ref.configure(state="readonly")
+            else: state, text = "bad", f"{minus_text} ({abs(diff_val):,.2f})"
+            var.set(text)
+            label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1], text=text)
 
         set_check_result('so_check_display', w_vars.get('so_vs_payment_result_var'), so_vs_payment_diff, "ยอดโอนเกิน", "ยอดโอนขาด")
 
+        # --- 6. คำนวณยอดเงินสด ---
         cash_product_val = get_float_from_entry('cash_product_input_entry')
         cash_required_total = cash_product_val + total_cashable_services_and_fees
         w_vars['cash_required_total_var'].set(f"{cash_required_total:,.2f}")
