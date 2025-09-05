@@ -62,18 +62,32 @@ class SalesTasksWindow(CTkToplevel):
     def _load_rejected_tasks(self):
         for widget in self.rejected_frame.winfo_children(): widget.destroy()
         try:
+            # <<< START: แก้ไข Query ให้รองรับสถานะ Deferred ด้วย >>>
             query = """
                 SELECT * FROM commissions 
-                WHERE sale_key = %s AND status = 'Rejected by SM' AND is_active = 1 
+                WHERE sale_key = %s AND status IN ('Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR') AND is_active = 1 
                 ORDER BY timestamp DESC
             """
+            # <<< END >>>
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.sale_key,))
             if df.empty:
-                CTkLabel(self.rejected_frame, text="ไม่มีงานที่ถูกตีกลับ").pack(pady=20)
+                CTkLabel(self.rejected_frame, text="ไม่มีงานที่ถูกตีกลับหรือถูกเลื่อน").pack(pady=20)
                 return
             
             for _, row in df.iterrows():
-                card = CTkFrame(self.rejected_frame, border_width=1, fg_color="#FEF2F2")
+                # <<< START: แก้ไขการแสดงผล Card ให้แยกสีและข้อความ >>>
+                status = row['status']
+                if 'Reject' in status:
+                    card_color = "#FEF2F2" # แดงอ่อน
+                    reason_color = "#B91C1C"
+                    status_prefix = "ตีกลับ"
+                else: # Deferred
+                    card_color = "#FEFCE8" # เหลืองอ่อน
+                    reason_color = "#A16207"
+                    status_prefix = "เลื่อน"
+                
+                card = CTkFrame(self.rejected_frame, border_width=1, fg_color=card_color)
+                # ... (โค้ดสร้าง Card ส่วนที่เหลือเหมือนเดิม) ...
                 card.pack(fill="x", padx=5, pady=4)
                 card.grid_columnconfigure(0, weight=1)
 
@@ -86,9 +100,11 @@ class SalesTasksWindow(CTkToplevel):
                 edit_button = CTkButton(top_frame, text="แก้ไข", width=80, command=lambda r=row: self._edit_and_close(r))
                 edit_button.pack(side="right")
                 
+                rejected_by = "SM" if "SM" in status else "HR"
                 reason_text = row['rejection_reason'] or "ไม่มีเหตุผลระบุ"
-                reason_label = CTkLabel(card, text=f"เหตุผลที่ถูกตีกลับ: {reason_text}", text_color="#B91C1C", wraplength=700, justify="left", anchor="w")
+                reason_label = CTkLabel(card, text=f"เหตุผลที่{status_prefix} (จาก {rejected_by}): {reason_text}", text_color=reason_color, wraplength=700, justify="left", anchor="w")
                 reason_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 5))
+                # <<< END >>>
 
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถโหลดงานที่ถูกตีกลับได้: {e}", parent=self)

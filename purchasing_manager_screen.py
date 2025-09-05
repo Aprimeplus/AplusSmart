@@ -113,13 +113,35 @@ class ReopenPOWindow(CTkToplevel):
             card = CTkFrame(self.main_frame, border_width=1)
             card.pack(fill="x", padx=10, pady=5)
             
-            timestamp = pd.to_datetime(po_data['timestamp']).strftime('%Y-%m-%d %H:%M')
             info_text = f"PO: {po_data['po_number']} | SO: {po_data['so_number']} | Supplier: {po_data['supplier_name']}"
             
             CTkLabel(card, text=info_text).pack(side="left", padx=15, pady=10)
-            reopen_button = CTkButton(card, text="ดึง PO นี้กลับมาแก้ไข", fg_color="#F97316", hover_color="#EA580C", 
-                                      command=lambda data=po_data.to_dict(): self._reopen_po(data))
-            reopen_button.pack(side="right", padx=15, pady=10)
+
+            # <<< START: เพิ่ม Frame สำหรับจัดวางปุ่ม และเพิ่มปุ่ม "แก้ไข" >>>
+            action_frame = CTkFrame(card, fg_color="transparent")
+            action_frame.pack(side="right", padx=15, pady=10)
+
+            # --- ปุ่มใหม่สำหรับ "แก้ไข" โดยตรง ---
+            edit_button = CTkButton(
+                action_frame,
+                text="แก้ไข",
+                fg_color="#3B82F6", # สีน้ำเงิน
+                hover_color="#2563EB",
+                command=lambda p_id=po_data['po_id']: self.app_container.show_purchase_detail_window(
+                    purchase_id=int(p_id),
+                    on_save_callback=self._load_reopenable_pos # สั่งให้หน้านี้ Refresh ตัวเองหลังบันทึก
+                )
+            )
+            edit_button.pack(side="left", padx=(0, 5))
+
+            # --- ปุ่มเดิมสำหรับ "ดึง PO กลับ" ---
+            reopen_button = CTkButton(
+                action_frame, 
+                text="ดึง PO กลับ", # ปรับข้อความให้สั้นลง
+                fg_color="#F97316", 
+                hover_color="#EA580C", 
+                command=lambda data=po_data.to_dict(): self._reopen_po(data))
+            reopen_button.pack(side="left")
 
     def _filter_po_list(self, event=None):
         search_term = self.search_entry.get().lower().strip()
@@ -385,6 +407,7 @@ class PurchasingManagerScreen(CTkFrame):
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
+                # ตรวจสอบจำนวน PO ทั้งหมดและที่อนุมัติแล้ว (เหมือนเดิม)
                 cursor.execute("""
                     SELECT COUNT(id) FROM purchase_orders 
                     WHERE so_number = %s AND status NOT IN ('Draft', 'Rejected')
@@ -397,15 +420,20 @@ class PurchasingManagerScreen(CTkFrame):
                 """, (so_number,))
                 approved_pos = cursor.fetchone()[0]
 
+                # เงื่อนไข: ถ้า PO ทุกใบของ SO นี้ถูกอนุมัติครบแล้ว
                 if total_pos > 0 and total_pos == approved_pos:
                     print(f"All POs for SO {so_number} are approved. Forwarding to Sale Manager.")
                     
+                    # <<< START: แก้ไข Query ตรงนี้ >>>
+                    # เพิ่มเงื่อนไข "AND is_active = 1" เพื่อให้แน่ใจว่าเราอัปเดต SO เวอร์ชันล่าสุดเสมอ
                     new_so_status = 'Pending Sale Manager Approval'
                     cursor.execute("""
                         UPDATE commissions SET status = %s 
-                        WHERE so_number = %s
+                        WHERE so_number = %s AND is_active = 1
                     """, (new_so_status, so_number))
+                    # <<< END: สิ้นสุดการแก้ไข >>>
 
+                    # สร้าง Notification (ส่วนนี้ทำงานถูกต้องอยู่แล้ว)
                     cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sales Manager' AND status = 'Active'")
                     manager_keys = [row[0] for row in cursor.fetchall()]
                     
@@ -700,33 +728,56 @@ class PurchasingManagerScreen(CTkFrame):
             CTkLabel(detail_frame, text=f"Error loading PO details: {e}").pack()
             
     def _create_po_card_widget(self, parent, row_data, from_detail_window=False):
-        card = CTkFrame(parent, border_width=1, corner_radius=10); card.grid_columnconfigure(0, weight=3); card.grid_columnconfigure(1, weight=1)
-        info_frame = CTkFrame(card, fg_color="transparent"); info_frame.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        card = CTkFrame(parent, border_width=1, corner_radius=10)
+        card.grid_columnconfigure(0, weight=3)
+        card.grid_columnconfigure(1, weight=1)
+        
+        info_frame = CTkFrame(card, fg_color="transparent")
+        info_frame.grid(row=0, column=0, padx=10, pady=10, sticky="w")
         
         status_color = "#FB923C" if row_data['approval_status'] == 'Pending Mgr 1' else "#FACC15" if row_data['approval_status'] == 'Pending Mgr 2' else "#A855F7"
+        
+        # <<< START: แก้ไขจุดนี้ >>>
+        # ดึงค่า grand_total มาใช้แสดงผลแทน total_cost
         grand_total = row_data.get('grand_total', 0) or 0
+        
         CTkLabel(info_frame, text=f"PO: {row_data['po_number']}", font=self.header_font).pack(anchor="w")
         CTkLabel(info_frame, text=f"Supplier: {row_data['supplier_name']} | ยอดรวม: {grand_total:,.2f} บาท").pack(anchor="w")
+        # <<< END >>>
+        
         CTkLabel(info_frame, text=f"Status: {row_data['approval_status']}", text_color=status_color, font=CTkFont(weight="bold")).pack(anchor="w")
         CTkLabel(info_frame, text=f"Submitted by: {row_data['user_key']} at {pd.to_datetime(row_data['timestamp']).strftime('%Y-%m-%d %H:%M')}").pack(anchor="w")
         
-        action_frame = CTkFrame(card, fg_color="transparent"); action_frame.grid(row=0, column=1, padx=10, pady=10, sticky="e")
-        approve_cmd = lambda d=row_data['id']: self._approve_po(d); reject_cmd = lambda d=row_data['id']: self._reject_po(d)
+        action_frame = CTkFrame(card, fg_color="transparent")
+        action_frame.grid(row=0, column=1, padx=10, pady=10, sticky="e")
+        
+        approve_cmd = lambda d=row_data['id']: self._approve_po(d)
+        reject_cmd = lambda d=row_data['id']: self._reject_po(d)
+        
         CTkButton(action_frame, text="ดูรายละเอียด", width=120, command=lambda d=row_data['id']: self._view_details(d)).pack(fill="x", pady=2)
         CTkButton(action_frame, text="อนุมัติ", width=120, fg_color="#16A34A", hover_color="#15803D", command=approve_cmd).pack(fill="x", pady=2)
         CTkButton(action_frame, text="ปฏิเสธ", width=120, fg_color="#DC2626", hover_color="#B91C1C", command=reject_cmd).pack(fill="x", pady=2)
+        
         return card
         
+    # (ในไฟล์ purchasing_manager_screen.py)
+# ให้นำฟังก์ชันนี้ไปวางทับของเดิม
+
+    # (ในไฟล์ purchasing_manager_screen.py)
+# ให้นำฟังก์ชันนี้ไปวางทับของเดิม
+
+    # purchasing_manager_screen.py
+
     def _view_details(self, po_id):
      try: 
+        # แก้ไขโดยการส่ง on_save_callback ไปแทน เพื่อให้หน้าจอ refresh ตัวเองหลัง HR แก้ไขข้อมูล
         self.app_container.show_purchase_detail_window(
             purchase_id=po_id,
-            approve_callback=self._approve_po,
-            reject_callback=self._reject_po
+            on_save_callback=self._load_data # <--- แก้ไขชื่อ parameter เป็น on_save_callback
         )
      except Exception as e: 
         messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดดูรายละเอียดได้: {e}", parent=self)
-        
+
     def _create_notification(self, cursor, po_id, action_type, reason=""):
         try:
             cursor.execute("SELECT user_key, po_number FROM purchase_orders WHERE id = %s", (po_id,))

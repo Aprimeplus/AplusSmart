@@ -1564,7 +1564,7 @@ class HRScreen(CTkFrame):
     def _calculate_final_pu_cost(self, row):
         """
         คำนวณต้นทุนรวมสุดท้ายจากฝั่งระบบ (PU) สำหรับใช้ในหน้าเปรียบเทียบข้อมูล
-        (เวอร์ชันแก้ไข ไม่มีการนับค่าจัดส่งซ้ำซ้อน)
+        (เวอร์ชันแก้ไข: ใช้ผลรวมจาก PO เป็นหลัก ไม่บวกค่าใช้จ่ายซ้ำซ้อน)
         """
         overrides = {}
         if pd.notna(row.get('hr_cost_overrides')):
@@ -1572,29 +1572,16 @@ class HRScreen(CTkFrame):
                 overrides = json.loads(row['hr_cost_overrides']) if isinstance(row['hr_cost_overrides'], str) else row['hr_cost_overrides']
             except (json.JSONDecodeError, TypeError):
                 pass
-
-        # 1. ดึงค่าต้นทุนพื้นฐานทั้งหมดจากข้อมูลที่ Query มา
-        # cogs_db คือ ยอดรวม total_cost จาก PO ทั้งหมด (ซึ่งรวมค่าส่งใน PO แล้ว)
-        po_total_cost_base = float(row.get('cogs_db', 0) or 0)
         
-        # ค่าใช้จ่ายอื่นๆ ที่อยู่นอก PO
-        po_relocation_val = float(row.get('po_relocation', 0) or 0)
-        brokerage_fee_val = float(row.get('brokerage_fee', 0) or 0)
-        transfer_fee_val = float(row.get('transfer_fee', 0) or 0)
+        # <<< START: แก้ไข Logic การคำนวณ >>>
+        # 1. ดึงค่าต้นทุนหลัก คือยอดรวมจาก PO ทั้งหมด ('cogs_db')
+        po_total_cost_base = float(row.get('cogs_db', 0) or 0)
 
-        # 2. ตรวจสอบว่ามีค่าที่ HR แก้ไขเอง (Overrides) หรือไม่
-        # <<< START: แก้ไข Logic การรวมยอด >>>
-        cost_po = float(overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
-        cost_relocation = float(overrides.get('ต้นทุนค่าย้าย', po_relocation_val))
-        cost_brokerage = float(overrides.get('ต้นทุนค่านายหน้า', brokerage_fee_val))
-        cost_transfer = float(overrides.get('ต้นทุนค่าธรรมเนียมโอน', transfer_fee_val))
-        # <<< END: สิ้นสุดการแก้ไข Logic >>>
-
-        # 3. รวมเป็นต้นทุนสุดท้ายที่ถูกต้อง
-        final_cost = cost_po + cost_relocation + cost_brokerage + cost_transfer
+        # 2. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี หรือใช้ค่าจาก PO ถ้าไม่มี
+        final_cost = float(overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
+        # <<< END >>>
         
         return final_cost
-    # อยู่ในไฟล์ hr_screen.py ภายในคลาส HRScreen
 
     def _compare_data(self):
         try:
@@ -1661,11 +1648,21 @@ class HRScreen(CTkFrame):
                     if final_margin < 0: return 'ขาดทุน'
                     elif final_margin < 10: return 'กำไรน้อย'
                     else: return 'กำไรดี'
+                
                 if row['_merge'] == 'right_only': return 'มีใน Express, ไม่มีในระบบ'
                 if row['_merge'] == 'left_only': return 'มีในระบบ, ไม่มีใน Express'
                 
-                sale_ok = row['sales_for_comparison'] >= row['sales_uploaded']
-                cost_ok = row['cost_db'] >= row['cost_uploaded']
+                # <<< START: เพิ่ม Logic ตรวจสอบการขาดทุนเป็นอันดับแรก >>>
+                final_system_sale = row['sales_for_comparison']
+                final_system_cost = row['cost_db']
+
+                if pd.notna(final_system_sale) and pd.notna(final_system_cost) and final_system_cost > final_system_sale:
+                    return "‼️ ขายขาดทุน (ตรวจสอบด่วน)"
+                # <<< END >>>
+
+                # ถ้าไม่ขาดทุน ค่อยตรวจสอบความถูกต้องของข้อมูลต่อไป
+                sale_ok = final_system_sale >= row['sales_uploaded']
+                cost_ok = final_system_cost >= row['cost_uploaded']
                 
                 if sale_ok and cost_ok: 
                     return "ผ่านเกณฑ์"
@@ -1731,7 +1728,8 @@ class HRScreen(CTkFrame):
                 "กำไรดี": "#BBF7D0", 
                 "กำไรน้อย": "#FEF08A", 
                 "ขาดทุน": "#FECACA", 
-                "ยืนยันแล้ว (รอผล)": "#E5E7EB"
+                "ยืนยันแล้ว (รอผล)": "#E5E7EB",
+                "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171", # <<< เพิ่มสถานะและสีแดงสำหรับขายขาดทุน
             }
             
             self.results_frame_label.configure(text="ผลลัพธ์การเปรียบเทียบ (ดับเบิลคลิกเพื่อตรวจสอบ)")

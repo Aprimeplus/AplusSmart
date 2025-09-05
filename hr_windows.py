@@ -114,6 +114,15 @@ class SOPopupWindow(CTkToplevel):
         self._add_item_row_with_vat(f3, "ค่าจัดส่ง:", 'shipping_cost_entry', 'shipping_vat_option_var', 1)
         self._add_form_row(f3, "วันที่จัดส่ง:", DateSelector(f3, dropdown_style=self.master.dropdown_style), 'delivery_date_selector', 2)
 
+        f4 = self._create_so_section_frame(parent_frame, "ค่าธรรมเนียมและส่วนลด")
+        self._add_item_row_with_vat(f4, "ค่าธรรมเนียมบัตร:", 'credit_card_fee_entry', 'credit_card_fee_vat_option_var', 1)
+        self._add_form_row(f4, "ค่าธรรมเนียมโอน:", NumericEntry(f4), 'transfer_fee_entry', 2)
+        self._add_form_row(f4, "ภาษีหัก ณ ที่จ่าย:", NumericEntry(f4), 'wht_fee_entry', 3)
+        self._add_form_row(f4, "ค่านายหน้า:", NumericEntry(f4), 'brokerage_fee_entry', 4)
+        self._add_form_row(f4, "คูปอง:", NumericEntry(f4), 'coupon_value_entry', 5)
+        self._add_form_row(f4, "ของแถม:", NumericEntry(f4), 'giveaway_value_entry', 6)
+        # +++ END: สิ้นสุด Section ใหม่ +++
+
         # Section 6: Payment Details (ย้ายมาไว้ตรงนี้เพื่อให้เห็นข้อมูลการชำระเงินครบถ้วน)
         f6 = self._create_so_section_frame(parent_frame, "รายละเอียดการโอนชำระ")
         self._add_form_row(f6, "ยอดโอนชำระ 1:", NumericEntry(f6), 'payment1_amount_entry', 1)
@@ -499,48 +508,6 @@ class HRVerificationWindow(CTkToplevel):
         header_frame = CTkFrame(self, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
         CTkLabel(header_frame, text=f"SO Number: {self.so_number}", font=CTkFont(size=20, weight="bold")).pack(side="left")
-
-        detail_button_frame = CTkFrame(header_frame, fg_color="transparent")
-        detail_button_frame.pack(side="right")
-        CTkButton(detail_button_frame, text="ดูข้อมูล SO", command=self._view_so_data).pack(side="left", padx=(0, 5))
-        CTkButton(detail_button_frame, text="✏️ แก้ไขข้อมูล SO", command=self._open_so_editor_popup).pack(side="left", padx=(5, 0))
-
-        # --- Main Scrollable Frame ---
-        scroll_frame = CTkScrollableFrame(self, fg_color="#F0F2F5") # สีพื้นหลังอ่อนๆ
-        scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
-        scroll_frame.grid_columnconfigure(0, weight=1)
-        scroll_frame.grid_columnconfigure(1, weight=1)
-
-        # ### UI ใหม่สำหรับแสดงผลสรุป ###
-        sales_card = CTkFrame(scroll_frame, corner_radius=10)
-        sales_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        self._create_summary_card(sales_card, "ยอดขายรวมสุดท้าย (Final Sales)", "sales")
-
-        cost_card = CTkFrame(scroll_frame, corner_radius=10)
-        cost_card.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        self._create_summary_card(cost_card, "ยอดต้นทุนรวมสุดท้าย (Final Cost)", "cost")
-
-        # ### UI ใหม่สำหรับแสดงรายการ PO ###
-        self.po_container_frame = CTkFrame(scroll_frame, fg_color="transparent")
-        self.po_container_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
-        self.po_container_frame.grid_columnconfigure(0, weight=1)
-        CTkLabel(self.po_container_frame, text="ใบสั่งซื้อ (PO) ที่เกี่ยวข้อง", font=CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(0, 5))
-
-        # --- Action Buttons Frame (ด้านล่างสุด) ---
-        action_frame = CTkFrame(self, fg_color="transparent")
-        action_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=(10, 15))
-        action_frame.grid_columnconfigure((0,1,2), weight=1)
-
-        CTkButton(action_frame, text="ตีกลับให้ฝ่ายจัดซื้อ (Reject)", height=40, fg_color="#F97316", hover_color="#EA580C", command=self._reject_to_purchasing).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        CTkButton(action_frame, text="บันทึกการแก้ไข", height=40, fg_color="#3B82F6", hover_color="#2563EB", command=self._save_intermediate_changes).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        CTkButton(action_frame, text="ยืนยันข้อมูลถูกต้อง (Verify Data)", height=40, fg_color="#16A34A", hover_color="#15803D", command=self._verify_and_save_data).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
-
-    def _create_new_ui_layout(self):
-        """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างนี้"""
-        # --- Header ---
-        header_frame = CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
-        CTkLabel(header_frame, text=f"SO Number: {self.so_number}", font=CTkFont(size=20, weight="bold")).pack(side="left")
         
         detail_button_frame = CTkFrame(header_frame, fg_color="transparent")
         detail_button_frame.pack(side="right")
@@ -548,12 +515,10 @@ class HRVerificationWindow(CTkToplevel):
         CTkButton(detail_button_frame, text="✏️ แก้ไขข้อมูล SO", command=self._open_so_editor_popup).pack(side="left", padx=(5, 0))
 
         # --- Main Scrollable Frame ---
-        scroll_frame = CTkScrollableFrame(self, fg_color="#F0F2F5") # สีพื้นหลังอ่อนๆ
+        scroll_frame = CTkScrollableFrame(self, fg_color="#F0F2F5")
         scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
-        scroll_frame.grid_columnconfigure(0, weight=1)
-        scroll_frame.grid_columnconfigure(1, weight=1)
+        scroll_frame.grid_columnconfigure((0, 1), weight=1)
 
-        # ### UI ใหม่สำหรับแสดงผลสรุป ###
         sales_card = CTkFrame(scroll_frame, corner_radius=10)
         sales_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self._create_summary_card(sales_card, "ยอดขายรวมสุดท้าย (Final Sales)", "sales")
@@ -562,7 +527,6 @@ class HRVerificationWindow(CTkToplevel):
         cost_card.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
         self._create_summary_card(cost_card, "ยอดต้นทุนรวมสุดท้าย (Final Cost)", "cost")
         
-        # ### UI ใหม่สำหรับแสดงรายการ PO ###
         self.po_container_frame = CTkFrame(scroll_frame, fg_color="transparent")
         self.po_container_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
         self.po_container_frame.grid_columnconfigure(0, weight=1)
@@ -571,48 +535,57 @@ class HRVerificationWindow(CTkToplevel):
         # --- Action Buttons Frame (ด้านล่างสุด) ---
         action_frame = CTkFrame(self, fg_color="transparent")
         action_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=(10, 15))
-        action_frame.grid_columnconfigure((0,1,2), weight=1)
+        action_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
-        CTkButton(action_frame, text="ตีกลับให้ฝ่ายจัดซื้อ (Reject)", height=40, fg_color="#F97316", hover_color="#EA580C", command=self._reject_to_purchasing).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        CTkButton(action_frame, text="บันทึกการแก้ไข", height=40, fg_color="#3B82F6", hover_color="#2563EB", command=self._save_intermediate_changes).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        CTkButton(action_frame, text="ยืนยันข้อมูลถูกต้อง (Verify Data)", height=40, fg_color="#16A34A", hover_color="#15803D", command=self._verify_and_save_data).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
-    
+        # <<< START: แก้ไข command ของปุ่มนี้ >>>
+        # เปลี่ยนจาก _reject_to_purchasing เป็น _reject_to_salesperson
+        CTkButton(action_frame, text="ตีกลับให้ฝ่ายขาย (Reject)", height=40, fg_color="#D97706", hover_color="#B45309", command=self._reject_to_salesperson).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        # <<< END >>>
+        
+        CTkButton(action_frame, text="เลื่อนไปเดือนถัดไป (Defer)", height=40, fg_color="#64748B", hover_color="#475569", command=self._defer_so).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        CTkButton(action_frame, text="บันทึกการแก้ไข", height=40, fg_color="#3B82F6", hover_color="#2563EB", command=self._save_intermediate_changes).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+        CTkButton(action_frame, text="ยืนยันข้อมูลถูกต้อง (Verify)", height=40, fg_color="#16A34A", hover_color="#15803D", command=self._verify_and_save_data).grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+
     def _populate_po_cards(self):
         """สร้างการ์ดสำหรับ PO แต่ละใบ"""
         for widget in self.po_container_frame.winfo_children():
-            if isinstance(widget, CTkLabel) and "ใบสั่งซื้อ" in widget.cget("text"):
+            if isinstance(widget, ctk.CTkLabel) and "ใบสั่งซื้อ" in widget.cget("text"):
                 continue
             widget.destroy()
 
         if self.po_data.empty:
-            CTkLabel(self.po_container_frame, text="ไม่พบข้อมูล PO ที่เกี่ยวข้อง").pack(pady=10)
+            ctk.CTkLabel(self.po_container_frame, text="ไม่พบข้อมูล PO ที่เกี่ยวข้อง").pack(pady=10)
             return
 
         for index, row in self.po_data.iterrows():
-            po_card = CTkFrame(self.po_container_frame, border_width=1, corner_radius=8)
+            po_card = ctk.CTkFrame(self.po_container_frame, border_width=1, corner_radius=8)
             po_card.pack(fill="x", expand=True, padx=0, pady=4)
             po_card.grid_columnconfigure(0, weight=1)
 
-            info_frame = CTkFrame(po_card, fg_color="transparent")
+            info_frame = ctk.CTkFrame(po_card, fg_color="transparent")
             info_frame.grid(row=0, column=0, sticky="w", padx=10, pady=5)
             
-            info_text = f"PO: {row['po_number']}  |  Supplier: {row['supplier_name']}  |  ยอดรวม: {row.get('total_cost', 0):,.2f} บาท"
-            CTkLabel(info_frame, text=info_text).pack(anchor="w")
+            # <<< START: แก้ไขจุดนี้ >>>
+            # เปลี่ยนจากการใช้ 'total_cost' มาเป็น 'grand_total'
+            grand_total = row.get('grand_total', 0) or 0
+            info_text = f"PO: {row['po_number']}  |  Supplier: {row['supplier_name']}  |  ยอดรวม: {grand_total:,.2f} บาท"
+            # <<< END >>>
+
+            ctk.CTkLabel(info_frame, text=info_text).pack(anchor="w")
             
             status_color = "#16A34A" if row['status'] == 'Approved' else 'gray'
-            CTkLabel(info_frame, text=f"สถานะ: {row['status']}", text_color=status_color).pack(anchor="w")
+            ctk.CTkLabel(info_frame, text=f"สถานะ: {row['status']}", text_color=status_color).pack(anchor="w")
                 
-            action_frame = CTkFrame(po_card, fg_color="transparent")
+            action_frame = ctk.CTkFrame(po_card, fg_color="transparent")
             action_frame.grid(row=0, column=1, padx=10, pady=5, sticky="e")
 
-            # --- [แก้ไข] รวมปุ่มเหลือปุ่มเดียว ---
-            edit_button = CTkButton(
+            edit_button = ctk.CTkButton(
                 action_frame, 
                 text="ดูรายละเอียด / แก้ไข", 
                 width=150,
                 command=lambda po_id=row['id']: self.app_container.show_purchase_detail_window(
                     int(po_id), 
-                    on_save_callback=self._update_all_calculations_and_ui # ส่งฟังก์ชัน refresh ไปด้วย
+                    on_save_callback=self._update_all_calculations_and_ui
                 )
             )
             edit_button.pack(pady=2, padx=2)
@@ -963,12 +936,17 @@ class HRVerificationWindow(CTkToplevel):
             if widget_key in current_popup_widgets_ref:
                 widget = current_popup_widgets_ref[widget_key]
                 if not (widget and widget.winfo_exists()): continue
+
                 if isinstance(widget, (NumericEntry, CTkEntry)):
                     value = widget.get()
-                    if 'amount' in data_key or 'cost' in data_key or 'fee' in data_key:
+                    if 'amount' in data_key or 'cost' in data_key or 'fee' in data_key or 'wht' in data_key:
                         value = utils.convert_to_float(value)
+                
+                # <<< START: เพิ่มโค้ดส่วนนี้เพื่อดึงข้อมูลวันที่ >>>
                 elif isinstance(widget, DateSelector):
                     value = widget.get_date()
+                # <<< END >>>
+
             if value is not None:
                 updated_data[data_key] = value
 
@@ -1122,28 +1100,19 @@ class HRVerificationWindow(CTkToplevel):
     def _recalculate_summaries(self):
         """
         คำนวณค่าสรุปทั้งหมดและกำหนดค่าเริ่มต้นที่ถูกต้อง
-        (เวอร์ชันแก้ไข ไม่มีการนับค่าใช้จ่ายซ้ำซ้อน)
+        (เวอร์ชันแก้ไข: ไม่รวม PO ที่ถูกตีกลับ)
         """
         # --- คำนวณฝั่ง System ---
-        # 1. ดึงค่าต้นทุนพื้นฐานจากข้อมูล PO และ SO
-        # po_total_cost_base คือยอดรวมจาก PO ทั้งหมด ซึ่งรวมค่าสินค้าและค่าส่งใน PO มาแล้ว
-        po_total_cost_base = self.po_data['total_cost'].sum()
         
-        # ดึงค่าใช้จ่ายอื่นๆ ที่อยู่นอก PO
-        po_relocation = self.po_data['relocation_cost'].sum() if 'relocation_cost' in self.po_data.columns else 0
-        brokerage_fee = float(self.system_data.get('brokerage_fee', 0) or 0)
-        transfer_fee = float(self.system_data.get('transfer_fee', 0) or 0)
-
-        # 2. ใช้ค่าที่ HR อาจจะแก้ไขเอง (Overrides) ถ้ามี
-        # <<< START: แก้ไข Logic การรวมยอด >>>
-        # ใช้ po_total_cost_base เป็นตัวหลัก และไม่นำค่า shipping มาบวกซ้ำ
-        cost_po_sys = float(self.cost_overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
-        cost_relocation_sys = float(self.cost_overrides.get('ต้นทุนค่าย้าย', po_relocation))
-        cost_brokerage_sys = float(self.cost_overrides.get('ต้นทุนค่านายหน้า', brokerage_fee))
-        cost_transfer_sys = float(self.cost_overrides.get('ต้นทุนค่าธรรมเนียมโอน', transfer_fee))
-
-        # 3. รวมเป็นต้นทุนสุดท้ายฝั่ง System ที่ถูกต้อง
-        total_cost_system = cost_po_sys + cost_relocation_sys + cost_brokerage_sys + cost_transfer_sys
+        # <<< START: แก้ไข Logic การรวมยอดต้นทุน >>>
+        # 1. กรองข้อมูลเฉพาะ PO ที่มีสถานะ 'Approved'
+        approved_po_df = self.po_data[self.po_data['status'] == 'Approved']
+        
+        # 2. คำนวณยอดรวมจาก PO ที่ผ่านการกรองแล้วเท่านั้น
+        po_total_cost_base = approved_po_df['total_cost'].sum()
+        
+        # 3. ต้นทุนสุดท้ายคือยอดรวมจาก PO ที่ Approved หรือค่าที่ HR แก้ไขเอง (ถ้ามี)
+        total_cost_system = float(self.cost_overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
         # <<< END: สิ้นสุดการแก้ไข Logic >>>
 
         # --- คำนวณฝั่ง Express และ Sales (เหมือนเดิม) ---
@@ -1151,6 +1120,7 @@ class HRVerificationWindow(CTkToplevel):
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
         total_sale_system = (
             float(self.system_data.get('sales_service_amount', 0) or 0) +
+            float(self.system_data.get('shipping_cost', 0) or 0) +
             float(self.system_data.get('cutting_drilling_fee', 0) or 0) +
             float(self.system_data.get('other_service_fee', 0) or 0) -
             float(self.system_data.get('coupons', 0) or 0)
@@ -1174,7 +1144,6 @@ class HRVerificationWindow(CTkToplevel):
             self.final_cost_source.set(self.system_data['hr_cost_source'])
         else:
             self.final_cost_source.set("system")
-    # --- END: สิ้นสุดโค้ดเวอร์ชันสมบูรณ์ ---
             
     def _create_so_info_section(self):
         frame = CTkFrame(self, fg_color="#F0F0F0")
@@ -1358,60 +1327,103 @@ class HRVerificationWindow(CTkToplevel):
         CTkButton(frame, text="ยืนยันข้อมูลถูกต้อง (Verify Data)", fg_color="#16A34A", hover_color="#15803D", command=self._verify_and_save_data).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
     # hr_windows.py (ฟังก์ชัน _reject_to_purchasing ที่แก้ไขแล้ว)
 
-    def _reject_to_purchasing(self):
-        """จัดการ Logic การตีกลับ SO ไปยังฝ่ายจัดซื้อ"""
-        # 1. แสดงหน้าต่างให้กรอกเหตุผล
-        dialog = CTkInputDialog(text="กรุณาระบุเหตุผลที่ตีกลับ (จะถูกส่งไปให้ฝ่ายจัดซื้อ):", title="ตีกลับ SO")
+    def _reject_to_salesperson(self):
+        """
+        ตีกลับ SO และ PO ทั้งหมดที่เกี่ยวข้อง ไปยังเซลส์เจ้าของ
+        """
+        dialog = CTkInputDialog(text="กรุณาระบุเหตุผลที่ตีกลับ (จะถูกส่งไปให้เซลส์):", title="ตีกลับ SO และ PO ทั้งหมด")
         reason = dialog.get_input()
         
         if not reason or not reason.strip():
-            return # ผู้ใช้กดยกเลิก
+            return
 
-        so_number = self.system_data.get('so_number')
         so_id = self.system_data.get('id')
+        sale_key_to_notify = self.system_data.get('sale_key')
 
-        # 2. เริ่มกระบวนการบันทึกข้อมูลลง Database
+        if not sale_key_to_notify:
+            messagebox.showerror("ผิดพลาด", "ไม่สามารถหารหัสของเซลส์เจ้าของ SO นี้ได้", parent=self)
+            return
+
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 3. อัปเดตสถานะ SO และบันทึกเหตุผล (ถูกต้องแล้ว)
+                # 1. อัปเดตสถานะ SO และบันทึกเหตุผล
                 cursor.execute(
                     "UPDATE commissions SET status = 'Rejected by HR', rejection_reason = %s WHERE id = %s",
                     (reason.strip(), so_id)
                 )
 
-                # +++ START: เพิ่มส่วนที่ขาดหายไป +++
-                # 4. อัปเดตสถานะของ PO ที่เกี่ยวข้องทั้งหมดให้เป็น 'Rejected'
-                rejection_note = f"ตีกลับโดย HR: {reason.strip()}"
+                # <<< START: เพิ่มโค้ดส่วนนี้ >>>
+                # 2. อัปเดตสถานะของ PO ทุกใบที่เกี่ยวข้องกับ SO นี้ให้เป็น 'Rejected' ด้วย
                 cursor.execute(
-                    "UPDATE purchase_orders SET status = 'Rejected', approval_status = 'Rejected', rejection_reason = %s WHERE so_number = %s",
-                    (rejection_note, so_number)
+                    "UPDATE purchase_orders SET status = 'Rejected', approval_status = 'Rejected' WHERE so_number = %s",
+                    (self.so_number,)
                 )
-                # +++ END: สิ้นสุดส่วนที่เพิ่ม +++
+                # <<< END >>>
 
-                # 5. ค้นหา User ฝ่ายจัดซื้อทั้งหมดที่เกี่ยวข้องกับ SO นี้ (ถูกต้องแล้ว)
+                # 3. สร้าง Notification แจ้งเตือนเซลส์เจ้าของโดยตรง
+                message = f"SO: {self.so_number} ของคุณถูกตีกลับโดย HR\nเหตุผล: {reason.strip()}"
                 cursor.execute(
-                    "SELECT DISTINCT user_key FROM purchase_orders WHERE so_number = %s",
-                    (so_number,)
+                    "INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)",
+                    (sale_key_to_notify, message, so_id)
                 )
-                pu_keys = [row[0] for row in cursor.fetchall()]
-
-                # 6. สร้าง Notification แจ้งเตือนฝ่ายจัดซื้อ (ถูกต้องแล้ว)
-                message = f"SO: {so_number} ถูกตีกลับโดย HR\nเหตุผล: {reason.strip()}"
-                for key in pu_keys:
-                    cursor.execute(
-                        "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)",
-                        (key, message)
-                    )
             
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "ตีกลับ SO ไปยังฝ่ายจัดซื้อเรียบร้อยแล้ว", parent=self.master)
+            messagebox.showinfo("สำเร็จ", "ตีกลับ SO และ PO ที่เกี่ยวข้องทั้งหมดไปยังฝ่ายขายเรียบร้อยแล้ว", parent=self.master)
             
-            # 7. Refresh หน้าจอหลักและปิดหน้าต่างนี้ (ถูกต้องแล้ว)
-            if self.app_container.hr_screen:
-                self.app_container.hr_screen._refresh_comparison_view()
             self._on_close()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+    
+    def _defer_so(self):
+        """
+        [แก้ไข] เลื่อน SO กลับไปให้เซลส์ใน My Tasks พร้อมเหตุผล
+        """
+        so_number = self.system_data.get('so_number')
+        so_id = self.system_data.get('id')
+        sale_key_to_notify = self.system_data.get('sale_key')
+
+        # 1. ถามเหตุผลในการเลื่อน
+        dialog = CTkInputDialog(text=f"กรุณาระบุเหตุผลที่เลื่อน SO: {so_number}\n(จะถูกส่งกลับไปให้เซลส์)", title="เลื่อน SO กลับไปที่ฝ่ายขาย")
+        reason = dialog.get_input()
+        
+        if not reason or not reason.strip():
+            return # ผู้ใช้กดยกเลิก
+
+        # 2. ยืนยันการทำงาน
+        msg = (f"คุณต้องการเลื่อน SO: {so_number} กลับไปให้เซลส์ใช่หรือไม่?\n\n"
+               "SO จะไปปรากฏใน 'งานของฉัน' ของเซลส์เพื่อรอการแก้ไขและนำส่งใหม่")
+        
+        if not messagebox.askyesno("ยืนยันการเลื่อน SO", msg, parent=self):
+            return
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # 3. อัปเดตสถานะเป็น Deferred และบันทึกเหตุผล
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET status = 'Deferred by HR', rejection_reason = %s
+                    WHERE id = %s
+                """, (reason.strip(), so_id))
+                
+                # 4. สร้าง Notification แจ้งเตือนเซลส์
+                message = f"SO: {so_number} ของคุณถูก 'เลื่อน' โดย HR\nเหตุผล: {reason.strip()}"
+                cursor.execute("""
+                    INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id)
+                    VALUES (%s, %s, FALSE, %s)
+                """, (sale_key_to_notify, message, so_id))
+            
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"เลื่อน SO: {so_number} กลับไปให้เซลส์เรียบร้อยแล้ว", parent=self.master)
+            
+            self._on_close() # ปิดหน้าต่างและรีเฟรชหน้าหลัก
 
         except Exception as e:
             if conn: conn.rollback()

@@ -1047,18 +1047,85 @@ class PurchasingScreen(CTkFrame):
     
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         updated_data = {}
-        db_key_map = {
-            'bill_date_selector': 'bill_date', 'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id',
-            'credit_term_entry': 'credit_term', 'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee': 'cutting_drilling_fee',
-            'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost', 'delivery_date': 'delivery_date',
-            'credit_card_fee_entry': 'credit_card_fee', 'transfer_fee_entry': 'transfer_fee', 'wht_3_percent': 'wht_3_percent',
-            'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons', 'giveaways': 'giveaways',
-            'payment_date': 'payment_date_selector', 'cash_product_input': 'cash_product_input_entry', 'cash_actual_payment': 'cash_actual_payment',
-            'sales_service_vat_option': 'sales_service_vat_option', 'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
-            'other_service_fee_vat_option': 'other_service_fee_vat_option', 'shipping_vat_option_var': 'shipping_vat_option',
-            'credit_card_fee_vat_option': 'credit_card_fee_vat_option_var', 'so_grand_total_var': 'so_grand_total',
-            'total_payment_amount': 'total_payment_amount', 'difference_amount_var': 'difference_amount'
+        
+        key_map = {
+            'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id',
+            'credit_term_entry': 'credit_term', 'pickup_location_entry': 'pickup_location',
+            'pickup_rego_entry': 'pickup_registration', 'bill_date_selector': 'bill_date', 
+            'delivery_date_selector': 'delivery_date', 'payment_date_selector': 'payment_date', 
+            'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
+            'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
+            'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
+            'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
+            'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
+            'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
+            'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
+            'cash_actual_payment_entry': 'cash_actual_payment'
         }
+
+        numeric_keywords = ['amount', 'cost', 'fee', 'wht', 'price', 'percent', 'coupons', 'giveaways']
+
+        for widget_key, data_key in key_map.items():
+            value = None
+            if widget_key in current_popup_widgets_ref:
+                widget = current_popup_widgets_ref[widget_key]
+                if widget and widget.winfo_exists():
+                    if isinstance(widget, DateSelector):
+                        value = widget.get_date()
+                    elif isinstance(widget, (NumericEntry, CTkEntry)):
+                        value = widget.get()
+                        if any(keyword in data_key for keyword in numeric_keywords):
+                            value = utils.convert_to_float(value)
+            
+            if value is not None:
+                updated_data[data_key] = value
+
+        shared_vars_map = {
+            'delivery_type_var': 'delivery_type',
+            'sales_service_vat_option': 'sales_service_vat_option',
+            'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
+            'other_service_fee_vat_option': 'other_service_fee_vat_option',
+            'shipping_vat_option_var': 'shipping_vat_option',
+            'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option',
+        }
+        for var_key, data_key in shared_vars_map.items():
+             if var_key in so_shared_vars_data:
+                updated_data[data_key] = so_shared_vars_data[var_key].get()
+
+        p1 = utils.convert_to_float(current_popup_widgets_ref.get('payment1_amount_entry').get())
+        p2 = utils.convert_to_float(current_popup_widgets_ref.get('payment2_amount_entry').get())
+        updated_data['total_payment_amount'] = p1 + p2
+
+        # <<< START: แก้ไขจุดนี้ >>>
+        # ลบบรรทัดที่พยายามจะบันทึก so_grand_total และ difference_amount ออก
+        # เพราะเป็นค่าที่คำนวณเพื่อแสดงผลเท่านั้น ไม่มีอยู่ในฐานข้อมูล
+        # updated_data['so_grand_total'] = utils.convert_to_float(so_shared_vars_data['so_grand_total_var'].get())
+        # updated_data['difference_amount'] = utils.convert_to_float(so_shared_vars_data['difference_amount_var'].get())
+        # <<< END >>>
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                set_clauses = [f'"{k}" = %s' for k in updated_data.keys()]
+                params = list(updated_data.values()) + [so_id]
+                sql_update = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
+                
+                cursor.execute(sql_update, tuple(params))
+            conn.commit()
+            
+            messagebox.showinfo("สำเร็จ", f"บันทึกข้อมูล SO Number: {self.current_commission_data.get('so_number')} เรียบร้อยแล้ว", parent=self)
+            
+            reloaded_df = pd.read_sql_query("SELECT * FROM commissions WHERE id = %s", self.pg_engine, params=(so_id,))
+            if not reloaded_df.empty:
+                self.current_commission_data = reloaded_df.iloc[0].to_dict()
+            
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึกข้อมูล SO:\n{e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
 
         def _safe_get_float(entry_widget):
             if entry_widget and hasattr(entry_widget, 'winfo_exists') and entry_widget.winfo_exists():
@@ -1066,7 +1133,7 @@ class PurchasingScreen(CTkFrame):
                 except (ValueError, tk.TclError): return 0.0
             return 0.0
 
-        for widget_key, db_col_name in db_key_map.items():
+        for widget_key, db_col_name in key_map.items():
             value = None
             if widget_key in current_popup_widgets_ref:
                 widget_instance = current_popup_widgets_ref[widget_key]

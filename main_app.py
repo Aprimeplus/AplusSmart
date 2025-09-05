@@ -319,33 +319,66 @@ class AppContainer(CTk):
         try:
             conn = self.get_connection()
             with conn.cursor() as cursor:
+                # --- Logic สำหรับ Inbound/Other Sales ---
                 try:
                     inbound_deadline = now.replace(day=27, hour=17, minute=30, second=0, microsecond=0)
                     if now > inbound_deadline:
-                        print(f"Inbound deadline passed. Submitting records to 'Pending PU'...")
-                        sql_inbound = "UPDATE commissions c SET status = 'Pending PU' FROM sales_users su WHERE c.sale_key = su.sale_key AND c.status = 'Original' AND (su.sale_type IS NULL OR su.sale_type != 'Outbound');"
-                        cursor.execute(sql_inbound)
+                        current_month = now.month
+                        current_year = now.year
+                        
+                        print(f"Inbound deadline passed. Submitting records for {current_year}-{current_month} to 'Pending PU'...")
+                        
+                        # <<< START: แก้ไข Query ตรงนี้ >>>
+                        # เพิ่มเงื่อนไข AND c.commission_month = %s AND c.commission_year = %s
+                        # เพื่อให้ส่งเฉพาะ SO ของ "เดือนปัจจุบัน" เท่านั้น
+                        sql_inbound = """
+                            UPDATE commissions c SET status = 'Pending PU' 
+                            FROM sales_users su 
+                            WHERE c.sale_key = su.sale_key 
+                              AND c.status = 'Original' 
+                              AND (su.sale_type IS NULL OR su.sale_type != 'Outbound')
+                              AND c.commission_month = %s
+                              AND c.commission_year = %s;
+                        """
+                        cursor.execute(sql_inbound, (current_month, current_year))
+                        # <<< END >>>
+
                         if cursor.rowcount > 0:
                             conn.commit()
                             print(f"Auto-submitted {cursor.rowcount} Inbound/Other records to Pending PU.")
                         else:
-                            conn.rollback()
+                            conn.rollback() # ใช้ rollback แทน commit ถ้าไม่มีอะไรเปลี่ยนแปลง
                 except ValueError:
-                    print("Could not create inbound deadline (e.g., Feb has < 27 days).")
+                    # กรณีที่เป็นเดือน ก.พ. ที่ไม่มีวันที่ 27
+                    print("Could not create inbound deadline for this month.")
                     conn.rollback()
+
+                # --- Logic สำหรับ Outbound Sales (เหมือนเดิม) ---
                 outbound_deadline = now.replace(day=3, hour=17, minute=30, second=0, microsecond=0)
                 if now > outbound_deadline:
-                    last_month_date = now - timedelta(days=5)
+                    last_month_date = now - timedelta(days=5) # ใช้วันที่ปัจจุบันลบ 5 วัน เพื่อให้แน่ใจว่าเป็นเดือนก่อนหน้าเสมอ
                     target_month = last_month_date.month
                     target_year = last_month_date.year
+                    
                     print(f"Outbound deadline passed. Submitting records for {target_year}-{target_month} to 'Pending PU'...")
-                    sql_outbound = "UPDATE commissions c SET status = 'Pending PU' FROM sales_users su WHERE c.sale_key = su.sale_key AND c.status = 'Original' AND su.sale_type = 'Outbound' AND c.commission_month = %s AND c.commission_year = %s;"
+                    
+                    sql_outbound = """
+                        UPDATE commissions c SET status = 'Pending PU' 
+                        FROM sales_users su 
+                        WHERE c.sale_key = su.sale_key 
+                          AND c.status = 'Original' 
+                          AND su.sale_type = 'Outbound' 
+                          AND c.commission_month = %s 
+                          AND c.commission_year = %s;
+                    """
                     cursor.execute(sql_outbound, (target_month, target_year))
+                    
                     if cursor.rowcount > 0:
                         conn.commit()
                         print(f"Auto-submitted {cursor.rowcount} Outbound records to Pending PU.")
                     else:
                         conn.rollback()
+
         except Exception as e:
             print(f"Error during auto-submission: {e}")
             if conn: conn.rollback()

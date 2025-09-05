@@ -1,64 +1,10 @@
-# utils.py (ฉบับสมบูรณ์)
+# dialog_windows.py
 
 import tkinter as tk
-from tkinter import ttk
-import pandas as pd
-import numpy as np
-import customtkinter as ctk
-from datetime import datetime
-from customtkinter import CTkFrame, CTkLabel, CTkScrollableFrame, CTkToplevel, CTkFont, CTkEntry, CTkCheckBox, CTkButton
+from customtkinter import (CTkToplevel, CTkScrollableFrame, CTkLabel, CTkFont, 
+                           CTkFrame, CTkButton, CTkEntry, CTkCheckBox)
 from tkinter import messagebox
 
-# --- ฟังก์ชัน Helper ---
-def convert_to_float(value_str):
-    if value_str is None or value_str == '':
-        return 0.0
-    try:
-        return float(str(value_str).replace(",", ""))
-    except (ValueError, TypeError):
-        return 0.0
-
-# --- คลาส Widget พิเศษ ---
-class FormattedNumericEntry(ctk.CTkEntry):
-    def __init__(self, master, command=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self._variable = tk.StringVar(self)
-        self.configure(textvariable=self._variable)
-        self._command = command
-        self._is_formatting = False
-        self._variable.trace_add("write", self._format_and_callback)
-
-    def _format_and_callback(self, *args):
-        if self._is_formatting: return
-        self._is_formatting = True
-        try:
-            current_value = self._variable.get()
-            cursor_position = self.index(tk.INSERT)
-            numeric_chars = ''.join(filter(lambda char: char.isdigit() or char == '.', current_value))
-            if numeric_chars and numeric_chars != '.':
-                number = float(numeric_chars)
-                formatted_value = f"{number:,.2f}"
-                if formatted_value != current_value:
-                    self._variable.set(formatted_value)
-                    commas_before = current_value[:cursor_position].count(',')
-                    commas_after = formatted_value.count(',')
-                    new_cursor_pos = cursor_position + (commas_after - commas_before)
-                    if new_cursor_pos >= 0: self.icursor(new_cursor_pos)
-            if self._command: self._command()
-        except (ValueError, TypeError): pass
-        finally: self._is_formatting = False
-
-    def get_value(self) -> float:
-        try: return float(self._variable.get().replace(",", ""))
-        except (ValueError, TypeError): return 0.0
-
-    def set(self, value: float):
-        try:
-            num_value = float(value)
-            self._variable.set(f"{num_value:,.2f}")
-        except (ValueError, TypeError): self._variable.set("0.00")
-
-# --- คลาสหน้าต่าง Dialog ที่ใช้งานร่วมกัน ---
 class RejectionReasonDialog(CTkToplevel):
     def __init__(self, master):
         super().__init__(master)

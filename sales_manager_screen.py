@@ -282,34 +282,35 @@ class SalesManagerScreen(CTkFrame):
         finally:
             if conn: self.app_container.release_connection(conn)
 
-    def _reject_so(self, so_id):
-        dialog = CTkInputDialog(text="กรุณาระบุเหตุผลที่ปฏิเสธ (SO จะถูกส่งกลับไปให้ฝ่ายขายแก้ไข):", title="ปฏิเสธ SO")
+    def _reject_so(self, so_id_to_reject, so_number):
+        dialog = CTkInputDialog(text=f"กรุณาระบุเหตุผลที่ตีกลับ SO: {so_number}", title="ตีกลับ SO")
         reason = dialog.get_input()
-
-        if reason is None or not reason.strip():
-             return
+        if not reason or not reason.strip():
+            return
 
         conn = None
         try:
-             conn = self.app_container.get_connection()
-             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                cursor.execute("UPDATE commissions SET status = 'Rejected by SM', rejection_reason = %s WHERE id = %s", (reason.strip(), so_id,))
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE commissions SET status = 'Rejected by SM', rejection_reason = %s WHERE id = %s",
+                    (reason.strip(), so_id_to_reject)
+                )
                 
-                cursor.execute("SELECT so_number, sale_key FROM commissions WHERE id = %s", (so_id,))
-                so_info = cursor.fetchone()
-            
-                message = f"SO ของคุณ ({so_info['so_number']}) ถูกปฏิเสธโดย Sales Manager\nเหตุผล: {reason}\nกรุณาแก้ไขและนำส่งข้อมูลอีกครั้ง"
+                # หา sale_key และสร้าง Notification
+                cursor.execute("SELECT sale_key FROM commissions WHERE id = %s", (so_id_to_reject,))
+                sale_key = cursor.fetchone()[0]
+                
+                message = f"SO: {so_number} ถูกตีกลับโดย SM\nเหตุผล: {reason.strip()}"
                 cursor.execute(
                     "INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)",
-                    (so_info['sale_key'], message, so_id)
+                    (sale_key, message, so_id_to_reject)
                 )
- 
-             conn.commit()
-             messagebox.showinfo("สำเร็จ", "ปฏิเสธ SO และส่งกลับไปให้ฝ่ายขายเรียบร้อยแล้ว", parent=self)
-             self._load_pending_so_tasks()
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "ตีกลับ SO เรียบร้อยแล้ว", parent=self)
+            self._load_pending_so() # Refresh หน้าจอ
         except Exception as e:
-          if conn: conn.rollback()
-          messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
-          traceback.print_exc()
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
         finally:
-          if conn: self.app_container.release_connection(conn)
+            if conn: self.app_container.release_connection(conn)

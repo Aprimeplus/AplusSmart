@@ -1,4 +1,4 @@
-# history_windows.py (ฉบับแก้ไขล่าสุด)
+# history_windows.py
 
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -8,11 +8,15 @@ import json
 import pandas as pd
 from datetime import datetime
 import traceback
-from custom_widgets import NumericEntry, DateSelector , AutoCompleteEntry
-import utils
 import psycopg2.errors
 import psycopg2.extras
 import numpy as np
+
+# --- ตรวจสอบว่า import ถูกต้องตามนี้ ---
+import utils
+from utils import FormattedNumericEntry, RejectionReasonDialog
+from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
+# ---
 
 from sqlalchemy import create_engine
 
@@ -101,26 +105,31 @@ class SalesDataViewerWindow(CTkToplevel):
                     CTkLabel(self.main_frame, text=value_text, font=normal_font, wraplength=400, justify="left", anchor="w").grid(row=current_row, column=1, padx=10, pady=3, sticky="w")
                     current_row += 1
 
-# history_windows.py (นำไปวางทับคลาส PurchaseDetailWindow เดิมทั้งหมด)
-
-# history_windows.py
 
 class PurchaseDetailWindow(CTkToplevel):
-    def __init__(self, master, app_container, purchase_id, approve_callback=None, reject_callback=None, on_save_callback=None):
+    def __init__(self, master, app_container, purchase_id, on_save_callback=None, **kwargs):
         super().__init__(master)
         self.title(f"รายละเอียด/แก้ไขใบสั่งซื้อ (PO ID: {purchase_id})")
-        self.geometry("900x700")
+        self.geometry("900x800")
+        
+        final_save_callback = on_save_callback
+        if 'approve_callback' in kwargs:
+            final_save_callback = kwargs['approve_callback']
         
         self.app_container = app_container
         self.purchase_id = purchase_id
         self.on_save_callback = on_save_callback
-        self.user_role = self.app_container.current_user_role 
+        self.user_role = self.app_container.current_user_role
         
-        # ตัวแปรสำหรับเก็บ Widget ที่แก้ไขได้
+        # <<< START: แก้ไขจุดนี้ >>>
+        # ย้ายการสร้าง Dictionary มาไว้ที่นี่
         self.po_entries = {}
-        self.item_widgets = []
-
-        # Layout หลัก
+        self.item_entries = []
+        self.deleted_item_ids = []
+        self.payment_entries = [] # <<< เพิ่ม: สำหรับเก็บรายการชำระเงิน
+        self.deleted_payment_ids = [] # <<< เพิ่ม: สำหรับเก็บ ID รายการชำระเงินที่จะลบ
+        # <<< END >>>
+        
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -128,7 +137,6 @@ class PurchaseDetailWindow(CTkToplevel):
         self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         self.scroll_frame.grid_columnconfigure(0, weight=1)
         
-        # สร้างปุ่ม Action ไว้ด้านล่างสุด
         self._create_action_buttons()
 
         self.after(50, self._load_and_display_data)
@@ -149,9 +157,14 @@ class PurchaseDetailWindow(CTkToplevel):
             
             if not po_data:
                 messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบ PO ID: {self.purchase_id}", parent=self)
-                self.destroy(); return
+                self.destroy()
+                return
 
-            self.create_formatted_view(po_data, items_data, payments_data)
+            self.po_data = dict(po_data)
+            self.items_data = [dict(item) for item in items_data]
+            self.payments_data = [dict(payment) for payment in payments_data]
+
+            self._create_formatted_view()
 
         except Exception as e:
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
@@ -159,181 +172,548 @@ class PurchaseDetailWindow(CTkToplevel):
         finally:
             if conn: self.app_container.release_connection(conn)
 
-    def create_formatted_view(self, po_data, items_data, payments_data):
-        """สร้าง UI ทั้งหมดแบบละเอียด และเป็นฟอร์มที่แก้ไขได้"""
-        self._create_info_section(self.scroll_frame, po_data)
-        self._create_items_section(self.scroll_frame, items_data)
-        self._create_summary_section(self.scroll_frame, po_data)
-        self._create_payments_section(self.scroll_frame, payments_data)
-        self._create_shipping_section(self.scroll_frame, po_data)
+    # history_windows.py
+
+    def _create_formatted_view(self):
+        for widget in self.scroll_frame.winfo_children():
+            widget.destroy()
+        
+        # เคลียร์ List ของข้อมูลเก่า
+        self.item_entries, self.deleted_item_ids = [], []
+        self.payment_entries, self.deleted_payment_ids = [], []
+
+        # สร้าง UI ตามลำดับที่ถูกต้อง
+        self._create_info_section(self.scroll_frame, self.po_data)
+        self._create_summary_section(self.scroll_frame, self.po_data)
+        self._create_items_section(self.scroll_frame, self.items_data)
+        self._create_shipping_section(self.scroll_frame, self.po_data)
+        self._create_approval_info_section(self.scroll_frame, self.po_data)
+        
+        # <<< แก้ไข: เรียกใช้ฟังก์ชันสร้าง Section การชำระเงินแค่ครั้งเดียว >>>
+        self._create_payments_section(self.scroll_frame, self.payments_data)
+        
+        self._recalculate_summary_totals()
 
     def _create_section(self, parent, title):
         section_frame = CTkFrame(parent, corner_radius=10, border_width=1)
-        section_frame.pack(fill="x", padx=10, pady=10)
+        section_frame.pack(fill="x", padx=10, pady=8) # ลด pady เล็กน้อย
         section_frame.grid_columnconfigure(1, weight=1)
-        title_label = CTkLabel(section_frame, text=title, font=CTkFont(size=16, weight="bold"))
-        title_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(5,10), sticky="w")
+        CTkLabel(section_frame, text=title, font=CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=2, padx=10, pady=(5,10), sticky="w")
         return section_frame
-
-    def _create_editable_row(self, parent, row, label, value, key):
-        """สร้างแถวข้อมูลที่แก้ไขได้ และเก็บ reference ไว้"""
-        CTkLabel(parent, text=label).grid(row=row, column=0, padx=10, pady=5, sticky="w")
+    
+    def _create_editable_row(self, parent, row_index, label, value, key, is_numeric=False, widget_class=None, options=None):
+        """Helper สำหรับสร้างแถวที่สามารถแก้ไขข้อมูลได้ (เวอร์ชันอัปเดตให้รองรับ Dropdown)"""
+        CTkLabel(parent, text=f"{label}:").grid(row=row_index, column=0, padx=10, pady=5, sticky="w")
         
-        is_numeric_key = any(s in key for s in ['cost', 'total', 'grand'])
-        if isinstance(value, (int, float, np.floating)) or is_numeric_key:
-            entry = NumericEntry(parent)
-            entry.insert(0, f"{float(value):,.2f}" if value is not None else "0.00")
+        # <<< START: แก้ไข Logic การสร้าง Widget >>>
+        if widget_class == CTkOptionMenu:
+            # ถ้ามีการระบุให้ใช้ CTkOptionMenu (Dropdown)
+            entry_var = tk.StringVar(value=str(value) if value is not None else (options[0] if options else ""))
+            entry = CTkOptionMenu(parent, variable=entry_var, values=options or [])
+            self.po_entries[key] = entry_var # เก็บ StringVar แทน widget โดยตรง
+        elif is_numeric:
+            # ถ้าเป็นช่องตัวเลข
+            entry = FormattedNumericEntry(parent, command=self._recalculate_summary_totals)
+            entry.set(value if value is not None else 0.0)
+            self.po_entries[key] = entry
         else:
+            # ถ้าเป็นช่องข้อความปกติ
             entry = CTkEntry(parent)
             entry.insert(0, str(value) if value is not None else "")
+            self.po_entries[key] = entry
+        # <<< END >>>
+            
+        entry.grid(row=row_index, column=1, padx=10, pady=5, sticky="ew")
+        return entry
 
-        entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
-        self.po_entries[key] = entry
+    def _add_display_row(self, parent, row_index, label, value):
+        if value is None or pd.isna(value): value_text = "-"
+        elif isinstance(value, (int, float, np.floating)): value_text = f"{value:,.2f}"
+        elif isinstance(value, datetime): value_text = value.strftime('%d/%m/%Y %H:%M')
+        else: value_text = str(value)
+
+        CTkLabel(parent, text=f"{label}:", anchor="w").grid(row=row_index, column=0, padx=10, pady=3, sticky="w")
+        CTkLabel(parent, text=value_text, wraplength=400, justify="left", anchor="w").grid(row=row_index, column=1, padx=10, pady=3, sticky="w")
 
     def _create_info_section(self, parent, data):
         info_frame = self._create_section(parent, "ข้อมูลทั่วไป")
-        self._create_editable_row(info_frame, 1, "SO Number:", data.get("so_number"), key="so_number")
-        self._create_editable_row(info_frame, 2, "PO Number:", data.get("po_number"), key="po_number")
-        self._create_editable_row(info_frame, 3, "ชื่อซัพพลายเออร์:", data.get("supplier_name"), key="supplier_name")
-        self._create_editable_row(info_frame, 4, "Credit Term:", data.get("credit_term"), key="credit_term")
+        self._create_editable_row(info_frame, 1, "SO Number", data.get("so_number"), key="so_number")
+        self._create_editable_row(info_frame, 2, "PO Number", data.get("po_number"), key="po_number")
+        self._create_editable_row(info_frame, 3, "ชื่อซัพพลายเออร์", data.get("supplier_name"), key="supplier_name")
+        self._create_editable_row(info_frame, 4, "รหัสซัพพลายเออร์", data.get("supplier_code"), key="supplier_code")
+        self._create_editable_row(info_frame, 5, "Credit Term", data.get("credit_term"), key="credit_term")
+        
+        # <<< START: แก้ไข data.get('po_type') เป็น data.get('po_mode') >>>
+        # <<< และ key='po_type' เป็น key='po_mode' >>>
+        self._create_editable_row(
+            info_frame, 6, "ประเภท PO", data.get("po_mode"), key="po_mode", 
+            widget_class=CTkOptionMenu, 
+            options=["Single-PO", "Multiple-PO"]
+        )
+        # <<< END >>>
+
+        self._add_display_row(info_frame, 7, "สถานะ", data.get("status"))
 
     def _create_items_section(self, parent, items_list):
-        items_frame = self._create_section(parent, "รายการสินค้า")
+        self.items_frame = self._create_section(parent, "รายการสินค้า")
+        headers = ["รหัสสินค้า", "ชื่อสินค้า", "น้ำหนัก", "จำนวน", "ราคา/หน่วย", "ส่วนลด", "ราคารวม"]
+        header_container = CTkFrame(self.items_frame, fg_color="transparent")
+        header_container.grid(row=1, column=0, sticky="ew")
         
-        # --- [แก้ไข] กำหนด Grid ให้กับ items_frame ---
-        items_frame.grid_columnconfigure(0, weight=4) # Name
-        items_frame.grid_columnconfigure(1, weight=1) # Qty
-        items_frame.grid_columnconfigure(2, weight=2) # Price
+        col_weights = [2, 4, 1, 1, 2, 2, 2] # ปรับสัดส่วน
+        for i, header_text in enumerate(headers):
+            header_container.grid_columnconfigure(i, weight=col_weights[i])
+            CTkLabel(header_container, text=header_text, font=CTkFont(size=14, weight="bold")).grid(row=0, column=i, padx=5, pady=5)
         
-        # --- [แก้ไข] Header (ใช้ .grid() และกำหนด row=1 เพราะ row=0 คือ Title ของ Section) ---
-        header = CTkFrame(items_frame, fg_color="#E5E7EB", corner_radius=0)
-        header.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=(0, 2))
-        header.grid_columnconfigure(0, weight=4)
-        header.grid_columnconfigure(1, weight=1)
-        header.grid_columnconfigure(2, weight=2)
-        CTkLabel(header, text="Product Name").grid(row=0, column=0, padx=5, sticky="w")
-        CTkLabel(header, text="Quantity").grid(row=0, column=1, padx=5)
-        CTkLabel(header, text="Unit Price").grid(row=0, column=2, padx=5)
-
-        if not items_list:
-            CTkLabel(items_frame, text="ไม่มีรายการสินค้า").grid(row=2, column=0, columnspan=3, pady=10)
-            return
-        
-        # Item Rows (จะถูกเพิ่มด้วย grid ใน _add_item_row)
+        self.items_content_frame = CTkFrame(self.items_frame, fg_color="transparent")
+        self.items_content_frame.grid(row=2, column=0, sticky="ew")
         for item in items_list:
-            self._add_item_row(items_frame, item)
-
-    def _add_item_row(self, parent, item_data):
-        # row_index จะเริ่มที่ 2 เพราะ row 0 คือ Title, row 1 คือ Header
-        row_index = len(self.item_widgets) + 2
-
-        # --- [แก้ไข] สร้าง Frame และวางด้วย .grid() ---
-        row_frame = CTkFrame(parent, fg_color="transparent")
-        row_frame.grid(row=row_index, column=0, columnspan=3, sticky="ew", padx=5, pady=1)
-        row_frame.grid_columnconfigure(0, weight=4) # Name
-        row_frame.grid_columnconfigure(1, weight=1) # Qty
-        row_frame.grid_columnconfigure(2, weight=2) # Price
+            self._add_item_row(item)
         
+        add_button = CTkButton(self.items_frame, text="+ เพิ่มรายการ", command=self._add_new_item_row)
+        add_button.grid(row=3, column=0, padx=5, pady=10, sticky="w")
+
+    def _add_item_row(self, item_data=None, is_new=False):
+        if item_data is None: item_data = {}
+        row_frame = CTkFrame(self.items_content_frame, fg_color="transparent")
+        row_frame.pack(fill="x", pady=2)
+        
+        col_weights = [2, 4, 1, 1, 2, 2, 2, 0]
+        for i, w in enumerate(col_weights):
+            row_frame.grid_columnconfigure(i, weight=w)
+
+        # Product Code
+        entry_code = CTkEntry(row_frame)
+        entry_code.insert(0, item_data.get('product_code', ''))
+        entry_code.grid(row=0, column=0, padx=5, sticky="ew")
+        
+        # Product Name
         entry_name = CTkEntry(row_frame)
         entry_name.insert(0, item_data.get('product_name', ''))
-        entry_name.grid(row=0, column=0, padx=(0,2), sticky="ew")
+        entry_name.grid(row=0, column=1, padx=5, sticky="ew")
 
-        entry_qty = NumericEntry(row_frame)
-        entry_qty.insert(0, f"{item_data.get('quantity', 0):.2f}")
-        entry_qty.grid(row=0, column=1, padx=2, sticky="ew")
+        # Weight
+        entry_weight = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals)
+        entry_weight.set(item_data.get('total_weight', 0))
+        entry_weight.grid(row=0, column=2, padx=5, sticky="ew")
 
-        entry_price = NumericEntry(row_frame)
-        entry_price.insert(0, f"{item_data.get('unit_price', 0):.2f}")
-        entry_price.grid(row=0, column=2, padx=(2,0), sticky="ew")
+        # Quantity
+        entry_qty = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals)
+        entry_qty.set(item_data.get('quantity', 0))
+        entry_qty.grid(row=0, column=3, padx=5, sticky="ew")
+
+        # Unit Price
+        entry_price = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals)
+        entry_price.set(item_data.get('unit_price', 0))
+        entry_price.grid(row=0, column=4, padx=5, sticky="ew")
         
-        self.item_widgets.append({
-            'id': item_data['id'],
-            'name_entry': entry_name,
-            'qty_entry': entry_qty,
-            'price_entry': entry_price
-        })
+        # Discount
+        entry_discount = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals)
+        entry_discount.set(item_data.get('discount_value', 0))
+        entry_discount.grid(row=0, column=5, padx=5, sticky="ew")
 
-    def _create_summary_section(self, parent, summary_data):
+        # Total Price Label
+        label_total = CTkLabel(row_frame, text="0.00", anchor="e")
+        label_total.grid(row=0, column=6, padx=5, sticky="ew")
+
+        # Delete Button
+        delete_button = CTkButton(row_frame, text="ลบ", width=40, fg_color="#DC2626", hover_color="#B91C1C", command=lambda r=row_frame, i=item_data.get('id'): self._remove_item_row(r, i))
+        delete_button.grid(row=0, column=7, padx=(5,0))
+
+        self.item_entries.append({
+            'id': item_data.get('id'), 'frame': row_frame, 
+            'widgets': {
+                'product_code': entry_code, 'product_name': entry_name, 'total_weight': entry_weight,
+                'quantity': entry_qty, 'unit_price': entry_price, 
+                'discount_value': entry_discount, 'total_price_label': label_total
+            }
+        })
+        self._recalculate_summary_totals()
+
+    def _add_new_item_row(self):
+        self._add_item_row(is_new=True)
+
+    def _remove_item_row(self, row_frame, item_id):
+        if item_id is not None:
+            self.deleted_item_ids.append(item_id)
+        index_to_remove = -1
+        for i, item_entry in enumerate(self.item_entries):
+            if item_entry['frame'] == row_frame:
+                index_to_remove = i
+                break
+        if index_to_remove != -1:
+            self.item_entries.pop(index_to_remove)
+        row_frame.destroy()
+        self._recalculate_summary_totals()
+
+    def _create_shipping_section(self, parent, data):
+        shipping_frame = self._create_section(parent, "ข้อมูลการจัดส่ง")
+        
+        # --- ค่าส่งเข้าสต๊อก ---
+        self._create_editable_row(shipping_frame, 1, "ค่าส่งเข้าสต๊อก:", data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost", is_numeric=True)
+        # <<< START: เพิ่มวันที่ส่งเข้าสต๊อก >>>
+        CTkLabel(shipping_frame, text="วันที่ส่งเข้าสต๊อก:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        stock_date_selector = DateSelector(shipping_frame)
+        stock_date_selector.set_date(data.get("shipping_to_stock_date"))
+        stock_date_selector.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["shipping_to_stock_date"] = stock_date_selector
+        # <<< END >>>
+
+        # --- ค่าส่งเข้าไซต์ ---
+        self._create_editable_row(shipping_frame, 3, "ค่าส่งเข้าไซต์:", data.get("shipping_to_site_cost"), key="shipping_to_site_cost", is_numeric=True)
+        # <<< START: เพิ่มวันที่ส่งเข้าไซต์ >>>
+        CTkLabel(shipping_frame, text="วันที่ส่งเข้าไซต์:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        site_date_selector = DateSelector(shipping_frame)
+        site_date_selector.set_date(data.get("shipping_to_site_date"))
+        site_date_selector.grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["shipping_to_site_date"] = site_date_selector
+        # <<< END >>>
+
+        # --- ค่าย้าย ---
+        self._create_editable_row(shipping_frame, 5, "ค่าย้าย:", data.get("relocation_cost"), key="relocation_cost", is_numeric=True)
+
+    def _create_summary_section(self, parent, data):
         summary_frame = self._create_section(parent, "สรุปยอด")
-        self._create_editable_row(summary_frame, 1, "ยอดรวมต้นทุนสินค้า:", summary_data.get("total_cost"), key="total_cost")
-        self._create_editable_row(summary_frame, 2, "ยอดรวมที่ต้องชำระ:", summary_data.get("grand_total"), key="grand_total")
+        # Row 1
+        CTkLabel(summary_frame, text="ยอดรวมต้นทุนสินค้า (คำนวณ):", anchor="w").grid(row=1, column=0, padx=10, pady=3, sticky="w")
+        self.total_cost_label = CTkLabel(summary_frame, text="0.00", anchor="w")
+        self.total_cost_label.grid(row=1, column=1, padx=10, pady=3, sticky="w")
+        
+        # Row 2
+        self._create_editable_row(summary_frame, 2, "ส่วนลดท้ายบิล", data.get("bill_discount"), key="bill_discount", is_numeric=True)
+        
+        # Row 3
+        CTkLabel(summary_frame, text="น้ำหนักรวม (คำนวณ):", anchor="w").grid(row=3, column=0, padx=10, pady=3, sticky="w")
+        self.total_weight_label = CTkLabel(summary_frame, text="0.00 kg", anchor="w")
+        self.total_weight_label.grid(row=3, column=1, padx=10, pady=3, sticky="w")
+
+        # Row 4
+        self._create_editable_row(summary_frame, 4, "ภาษีหัก ณ ที่จ่าย (3%)", data.get("wht_3_percent"), key="wht_3_percent", is_numeric=True)
+
+        # Row 5
+        self._create_editable_row(summary_frame, 5, "ภาษีมูลค่าเพิ่ม (7%)", data.get("vat_7_percent"), key="vat_7_percent", is_numeric=True)
+        
+        # Row 6 (Grand Total)
+        CTkLabel(summary_frame, text="ยอดรวมที่ต้องชำระ (คำนวณ):", anchor="w", font=CTkFont(weight="bold")).grid(row=6, column=0, padx=10, pady=3, sticky="w")
+        self.grand_total_label = CTkLabel(summary_frame, text="0.00", anchor="w", font=CTkFont(weight="bold"))
+        self.grand_total_label.grid(row=6, column=1, padx=10, pady=3, sticky="w")
+
+    # <<< START: เพิ่ม Section ใหม่สำหรับข้อมูลการอนุมัติ >>>
+    def _create_approval_info_section(self, parent, data):
+        approval_frame = self._create_section(parent, "ข้อมูลการอนุมัติและประวัติ")
+        self._add_display_row(approval_frame, 1, "สร้างโดย", data.get("user_key"))
+        self._add_display_row(approval_frame, 2, "สร้างเมื่อ", data.get("timestamp"))
+        
+        if data.get("approver_manager1_key"):
+            self._add_display_row(approval_frame, 3, "อนุมัติโดย Manager 1", f"{data.get('approver_manager1_key')} (เมื่อ: {pd.to_datetime(data.get('approval_date_manager1')).strftime('%d/%m/%Y %H:%M') if pd.notna(data.get('approval_date_manager1')) else '-'})")
+        if data.get("approver_manager2_key"):
+            self._add_display_row(approval_frame, 4, "อนุมัติโดย Manager 2", f"{data.get('approver_manager2_key')} (เมื่อ: {pd.to_datetime(data.get('approval_date_manager2')).strftime('%d/%m/%Y %H:%M') if pd.notna(data.get('approval_date_manager2')) else '-'})")
+        if data.get("approver_director_key"):
+            self._add_display_row(approval_frame, 5, "อนุมัติโดย Director", f"{data.get('approver_director_key')} (เมื่อ: {pd.to_datetime(data.get('approval_date_director')).strftime('%d/%m/%Y %H:%M') if pd.notna(data.get('approval_date_director')) else '-'})")
+        if data.get("rejection_reason"):
+             self._add_display_row(approval_frame, 6, "เหตุผลที่ถูกปฏิเสธ", data.get("rejection_reason"))
+    # <<< END >>>
+
+    def _recalculate_summary_totals(self, *args):
+        total_cost = 0.0
+        total_weight = 0.0
+        
+        for item_row in self.item_entries:
+            try:
+                qty = item_row['widgets']['quantity'].get_value()
+                price = item_row['widgets']['unit_price'].get_value()
+                discount = item_row['widgets']['discount_value'].get_value()
+                weight = item_row['widgets']['total_weight'].get_value()
+                
+                item_total = (qty * price) - discount
+                
+                # ---> [เพิ่ม] ตรวจสอบก่อน configure
+                if hasattr(item_row['widgets']['total_price_label'], 'configure'):
+                    item_row['widgets']['total_price_label'].configure(text=f"{item_total:,.2f}")
+                
+                total_cost += item_total
+                total_weight += weight
+            except (ValueError, TypeError):
+                 # ---> [เพิ่ม] ตรวจสอบก่อน configure
+                if hasattr(item_row['widgets']['total_price_label'], 'configure'):
+                    item_row['widgets']['total_price_label'].configure(text="Error")
+
+        # ---> [แก้ไข] ตรวจสอบว่า label มีอยู่จริงหรือไม่ก่อนจะ .configure()
+        if hasattr(self, 'total_cost_label'):
+            self.total_cost_label.configure(text=f"{total_cost:,.2f}")
+        if hasattr(self, 'total_weight_label'):
+            self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
+        
+        try:
+            # ---> [แก้ไข] ตรวจสอบว่า po_entries มี key ที่ต้องการหรือไม่
+            shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value() if 'shipping_to_stock_cost' in self.po_entries else 0.0
+            shipping_site = self.po_entries['shipping_to_site_cost'].get_value() if 'shipping_to_site_cost' in self.po_entries else 0.0
+            relocation_cost = self.po_entries['relocation_cost'].get_value() if 'relocation_cost' in self.po_entries else 0.0
+            bill_discount = self.po_entries['bill_discount'].get_value() if 'bill_discount' in self.po_entries else 0.0
+            wht = self.po_entries['wht_3_percent'].get_value() if 'wht_3_percent' in self.po_entries else 0.0
+            vat = self.po_entries['vat_7_percent'].get_value() if 'vat_7_percent' in self.po_entries else 0.0
+        except (KeyError, ValueError, TypeError):
+            shipping_stock, shipping_site, relocation_cost, bill_discount, wht, vat = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            
+        # สูตรคำนวณ Grand Total ใหม่
+        subtotal_after_discount = total_cost - bill_discount
+        total_shipping = shipping_stock + shipping_site + relocation_cost
+        grand_total = subtotal_after_discount + total_shipping + vat - wht
+        
+        # ---> [แก้ไข] ตรวจสอบว่า label มีอยู่จริงหรือไม่ก่อนจะ .configure()
+        if hasattr(self, 'grand_total_label'):
+            self.grand_total_label.configure(text=f"{grand_total:,.2f}")
 
     def _create_payments_section(self, parent, payments_list):
-        payments_frame = self._create_section(parent, "การชำระเงิน")
-        if not payments_list:
-            CTkLabel(payments_frame, text="ไม่มีข้อมูลการชำระเงิน").grid(row=1, column=0, pady=10)
-        else:
-            for i, payment in enumerate(payments_list):
-                p_text = f"{payment.get('payment_type', 'N/A')}: {payment.get('amount'):,.2f} บาท (วันที่: {payment.get('payment_date')})"
-                CTkLabel(payments_frame, text=p_text).grid(row=i+1, column=0, padx=10, pady=2, sticky="w")
+        self.payments_frame = self._create_section(parent, "การชำระเงิน")
+        
+        # <<< START: แก้ไข Layout ทั้งหมดในฟังก์ชันนี้ >>>
+        self.payments_frame.grid_columnconfigure(0, weight=1)
 
-    def _create_shipping_section(self, parent, shipping_data):
-        shipping_frame = self._create_section(parent, "ข้อมูลการจัดส่ง")
-        CTkLabel(shipping_frame, text="--- การจัดส่งเข้าสต๊อก ---", font=CTkFont(slant="italic")).grid(row=1, column=0, columnspan=2, pady=(5,2), sticky="w", padx=10)
-        self._create_editable_row(shipping_frame, 2, "ค่าจัดส่ง (สต๊อก):", shipping_data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost")
-        CTkLabel(shipping_frame, text="--- การจัดส่งเข้าไซต์งาน ---", font=CTkFont(slant="italic")).grid(row=3, column=0, columnspan=2, pady=(10,2), sticky="w", padx=10)
-        self._create_editable_row(shipping_frame, 4, "ค่าจัดส่ง (ไซต์):", shipping_data.get("shipping_to_site_cost"), key="shipping_to_site_cost")
+        # Header ของตาราง
+        headers = ["ประเภทการชำระ", "ยอดเงิน", "วันที่ชำระ"]
+        col_weights = [1, 1, 1]
+        
+        header_container = CTkFrame(self.payments_frame, fg_color="transparent")
+        header_container.grid(row=1, column=0, sticky="ew", padx=10, pady=(0,5)) # ใช้ .grid()
+
+        for i, header_text in enumerate(headers):
+            header_container.grid_columnconfigure(i, weight=col_weights[i])
+            CTkLabel(header_container, text=header_text, font=CTkFont(size=14, weight="bold")).grid(row=0, column=i, padx=5, pady=5, sticky="w")
+        
+        self.payments_content_frame = CTkFrame(self.payments_frame, fg_color="transparent")
+        self.payments_content_frame.grid(row=2, column=0, sticky="ew", padx=10) # ใช้ .grid()
+        self.payments_content_frame.grid_columnconfigure(0, weight=1)
+
+        # สร้างแถวสำหรับแต่ละรายการชำระเงินที่มีอยู่
+        if payments_list:
+            for payment in payments_list:
+                self._add_payment_row(payment)
+
+        # ปุ่มเพิ่มรายการชำระเงิน
+        add_button = CTkButton(self.payments_frame, text="+ เพิ่มการชำระเงิน", command=self._add_payment_row)
+        add_button.grid(row=3, column=0, pady=10, padx=10, sticky="w") # ใช้ .grid()
     
+    def _add_payment_row(self, payment_data=None):
+        if payment_data is None: payment_data = {}
+
+        # <<< START: แก้ไข Layout จาก .pack() เป็น .grid() >>>
+        row_frame = CTkFrame(self.payments_content_frame, fg_color="transparent")
+        row_frame.grid(row=len(self.payment_entries), column=0, sticky="ew", pady=2) # ใช้ .grid()
+        row_frame.grid_columnconfigure((0,1,2), weight=1)
+        row_frame.grid_columnconfigure(3, weight=0)
+        # <<< END >>>
+
+        payment_types = ["Payment 1", "Payment 2", "Full Payment", "CN Refund"]
+        type_var = tk.StringVar(value=payment_data.get('payment_type', payment_types[0]))
+        type_menu = CTkOptionMenu(row_frame, variable=type_var, values=payment_types)
+        type_menu.grid(row=0, column=0, padx=(0,5), sticky="ew")
+
+        amount_entry = FormattedNumericEntry(row_frame)
+        amount_entry.set(payment_data.get('amount', 0.0))
+        amount_entry.grid(row=0, column=1, padx=5, sticky="ew")
+        
+        date_selector = DateSelector(row_frame)
+        date_selector.set_date(payment_data.get('payment_date'))
+        date_selector.grid(row=0, column=2, padx=5, sticky="ew")
+        
+        delete_button = CTkButton(row_frame, text="ลบ", width=40, fg_color="#DC2626", hover_color="#B91C1C",
+                                  command=lambda r=row_frame, p_id=payment_data.get('id'): self._remove_payment_row(r, p_id))
+        delete_button.grid(row=0, column=3, padx=(5,0))
+
+        self.payment_entries.append({
+            'id': payment_data.get('id'),
+            'frame': row_frame,
+            'widgets': {
+                'type_var': type_var,
+                'amount_entry': amount_entry,
+                'date_selector': date_selector
+            }
+        })
+    
+    def _remove_payment_row(self, row_frame, payment_id):
+        if payment_id is not None:
+            self.deleted_payment_ids.append(payment_id)
+        
+        index_to_remove = -1
+        for i, entry in enumerate(self.payment_entries):
+            if entry['frame'] == row_frame:
+                index_to_remove = i
+                break
+        
+        if index_to_remove != -1:
+            self.payment_entries.pop(index_to_remove)
+        
+        row_frame.destroy()
+        self._recalculate_summary_totals()
+
     def _create_action_buttons(self):
         button_frame = CTkFrame(self)
         button_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-        button_frame.grid_columnconfigure(0, weight=1)
+        
+        # --- Manager/Director View ---
+        if self.user_role in ['Purchasing Manager', 'Director']:
+            button_frame.grid_columnconfigure((0, 1, 2), weight=1) # แบ่ง 3 ส่วน
+            
+            approve_button = CTkButton(button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D")
+            approve_button.grid(row=0, column=0, padx=5, sticky="ew")
 
-        # --- ตรวจสอบ Role ของผู้ใช้ตรงนี้ ---
-        if self.user_role == 'HR':
-            # ถ้าเป็น HR, ให้แสดงปุ่ม "บันทึกการแก้ไข"
-            save_button = CTkButton(button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
-            save_button.pack(pady=10)
-        else:
-            # ถ้าเป็น Role อื่น (เช่น PU), ให้แสดงแค่ปุ่ม "ปิด"
+            reject_button = CTkButton(button_frame, text="ปฏิเสธ (Reject)", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C")
+            reject_button.grid(row=0, column=1, padx=5, sticky="ew")
+
             close_button = CTkButton(button_frame, text="ปิด", command=self.destroy, fg_color="gray")
-            close_button.pack(pady=10)
+            close_button.grid(row=0, column=2, padx=5, sticky="ew")
 
-    def _save_changes(self):
+        # --- HR/PU Staff View ---
+        else:
+            button_frame.grid_columnconfigure(0, weight=1)
+            save_button = CTkButton(button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
+            save_button.pack(side="left", padx=10, pady=10)
+        
+            close_button = CTkButton(button_frame, text="ปิด", command=self.destroy, fg_color="gray")
+            close_button.pack(side="right", padx=10, pady=10)
+    
+    def _approve_po(self):
+        # Logic การอนุมัติ (ยกมาจาก purchasing_manager_screen.py)
+        # สามารถนำ Logic ที่ซับซ้อนเกี่ยวกับการอนุมัติตามลำดับขั้นและยอดเงินมาใส่ที่นี่ได้
+        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการอนุมัติ PO ID: {self.purchase_id} ใช่หรือไม่?", parent=self):
+            return
+        
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
-                # 1. อัปเดตข้อมูล PO หลัก
+                # ตัวอย่าง Logic การอนุมัติแบบง่าย
+                cursor.execute(
+                    "UPDATE purchase_orders SET status = 'Approved', approval_status = 'Approved', approver_manager1_key = %s, approval_date_manager1 = %s WHERE id = %s",
+                    (self.app_container.current_user_key, datetime.now(), self.purchase_id)
+                )
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "อนุมัติ PO เรียบร้อยแล้ว", parent=self)
+            if self.on_save_callback:
+                self.on_save_callback() # Refresh หน้าจอหลัก
+            self.destroy()
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+    
+    def _reject_po(self):
+        # Logic การปฏิเสธ (ยกมาจาก purchasing_manager_screen.py)
+        dialog = RejectionReasonDialog(self)
+        self.wait_window(dialog)
+        reason = getattr(dialog, '_reason_string', None)
+        if reason is None:
+            return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE purchase_orders SET status = 'Rejected', approval_status = 'Rejected', rejection_reason = %s, last_modified_by = %s WHERE id = %s",
+                    (reason.strip(), self.app_container.current_user_key, self.purchase_id)
+                )
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "ปฏิเสธ PO เรียบร้อยแล้ว", parent=self)
+            if self.on_save_callback:
+                self.on_save_callback() # Refresh หน้าจอหลัก
+            self.destroy()
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _save_changes(self):
+        self._recalculate_summary_totals()
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                total_cost = utils.convert_to_float(self.total_cost_label.cget("text"))
+                grand_total = utils.convert_to_float(self.grand_total_label.cget("text"))
+
+                # <<< START: แก้ไข po_type เป็น po_mode ใน Query และ Parameters >>>
                 cursor.execute("""
                     UPDATE purchase_orders SET 
-                        so_number = %s, po_number = %s, supplier_name = %s, 
-                        credit_term = %s, total_cost = %s, grand_total = %s,
-                        shipping_to_stock_cost = %s, shipping_to_site_cost = %s
+                        so_number = %s, po_number = %s, supplier_name = %s, supplier_code = %s, 
+                        credit_term = %s, po_mode = %s,
+                        shipping_to_stock_cost = %s, shipping_to_stock_date = %s, 
+                        shipping_to_site_cost = %s, shipping_to_site_date = %s, 
+                        relocation_cost = %s, bill_discount = %s, wht_3_percent = %s, 
+                        vat_7_percent = %s, total_cost = %s, grand_total = %s
                     WHERE id = %s
                 """, (
                     self.po_entries['so_number'].get(), self.po_entries['po_number'].get(),
-                    self.po_entries['supplier_name'].get(), self.po_entries['credit_term'].get(),
-                    utils.convert_to_float(self.po_entries['total_cost'].get()),
-                    utils.convert_to_float(self.po_entries['grand_total'].get()),
-                    utils.convert_to_float(self.po_entries['shipping_to_stock_cost'].get()),
-                    utils.convert_to_float(self.po_entries['shipping_to_site_cost'].get()),
+                    self.po_entries['supplier_name'].get(), self.po_entries['supplier_code'].get(),
+                    self.po_entries['credit_term'].get(), self.po_entries['po_mode'].get(),
+                    self.po_entries['shipping_to_stock_cost'].get_value(),
+                    self.po_entries['shipping_to_stock_date'].get_date(),
+                    self.po_entries['shipping_to_site_cost'].get_value(),
+                    self.po_entries['shipping_to_site_date'].get_date(),
+                    self.po_entries['relocation_cost'].get_value(),
+                    self.po_entries['bill_discount'].get_value(),
+                    self.po_entries['wht_3_percent'].get_value(),
+                    self.po_entries['vat_7_percent'].get_value(),
+                    total_cost, grand_total,
                     self.purchase_id
                 ))
 
-                # 2. อัปเดตรายการสินค้า
-                for item_row in self.item_widgets:
-                    item_id = item_row['id']
-                    new_name = item_row['name_entry'].get()
-                    new_qty = utils.convert_to_float(item_row['qty_entry'].get())
-                    new_price = utils.convert_to_float(item_row['price_entry'].get())
-                    new_total = new_qty * new_price
-                    cursor.execute("""
-                        UPDATE purchase_order_items 
-                        SET product_name = %s, quantity = %s, unit_price = %s, total_price = %s
-                        WHERE id = %s
-                    """, (new_name, new_qty, new_price, new_total, item_id))
+                if self.deleted_item_ids:
+                    cursor.execute("DELETE FROM purchase_order_items WHERE id IN %s", (tuple(self.deleted_item_ids),))
 
-                # 3. บันทึก Log
-                log_details = { "message": f"Edited PO: {self.po_entries['po_number'].get()} by HR ({self.app_container.current_user_key})" }
-                cursor.execute("""
-                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, ('PO Edited by HR', 'purchase_orders', self.purchase_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
+                for item_row in self.item_entries:
+                    widgets, item_id = item_row['widgets'], item_row['id']
+                    code, name = widgets['product_code'].get(), widgets['product_name'].get()
+                    weight, qty = widgets['total_weight'].get_value(), widgets['quantity'].get_value()
+                    price, discount = widgets['unit_price'].get_value(), widgets['discount_value'].get_value()
+                    total = (qty * price) - discount
+                
+                if self.deleted_payment_ids:
+                    cursor.execute("DELETE FROM purchase_order_payments WHERE id IN %s", (tuple(self.deleted_payment_ids),))
+
+                for payment_row in self.payment_entries:
+                    widgets = payment_row['widgets']
+                    payment_id = payment_row['id']
+                    
+                    p_type = widgets['type_var'].get()
+                    p_amount = widgets['amount_entry'].get_value()
+                    p_date = widgets['date_selector'].get_date()
+                    
+                    if payment_id: # อัปเดตรายการเดิม
+                        cursor.execute("""
+                            UPDATE purchase_order_payments SET 
+                                payment_type = %s, amount = %s, payment_date = %s
+                            WHERE id = %s
+                        """, (p_type, p_amount, p_date, payment_id))
+                    else: # เพิ่มรายการใหม่
+                        cursor.execute("""
+                            INSERT INTO purchase_order_payments 
+                            (purchase_order_id, payment_type, amount, payment_date)
+                            VALUES (%s, %s, %s, %s)
+                        """, (self.purchase_id, p_type, p_amount, p_date))
+
+                    if item_id:
+                        cursor.execute("""
+                            UPDATE purchase_order_items SET 
+                                product_code = %s, product_name = %s, total_weight = %s, quantity = %s, 
+                                unit_price = %s, discount_value = %s, total_price = %s 
+                            WHERE id = %s
+                        """, (code, name, weight, qty, price, discount, total, item_id))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO purchase_order_items 
+                            (purchase_order_id, product_code, product_name, total_weight, quantity, unit_price, discount_value, total_price) 
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (self.purchase_id, code, name, weight, qty, price, discount, total))
+
+                log_details = { "message": f"PO ID {self.purchase_id} edited by {self.user_role} ({self.app_container.current_user_key})" }
+                cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", ('PO Edited', 'purchase_orders', self.purchase_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข PO เรียบร้อยแล้ว", parent=self)
             
-            if self.on_save_callback:
+            if self.on_save_callback: 
                 self.on_save_callback()
             self.destroy()
 
@@ -343,7 +723,6 @@ class PurchaseDetailWindow(CTkToplevel):
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
-
 
 class PurchaseHistoryWindow(CTkToplevel):
 
