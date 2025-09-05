@@ -714,6 +714,10 @@ class PurchasingScreen(CTkFrame):
         super().__init__(master, corner_radius=0, fg_color="#EDE9FE")
         self.shipping_to_stock_vat_var = tk.StringVar(value="VAT")
         self.shipping_to_site_vat_var = tk.StringVar(value="VAT")
+        self.shipping_to_stock_wht_var = tk.StringVar(value="ไม่มีหัก")
+        self.shipping_to_site_wht_var = tk.StringVar(value="ไม่มีหัก")
+        self.shipping_to_stock_wht_display_var = tk.StringVar(value="0.00")
+        self.shipping_to_site_wht_display_var = tk.StringVar(value="0.00")
         
         self.dropdown_style = {
             "fg_color": "white",
@@ -784,111 +788,129 @@ class PurchasingScreen(CTkFrame):
             messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก SO Number", parent=self)
 
     def _update_summary(self, *args):
-    # --- 1. คำนวณยอดรวมจากรายการสินค้า (Product Subtotal) ---
-      product_subtotal = 0
-      overall_total_weight = 0
-      for row_dict in self.product_rows:
-          try:
-              if not row_dict["name"].winfo_exists(): continue
+        # --- 1. คำนวณยอดรวมจากรายการสินค้า (Product Subtotal) ---
+        product_subtotal = 0
+        overall_total_weight = 0
+        for row_dict in self.product_rows:
+            try:
+                if not row_dict["name"].winfo_exists(): continue
+              
+                qty = utils.convert_to_float(row_dict["qty"].get())
+                price = utils.convert_to_float(row_dict["price"].get())
+                weight = utils.convert_to_float(row_dict["weight"].get())
+                discount_val = utils.convert_to_float(row_dict["discount_entry"].get())
+                discount_type = row_dict["discount_type_var"].get()
+
+                line_total = qty * price
+                discount_amount = (line_total * (discount_val / 100.0)) if discount_type == "%" else discount_val
+                row_final_price = line_total - discount_amount
+                row_final_weight = qty * weight
+
+                product_subtotal += row_final_price
+                overall_total_weight += row_final_weight
+
+                for entry, value in [(row_dict["total_price"], row_final_price), (row_dict["total_weight"], row_final_weight)]:
+                    entry.configure(state="normal")
+                    entry.delete(0, tk.END)
+                    entry.insert(0, f"{value:,.2f}")
+                    entry.configure(state="readonly")
+            except (ValueError, tk.TclError):
+                continue
+
+        # --- 2. ดึงข้อมูลตัวเลขทั้งหมดจากฟอร์ม ---
+        shipping_stock_cost = utils.convert_to_float(self.shipping_to_stock_cost_entry.get())
+        shipping_site_cost = utils.convert_to_float(self.shipping_to_site_cost_entry.get())
+        end_of_bill_discount = utils.convert_to_float(self.end_of_bill_discount_entry.get())
+        p1 = utils.convert_to_float(self.payment_entries["Payment 1"]["amount"].get())
+        p2 = utils.convert_to_float(self.payment_entries["Payment 2"]["amount"].get())
+        full_payment = utils.convert_to_float(self.payment_entries["Full Payment"]["amount"].get())
+      
+        # --- 3. คำนวณยอดที่ต้องชำระให้ซัพพลายเออร์ และค่าส่งที่จ่ายแยก ---
+        supplier_payable_vatable = product_subtotal - end_of_bill_discount
+        supplier_payable_non_vatable = 0.0
+        separate_shipping_cost = 0.0
+        shipping_stock_wht_amount = 0.0
+        shipping_site_wht_amount = 0.0
+
+        # ตรวจสอบค่าส่งเข้าสต๊อก
+        if self.shipping_to_stock_type_var.get() == 'ซัพพลายเออร์จัดส่ง':
+            stock_wht_type = self.shipping_to_stock_wht_var.get()
+            if stock_wht_type == "1%":
+                shipping_stock_wht_amount = shipping_stock_cost * 0.01
+            elif stock_wht_type == "3%":
+                shipping_stock_wht_amount = shipping_stock_cost * 0.03
             
-              qty = utils.convert_to_float(row_dict["qty"].get())
-              price = utils.convert_to_float(row_dict["price"].get())
-              weight = utils.convert_to_float(row_dict["weight"].get())
-              discount_val = utils.convert_to_float(row_dict["discount_entry"].get())
-              discount_type = row_dict["discount_type_var"].get()
+            if self.shipping_to_stock_vat_var.get() == 'VAT':
+                supplier_payable_vatable += shipping_stock_cost
+            else:
+                supplier_payable_non_vatable += shipping_stock_cost
+        else:
+            separate_shipping_cost += shipping_stock_cost
 
-              line_total = qty * price
-              discount_amount = (line_total * (discount_val / 100.0)) if discount_type == "%" else discount_val
-              row_final_price = line_total - discount_amount
-              row_final_weight = qty * weight
+        # ตรวจสอบค่าส่งเข้าไซต์
+        if self.shipping_to_site_type_var.get() == 'ซัพพลายเออร์จัดส่ง':
+            site_wht_type = self.shipping_to_site_wht_var.get()
+            if site_wht_type == "1%":
+                shipping_site_wht_amount = shipping_site_cost * 0.01
+            elif site_wht_type == "3%":
+                shipping_site_wht_amount = shipping_site_cost * 0.03
 
-              product_subtotal += row_final_price
-              overall_total_weight += row_final_weight
+            if self.shipping_to_site_vat_var.get() == 'VAT':
+                supplier_payable_vatable += shipping_site_cost
+            else:
+                supplier_payable_non_vatable += shipping_site_cost
+        else:
+            separate_shipping_cost += shipping_site_cost
 
-            # อัปเดต UI ของแต่ละแถว
-              for entry, value in [(row_dict["total_price"], row_final_price), (row_dict["total_weight"], row_final_weight)]:
-                  entry.configure(state="normal")
-                  entry.delete(0, tk.END)
-                  entry.insert(0, f"{value:,.2f}")
-                  entry.configure(state="readonly")
-          except (ValueError, tk.TclError):
-              continue
-
-    # --- 2. ดึงข้อมูลตัวเลขทั้งหมดจากฟอร์ม ---
-      shipping_stock_cost = utils.convert_to_float(self.shipping_to_stock_cost_entry.get())
-      shipping_site_cost = utils.convert_to_float(self.shipping_to_site_cost_entry.get())
-      end_of_bill_discount = utils.convert_to_float(self.end_of_bill_discount_entry.get())
-      p1 = utils.convert_to_float(self.payment_entries["Payment 1"]["amount"].get())
-      p2 = utils.convert_to_float(self.payment_entries["Payment 2"]["amount"].get())
-      full_payment = utils.convert_to_float(self.payment_entries["Full Payment"]["amount"].get())
-    
-    # --- 3. คำนวณยอดที่ต้องชำระให้ซัพพลายเออร์ และค่าส่งที่จ่ายแยก ---
-      supplier_payable_vatable = product_subtotal - end_of_bill_discount
-      supplier_payable_non_vatable = 0.0
-      separate_shipping_cost = 0.0
-
-    # ตรวจสอบค่าส่งเข้าสต๊อก
-      if self.shipping_to_stock_type_var.get() == 'ซัพพลายเออร์จัดส่ง':
-          if self.shipping_to_stock_vat_var.get() == 'VAT':
-              supplier_payable_vatable += shipping_stock_cost
-          else:
-              supplier_payable_non_vatable += shipping_stock_cost
-      else:
-          separate_shipping_cost += shipping_stock_cost
-
-    # ตรวจสอบค่าส่งเข้าไซต์
-      if self.shipping_to_site_type_var.get() == 'ซัพพลายเออร์จัดส่ง':
-          if self.shipping_to_site_vat_var.get() == 'VAT':
-              supplier_payable_vatable += shipping_site_cost
-          else:
-              supplier_payable_non_vatable += shipping_site_cost
-      else:
-          separate_shipping_cost += shipping_site_cost
-
-    # --- 4. คำนวณ VAT, WHT, ยอดสุทธิ และยอดค้างชำระ ---
-      vat7_amount = supplier_payable_vatable * 0.07 if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() else 0.0
-      wht3_amount = supplier_payable_vatable * 0.03 if hasattr(self, 'vat3_checkbox') and self.vat3_checkbox.get() else 0.0
-    
-      grand_total_payable_to_supplier = (supplier_payable_vatable + vat7_amount - wht3_amount) + supplier_payable_non_vatable
-      total_deposit = p1 + p2
-      balance_due = grand_total_payable_to_supplier - total_deposit - full_payment
-
-    # --- 5. อัปเดต UI ทั้งหมดในส่วนสรุป ---
-      def set_readonly_val(entry, value):
-          if entry and entry.winfo_exists():
-             entry.configure(state="normal")
-             entry.delete(0, "end")
-             entry.insert(0, f"{value:,.2f}")
-             entry.configure(state="readonly")
- 
-      total_po_cost = (product_subtotal - end_of_bill_discount) + shipping_stock_cost + shipping_site_cost
-      set_readonly_val(self.total_cost_entry, total_po_cost)
-      set_readonly_val(self.total_weight_summary_entry, overall_total_weight)
-      set_readonly_val(self.vat7_entry, vat7_amount)
-      set_readonly_val(self.vat3_entry, wht3_amount)
-      set_readonly_val(self.grand_total_with_vat_entry, supplier_payable_vatable + supplier_payable_non_vatable + vat7_amount)
-      set_readonly_val(self.grand_total_payable_entry, grand_total_payable_to_supplier)
-      set_readonly_val(self.separate_shipping_entry, separate_shipping_cost)
-  
-      self.total_deposit_var.set(f"{total_deposit:,.2f}")
-    
-      stock_vat_display = shipping_stock_cost * 0.07 if self.shipping_to_stock_vat_var.get() == 'VAT' else 0.0
-      site_vat_display = shipping_site_cost * 0.07 if self.shipping_to_site_vat_var.get() == 'VAT' else 0.0
-      self.shipping_to_stock_vat_display_var.set(f"{stock_vat_display:,.2f}")
-      self.shipping_to_site_vat_display_var.set(f"{site_vat_display:,.2f}")
-
-      if hasattr(self, 'balance_due_entry') and self.balance_due_entry.winfo_exists():
-          if abs(balance_due) < 0.01:
-              text, text_color, bg_color = "ยอดชำระครบถ้วน", "#15803D", "#BBF7D0"
-          elif balance_due < 0:
-              text, text_color, bg_color = f"ชำระเกิน {abs(balance_due):,.2f}", "#15803D", "#BBF7D0"
-          else:
-              text, text_color, bg_color = f"ยอดค้างชำระ {balance_due:,.2f}", "#B91C1C", "#FECACA"
+        # --- 4. คำนวณ VAT, WHT, ยอดสุทธิ และยอดค้างชำระ ---
+        vat7_amount = supplier_payable_vatable * 0.07 if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() else 0.0
+        product_wht3_amount = supplier_payable_vatable * 0.03 if hasattr(self, 'vat3_checkbox') and self.vat3_checkbox.get() else 0.0
         
-          self.balance_due_var.set(text)
-          self.balance_due_entry.configure(text_color=text_color, fg_color=bg_color)
-      else:
-          self.balance_due_var.set(f"{balance_due:,.2f}")
+        total_wht_deduction = product_wht3_amount + shipping_stock_wht_amount + shipping_site_wht_amount
+        grand_total_payable_to_supplier = (supplier_payable_vatable + vat7_amount - total_wht_deduction) + supplier_payable_non_vatable
+        total_deposit = p1 + p2
+        balance_due = grand_total_payable_to_supplier - total_deposit - full_payment
+
+        # --- 5. อัปเดต UI ทั้งหมดในส่วนสรุป ---
+        def set_readonly_val(entry, value):
+            if entry and entry.winfo_exists():
+               entry.configure(state="normal")
+               entry.delete(0, "end")
+               entry.insert(0, f"{value:,.2f}")
+               entry.configure(state="readonly")
+   
+        total_po_cost = (product_subtotal - end_of_bill_discount) + shipping_stock_cost + shipping_site_cost
+        set_readonly_val(self.total_cost_entry, total_po_cost)
+        set_readonly_val(self.total_weight_summary_entry, overall_total_weight)
+        set_readonly_val(self.vat7_entry, vat7_amount)
+        set_readonly_val(self.vat3_entry, product_wht3_amount) # ช่องนี้จะแสดงเฉพาะ WHT 3% ของสินค้า
+        set_readonly_val(self.grand_total_with_vat_entry, supplier_payable_vatable + supplier_payable_non_vatable + vat7_amount)
+        set_readonly_val(self.grand_total_payable_entry, grand_total_payable_to_supplier)
+        set_readonly_val(self.separate_shipping_entry, separate_shipping_cost)
+    
+        self.total_deposit_var.set(f"{total_deposit:,.2f}")
+      
+        stock_vat_display = shipping_stock_cost * 0.07 if self.shipping_to_stock_vat_var.get() == 'VAT' else 0.0
+        site_vat_display = shipping_site_cost * 0.07 if self.shipping_to_site_vat_var.get() == 'VAT' else 0.0
+        self.shipping_to_stock_vat_display_var.set(f"{stock_vat_display:,.2f}")
+        self.shipping_to_site_vat_display_var.set(f"{site_vat_display:,.2f}")
+        
+        # อัปเดตช่องแสดงผล WHT ของค่าขนส่ง
+        self.shipping_to_stock_wht_display_var.set(f"{shipping_stock_wht_amount:,.2f}")
+        self.shipping_to_site_wht_display_var.set(f"{shipping_site_wht_amount:,.2f}")
+
+        if hasattr(self, 'balance_due_entry') and self.balance_due_entry.winfo_exists():
+            if abs(balance_due) < 0.01:
+                text, text_color, bg_color = "ยอดชำระครบถ้วน", "#15803D", "#BBF7D0"
+            elif balance_due < 0:
+                text, text_color, bg_color = f"ชำระเกิน {abs(balance_due):,.2f}", "#15803D", "#BBF7D0"
+            else:
+                text, text_color, bg_color = f"ยอดค้างชำระ {balance_due:,.2f}", "#B91C1C", "#FECACA"
+          
+            self.balance_due_var.set(text)
+            self.balance_due_entry.configure(text_color=text_color, fg_color=bg_color)
+        else:
+            self.balance_due_var.set(f"{balance_due:,.2f}")
 
     def _so_create_string_vars(self):
         now = datetime.now()
@@ -1251,6 +1273,8 @@ class PurchasingScreen(CTkFrame):
         self.editing_po_id = None
         self.shipping_to_stock_vat_var.set("VAT")
         self.shipping_to_site_vat_var.set("VAT")
+        self.shipping_to_stock_wht_var.set("ไม่มีหัก")
+        self.shipping_to_site_wht_var.set("ไม่มีหัก")
         self.department_entry.delete(0, 'end')
         self.pur_order_entry.delete(0, 'end')
         self.po_number_type_var.set("PO")
@@ -1715,27 +1739,40 @@ class PurchasingScreen(CTkFrame):
         self.shipping_to_stock_vat_display_entry = CTkEntry(parent_frame, textvariable=self.shipping_to_stock_vat_display_var, state="readonly", fg_color="gray85")
         self.shipping_to_stock_vat_display_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
 
+        # --- START: เพิ่มส่วนหัก ณ ที่จ่าย (WHT) สำหรับ Stock ---
+        CTkLabel(parent_frame, text="หัก ณ ที่จ่าย:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.shipping_to_stock_wht_var.trace_add("write", self._update_summary)
+        stock_wht_frame = CTkFrame(parent_frame, fg_color="transparent")
+        stock_wht_frame.grid(row=3, column=1, sticky="ew", padx=5, pady=2)
+        CTkRadioButton(stock_wht_frame, text="ไม่มีหัก", variable=self.shipping_to_stock_wht_var, value="ไม่มีหัก").pack(side="left", padx=(0,5))
+        CTkRadioButton(stock_wht_frame, text="1%", variable=self.shipping_to_stock_wht_var, value="1%").pack(side="left", padx=5)
+        CTkRadioButton(stock_wht_frame, text="3%", variable=self.shipping_to_stock_wht_var, value="3%").pack(side="left", padx=5)
+
+        CTkLabel(parent_frame, text="ยอดหัก ณ ที่จ่าย:", font=self.entry_font).grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        self.shipping_to_stock_wht_display_entry = CTkEntry(parent_frame, textvariable=self.shipping_to_stock_wht_display_var, state="readonly", fg_color="gray85")
+        self.shipping_to_stock_wht_display_entry.grid(row=4, column=1, sticky="ew", padx=5, pady=2)
+        # --- END: สิ้นสุดส่วน WHT ---
+
         self.shipping_to_stock_date_selector = DateSelector(parent_frame, dropdown_style=self.dropdown_style)
-        self.shipping_to_stock_date_selector.grid(row=3, column=1, sticky="w", padx=5, pady=2)
+        self.shipping_to_stock_date_selector.grid(row=5, column=1, sticky="w", padx=5, pady=2)
         
-        # --- ตรวจสอบส่วนนี้ให้แน่ใจว่าตัวแปรถูกต้อง ---
         self.shipping_to_stock_type_var = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
         stock_shipper_radio_frame = CTkFrame(parent_frame, fg_color="transparent")
-        stock_shipper_radio_frame.grid(row=4, column=1, sticky="w", padx=5, pady=2)
+        stock_shipper_radio_frame.grid(row=6, column=1, sticky="w", padx=5, pady=2)
         CTkRadioButton(stock_shipper_radio_frame, text="ซัพพลายเออร์จัดส่ง", variable=self.shipping_to_stock_type_var, value="ซัพพลายเออร์จัดส่ง", command=self._update_summary).pack(side="left")
         CTkRadioButton(stock_shipper_radio_frame, text="Aplus Logistic", variable=self.shipping_to_stock_type_var, value="Aplus Logistic", command=self._update_summary).pack(side="left", padx=5)
         CTkRadioButton(stock_shipper_radio_frame, text="Lalamove/Others", variable=self.shipping_to_stock_type_var, value="Lalamove/Others", command=self._update_summary).pack(side="left", padx=5)
         
-        self.shipping_to_stock_notes_entry = CTkEntry(parent_frame, placeholder_text="หมายเหตุ...")
-        self.shipping_to_stock_notes_entry.grid(row=5, column=1, sticky="ew", padx=5, pady=2)
+        self.shipping_to_stock_notes_entry = CTkEntry(parent_frame, placeholder_text="หมายเหตุ... รับจ้าง / รถบริษัท , กะบะ/6ล้อ/เฮี๊ยบ/10ล้อ/เทเล่อร์, ชือคนขับ, ทะเบียน")
+        self.shipping_to_stock_notes_entry.grid(row=7, column=1, sticky="ew", padx=5, pady=2)
 
-        CTkFrame(parent_frame, height=2, fg_color="gray90").grid(row=6, column=0, columnspan=2, sticky="ew", pady=10, padx=10)
+        CTkFrame(parent_frame, height=2, fg_color="gray90").grid(row=8, column=0, columnspan=2, sticky="ew", pady=10, padx=10)
 
         # --- Section 2: Shipping to Site ---
-        CTkLabel(parent_frame, text="2.ค่าจัดส่งเข้าไซต์").grid(row=7, column=0, padx=10, pady=5, sticky="w")
+        CTkLabel(parent_frame, text="2.ค่าจัดส่งเข้าไซต์").grid(row=9, column=0, padx=10, pady=5, sticky="w")
 
         site_cost_frame = CTkFrame(parent_frame, fg_color="transparent")
-        site_cost_frame.grid(row=7, column=1, sticky="ew", padx=5, pady=2)
+        site_cost_frame.grid(row=9, column=1, sticky="ew", padx=5, pady=2)
 
         self.shipping_to_site_cost_entry = NumericEntry(site_cost_frame)
         self.shipping_to_site_cost_entry.pack(side="left", fill="x", expand=True, padx=(0,5))
@@ -1747,23 +1784,36 @@ class PurchasingScreen(CTkFrame):
         CTkRadioButton(site_vat_radio_frame, text="CASH", variable=self.shipping_to_site_vat_var, value="CASH").pack(side="left", padx=5)
         self.shipping_to_site_vat_var.trace_add("write", self._update_summary)
 
-        CTkLabel(parent_frame, text="VAT 7%:", font=self.entry_font).grid(row=8, column=0, padx=10, pady=5, sticky="w")
+        CTkLabel(parent_frame, text="VAT 7%:", font=self.entry_font).grid(row=10, column=0, padx=10, pady=5, sticky="w")
         self.shipping_to_site_vat_display_entry = CTkEntry(parent_frame, textvariable=self.shipping_to_site_vat_display_var, state="readonly", fg_color="gray85")
-        self.shipping_to_site_vat_display_entry.grid(row=8, column=1, sticky="ew", padx=5, pady=2)
+        self.shipping_to_site_vat_display_entry.grid(row=10, column=1, sticky="ew", padx=5, pady=2)
+
+        # --- START: เพิ่มส่วนหัก ณ ที่จ่าย (WHT) สำหรับ Site ---
+        CTkLabel(parent_frame, text="หัก ณ ที่จ่าย:").grid(row=11, column=0, padx=10, pady=5, sticky="w")
+        self.shipping_to_site_wht_var.trace_add("write", self._update_summary)
+        site_wht_frame = CTkFrame(parent_frame, fg_color="transparent")
+        site_wht_frame.grid(row=11, column=1, sticky="ew", padx=5, pady=2)
+        CTkRadioButton(site_wht_frame, text="ไม่มีหัก", variable=self.shipping_to_site_wht_var, value="ไม่มีหัก").pack(side="left", padx=(0,5))
+        CTkRadioButton(site_wht_frame, text="1%", variable=self.shipping_to_site_wht_var, value="1%").pack(side="left", padx=5)
+        CTkRadioButton(site_wht_frame, text="3%", variable=self.shipping_to_site_wht_var, value="3%").pack(side="left", padx=5)
+
+        CTkLabel(parent_frame, text="ยอดหัก ณ ที่จ่าย:", font=self.entry_font).grid(row=12, column=0, padx=10, pady=5, sticky="w")
+        self.shipping_to_site_wht_display_entry = CTkEntry(parent_frame, textvariable=self.shipping_to_site_wht_display_var, state="readonly", fg_color="gray85")
+        self.shipping_to_site_wht_display_entry.grid(row=12, column=1, sticky="ew", padx=5, pady=2)
+        # --- END: สิ้นสุดส่วน WHT ---
 
         self.shipping_to_site_date_selector = DateSelector(parent_frame, dropdown_style=self.dropdown_style)
-        self.shipping_to_site_date_selector.grid(row=9, column=1, sticky="w", padx=5, pady=2)
+        self.shipping_to_site_date_selector.grid(row=13, column=1, sticky="w", padx=5, pady=2)
         
-        # --- ตรวจสอบส่วนนี้ให้แน่ใจว่าตัวแปรถูกต้อง ---
         self.shipping_to_site_type_var = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
         site_shipper_radio_frame = CTkFrame(parent_frame, fg_color="transparent")
-        site_shipper_radio_frame.grid(row=10, column=1, sticky="w", padx=5, pady=2)
+        site_shipper_radio_frame.grid(row=14, column=1, sticky="w", padx=5, pady=2)
         CTkRadioButton(site_shipper_radio_frame, text="ซัพพลายเออร์จัดส่ง", variable=self.shipping_to_site_type_var, value="ซัพพลายเออร์จัดส่ง", command=self._update_summary).pack(side="left")
         CTkRadioButton(site_shipper_radio_frame, text="Aplus Logistic", variable=self.shipping_to_site_type_var, value="Aplus Logistic", command=self._update_summary).pack(side="left", padx=5)
         CTkRadioButton(site_shipper_radio_frame, text="Lalamove/Others", variable=self.shipping_to_site_type_var, value="Lalamove/Others", command=self._update_summary).pack(side="left", padx=5)
 
-        self.shipping_to_site_notes_entry = CTkEntry(parent_frame, placeholder_text="หมายเหตุ...")
-        self.shipping_to_site_notes_entry.grid(row=11, column=1, sticky="ew", padx=5, pady=2)
+        self.shipping_to_site_notes_entry = CTkEntry(parent_frame, placeholder_text="หมายเหตุ... รับจ้าง / รถบริษัท , กะบะ/6ล้อ/เฮี๊ยบ/10ล้อ/เทเล่อร์, ชือคนขับ, ทะเบียน")
+        self.shipping_to_site_notes_entry.grid(row=15, column=1, sticky="ew", padx=5, pady=2)
     
     def _populate_payment_column(self, parent_frame):
         parent_frame.grid_columnconfigure(1, weight=1)
@@ -2001,12 +2051,16 @@ class PurchasingScreen(CTkFrame):
             'shipping_to_site_cost': utils.convert_to_float(self.shipping_to_site_cost_entry.get()),
             'shipping_to_stock_cost': utils.convert_to_float(self.shipping_to_stock_cost_entry.get()),
             'shipping_to_stock_vat_type': self.shipping_to_stock_vat_var.get(),
+            'shipping_to_stock_wht_type': self.shipping_to_stock_wht_var.get(),
+            'shipping_to_stock_wht_amount': utils.convert_to_float(self.shipping_to_stock_wht_display_var.get()),
             'shipping_to_stock_date': self.shipping_to_stock_date_selector.get_date(),
             # --- ตรวจสอบ 2 บรรทัดล่างนี้ให้แน่ใจว่าถูกต้อง ---
             'shipping_to_stock_shipper': self.shipping_to_stock_type_var.get(),
             'shipping_to_stock_notes': self.shipping_to_stock_notes_entry.get(),
             'shipping_to_site_cost': utils.convert_to_float(self.shipping_to_site_cost_entry.get()),
             'shipping_to_site_vat_type': self.shipping_to_site_vat_var.get(),
+            'shipping_to_site_wht_type': self.shipping_to_site_wht_var.get(),
+            'shipping_to_site_wht_amount': utils.convert_to_float(self.shipping_to_site_wht_display_var.get()),
             'shipping_to_site_date': self.shipping_to_site_date_selector.get_date(),
             'shipping_to_site_shipper': self.shipping_to_site_type_var.get(),
             'shipping_to_site_notes': self.shipping_to_site_notes_entry.get(),
@@ -2217,6 +2271,8 @@ class PurchasingScreen(CTkFrame):
             # ... (โค้ดส่วนที่เหลือของฟังก์ชันเหมือนเดิมทั้งหมด) ...
             self.shipping_to_stock_vat_var.set(po_data.get("shipping_to_stock_vat_type", "VAT"))
             self.shipping_to_site_vat_var.set(po_data.get("shipping_to_site_vat_type", "VAT"))
+            self.shipping_to_stock_wht_var.set(po_data.get("shipping_to_stock_wht_type", "ไม่มีหัก"))
+            self.shipping_to_site_wht_var.set(po_data.get("shipping_to_site_wht_type", "ไม่มีหัก"))
             
             if po_data.get("vat_7_percent_checked"): self.vat_checkbox.select()
             po_full_number = po_data.get("po_number", "PO")

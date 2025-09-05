@@ -348,29 +348,68 @@ class PurchaseDetailWindow(CTkToplevel):
 
     def _create_shipping_section(self, parent, data):
         shipping_frame = self._create_section(parent, "ข้อมูลการจัดส่ง")
-        
-        # --- ค่าส่งเข้าสต๊อก ---
-        self._create_editable_row(shipping_frame, 1, "ค่าส่งเข้าสต๊อก:", data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost", is_numeric=True)
-        # <<< START: เพิ่มวันที่ส่งเข้าสต๊อก >>>
-        CTkLabel(shipping_frame, text="วันที่ส่งเข้าสต๊อก:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        current_row = 1
+
+        # --- Sub-section: ค่าส่งเข้าสต๊อก ---
+        CTkLabel(shipping_frame, text="--- ค่าจัดส่งเข้าสต๊อก ---", font=CTkFont(weight="bold")).grid(row=current_row, column=0, columnspan=2, pady=(5,2), sticky="w", padx=10)
+        current_row += 1
+
+        self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าสต๊อก:", data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost", is_numeric=True)
+        current_row += 1
+
+        CTkLabel(shipping_frame, text="วันที่ส่งเข้าสต๊อก:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         stock_date_selector = DateSelector(shipping_frame)
         stock_date_selector.set_date(data.get("shipping_to_stock_date"))
-        stock_date_selector.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+        stock_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
         self.po_entries["shipping_to_stock_date"] = stock_date_selector
+        current_row += 1
+
+        # <<< START: เพิ่มฟิลด์ใหม่สำหรับค่าส่งเข้าสต๊อก >>>
+        self._create_editable_row(shipping_frame, current_row, "ประเภท VAT:", data.get("shipping_to_stock_vat_type"), key="shipping_to_stock_vat_type", widget_class=CTkOptionMenu, options=["VAT", "CASH"])
+        current_row += 1
+        
+        shipper_options = ["ซัพพลายเออร์จัดส่ง", "Aplus Logistic", "Lalamove/Others"]
+        self._create_editable_row(shipping_frame, current_row, "ผู้จัดส่ง:", data.get("shipping_to_stock_shipper"), key="shipping_to_stock_shipper", widget_class=CTkOptionMenu, options=shipper_options)
+        current_row += 1
+
+        wht_options = ["ไม่มีหัก", "1%", "3%"]
+        self._create_editable_row(shipping_frame, current_row, "หัก ณ ที่จ่าย:", data.get("shipping_to_stock_wht_type"), key="shipping_to_stock_wht_type", widget_class=CTkOptionMenu, options=wht_options)
+        current_row += 1
+        
+        self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_stock_notes"), key="shipping_to_stock_notes")
+        current_row += 1
         # <<< END >>>
 
-        # --- ค่าส่งเข้าไซต์ ---
-        self._create_editable_row(shipping_frame, 3, "ค่าส่งเข้าไซต์:", data.get("shipping_to_site_cost"), key="shipping_to_site_cost", is_numeric=True)
-        # <<< START: เพิ่มวันที่ส่งเข้าไซต์ >>>
-        CTkLabel(shipping_frame, text="วันที่ส่งเข้าไซต์:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        # --- Sub-section: ค่าส่งเข้าไซต์ ---
+        CTkLabel(shipping_frame, text="--- ค่าจัดส่งเข้าไซต์ ---", font=CTkFont(weight="bold")).grid(row=current_row, column=0, columnspan=2, pady=(10,2), sticky="w", padx=10)
+        current_row += 1
+
+        self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าไซต์:", data.get("shipping_to_site_cost"), key="shipping_to_site_cost", is_numeric=True)
+        current_row += 1
+
+        CTkLabel(shipping_frame, text="วันที่ส่งเข้าไซต์:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         site_date_selector = DateSelector(shipping_frame)
         site_date_selector.set_date(data.get("shipping_to_site_date"))
-        site_date_selector.grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+        site_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
         self.po_entries["shipping_to_site_date"] = site_date_selector
+        current_row += 1
+        
+        # <<< START: เพิ่มฟิลด์ใหม่สำหรับค่าส่งเข้าไซต์ >>>
+        self._create_editable_row(shipping_frame, current_row, "ประเภท VAT:", data.get("shipping_to_site_vat_type"), key="shipping_to_site_vat_type", widget_class=CTkOptionMenu, options=["VAT", "CASH"])
+        current_row += 1
+        
+        self._create_editable_row(shipping_frame, current_row, "ผู้จัดส่ง:", data.get("shipping_to_site_shipper"), key="shipping_to_site_shipper", widget_class=CTkOptionMenu, options=shipper_options)
+        current_row += 1
+
+        self._create_editable_row(shipping_frame, current_row, "หัก ณ ที่จ่าย:", data.get("shipping_to_site_wht_type"), key="shipping_to_site_wht_type", widget_class=CTkOptionMenu, options=wht_options)
+        current_row += 1
+        
+        self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_site_notes"), key="shipping_to_site_notes")
+        current_row += 1
         # <<< END >>>
 
-        # --- ค่าย้าย ---
-        self._create_editable_row(shipping_frame, 5, "ค่าย้าย:", data.get("relocation_cost"), key="relocation_cost", is_numeric=True)
+        # --- ค่าย้าย (ถ้ามี) ---
+        self._create_editable_row(shipping_frame, current_row, "ค่าย้าย:", data.get("relocation_cost"), key="relocation_cost", is_numeric=True)
 
     def _create_summary_section(self, parent, data):
         summary_frame = self._create_section(parent, "สรุปยอด")
