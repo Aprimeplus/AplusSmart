@@ -19,6 +19,7 @@ import re
 from history_windows import SOPopupWindow
 from hr_windows import SODetailViewer 
 from export_utils import export_approved_pos_to_excel
+from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 
 
 # --- แก้ไข: ลบ import ที่เป็นปัญหาออก และย้าย Dialog class ไปไว้ในไฟล์ของตัวเอง (ถ้ามี) ---
@@ -31,6 +32,8 @@ from po_selection_dialog import POSelectionDialog
 from po_selection_dialog import POSelectionDialog
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 import utils
+
+
 
 class SubmitPODialog(CTkToplevel):
     def __init__(self, master, purchasing_screen_instance):
@@ -68,8 +71,6 @@ class SubmitPODialog(CTkToplevel):
         self.transient(master)
         self.grab_set()
     
-      # purchasing_screen.py (เพิ่มฟังก์ชันนี้เข้าไปในคลาส PurchasingScreen)
-
 
     def _populate_po_list(self):
         try:
@@ -770,6 +771,59 @@ class PurchasingScreen(CTkFrame):
         self._poll_and_update_tasks_badge()
         self.bind("<Destroy>", self._on_destroy)
     
+    def _refresh_so_list(self):
+        """
+        ดึงข้อมูล SO ล่าสุดและอัปเดตค่าใน CTkComboBox
+        """
+        print("Refreshing SO ComboBox list...")
+        new_so_list = self._get_commission_so_numbers_formatted()
+        
+        if hasattr(self, 'so_entry') and isinstance(self.so_entry, CTkComboBox):
+            self.so_entry.configure(values=new_so_list)
+            self.so_entry.set("") # เคลียร์ค่าที่เลือกไว้
+            messagebox.showinfo("รีเฟรช", f"อัปเดตรายการ SO เรียบร้อยแล้ว\nพบ {len(new_so_list) - 1} รายการที่พร้อมดำเนินการ", parent=self)
+        else:
+            messagebox.showwarning("ผิดพลาด", "ไม่สามารถรีเฟรชรายการได้ Widget ไม่ถูกต้อง", parent=self)
+            
+    def _get_commission_so_numbers_formatted(self):
+        """
+        (เวอร์ชันใหม่) ดึงข้อมูล SO มาสร้างเป็น List of Strings ที่จัดรูปแบบแล้วสำหรับ CTkComboBox
+        """
+        try:
+            query = """
+                SELECT c.so_number, c.customer_name, u.sale_name
+                FROM commissions c
+                JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE (c.status = 'Pending PU' OR (c.status = 'PO In Progress' AND c.user_key = %s)) 
+                AND c.is_active = 1 
+                ORDER BY c.timestamp DESC
+            """
+            df = pd.read_sql_query(query, self.pg_engine, params=(self.user_key,))
+            
+            if df.empty:
+                return [""] # คืนค่าเป็น List ที่มีค่าว่าง 1 ตัว
+
+            formatted_list = [""] # ตัวเลือกแรกให้เป็นค่าว่าง
+            MAX_CUST_NAME_LEN = 35 # กำหนดความยาวสูงสุดของชื่อลูกค้าที่จะแสดง
+
+            for _, row in df.iterrows():
+                so = row['so_number']
+                cust = str(row['customer_name'] or '')
+                sale = str(row.get('sale_name') or 'N/A')
+
+                # ย่อชื่อลูกค้าถ้ามันยาวเกินไป
+                if len(cust) > MAX_CUST_NAME_LEN:
+                    cust = cust[:MAX_CUST_NAME_LEN] + "..."
+                
+                # สร้างข้อความที่จะแสดงผลในแต่ละแถว
+                display_string = f"{so} | {cust} (เซลส์: {sale})"
+                formatted_list.append(display_string)
+            
+            return formatted_list
+        except Exception as e:
+            print(f"Error fetching SO list for ComboBox: {e}")
+            return [""]
+
     def _lookup_so_details(self):
         """
         เปิดหน้าต่างให้ผู้ใช้กรอก SO Number เพื่อค้นหาและแสดงรายละเอียด
@@ -1203,9 +1257,20 @@ class PurchasingScreen(CTkFrame):
             if conn: self.app_container.release_connection(conn)
 
 
-    def _on_so_selected(self, so_number: str, is_editing: bool = False):
-        if not so_number: self.handle_clear_button_press(confirm=False); return
+    def _on_so_selected(self, selection_string: str, is_editing: bool = False):
+        # <<< START: แก้ไข Logic การรับค่า >>>
+        so_number = ""
+        # ตรวจสอบว่ามีข้อความที่ถูกเลือกมาหรือไม่
+        if selection_string and '|' in selection_string:
+            # ถ้ามี ให้ตัดเอาเฉพาะส่วนแรกสุด (คือ SO Number)
+            so_number = selection_string.split('|')[0].strip()
+        else:
+            # ถ้าไม่มี (เช่น ผู้ใช้พิมพ์เอง) ให้ใช้ค่าที่พิมพ์มาตรงๆ
+            so_number = selection_string.strip()
 
+        if not so_number:
+            self.handle_clear_button_press(confirm=False)
+            return
         conn = self.app_container.get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
@@ -1347,10 +1412,26 @@ class PurchasingScreen(CTkFrame):
         top_frame.grid_columnconfigure(7, weight=1)
 
         CTkLabel(top_frame, text="SO Number:").grid(row=0, column=0, sticky="w", padx=10, pady=5)
-        self.so_entry = CTkComboBox(top_frame, values=self._get_commission_so_numbers(), command=self._on_so_selected)
-        self.so_entry.set("")
-        self.so_entry.grid(row=0, column=1, columnspan=7, sticky="ew", padx=10, pady=5)
 
+        # --- START: แก้ไขให้เหลือแต่โค้ดที่ถูกต้อง ---
+        so_selection_frame = CTkFrame(top_frame, fg_color="transparent")
+        so_selection_frame.grid(row=0, column=1, columnspan=7, sticky="ew", padx=10, pady=5)
+        so_selection_frame.grid_columnconfigure(0, weight=1)
+
+        # เราจะใช้ CTkComboBox ที่เรียกใช้ฟังก์ชันใหม่ที่ถูกต้อง
+        self.so_entry = CTkComboBox(
+            so_selection_frame,
+            values=self._get_commission_so_numbers_formatted(), # <-- ใช้ฟังก์ชันชื่อใหม่ที่ถูกต้อง
+            command=self._on_so_selected
+        )
+        self.so_entry.set("")
+        self.so_entry.grid(row=0, column=0, sticky="ew")
+
+        refresh_button = CTkButton(so_selection_frame, text="🔄", width=35, command=self._refresh_so_list)
+        refresh_button.grid(row=0, column=1, sticky="e", padx=(5, 0))
+        # --- END: สิ้นสุดการแก้ไข ---
+
+        # --- โค้ดส่วนที่เหลือของฟังก์ชันถูกต้องแล้ว ---
         CTkLabel(top_frame, text="เอกสาร PO/ST:").grid(row=1, column=0, sticky="w", padx=10, pady=5)
         
         po_st_frame = CTkFrame(top_frame, fg_color="transparent")
@@ -1391,13 +1472,10 @@ class PurchasingScreen(CTkFrame):
 
         CTkLabel(sup_frame, text="Supplier Name:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
         
-        # --- START: แก้ไขบรรทัดนี้ ---
-        # เปลี่ยนจาก self.supplier_display_list เป็น self.supplier_completion_data
         self.supplier_name_combo = AutoCompleteEntry(sup_frame, 
-                                                     completion_list=self.supplier_completion_data, 
-                                                     command_on_select=self._on_supplier_selected, 
-                                                     placeholder_text="พิมพ์เพื่อค้นหาซัพพลายเออร์...")
-        # --- END: สิ้นสุดการแก้ไข ---
+                                                    completion_list=self.supplier_completion_data, 
+                                                    command_on_select=self._on_supplier_selected, 
+                                                    placeholder_text="พิมพ์เพื่อค้นหาซัพพลายเออร์...")
         
         self.supplier_name_combo.grid(row=0, column=1, sticky="ew", padx=(0,10), pady=3)
         
@@ -1485,14 +1563,10 @@ class PurchasingScreen(CTkFrame):
     def _on_product_selected(self, selection_dict, row_widgets):
         if not selection_dict: return
 
-        # --- START: เพิ่ม Logic แก้ไขข้อความในช่องค้นหา ---
-        # 1. ดึงวิดเจ็ตช่องค้นหาของแถวนั้นๆ ออกมา
         code_entry_widget = row_widgets.get("code")
-        # 2. ลบข้อความยาวๆ ทิ้งไป แล้วใส่เฉพาะ "รหัสสินค้า" กลับเข้าไป
         if code_entry_widget:
             code_entry_widget.delete(0, tk.END)
             code_entry_widget.insert(0, selection_dict.get('code', ''))
-        # --- END: สิ้นสุดการเพิ่ม Logic ---
         
         code = selection_dict.get('code')
         product_data = self.product_data_map.get(code)
@@ -1506,8 +1580,22 @@ class PurchasingScreen(CTkFrame):
             row_widgets["name_var"].set(str(product_data.get("name") or ""))
             row_widgets["warehouse_var"].set(str(product_data.get("warehouse") or ""))
             
-            if row_widgets["price"].winfo_exists(): row_widgets["price"].delete(0, "end")
-            if row_widgets["weight"].winfo_exists(): row_widgets["weight"].delete(0, "end")
+            # <<< START: เพิ่ม Logic การใส่ราคาและน้ำหนักอัตโนมัติ >>>
+            last_price = product_data.get("last_price")
+            last_weight = product_data.get("last_weight")
+
+            price_entry = row_widgets.get("price")
+            if price_entry and price_entry.winfo_exists():
+                price_entry.delete(0, "end")
+                if pd.notna(last_price):
+                    price_entry.insert(0, f"{last_price:.2f}")
+
+            weight_entry = row_widgets.get("weight")
+            if weight_entry and weight_entry.winfo_exists():
+                weight_entry.delete(0, "end")
+                if pd.notna(last_weight):
+                    weight_entry.insert(0, f"{last_weight:.2f}")
+            # <<< END >>>
             
             self._update_summary()
             self._check_for_override(row_widgets)
@@ -1568,33 +1656,34 @@ class PurchasingScreen(CTkFrame):
     
     def _load_product_master_data(self):
         try:
-            df = pd.read_sql("SELECT product_code, product_name, warehouse FROM products ORDER BY product_code", self.pg_engine)
+            # <<< START: แก้ไข Query ให้ดึง 2 คอลัมน์ใหม่เข้ามาด้วย >>>
+            query = "SELECT product_code, product_name, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
+            df = pd.read_sql(query, self.pg_engine)
+            # <<< END >>>
             
-            # --- START: แก้ไขส่วนนี้ ---
-            # สร้างข้อมูลที่มีโครงสร้างสำหรับ AutoComplete ที่ฉลาดขึ้น
             self.product_completion_data = []
             MAX_NAME_LENGTH = 50
             for _, row in df.iterrows():
-                name = row['product_name'] or "" # จัดการกรณีชื่อเป็นค่าว่าง
-                # ย่อชื่อที่ยาวเกินไปสำหรับแสดงผลใน Dropdown
+                name = row['product_name'] or ""
                 display_name = name[:MAX_NAME_LENGTH] + '...' if len(name) > MAX_NAME_LENGTH else name
                 display_text = f"{row['product_code']} - {display_name}"
 
+                # <<< START: เพิ่มการเก็บข้อมูลใหม่เข้าไปใน Dictionary >>>
                 self.product_completion_data.append({
-                    "name": name, # เก็บชื่อเต็มไว้
+                    "name": name,
                     "code": row['product_code'],
                     "warehouse": row.get('warehouse', ''),
-                    "display": display_text
+                    "display": display_text,
+                    "last_price": row.get('last_unit_price'),      # <-- เพิ่ม
+                    "last_weight": row.get('last_weight_per_unit') # <-- เพิ่ม
                 })
+                # <<< END >>>
 
-            # สร้าง Map สำหรับดึงข้อมูลเมื่อผู้ใช้เลือก (เหมือนเดิมแต่ใช้ข้อมูลใหม่)
             self.product_data_map = {item['code']: item for item in self.product_completion_data}
 
-            # อัปเดตรายการสินค้าในแถวที่ถูกสร้างไปแล้วให้ใช้ข้อมูลชุดใหม่
             for row_dict in self.product_rows:
                 if "code" in row_dict and isinstance(row_dict["code"], AutoCompleteEntry):
                     row_dict["code"].completion_list = self.product_completion_data
-            # --- END: สิ้นสุดการแก้ไข ---
 
         except Exception as e: 
             print(f"Error loading product master data: {e}")
@@ -1895,6 +1984,7 @@ class PurchasingScreen(CTkFrame):
 
         self.vat_checkbox = CTkCheckBox(parent_frame, text="Vat 7%", command=self._update_summary)
         self.vat_checkbox.grid(row=row_idx + 4, column=0, sticky="w", padx=10, pady=2)
+        self.vat_checkbox.select()
         self.vat7_entry = CTkEntry(parent_frame, state="readonly", fg_color="gray85")
         self.vat7_entry.grid(row=row_idx + 4, column=1, sticky="ew", padx=5, pady=5)
 
@@ -2162,6 +2252,34 @@ class PurchasingScreen(CTkFrame):
             
             conn.commit()
             messagebox.showinfo("สำเร็จ", f"บันทึก PO เป็น '{status}' สำเร็จ", parent=self)
+
+            try:
+                with conn.cursor() as cursor:
+                    update_values = []
+                    for item in items:
+                        product_code = item.get("product_code")
+                        unit_price = item.get("unit_price")
+                        weight_per_unit = item.get("weight_per_unit")
+
+                        if product_code and pd.notna(unit_price) and pd.notna(weight_per_unit):
+                            # เตรียมข้อมูลสำหรับการอัปเดตแบบทีเดียว
+                            update_values.append((unit_price, weight_per_unit, product_code))
+
+                    if update_values:
+                        # ใช้ execute_values เพื่อประสิทธิภาพที่ดีกว่า
+                        psycopg2.extras.execute_values(
+                            cursor,
+                            "UPDATE products SET last_unit_price = data.price, last_weight_per_unit = data.weight FROM (VALUES %s) AS data (price, weight, pcode) WHERE product_code = data.pcode",
+                            update_values
+                        )
+                        conn.commit()
+                        print("Successfully updated last price/weight for products.")
+                        # โหลดข้อมูลสินค้าใหม่หลังจากอัปเดต เพื่อให้ครั้งต่อไปได้ข้อมูลล่าสุด
+                        self._load_product_master_data()
+
+            except Exception as update_err:
+                print(f"Could not update last price/weight: {update_err}")
+                if conn: conn.rollback()
             
             so_number_in_po = header.get("so_number")
             if so_number_in_po and status != 'Draft':
@@ -2239,6 +2357,16 @@ class PurchasingScreen(CTkFrame):
                 items_data = cursor.fetchall()
                 cursor.execute("SELECT * FROM purchase_order_payments WHERE purchase_order_id = %s ORDER BY id", (po_id,))
                 payments_data = cursor.fetchall()
+            
+            if po_data.get("vat_7_percent_checked"):
+                self.vat_checkbox.select()
+            else:
+                self.vat_checkbox.deselect()
+
+            if po_data.get("wht_3_percent_checked"):
+                self.vat3_checkbox.select()
+            else:
+                self.vat3_checkbox.deselect()
 
             so_num = po_data.get("so_number", "")
             self.so_entry.set(so_num)

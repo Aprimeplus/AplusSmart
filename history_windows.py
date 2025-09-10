@@ -5,6 +5,8 @@ from tkinter import ttk, filedialog
 from customtkinter import (CTkToplevel, CTkTextbox, CTkScrollableFrame, CTkLabel, CTkFont, CTkFrame, CTkButton, CTkEntry, CTkRadioButton, CTkOptionMenu, CTkTabview)
 from tkinter import messagebox
 import json
+import customtkinter
+from customtkinter import CTkLabel, CTkFont, CTkCheckBox
 import pandas as pd
 from datetime import datetime
 import traceback
@@ -413,29 +415,44 @@ class PurchaseDetailWindow(CTkToplevel):
 
     def _create_summary_section(self, parent, data):
         summary_frame = self._create_section(parent, "สรุปยอด")
-        # Row 1
-        CTkLabel(summary_frame, text="ยอดรวมต้นทุนสินค้า (คำนวณ):", anchor="w").grid(row=1, column=0, padx=10, pady=3, sticky="w")
+        
+        # --- ยอดรวมต้นทุนสินค้า ---
+        CTkLabel(summary_frame, text="ยอดรวมต้นทุนสินค้า (คำนวณ):", anchor="w").grid(row=1, column=0, columnspan=2, padx=10, pady=3, sticky="w")
         self.total_cost_label = CTkLabel(summary_frame, text="0.00", anchor="w")
-        self.total_cost_label.grid(row=1, column=1, padx=10, pady=3, sticky="w")
+        self.total_cost_label.grid(row=1, column=2, padx=10, pady=3, sticky="w")
         
-        # Row 2
-        self._create_editable_row(summary_frame, 2, "ส่วนลดท้ายบิล", data.get("bill_discount"), key="bill_discount", is_numeric=True)
+        # --- ส่วนลดท้ายบิล ---
+        self._create_editable_row(summary_frame, 2, "ส่วนลดท้ายบิล:", data.get("bill_discount"), key="bill_discount", is_numeric=True)
         
-        # Row 3
-        CTkLabel(summary_frame, text="น้ำหนักรวม (คำนวณ):", anchor="w").grid(row=3, column=0, padx=10, pady=3, sticky="w")
+        # --- น้ำหนักรวม ---
+        CTkLabel(summary_frame, text="น้ำหนักรวม (คำนวณ):", anchor="w").grid(row=3, column=0, columnspan=2, padx=10, pady=3, sticky="w")
         self.total_weight_label = CTkLabel(summary_frame, text="0.00 kg", anchor="w")
-        self.total_weight_label.grid(row=3, column=1, padx=10, pady=3, sticky="w")
+        self.total_weight_label.grid(row=3, column=2, padx=10, pady=3, sticky="w")
 
-        # Row 4
-        self._create_editable_row(summary_frame, 4, "ภาษีหัก ณ ที่จ่าย (3%)", data.get("wht_3_percent"), key="wht_3_percent", is_numeric=True)
-
-        # Row 5
-        self._create_editable_row(summary_frame, 5, "ภาษีมูลค่าเพิ่ม (7%)", data.get("vat_7_percent"), key="vat_7_percent", is_numeric=True)
+        # --- START: แก้ไขส่วน Checkbox และ Entry ของ WHT และ VAT ---
         
-        # Row 6 (Grand Total)
-        CTkLabel(summary_frame, text="ยอดรวมที่ต้องชำระ (คำนวณ):", anchor="w", font=CTkFont(weight="bold")).grid(row=6, column=0, padx=10, pady=3, sticky="w")
+        # --- ภาษีหัก ณ ที่จ่าย (3%) ---
+        self.wht_checkbox = CTkCheckBox(summary_frame, text="ภาษีหัก ณ ที่จ่าย (3%):", command=self._recalculate_summary_totals)
+        self.wht_checkbox.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky="w")
+        wht_entry = self._create_editable_row(summary_frame, 4, "", data.get("wht_3_percent"), key="wht_3_percent", is_numeric=True)
+        wht_entry.grid(row=4, column=2) # จัดตำแหน่ง Entry ใหม่
+        if data.get("wht_3_percent_checked"):
+            self.wht_checkbox.select()
+
+        # --- ภาษีมูลค่าเพิ่ม (7%) ---
+        self.vat_checkbox = CTkCheckBox(summary_frame, text="ภาษีมูลค่าเพิ่ม (7%):", command=self._recalculate_summary_totals)
+        self.vat_checkbox.grid(row=5, column=0, columnspan=2, padx=10, pady=5, sticky="w")
+        vat_entry = self._create_editable_row(summary_frame, 5, "", data.get("vat_7_percent"), key="vat_7_percent", is_numeric=True)
+        vat_entry.grid(row=5, column=2) # จัดตำแหน่ง Entry ใหม่
+        if data.get("vat_7_percent_checked") is not False: # ถ้าเป็น True หรือ None (ไม่มีข้อมูล) ให้ติ๊กไว้ก่อน
+            self.vat_checkbox.select()
+
+        # --- END ---
+
+        # --- ยอดรวมที่ต้องชำระ ---
+        CTkLabel(summary_frame, text="ยอดรวมที่ต้องชำระ (คำนวณ):", anchor="w", font=CTkFont(weight="bold")).grid(row=6, column=0, columnspan=2, padx=10, pady=3, sticky="w")
         self.grand_total_label = CTkLabel(summary_frame, text="0.00", anchor="w", font=CTkFont(weight="bold"))
-        self.grand_total_label.grid(row=6, column=1, padx=10, pady=3, sticky="w")
+        self.grand_total_label.grid(row=6, column=2, padx=10, pady=3, sticky="w")
 
     # <<< START: เพิ่ม Section ใหม่สำหรับข้อมูลการอนุมัติ >>>
     def _create_approval_info_section(self, parent, data):
@@ -466,40 +483,56 @@ class PurchaseDetailWindow(CTkToplevel):
                 
                 item_total = (qty * price) - discount
                 
-                # ---> [เพิ่ม] ตรวจสอบก่อน configure
                 if hasattr(item_row['widgets']['total_price_label'], 'configure'):
                     item_row['widgets']['total_price_label'].configure(text=f"{item_total:,.2f}")
                 
                 total_cost += item_total
                 total_weight += weight
             except (ValueError, TypeError):
-                 # ---> [เพิ่ม] ตรวจสอบก่อน configure
                 if hasattr(item_row['widgets']['total_price_label'], 'configure'):
                     item_row['widgets']['total_price_label'].configure(text="Error")
 
-        # ---> [แก้ไข] ตรวจสอบว่า label มีอยู่จริงหรือไม่ก่อนจะ .configure()
         if hasattr(self, 'total_cost_label'):
             self.total_cost_label.configure(text=f"{total_cost:,.2f}")
         if hasattr(self, 'total_weight_label'):
             self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
         
+        # <<< START: แก้ไข Logic การคำนวณ VAT และ WHT ทั้งหมด >>>
         try:
-            # ---> [แก้ไข] ตรวจสอบว่า po_entries มี key ที่ต้องการหรือไม่
             shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value() if 'shipping_to_stock_cost' in self.po_entries else 0.0
             shipping_site = self.po_entries['shipping_to_site_cost'].get_value() if 'shipping_to_site_cost' in self.po_entries else 0.0
             relocation_cost = self.po_entries['relocation_cost'].get_value() if 'relocation_cost' in self.po_entries else 0.0
             bill_discount = self.po_entries['bill_discount'].get_value() if 'bill_discount' in self.po_entries else 0.0
-            wht = self.po_entries['wht_3_percent'].get_value() if 'wht_3_percent' in self.po_entries else 0.0
-            vat = self.po_entries['vat_7_percent'].get_value() if 'vat_7_percent' in self.po_entries else 0.0
-        except (KeyError, ValueError, TypeError):
-            shipping_stock, shipping_site, relocation_cost, bill_discount, wht, vat = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
             
-        # สูตรคำนวณ Grand Total ใหม่
-        subtotal_after_discount = total_cost - bill_discount
-        total_shipping = shipping_stock + shipping_site + relocation_cost
-        grand_total = subtotal_after_discount + total_shipping + vat - wht
+            wht_entry = self.po_entries.get('wht_3_percent')
+            vat_entry = self.po_entries.get('vat_7_percent')
+        except (KeyError, ValueError, TypeError):
+            shipping_stock, shipping_site, relocation_cost, bill_discount = 0.0, 0.0, 0.0, 0.0
+            wht_entry, vat_entry = None, None
+
+        # 1. คำนวณฐานสำหรับคิดภาษี (ยอดรวมสินค้า + ค่าขนส่ง - ส่วนลดท้ายบิล)
+        base_for_tax = total_cost + shipping_stock + shipping_site + relocation_cost - bill_discount
         
-        # ---> [แก้ไข] ตรวจสอบว่า label มีอยู่จริงหรือไม่ก่อนจะ .configure()
+        # 2. ตรวจสอบสถานะของ Checkbox และคำนวณภาษี
+        vat_amount = 0.0
+        wht_amount = 0.0
+
+        if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() == 1:
+            vat_amount = base_for_tax * 0.07
+
+        if hasattr(self, 'wht_checkbox') and self.wht_checkbox.get() == 1:
+            wht_amount = base_for_tax * 0.03
+
+        # 3. อัปเดตค่าในช่อง Entry ของ VAT และ WHT ให้แสดงผลตัวเลขที่คำนวณได้
+        if vat_entry:
+            vat_entry.set(vat_amount)
+        if wht_entry:
+            wht_entry.set(wht_amount)
+
+        # 4. คำนวณ Grand Total ใหม่โดยใช้ค่าภาษีที่คำนวณได้
+        grand_total = base_for_tax + vat_amount - wht_amount
+        
+        # 5. อัปเดต Label แสดงผลยอดรวมสุดท้าย
         if hasattr(self, 'grand_total_label'):
             self.grand_total_label.configure(text=f"{grand_total:,.2f}")
 

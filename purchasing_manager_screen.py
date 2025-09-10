@@ -20,6 +20,7 @@ from matplotlib.ticker import MaxNLocator
 from sqlalchemy import create_engine
 from export_utils import export_approved_pos_to_excel
 from pdf_utils import export_approved_pos_to_pdf
+from po_selection_dialog import POSelectionDialog
 
 class RejectionReasonDialog(CTkToplevel):
     def __init__(self, master):
@@ -270,11 +271,26 @@ class PurchasingManagerScreen(CTkFrame):
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
+    
+    def _open_po_print_dialog(self):
+        """
+        เปิดหน้าต่างสำหรับเลือก PO ใบเดียวเพื่อพิมพ์
+        """
+        try:
+            dialog = POSelectionDialog(
+                master=self, 
+                pg_engine=self.app_container.pg_engine, 
+                print_callback=self.app_container.generate_single_po_document
+            )
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างเลือก PO ได้: {e}", parent=self)
+            traceback.print_exc()
 
     def _create_header(self):
         header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
         CTkLabel(header_frame, text=f"หน้าจอหัวหน้าฝ่ายจัดซื้อ: {self.user_name}", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
         button_container = CTkFrame(header_frame, fg_color="transparent"); button_container.pack(side="right")
+        CTkButton(button_container, text="📄 พิมพ์ใบสั่งซื้อ PO", command=self._open_po_print_dialog, fg_color="#7C3AED", hover_color="#6D28D9").pack(side="left", padx=10)
         CTkButton(button_container, text="ดึงงาน PO กลับมาแก้ไข", command=self._open_reopen_po_window, fg_color="#F97316", hover_color="#EA580C").pack(side="left", padx=10)
         CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=lambda: self.app_container.show_history_window()).pack(side="left", padx=(0, 10))
         CTkButton(button_container, text="Refresh All", command=self._load_data).pack(side="left", padx=10)

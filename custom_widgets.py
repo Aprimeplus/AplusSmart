@@ -101,6 +101,15 @@ class AutoCompleteEntry(ctk.CTkEntry):
         self.bind("<KeyRelease>", self._on_key_release)
         self.bind("<FocusOut>", self._on_focus_out)
         self.bind("<Escape>", lambda e: self._hide_suggestions())
+    
+    def set_completion_list(self, new_list: list):
+        """
+        เมธอดสำหรับอัปเดตรายการคำใบ้ (suggestion list) จากภายนอก
+        """
+        self.completion_list = new_list
+        # ล้างข้อความในช่องค้นหาเมื่อมีการรีเฟรช
+        self.delete(0, tk.END)
+        print(f"AutoComplete list updated with {len(new_list)} items.")
 
     def _on_key_release(self, event):
         if event.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Caps_Lock", "Tab", "Up", "Down", "Left", "Right", "Return", "Escape"):

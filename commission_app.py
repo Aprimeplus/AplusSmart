@@ -407,7 +407,7 @@ class CommissionApp(CTkFrame):
     def _on_history_so_select(self, row_data):
         """
         Callback function เมื่อมีการดับเบิลคลิกที่ SO ในหน้าต่างประวัติ
-        (เวอร์ชันแก้ไข: เพิ่มการตรวจสอบสถานะก่อนอนุญาตให้แก้ไข)
+        (เวอร์ชันแก้ไข: เพิ่มการตั้งค่า editing_record_id ให้ถูกต้อง)
         """
         if row_data is None:
             return
@@ -415,14 +415,25 @@ class CommissionApp(CTkFrame):
         so_status = row_data.get('status')
         so_number = row_data.get('so_number')
         
-        editable_statuses = ['Original', 'Edited', 'Rejected by SM', 'Rejected by HR']
+        editable_statuses = ['Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR']
 
         if so_status in editable_statuses:
             if messagebox.askyesno("โหลดข้อมูล", f"คุณต้องการโหลดข้อมูล SO: {so_number} เพื่อแก้ไขหรือไม่?"):
-                # --- จุดที่แก้ไข: เปลี่ยนชื่อฟังก์ชันให้ถูกต้อง ---
+                
+                # <<< START: แก้ไข Logic ทั้งหมดตรงนี้ >>>
+                # 1. ล้างข้อมูลในฟอร์มให้เป็นค่าเริ่มต้นก่อน เพื่อป้องกันข้อมูลเก่าค้าง
+                self._clear_form(confirm=False)
+                
+                # 2. (สำคัญที่สุด) ตั้งค่า ID ที่กำลังแก้ไข เพื่อให้โปรแกรมเข้าสู่ "โหมดแก้ไข"
+                self.editing_record_id = int(row_data.get('id'))
+                
+                # 3. โหลดข้อมูลจากแถวที่เลือกมาใส่ในฟอร์ม
                 self._populate_form_from_data(row_data.to_dict()) 
+                
+                # 4. ปิดหน้าต่างประวัติ (เหมือนเดิม)
                 if self.history_window and self.history_window.winfo_exists():
                     self.history_window.destroy()
+                # <<< END: สิ้นสุดการแก้ไข >>>
         else:
             messagebox.showinfo(
                 "ไม่สามารถแก้ไขได้",
@@ -1251,20 +1262,36 @@ class CommissionApp(CTkFrame):
         if data['customer_type'] == "ลูกค้าใหม่":
             if not data["customer_name"] or not data["customer_id"]:
                 return False, "สำหรับ 'ลูกค้าใหม่' กรุณากรอก 'ชื่อ' และ 'รหัส' ให้ครบถ้วน"
-        else: # ลูกค้าเก่า
+        else:  # ลูกค้าเก่า
             if not data["customer_id"]:
                 return False, "กรุณาเลือก 'รหัสลูกค้า' สำหรับลูกค้าเก่า"
 
-        if self.editing_record_id is None:
-            conn = None
-            try:
-                conn = self.app_container.get_connection()
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT id FROM commissions WHERE so_number = %s AND is_active = 1", (data["so_number"],))
-                    if cursor.fetchone():
-                        return False, f"เลขที่ SO '{data['so_number']}' นี้มีอยู่ในระบบแล้ว"
-            finally:
-                if conn: self.app_container.release_connection(conn)
+        # <<< START: แก้ไข Logic การตรวจสอบ SO ซ้ำทั้งหมด >>>
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # สร้าง Query และ Parameters พื้นฐาน
+                query = "SELECT id FROM commissions WHERE so_number = %s AND is_active = 1"
+                params = [data["so_number"]]
+
+                # ถ้าอยู่ในโหมดแก้ไข (self.editing_record_id มีค่า)
+                # ให้เพิ่มเงื่อนไขว่า "ไม่ต้องตรวจสอบกับ ID ของตัวเอง"
+                if self.editing_record_id:
+                    query += " AND id != %s"
+                    params.append(self.editing_record_id)
+
+                # ทำการ Query ด้วยเงื่อนไขที่ถูกต้อง
+                cursor.execute(query, tuple(params))
+                if cursor.fetchone():
+                    return False, f"เลขที่ SO '{data['so_number']}' นี้มีอยู่ในระบบแล้ว"
+        except Exception as e:
+            # กรณีเกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล
+            return False, f"เกิดข้อผิดพลาดในการตรวจสอบข้อมูล: {e}"
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+        # <<< END: สิ้นสุดการแก้ไข >>>
 
         return True, ""
 
@@ -1448,19 +1475,37 @@ class CommissionApp(CTkFrame):
                 messagebox.showerror("ผิดพลาด", f"ไม่สามารถเพิ่มลูกค้าใหม่ได้:\n{e}", parent=self)
                 return
 
+        # <<< START: แก้ไข Logic การบันทึกข้อมูลทั้งหมด >>>
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
+                # ดึงรายชื่อคอลัมน์จากฐานข้อมูลเพื่อความแม่นยำ
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'commissions'")
+                db_columns = {row[0] for row in cursor.fetchall()}
+                
+                # กรองข้อมูลจากฟอร์มให้เหลือเฉพาะที่มีในฐานข้อมูล
+                filtered_data = {k: v for k, v in form_data.items() if k in db_columns}
+
                 if self.editing_record_id:
-                    cursor.execute("UPDATE commissions SET is_active = 0 WHERE id = %s", (self.editing_record_id,))
-                    form_data['status'] = 'Edited'
-                    form_data['original_id'] = self.editing_record_id
+                    # --- โหมดแก้ไข: ใช้คำสั่ง UPDATE ---
+                    filtered_data['status'] = 'Edited'
+                    
+                    # สร้างส่วน SET ของคำสั่ง SQL แบบไดนามิก
+                    set_clauses = [f'"{key}" = %s' for key in filtered_data.keys()]
+                    params = list(filtered_data.values())
+                    params.append(self.editing_record_id) # เพิ่ม ID สำหรับ WHERE clause
 
-                self._perform_db_insert(form_data)
+                    update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
+                    cursor.execute(update_query, tuple(params))
+                    action = "อัปเดต"
+
+                else:
+                    # --- โหมดสร้างใหม่: ใช้คำสั่ง INSERT (เหมือนเดิม) ---
+                    self._perform_db_insert(filtered_data) # ส่ง filtered_data ไปแทน
+                    action = "บันทึก"
+
             conn.commit()
-
-            action = "อัปเดต" if self.editing_record_id else "บันทึก"
             messagebox.showinfo("สำเร็จ", f"{action}ข้อมูลเรียบร้อยแล้ว", parent=self)
 
             self._clear_form(confirm=False)
@@ -1471,6 +1516,7 @@ class CommissionApp(CTkFrame):
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถบันทึกข้อมูลได้:\n{e}", parent=self)
+            traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
 
