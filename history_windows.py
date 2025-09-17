@@ -359,6 +359,14 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าสต๊อก:", data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost", is_numeric=True)
         current_row += 1
 
+        # --- START: เพิ่มช่องแสดง VAT สำหรับค่าส่งเข้าสต๊อก ---
+        CTkLabel(shipping_frame, text="VAT 7%:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        stock_vat_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
+        stock_vat_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["shipping_to_stock_vat_display"] = stock_vat_display
+        current_row += 1
+        # --- END ---
+
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าสต๊อก:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         stock_date_selector = DateSelector(shipping_frame)
         stock_date_selector.set_date(data.get("shipping_to_stock_date"))
@@ -366,7 +374,6 @@ class PurchaseDetailWindow(CTkToplevel):
         self.po_entries["shipping_to_stock_date"] = stock_date_selector
         current_row += 1
 
-        # <<< START: เพิ่มฟิลด์ใหม่สำหรับค่าส่งเข้าสต๊อก >>>
         self._create_editable_row(shipping_frame, current_row, "ประเภท VAT:", data.get("shipping_to_stock_vat_type"), key="shipping_to_stock_vat_type", widget_class=CTkOptionMenu, options=["VAT", "CASH"])
         current_row += 1
         
@@ -380,7 +387,6 @@ class PurchaseDetailWindow(CTkToplevel):
         
         self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_stock_notes"), key="shipping_to_stock_notes")
         current_row += 1
-        # <<< END >>>
 
         # --- Sub-section: ค่าส่งเข้าไซต์ ---
         CTkLabel(shipping_frame, text="--- ค่าจัดส่งเข้าไซต์ ---", font=CTkFont(weight="bold")).grid(row=current_row, column=0, columnspan=2, pady=(10,2), sticky="w", padx=10)
@@ -388,6 +394,14 @@ class PurchaseDetailWindow(CTkToplevel):
 
         self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าไซต์:", data.get("shipping_to_site_cost"), key="shipping_to_site_cost", is_numeric=True)
         current_row += 1
+        
+        # --- START: เพิ่มช่องแสดง VAT สำหรับค่าส่งเข้าไซต์ ---
+        CTkLabel(shipping_frame, text="VAT 7%:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        site_vat_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
+        site_vat_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["shipping_to_site_vat_display"] = site_vat_display
+        current_row += 1
+        # --- END ---
 
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าไซต์:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         site_date_selector = DateSelector(shipping_frame)
@@ -396,7 +410,6 @@ class PurchaseDetailWindow(CTkToplevel):
         self.po_entries["shipping_to_site_date"] = site_date_selector
         current_row += 1
         
-        # <<< START: เพิ่มฟิลด์ใหม่สำหรับค่าส่งเข้าไซต์ >>>
         self._create_editable_row(shipping_frame, current_row, "ประเภท VAT:", data.get("shipping_to_site_vat_type"), key="shipping_to_site_vat_type", widget_class=CTkOptionMenu, options=["VAT", "CASH"])
         current_row += 1
         
@@ -408,7 +421,6 @@ class PurchaseDetailWindow(CTkToplevel):
         
         self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_site_notes"), key="shipping_to_site_notes")
         current_row += 1
-        # <<< END >>>
 
         # --- ค่าย้าย (ถ้ามี) ---
         self._create_editable_row(shipping_frame, current_row, "ค่าย้าย:", data.get("relocation_cost"), key="relocation_cost", is_numeric=True)
@@ -497,42 +509,77 @@ class PurchaseDetailWindow(CTkToplevel):
         if hasattr(self, 'total_weight_label'):
             self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
         
-        # <<< START: แก้ไข Logic การคำนวณ VAT และ WHT ทั้งหมด >>>
+        # --- START: แก้ไขและเพิ่ม Logic การคำนวณ VAT ทั้งหมด ---
         try:
-            shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value() if 'shipping_to_stock_cost' in self.po_entries else 0.0
-            shipping_site = self.po_entries['shipping_to_site_cost'].get_value() if 'shipping_to_site_cost' in self.po_entries else 0.0
-            relocation_cost = self.po_entries['relocation_cost'].get_value() if 'relocation_cost' in self.po_entries else 0.0
-            bill_discount = self.po_entries['bill_discount'].get_value() if 'bill_discount' in self.po_entries else 0.0
+            # ดึงค่าตัวเลขและตัวเลือกต่างๆ
+            shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value()
+            shipping_stock_vat_type = self.po_entries['shipping_to_stock_vat_type'].get()
+            
+            shipping_site = self.po_entries['shipping_to_site_cost'].get_value()
+            shipping_site_vat_type = self.po_entries['shipping_to_site_vat_type'].get()
+
+            relocation_cost = self.po_entries['relocation_cost'].get_value()
+            bill_discount = self.po_entries['bill_discount'].get_value()
             
             wht_entry = self.po_entries.get('wht_3_percent')
             vat_entry = self.po_entries.get('vat_7_percent')
         except (KeyError, ValueError, TypeError):
+            # กรณีที่ Widget ยังไม่ถูกสร้าง หรือมีค่าผิดพลาด ให้ใช้ค่าเริ่มต้นเป็น 0
             shipping_stock, shipping_site, relocation_cost, bill_discount = 0.0, 0.0, 0.0, 0.0
+            shipping_stock_vat_type, shipping_site_vat_type = "CASH", "CASH"
             wht_entry, vat_entry = None, None
 
-        # 1. คำนวณฐานสำหรับคิดภาษี (ยอดรวมสินค้า + ค่าขนส่ง - ส่วนลดท้ายบิล)
-        base_for_tax = total_cost + shipping_stock + shipping_site + relocation_cost - bill_discount
-        
-        # 2. ตรวจสอบสถานะของ Checkbox และคำนวณภาษี
-        vat_amount = 0.0
+        # 1. คำนวณ VAT ของค่าขนส่งแต่ละส่วนแยกกัน เพื่อแสดงผล
+        stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
+        site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
+
+        # 2. อัปเดตช่องแสดงผล VAT ที่เราสร้างขึ้นใหม่
+        stock_vat_display = self.po_entries.get("shipping_to_stock_vat_display")
+        if stock_vat_display:
+            stock_vat_display.configure(state="normal")
+            stock_vat_display.delete(0, "end")
+            stock_vat_display.insert(0, f"{stock_vat_amount:,.2f}")
+            stock_vat_display.configure(state="readonly")
+
+        site_vat_display = self.po_entries.get("shipping_to_site_vat_display")
+        if site_vat_display:
+            site_vat_display.configure(state="normal")
+            site_vat_display.delete(0, "end")
+            site_vat_display.insert(0, f"{site_vat_amount:,.2f}")
+            site_vat_display.configure(state="readonly")
+
+        # 3. คำนวณฐานสำหรับคิดภาษี (ยอดรวมสินค้า + ค่าขนส่ง (เฉพาะส่วนที่เป็น VAT) - ส่วนลดท้ายบิล)
+        # **สำคัญ:** ค่าขนส่งที่เป็น CASH จะไม่ถูกนำมารวมในฐานภาษี
+        base_for_tax = total_cost - bill_discount
+        if shipping_stock_vat_type == 'VAT':
+            base_for_tax += shipping_stock
+        if shipping_site_vat_type == 'VAT':
+            base_for_tax += shipping_site
+        # หมายเหตุ: relocation_cost อาจจะต้องมีตัวเลือก VAT/CASH เช่นกัน แต่ตอนนี้สมมติว่าไม่คิด VAT ไปก่อน
+
+        # 4. ตรวจสอบสถานะของ Checkbox และคำนวณภาษี
+        vat_amount_total = 0.0
         wht_amount = 0.0
 
         if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() == 1:
-            vat_amount = base_for_tax * 0.07
+            vat_amount_total = base_for_tax * 0.07
 
         if hasattr(self, 'wht_checkbox') and self.wht_checkbox.get() == 1:
             wht_amount = base_for_tax * 0.03
 
-        # 3. อัปเดตค่าในช่อง Entry ของ VAT และ WHT ให้แสดงผลตัวเลขที่คำนวณได้
-        if vat_entry:
-            vat_entry.set(vat_amount)
-        if wht_entry:
-            wht_entry.set(wht_amount)
+        # 5. อัปเดตค่าในช่อง Entry ของ VAT และ WHT
+        if vat_entry: vat_entry.set(vat_amount_total)
+        if wht_entry: wht_entry.set(wht_amount)
 
-        # 4. คำนวณ Grand Total ใหม่โดยใช้ค่าภาษีที่คำนวณได้
-        grand_total = base_for_tax + vat_amount - wht_amount
+        # 6. คำนวณ Grand Total (ยอดฐานภาษี + VAT รวม - WHT รวม + ค่าใช้จ่ายที่ไม่คิด VAT)
+        non_vat_costs = 0.0
+        if shipping_stock_vat_type == 'CASH': non_vat_costs += shipping_stock
+        if shipping_site_vat_type == 'CASH': non_vat_costs += shipping_site
+        non_vat_costs += relocation_cost
+
+        grand_total = base_for_tax + vat_amount_total - wht_amount + non_vat_costs
         
-        # 5. อัปเดต Label แสดงผลยอดรวมสุดท้าย
+        # 7. อัปเดต Label แสดงผลยอดรวมสุดท้าย
         if hasattr(self, 'grand_total_label'):
             self.grand_total_label.configure(text=f"{grand_total:,.2f}")
 

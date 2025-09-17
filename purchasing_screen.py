@@ -334,7 +334,7 @@ class MyTasksWindow(CTkToplevel):
                 for so_data in claimed_sos:
                     card = CTkFrame(self.so_in_progress_content_frame, border_width=1)
                     card.pack(fill="x", padx=5, pady=3)
-                    info = f"SO: {so_data['so_number']} - ลูกค้า: {so_data['customer_name']}"
+                    info = f"SO: {so_data['so_number']} - ลูกค้า: {so_data['customer_name']} (ดำเนินการโดย: คุณ)"
                     CTkLabel(card, text=info, font=self.label_font).pack(side="left", padx=10, pady=5)
                     continue_button = CTkButton(card, text="ทำต่อ", command=lambda s=so_data['so_number']: self._continue_so_task(s))
                     continue_button.pack(side="right", padx=10, pady=5)
@@ -771,6 +771,23 @@ class PurchasingScreen(CTkFrame):
         self._poll_and_update_tasks_badge()
         self.bind("<Destroy>", self._on_destroy)
     
+    def _lookup_so_details(self):
+        """
+        เปิดหน้าต่างให้ผู้ใช้กรอก SO Number เพื่อค้นหาและแสดงรายละเอียด
+        """
+        dialog = CTkInputDialog(text="กรุณาใส่ SO Number ที่ต้องการค้นหา:", title="ค้นหาข้อมูล Sales Order")
+        so_to_find = dialog.get_input()
+
+        if so_to_find and so_to_find.strip():
+            # เรียกใช้หน้าต่าง SODetailViewer ที่เราสร้างไว้ใน hr_windows.py
+            SODetailViewer(
+                master=self, 
+                app_container=self.app_container, 
+                so_number=so_to_find.strip().upper()
+            )   
+        elif so_to_find is not None: # ถ้าผู้ใช้กด OK แต่ไม่กรอกอะไร
+            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก SO Number", parent=self)
+
     def _refresh_so_list(self):
         """
         ดึงข้อมูล SO ล่าสุดและอัปเดตค่าใน CTkComboBox
@@ -1516,12 +1533,12 @@ class PurchasingScreen(CTkFrame):
         self.po_number_entry.icursor(tk.END)
             
     def _on_supplier_selected(self, selection_dict: dict):
-        # --- START: เพิ่ม Logic แก้ไขข้อความในช่องค้นหา ---
-        # 1. ลบข้อความยาวๆ (ชื่อ + รหัส) ที่ AutoComplete ใส่เข้ามาทิ้งไป
+        # <<< START: เพิ่ม Logic แก้ไขข้อความในช่องค้นหา >>>
+        # 1. ลบข้อความยาวๆ ที่ AutoComplete ใส่เข้ามาทิ้งไปก่อน
         self.supplier_name_combo.delete(0, tk.END)
-        # 2. ใส่เฉพาะ "ชื่อ" กลับเข้าไปใหม่
+        # 2. ใส่เฉพาะ "ชื่อ" ของซัพพลายเออร์กลับเข้าไปใหม่
         self.supplier_name_combo.insert(0, selection_dict.get('name', ''))
-        # --- END: สิ้นสุดการเพิ่ม Logic ---
+        # <<< END: สิ้นสุดการเพิ่ม Logic >>>
 
         selected_display_name = selection_dict.get('display', '')
         
@@ -1535,6 +1552,7 @@ class PurchasingScreen(CTkFrame):
             
             self.supplier_code_entry.insert(0, supplier.get('code', ''))
             
+            # Logic การแปลง Credit Term (ส่วนนี้ดีอยู่แล้ว)
             credit_term_map = {'เงินสด': 'เงินสด', '0': 'เงินสด', '7': 'Cr 7', '15': 'Cr 15', '30': 'Cr 30'}
             term_value = str(supplier.get('term', 'เงินสด')).strip()
             self.credit_term_entry.insert(0, credit_term_map.get(term_value, term_value))
@@ -1547,8 +1565,13 @@ class PurchasingScreen(CTkFrame):
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute("SELECT id FROM suppliers WHERE supplier_code = %s", (code,)); existing_by_code = cursor.fetchone()
                 is_update = False
+                # --- START: จุดที่แก้ไข ---
                 for k, v in self.supplier_data_map.items():
-                    if v['supplier_name'] == name: self.editing_supplier_id = v['id']; is_update = True; break
+                    if v['name'] == name:  # แก้ไขจาก v['supplier_name'] เป็น v['name']
+                        self.editing_supplier_id = v['id']
+                        is_update = True
+                        break
+                # --- END: สิ้นสุดการแก้ไข ---
                 if is_update:
                     if existing_by_code and existing_by_code['id'] != self.editing_supplier_id: messagebox.showerror("ข้อมูลซ้ำ", "รหัสซัพพลายเออร์นี้ถูกใช้แล้ว", parent=self); return
                     cursor.execute("UPDATE suppliers SET supplier_name = %s, supplier_code = %s, credit_term = %s WHERE id = %s", (name, code, term, self.editing_supplier_id)); messagebox.showinfo("สำเร็จ", f"อัปเดตข้อมูล '{name}' เรียบร้อยแล้ว", parent=self)
@@ -1635,7 +1658,7 @@ class PurchasingScreen(CTkFrame):
                 display_text = f"{row['supplier_name']} (Code: {row.get('supplier_code', '')})"
                 self.supplier_completion_data.append({
                     "id": row['id'],
-                    "name": row['supplier_name'],
+                    "name": row['supplier_name'], 
                     "code": row.get('supplier_code', ''),
                     "term": row.get('credit_term', 'เงินสด'),
                     "display": display_text

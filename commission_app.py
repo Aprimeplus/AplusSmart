@@ -1095,7 +1095,7 @@ class CommissionApp(CTkFrame):
         SubmitSODialog(self, self.app_container, self.sale_key, self.sale_name)
 
     def _update_final_calculations(self, *args):
-        # --- 1. รวบรวมข้อมูลตัวเลขจากฟอร์ม ---
+        # --- 1. รวบรวมข้อมูลตัวเลขจากฟอร์ม (เหมือนเดิม) ---
         sales = utils.convert_to_float(self.sales_amount_entry.get())
         shipping = utils.convert_to_float(self.shipping_cost_entry.get())
         card_fee = utils.convert_to_float(self.credit_card_fee_entry.get())
@@ -1105,7 +1105,7 @@ class CommissionApp(CTkFrame):
         brokerage = utils.convert_to_float(self.brokerage_fee_entry.get())
         coupons = utils.convert_to_float(self.coupon_value_entry.get())
         
-        # --- 2. แยกรายการที่จะนำไปคิด VAT และรายการเงินสด ---
+        # --- 2. แยกรายการที่จะนำไปคิด VAT และรายการเงินสด (เหมือนเดิม) ---
         total_vatable_revenue = 0.0
         total_cashable_services_and_fees = 0.0
 
@@ -1126,23 +1126,32 @@ class CommissionApp(CTkFrame):
                 total_cashable_services_and_fees += amount
             var_display.set(f"{item_vat:,.2f}")
 
-        # --- START: แก้ไข Logic การคำนวณใหม่ทั้งหมด ---
-        # 3. คำนวณ "ยอดรวมขาย SO" ที่แท้จริง (Gross Subtotal) สำหรับคิด VAT
+        # --- START: แก้ไข Logic การคำนวณใหม่ทั้งหมดตามที่คุณต้องการ ---
+        # 3. รวมยอดส่วนลดทั้งหมด (ค่านายหน้า + คูปอง)
         total_deductions = brokerage + coupons
-        gross_subtotal_for_vat = total_vatable_revenue + total_deductions
 
-        # 4. คำนวณ VAT จาก ยอดรวมขาย SO ที่แท้จริง
-        total_vat_amount = gross_subtotal_for_vat * 0.07
+        # 4. คำนวณยอดสุทธิหลังหักส่วนลด (นี่คือฐานสำหรับคิด VAT)
+        #    ตัวอย่าง: ยอดขาย 500 - คูปอง 200 = 300
+        net_subtotal_for_vat = total_vatable_revenue - total_deductions
 
-        # 5. คำนวณ "ยอดที่ต้องชำระ" สุดท้าย คือ (ยอดรวม + VAT) - ส่วนลด
-        final_amount_due = (gross_subtotal_for_vat + total_vat_amount) - total_deductions
+        # 5. คำนวณ VAT 7% จากยอดสุทธิหลังหักส่วนลด
+        #    ตัวอย่าง: 7% ของ 300 = 21
+        total_vat_amount = net_subtotal_for_vat * 0.07
+
+        # 6. คำนวณ "ยอดที่ต้องชำระ" สุดท้าย (ยอดสุทธิ + VAT)
+        #    ตัวอย่าง: 300 + 21 = 321
+        final_amount_due = net_subtotal_for_vat + total_vat_amount
         
-        # 6. อัปเดตค่าบนหน้าจอ
-        self.so_subtotal_var.set(f"{gross_subtotal_for_vat:,.2f}")
+        # 7. อัปเดตค่าบนหน้าจอ "SO ยอดขายสินค้า..."
+        #    - 'รวมยอดขาย SO' จะแสดงยอดก่อนหักส่วนลด
+        #    - 'VAT 7%' จะแสดง VAT ที่คำนวณจากยอดหลังหักส่วนลดแล้ว
+        #    - 'ยอดที่ต้องชำระ' คือยอดสุดท้ายที่ลูกค้าต้องจ่าย
+        self.so_subtotal_var.set(f"{total_vatable_revenue:,.2f}") # แสดงยอดเต็มก่อนหัก
         self.so_vat_var.set(f"{total_vat_amount:,.2f}")
         self.so_grand_total_var.set(f"{final_amount_due:,.2f}")
         # --- END: สิ้นสุดการแก้ไข Logic ---
 
+        # --- ส่วนที่เหลือของฟังก์ชันทำงานเหมือนเดิม ---
         self.cash_service_total_var.set(f"{total_cashable_services_and_fees:,.2f}")
 
         payment1 = utils.convert_to_float(self.payment1_amount_entry.get())
@@ -1164,8 +1173,8 @@ class CommissionApp(CTkFrame):
             entry.configure(fg_color=color_map[state][0], text_color=color_map[state][1])
 
         set_check_result(self.so_vs_payment_result_entry, self.so_vs_payment_result_var, balance_due, 
-                         plus_text="ยอดโอนขาด", 
-                         minus_text="ยอดโอนเกิน")
+                        plus_text="ยอดโอนขาด", 
+                        minus_text="ยอดโอนเกิน")
 
         cash_product_val = utils.convert_to_float(self.cash_product_input_entry.get())
         cash_required_total = cash_product_val + total_cashable_services_and_fees

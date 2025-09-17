@@ -64,7 +64,7 @@ def register_thai_fonts():
 def _build_left_column(header_data, styles, P, PB, format_num):
     """
     สร้างคอลัมน์ด้านซ้ายของเอกสาร PDF (SELL AUDITOR)
-    -- โค้ดเวอร์ชันสุดท้าย ปรับปรุงตามข้อเสนอแนะทั้งหมด --
+    -- แก้ไข: ปรับความกว้างคอลัมน์วันที่ใน Delivery Note (เวอร์ชันสมบูรณ์) --
     """
     story = []
     
@@ -75,14 +75,11 @@ def _build_left_column(header_data, styles, P, PB, format_num):
         [PB("Sale Name"), P(header_data.get('sale_name', '')), P(f"{header_data.get('commission_month', '')}/{header_data.get('commission_year', '')}")],
         [PB("Customer Name"), P(header_data.get('customer_name', '')), P(header_data.get('credit_term', ''))]
     ]
-    so_info_table = Table(so_info_data, colWidths=[3*cm, 3.25*cm, 3.25*cm], rowHeights=0.7*cm)
+    so_info_table = Table(so_info_data, colWidths=[3*cm, 3.25*cm, 3.25*cm])
     so_info_table.setStyle(TableStyle([
-        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('LEFTPADDING', (0,0), (-1,-1), 5),
-        ('SPAN', (1,0), (2,0)), 
-        ('ALIGN', (0,0), (-1,0), 'CENTER'),
-        ('BACKGROUND', (0,0), (-1,0), colors.lemonchiffon),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('LEFTPADDING', (0,0), (-1,-1), 5), ('SPAN', (1,0), (2,0)), 
+        ('ALIGN', (0,0), (-1,0), 'CENTER'), ('BACKGROUND', (0,0), (-1,0), colors.lemonchiffon),
     ]))
     story.append(so_info_table)
     
@@ -109,7 +106,7 @@ def _build_left_column(header_data, styles, P, PB, format_num):
         [P("ค่าจัดส่ง/ค่าย้าย"), P(format_num(shipping_cost)), P("คูปอง"), P(format_num(header_data.get('coupons', 0)))],
         [P("Vat 7% ค่าจัดส่ง"), P(format_num(shipping_vat)), P("ของแถม"), P(format_num(header_data.get('giveaways', 0)))],
     ]
-    selling_table = Table(selling_data, colWidths=[3.5*cm, 1.7*cm, 2.8*cm, 1.5*cm], rowHeights=0.6*cm)
+    selling_table = Table(selling_data, colWidths=[3.5*cm, 1.7*cm, 2.8*cm, 1.5*cm])
     selling_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 5), ('RIGHTPADDING', (0,0), (-1,-1), 5),
@@ -127,7 +124,7 @@ def _build_left_column(header_data, styles, P, PB, format_num):
         [P("ยอดโอนชำระรวม VAT"), P(format_num(header_data.get('total_payment_amount', 0))), P("ตรวจสอบยอด"), P("Delivery Note")],
         [P("ยอดค้างชำระ"), P(format_num(header_data.get('balance_due', 0))), "", ""]
     ]
-    payment_table = Table(payment_data, colWidths=[3.2*cm, 1.8*cm, 1.5*cm, 3.0*cm], rowHeights=0.6*cm)
+    payment_table = Table(payment_data, colWidths=[2.8*cm, 1.8*cm, 2.0*cm, 2.9*cm])
     payment_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 5), ('ALIGN', (1,1), (1,-1), 'RIGHT'),
@@ -136,7 +133,7 @@ def _build_left_column(header_data, styles, P, PB, format_num):
     ]))
     story.append(payment_table)
 
-    # 4. Cash Payment Table
+    # 4. Cash Payment Table & Delivery Note Table
     pickup_location = header_data.get('pickup_location', '') or 'None'
     relocation_cost = format_num(header_data.get('relocation_cost', 0))
     date_to_warehouse = str(header_data.get('date_to_warehouse', '')) if header_data.get('date_to_warehouse') else 'None'
@@ -151,18 +148,18 @@ def _build_left_column(header_data, styles, P, PB, format_num):
         [P("ทะเบียนเข้ารับ:"), P(f"{pickup_registration}")],
     ]
     
-    inner_table_colWidths = [1.5*cm, 1.5*cm] 
-    inner_table_row_height = 0.6*cm
-    
-    delivery_note_inner_table = Table(delivery_note_inner_data, 
-                                      colWidths=inner_table_colWidths, 
-                                      rowHeights=[inner_table_row_height]*len(delivery_note_inner_data))
-    
+    # --- START: แก้ไขความกว้างคอลัมน์ของตาราง Delivery Note (เวอร์ชันสุดท้าย) ---
+    # ปรับสัดส่วนให้คอลัมน์ขวา (Value) กว้างขึ้น เพื่อให้วันที่ไม่ตกบรรทัด
+    inner_table_colWidths = [2.2*cm, 1.8*cm] 
+    # --- END ---
+
+    delivery_note_inner_table = Table(delivery_note_inner_data, colWidths=inner_table_colWidths)
     delivery_note_inner_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('LEFTPADDING', (0,0), (-1,-1), 0), ('RIGHTPADDING', (0,0), (-1,-1), 0),
-        ('TOPPADDING', (0,0), (-1,-1), 0), ('BOTTOMPADDING', (0,0), (-1,-1), 0),
-        ('FONTSIZE', (0,0), (-1,-1), 8), ('FONTNAME', (0,0), (-1,-1), 'THSarabunNew'),
+        ('LEFTPADDING', (0,0), (-1,-1), 2), ('RIGHTPADDING', (0,0), (-1,-1), 2),
+        ('TOPPADDING', (0,0), (-1,-1), 1), ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+        ('FONTSIZE', (0,0), (-1,-1), 11),
+        ('FONTNAME', (0,0), (-1,-1), 'THSarabunNew'),
     ]))
 
     check_balance_text = P("ตรวจสอบยอด")
@@ -174,12 +171,9 @@ def _build_left_column(header_data, styles, P, PB, format_num):
         [P("ยอดรวมค่าบริการเงินสด"), P(format_num(header_data.get('cash_service_total', 0))), check_balance_text, ""], 
         [P("ยอดที่ต้องชำระเงินสด"), P(format_num(header_data.get('cash_required_total', 0))), "", ""], 
     ]
-    
     cash_data[1][3] = delivery_note_inner_table 
     
-    cash_table = Table(cash_data, colWidths=[3.2*cm, 1.8*cm, 1.5*cm, 3.0*cm], 
-                       rowHeights=[0.6*cm, 0.75*cm, 0.75*cm, 0.75*cm, 0.75*cm]) 
-
+    cash_table = Table(cash_data, colWidths=[3.2*cm, 1.3*cm, 1.0*cm, 4.0*cm])
     cash_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 5), ('BACKGROUND', (0,0), (2,0), colors.lightgrey),
@@ -193,11 +187,11 @@ def _build_left_column(header_data, styles, P, PB, format_num):
     
     # 5. Remark Table
     remark_text = header_data.get('remark', '')
-    remark_content = Paragraph(remark_text.replace('\n', '<br/>'), styles['Normal_TH'])
-    
-    remark_table = Table([[PB("หมายเหตุ (Remark)*")], [remark_content]], 
-                          colWidths=[9.5*cm], rowHeights=[0.6*cm, 0.6*cm])
-    
+    remark_content_with_spacer = [
+        Paragraph(remark_text.replace('\n', '<br/>'), styles['Normal_TH']),
+        Spacer(1, 1.5*cm) 
+    ]
+    remark_table = Table([[PB("หมายเหตุ (Remark)*")], [remark_content_with_spacer]], colWidths=[9.5*cm])
     remark_table.setStyle(TableStyle([
         ('BOX', (0,0), (-1,-1), 0.5, colors.black),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
@@ -211,6 +205,7 @@ def _build_left_column(header_data, styles, P, PB, format_num):
 def _build_right_column(header_data, items_data, styles, P, PB, format_num):
     """
     สร้างคอลัมน์ด้านขวาของเอกสาร PDF (PURCHASE COST AUDITOR)
+    -- แก้ไข: ปรับความกว้างคอลัมน์ "รวม" ให้กว้างขึ้น (เวอร์ชันสมบูรณ์) --
     """
     story = []
 
@@ -221,7 +216,7 @@ def _build_right_column(header_data, items_data, styles, P, PB, format_num):
         [P(header_data.get('po_number','')), P(header_data.get('department','')), P(header_data.get('rr_number','')), P(header_data.get('user_name',''))],
         [PB("Supplier Name"), P(header_data.get('supplier_name','')), "", P(header_data.get('credit_term',''))]
     ]
-    po_info_table = Table(po_info_data, colWidths=[2.5*cm, 2.25*cm, 2.25*cm, 2.5*cm], rowHeights=0.7*cm)
+    po_info_table = Table(po_info_data, colWidths=[2.5*cm, 2.25*cm, 2.25*cm, 2.5*cm])
     po_info_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 5),
@@ -240,17 +235,21 @@ def _build_right_column(header_data, items_data, styles, P, PB, format_num):
         [PB("No."), PB("สถานะ"), PB("Product Name"), PB("จำนวน"), PB("ราคาทุน"), PB("รวม")]
     ]
     for i, item in enumerate(items_data):
+        product_name_paragraph = Paragraph(item.get('product_name', ''), styles['Wrapped_TH'])
         row = [
             P(str(i+1)), 
             P(item.get('status', 'ST/TD')), 
-            Paragraph(item.get('product_name', ''), styles['Normal_TH']),
+            product_name_paragraph,
             P(format_num(item.get('quantity', 0))), 
             P(format_num(item.get('unit_price', 0))),
             P(format_num(item.get('total_price', 0)))
         ]
         item_rows.append(row)
     
-    item_col_widths = [0.8*cm, 1.5*cm, 3.0*cm, 1.4*cm, 1.4*cm, 1.4*cm]
+    # --- START: แก้ไขความกว้างคอลัมน์ "รวม" (Total) ให้กว้างขึ้น ---
+    item_col_widths = [0.8*cm, 1.5*cm, 2.2*cm, 1.6*cm, 1.6*cm, 1.8*cm]
+    # --- END ---
+
     item_table = Table(item_rows, colWidths=item_col_widths)
     item_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), 
@@ -274,7 +273,7 @@ def _build_right_column(header_data, items_data, styles, P, PB, format_num):
         [P("ชำระเต็ม"), P(format_num(header_data.get('full_payment_amount', 0))), P(str(header_data.get('full_payment_date',''))), P("ยอดต้นทุนรวม VAT"), P(format_num(header_data.get('grand_total_vat_po', 0)))],
         [P("CN/คืนส่วนต่าง"), P(format_num(header_data.get('cn_refund_amount', 0))), P(str(header_data.get('cn_refund_date',''))), P("ยอดต้นทุนชำระ"), P(format_num(header_data.get('net_payable_po', 0)))],
     ]
-    payment_summary_table = Table(payment_summary_data, colWidths=[2*cm, 1.5*cm, 2*cm, 2.2*cm, 1.8*cm], rowHeights=0.6*cm)
+    payment_summary_table = Table(payment_summary_data, colWidths=[2*cm, 1.5*cm, 2*cm, 2.2*cm, 1.8*cm])
     payment_summary_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 5), ('SPAN', (0,0), (2,0)), ('SPAN', (3,0), (4,0)),
@@ -292,7 +291,7 @@ def _build_right_column(header_data, items_data, styles, P, PB, format_num):
         [P("ค่าจัดส่ง 2"), P(format_num(header_data.get('shipping_cost_2',0))), P("VAT/CASH"), P(header_data.get('shipping_vat_type_2','')), P("ผู้อนุมัติ 2"), P(header_data.get('approver_2',''))],
         [P("ผู้จัดส่ง"), P(header_data.get('shipper_2', '')), P("หมายเหตุ"), "", P("ผู้อนุมัติ 3"), P(header_data.get('approver_3',''))],
     ]
-    shipping_approval_table = Table(shipping_approval_data, colWidths=[1.5*cm, 1.5*cm, 1.5*cm, 1*cm, 2*cm, 2*cm], rowHeights=0.6*cm)
+    shipping_approval_table = Table(shipping_approval_data, colWidths=[1.5*cm, 1.5*cm, 1.5*cm, 1*cm, 2*cm, 2*cm])
     shipping_approval_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 5), ('SPAN', (0,0), (3,0)),
@@ -334,9 +333,18 @@ def generate_multi_po_pdf(so_header_data, all_po_data):
     doc.addPageTemplates([two_column_template])
 
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name='Normal_TH', fontName='THSarabunNew', fontSize=8, leading=11))
-    styles.add(ParagraphStyle(name='Bold_TH', fontName='THSarabunNew-Bold', fontSize=9, leading=12))
-    styles.add(ParagraphStyle(name='Wrapped_TH', fontName='THSarabunNew', fontSize=8, leading=9))
+
+    # --- START: จุดที่แก้ไขขนาดฟอนต์ (ใหญ่ขึ้นอีก) ---
+    # ของเดิม: fontSize=11 และ 12
+    # styles.add(ParagraphStyle(name='Normal_TH', fontName='THSarabunNew', fontSize=11, leading=14))
+    # styles.add(ParagraphStyle(name='Bold_TH', fontName='THSarabunNew-Bold', fontSize=12, leading=15))
+    # styles.add(ParagraphStyle(name='Wrapped_TH', fontName='THSarabunNew', fontSize=10, leading=12))
+
+    # ของใหม่: เพิ่มขนาดฟอนต์และระยะห่างบรรทัด (leading) ให้อ่านง่ายขึ้น
+    styles.add(ParagraphStyle(name='Normal_TH', fontName='THSarabunNew', fontSize=12, leading=15))
+    styles.add(ParagraphStyle(name='Bold_TH', fontName='THSarabunNew-Bold', fontSize=13, leading=16))
+    styles.add(ParagraphStyle(name='Wrapped_TH', fontName='THSarabunNew', fontSize=11, leading=14))
+    # --- END ---
 
     def P(text, style='Normal_TH'): return Paragraph(str(text), styles[style])
     def PB(text, style='Bold_TH'): return Paragraph(str(text), styles[style])

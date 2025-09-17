@@ -3,6 +3,7 @@ from tkinter import messagebox, StringVar, TclError
 import psycopg2
 import pandas as pd
 from datetime import datetime
+import traceback
 
 class PurchaseOrderWindow(ctk.CTkToplevel):
     def __init__(self, master, app_container, po_id=None, on_close_callback=None):
@@ -101,26 +102,98 @@ class PurchaseOrderWindow(ctk.CTkToplevel):
 
     def _load_po_data(self):
         try:
-            query_po = "SELECT * FROM purchase_orders WHERE id = %s"
+            # --- START: แก้ไข Query ให้ดึงข้อมูลค่าขนส่งมาให้ครบทุกฟิลด์ ---
+            query_po = """
+                SELECT 
+                    po.*,
+                    -- ตั้งชื่อเล่น (alias) ให้คอลัมน์ค่าขนส่งจากตารางหลัก
+                    -- เพื่อให้ชื่อไม่ซ้ำกับคอลัมน์ในตาราง items และป้องกันความสับสน
+                    po.shipping_to_stock_cost AS main_shipping_stock_cost,
+                    po.shipping_to_site_cost AS main_shipping_site_cost,
+                    po.shipping_to_stock_vat_type,
+                    po.shipping_to_stock_wht_type,
+                    po.shipping_to_stock_date,
+                    po.shipping_to_stock_shipper,
+                    po.shipping_to_stock_notes,
+                    po.shipping_to_site_vat_type,
+                    po.shipping_to_site_wht_type,
+                    po.shipping_to_site_date,
+                    po.shipping_to_site_shipper,
+                    po.shipping_to_site_notes
+                FROM purchase_orders po
+                WHERE po.id = %s
+            """
+            # --- END ---
+
             po_df = pd.read_sql(query_po, self.pg_engine, params=(self.po_id,))
             if po_df.empty:
                 messagebox.showerror("Error", "PO not found.", parent=self)
                 return
             po_data = po_df.iloc[0].to_dict()
 
+            # เติมข้อมูลทั่วไป (ส่วนนี้ดีอยู่แล้ว)
             self.entry_supplier.insert(0, po_data.get('supplier_name', ''))
             self.entry_po_number.insert(0, po_data.get('po_number', ''))
             self.entry_so_number.insert(0, po_data.get('so_number', ''))
 
+            # --- START: ส่วนที่เพิ่มเข้ามาเพื่อดึงข้อมูลค่าขนส่งโดยละเอียด ---
+
+            # 1. ค่าจัดส่งเข้าสต๊อก (Shipping to Stock)
+            if hasattr(self, 'shipping_to_stock_cost_entry'):
+                self.shipping_to_stock_cost_entry.delete(0, 'end')
+                self.shipping_to_stock_cost_entry.insert(0, f"{po_data.get('main_shipping_stock_cost', 0):.2f}")
+            
+            if hasattr(self, 'shipping_to_stock_vat_var'):
+                self.shipping_to_stock_vat_var.set(po_data.get('shipping_to_stock_vat_type', 'VAT'))
+
+            if hasattr(self, 'shipping_to_stock_wht_var'):
+                self.shipping_to_stock_wht_var.set(po_data.get('shipping_to_stock_wht_type', 'ไม่มีหัก'))
+            
+            if hasattr(self, 'shipping_to_stock_date_selector'):
+                self.shipping_to_stock_date_selector.set_date(po_data.get('shipping_to_stock_date'))
+            
+            if hasattr(self, 'shipping_to_stock_type_var'):
+                self.shipping_to_stock_type_var.set(po_data.get('shipping_to_stock_shipper', 'ซัพพลายเออร์จัดส่ง'))
+            
+            if hasattr(self, 'shipping_to_stock_notes_entry'):
+                self.shipping_to_stock_notes_entry.delete(0, 'end')
+                self.shipping_to_stock_notes_entry.insert(0, po_data.get('shipping_to_stock_notes', ''))
+
+            # 2. ค่าจัดส่งเข้าไซต์ (Shipping to Site)
+            if hasattr(self, 'shipping_to_site_cost_entry'):
+                self.shipping_to_site_cost_entry.delete(0, 'end')
+                self.shipping_to_site_cost_entry.insert(0, f"{po_data.get('main_shipping_site_cost', 0):.2f}")
+
+            if hasattr(self, 'shipping_to_site_vat_var'):
+                self.shipping_to_site_vat_var.set(po_data.get('shipping_to_site_vat_type', 'VAT'))
+
+            if hasattr(self, 'shipping_to_site_wht_var'):
+                self.shipping_to_site_wht_var.set(po_data.get('shipping_to_site_wht_type', 'ไม่มีหัก'))
+
+            if hasattr(self, 'shipping_to_site_date_selector'):
+                self.shipping_to_site_date_selector.set_date(po_data.get('shipping_to_site_date'))
+
+            if hasattr(self, 'shipping_to_site_type_var'):
+                self.shipping_to_site_type_var.set(po_data.get('shipping_to_site_shipper', 'ซัพพลายเออร์จัดส่ง'))
+
+            if hasattr(self, 'shipping_to_site_notes_entry'):
+                self.shipping_to_site_notes_entry.delete(0, 'end')
+                self.shipping_to_site_notes_entry.insert(0, po_data.get('shipping_to_site_notes', ''))
+
+            # --- END ---
+
+            # โหลดรายการสินค้า (ส่วนนี้ดีอยู่แล้ว)
             query_items = "SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id"
             items_df = pd.read_sql(query_items, self.pg_engine, params=(self.po_id,))
             for index, row in items_df.iterrows():
                 self._add_item_row(row.to_dict())
             
-            self._update_totals() # Calculate totals after loading all items
+            # สั่งให้คำนวณยอดรวมทั้งหมดอีกครั้งหลังจากโหลดข้อมูลครบ
+            self._update_totals() 
 
         except Exception as e:
             messagebox.showerror("Database Error", f"Failed to load PO data: {e}", parent=self)
+            traceback.print_exc()
 
     def _add_item_row(self, item=None):
         item_frame = ctk.CTkFrame(self.scrollable_items_frame)
