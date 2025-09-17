@@ -265,6 +265,8 @@ class PurchasingManagerScreen(CTkFrame):
         self.rejection_chart_canvas, self.polling_job_id, self.so_detail_window, self.reopen_window = None, None, None, None
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
+        from po_selection_dialog import SOSelectionPrintDialog 
+        from po_document_generator import generate_multi_po_pdf
         self._create_header()
         self._create_dashboard_view()
         self._create_pending_list_view()
@@ -272,18 +274,181 @@ class PurchasingManagerScreen(CTkFrame):
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
     
-    def _open_po_print_dialog(self):
+    def _prepare_data_for_pdf(self, po_header_data, po_items_data, po_payments_data):
         """
-        เปิดหน้าต่างสำหรับเลือก PO ใบเดียวเพื่อพิมพ์
+        ฟังก์ชัน Helper สำหรับแปลงข้อมูล PO ให้อยู่ในรูปแบบที่ PDF Generator ต้องการ
+        """
+        # เริ่มต้นด้วยข้อมูล header ของ PO ทั้งหมด
+        pdf_data = po_header_data.copy()
+
+        # --- 1. แปลงข้อมูลการชำระเงิน (Payments) ---
+        # ตั้งค่าเริ่มต้นให้เป็น 0.00 ทั้งหมด
+        payment_keys = ['deposit_amount', 'balance_due_po', 'full_payment_amount', 'cn_refund_amount']
+        for key in payment_keys:
+            pdf_data[key] = 0.0
+        
+        # วนลูปเพื่อดึงข้อมูลจาก payments_data มาใส่ใน key ที่ถูกต้อง
+        for payment in po_payments_data:
+            amount = payment.get('amount', 0.0)
+            payment_date = pd.to_datetime(payment.get('payment_date')).strftime('%Y-%m-%d') if pd.notna(payment.get('payment_date')) else ''
+            
+            if payment['payment_type'] == 'Payment 1':
+                pdf_data['deposit_amount'] += amount
+                pdf_data['deposit_date'] = payment_date
+            elif payment['payment_type'] == 'Payment 2':
+                pdf_data['deposit_amount'] += amount # ยอดมัดจำคือผลรวมของ Payment 1 และ 2
+                pdf_data['deposit_date'] = payment_date # ใช้วันที่ของรายการล่าสุด
+            elif payment['payment_type'] == 'Full Payment':
+                pdf_data['full_payment_amount'] = amount
+                pdf_data['full_payment_date'] = payment_date
+            elif payment['payment_type'] == 'CN Refund':
+                pdf_data['cn_refund_amount'] = amount
+                pdf_data['cn_refund_date'] = payment_date
+        
+        # คำนวณยอดค้างชำระ (Balance Due)
+        grand_total = pdf_data.get('grand_total', 0.0) or 0.0
+        total_paid = pdf_data['deposit_amount'] + pdf_data['full_payment_amount']
+        pdf_data['balance_due_po'] = grand_total - total_paid
+        pdf_data['net_payable_po'] = grand_total - (pdf_data.get('wht_3_percent_po', 0.0) or 0.0)
+
+        # --- 2. แปลงข้อมูลค่าจัดส่ง (Shipping) ---
+        pdf_data['shipping_cost_1'] = pdf_data.get('shipping_to_stock_cost', 0.0)
+        pdf_data['shipping_vat_type_1'] = pdf_data.get('shipping_to_stock_vat_type', 'CASH')
+        pdf_data['shipper_1'] = pdf_data.get('shipping_to_stock_shipper', '')
+        
+        pdf_data['shipping_cost_2'] = pdf_data.get('shipping_to_site_cost', 0.0)
+        pdf_data['shipping_vat_type_2'] = pdf_data.get('shipping_to_site_vat_type', 'CASH')
+        pdf_data['shipper_2'] = pdf_data.get('shipping_to_site_shipper', '')
+        
+        # --- 3. แปลงข้อมูลผู้อนุมัติ (Approvers) ---
+        # ชื่อผู้อนุมัติถูกดึงมาด้วยชื่อที่ถูกต้องแล้ว (approver_1, approver_2, approver_3)
+        # แต่เราอาจจะต้องใส่ค่าว่างไว้เผื่อกรณีที่ยังไม่มีข้อมูล
+        pdf_data['creator_user'] = pdf_data.get('user_name', '')
+        pdf_data['approver_1'] = pdf_data.get('approver_1', '')
+        pdf_data['approver_2'] = pdf_data.get('approver_2', '')
+        pdf_data['approver_3'] = pdf_data.get('approver_3', '')
+
+        return pdf_data
+
+    def _print_selected_po_from_manager(self, po_id):
+        """
+        ฟังก์ชันสำหรับดึงข้อมูล PO และ SO ที่สมบูรณ์เพื่อส่งไปสร้าง PDF
+        (ใช้ Logic เดียวกับ purchasing_screen.py)
         """
         try:
-            dialog = POSelectionDialog(
+            # นี่คือ Query ที่ถูกต้องและสมบูรณ์ที่สุด
+            query = """
+                SELECT
+                    po.*, c.*,
+                    u_po.sale_name AS user_name,
+                    u_so.sale_name AS sale_name,
+                    m1.sale_name AS approver_1,
+                    m2.sale_name AS approver_2,
+                    d.sale_name AS approver_3
+                FROM purchase_orders po
+                LEFT JOIN commissions c ON po.so_number = c.so_number AND c.is_active = 1
+                LEFT JOIN sales_users u_po ON po.user_key = u_po.sale_key
+                LEFT JOIN sales_users u_so ON c.sale_key = u_so.sale_key
+                LEFT JOIN sales_users m1 ON po.approver_manager1_key = m1.sale_key
+                LEFT JOIN sales_users m2 ON po.approver_manager2_key = m2.sale_key
+                LEFT JOIN sales_users d ON po.approver_director_key = d.sale_key
+                WHERE po.id = %s LIMIT 1;
+            """
+            po_df = pd.read_sql_query(query, self.pg_engine, params=(po_id,))
+            if po_df.empty:
+                messagebox.showerror("Error", "ไม่พบข้อมูล PO ที่เลือก", parent=self)
+                return
+
+            header_data = po_df.iloc[0].to_dict()
+            items_df = pd.read_sql_query("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
+            payments_df = pd.read_sql_query("SELECT * FROM purchase_order_payments WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
+
+            all_po_data = [{
+                "header": header_data,
+                "items": items_df.to_dict('records'),
+                "payments": payments_df.to_dict('records')
+            }]
+            
+            # ส่งข้อมูลที่ครบถ้วนไปให้ฟังก์ชันสร้าง PDF
+            from po_document_generator import generate_multi_po_pdf
+            generate_multi_po_pdf(so_header_data=header_data, all_po_data=all_po_data)
+
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูลเพื่อพิมพ์: {e}", parent=self)
+            traceback.print_exc()
+
+    def _open_po_print_dialog(self):
+        """
+        (แก้ไข) เปิดหน้าต่างสำหรับเลือก SO เพื่อพิมพ์ PO ทั้งหมดที่เกี่ยวข้อง
+        """
+        try:
+            from po_selection_dialog import SOSelectionPrintDialog # Import ซ้ำเพื่อความแน่นอน
+            dialog = SOSelectionPrintDialog(
                 master=self, 
                 pg_engine=self.app_container.pg_engine, 
-                print_callback=self.app_container.generate_single_po_document
+                print_callback=self._print_all_pos_for_so # <-- ส่ง callback ไปยังฟังก์ชันใหม่
             )
         except Exception as e:
-            messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างเลือก PO ได้: {e}", parent=self)
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างเลือก SO ได้: {e}", parent=self)
+            traceback.print_exc()
+    
+    def _print_all_pos_for_so(self, so_number):
+        """
+        (เวอร์ชันแก้ไข) รวบรวมข้อมูลทั้งหมดของ SO และ PO ที่เกี่ยวข้องเพื่อส่งไปสร้าง PDF
+        """
+        try:
+            # 1. ดึงข้อมูล Header ของ SO (เหมือนเดิม)
+            so_query = """
+                SELECT c.*, u_so.sale_name AS sale_name
+                FROM commissions c
+                LEFT JOIN sales_users u_so ON c.sale_key = u_so.sale_key
+                WHERE c.so_number = %s AND c.is_active = 1 LIMIT 1;
+            """
+            so_header_df = pd.read_sql_query(so_query, self.pg_engine, params=(so_number,))
+            if so_header_df.empty:
+                messagebox.showerror("Error", f"ไม่พบข้อมูล SO: {so_number}", parent=self)
+                return
+            so_header_data = so_header_df.iloc[0].to_dict()
+
+            # 2. ดึงข้อมูล PO ทั้งหมดที่เกี่ยวข้อง (เหมือนเดิม)
+            po_query = """
+                SELECT po.*, u_po.sale_name AS user_name,
+                    m1.sale_name AS approver_1, m2.sale_name AS approver_2, d.sale_name AS approver_3
+                FROM purchase_orders po
+                LEFT JOIN sales_users u_po ON po.user_key = u_po.sale_key
+                LEFT JOIN sales_users m1 ON po.approver_manager1_key = m1.sale_key
+                LEFT JOIN sales_users m2 ON po.approver_manager2_key = m2.sale_key
+                LEFT JOIN sales_users d ON po.approver_director_key = d.sale_key
+                WHERE po.so_number = %s AND po.status = 'Approved';
+            """
+            all_po_df = pd.read_sql_query(po_query, self.pg_engine, params=(so_number,))
+            
+            # 3. เตรียมข้อมูลสำหรับส่งไปสร้าง PDF (*** ส่วนที่แก้ไข ***)
+            all_po_data_list = []
+            for _, po_row in all_po_df.iterrows():
+                po_id = po_row['id']
+                items_df = pd.read_sql("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
+                payments_df = pd.read_sql("SELECT * FROM purchase_order_payments WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
+                
+                # *** เรียกใช้ฟังก์ชันแปลงข้อมูลตรงนี้ ***
+                prepared_header = self._prepare_data_for_pdf(
+                    po_row.to_dict(), 
+                    items_df.to_dict('records'), 
+                    payments_df.to_dict('records')
+                )
+                
+                all_po_data_list.append({
+                    "header": prepared_header, # <-- ใช้ข้อมูลที่ผ่านการแปลงแล้ว
+                    "items": items_df.to_dict('records'),
+                    "payments": payments_df.to_dict('records') # ส่งไปเผื่อ แต่ปัจจุบันไม่ได้ใช้
+                })
+            
+            # 4. เรียกใช้ฟังก์ชันสร้าง PDF (เหมือนเดิม)
+            from po_document_generator import generate_multi_po_pdf
+            generate_multi_po_pdf(so_header_data=so_header_data, all_po_data=all_po_data_list)
+
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูลเพื่อพิมพ์: {e}", parent=self)
             traceback.print_exc()
 
     def _create_header(self):

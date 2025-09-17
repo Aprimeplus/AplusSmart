@@ -113,3 +113,28 @@ class RejectionReasonDialog(CTkToplevel):
             return
         self._reason_string = ", ".join(selected_reasons)
         self.destroy()
+    
+def set_entry_text(entry_widget, text):
+        """
+        Helper function to safely set text in a CTkEntry, handling the readonly state.
+        """
+        # ตรวจสอบว่า widget ยัง存在และใช้งานได้
+        if not entry_widget or not hasattr(entry_widget, 'winfo_exists') or not entry_widget.winfo_exists():
+            return
+        
+        try:
+            current_state = entry_widget.cget("state")
+            # หากเป็นแบบอ่านอย่างเดียว (readonly) ให้เปิดเป็นปกติก่อน
+            if current_state == "readonly":
+                entry_widget.configure(state="normal")
+            
+            # ลบข้อความเก่าและใส่ข้อความใหม่
+            entry_widget.delete(0, "end")
+            entry_widget.insert(0, str(text))
+            
+            # ทำให้กลับไปเป็นแบบอ่านอย่างเดียวเหมือนเดิม
+            if current_state == "readonly":
+                entry_widget.configure(state="readonly")
+        except Exception as e:
+            # ป้องกันโปรแกรมแครชถ้าเกิดข้อผิดพลาดที่ไม่คาดคิด
+            print(f"Error in set_entry_text for widget {entry_widget}: {e}")
