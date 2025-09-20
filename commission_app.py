@@ -1102,6 +1102,7 @@ class CommissionApp(CTkFrame):
         cutting_drilling = utils.convert_to_float(self.cutting_drilling_fee_entry.get())
         other_service = utils.convert_to_float(self.other_service_fee_entry.get())
         
+        # ดึงค่ามาเพื่อแสดงผลเท่านั้น ไม่นำไปคำนวณ
         brokerage = utils.convert_to_float(self.brokerage_fee_entry.get())
         coupons = utils.convert_to_float(self.coupon_value_entry.get())
         
@@ -1126,27 +1127,21 @@ class CommissionApp(CTkFrame):
                 total_cashable_services_and_fees += amount
             var_display.set(f"{item_vat:,.2f}")
 
-        # --- START: แก้ไข Logic การคำนวณใหม่ทั้งหมดตามที่คุณต้องการ ---
-        # 3. รวมยอดส่วนลดทั้งหมด (ค่านายหน้า + คูปอง)
-        total_deductions = brokerage + coupons
+        # --- START: แก้ไข Logic การคำนวณ ---
+        # 3. [แก้ไข] ไม่นำค่านายหน้าและคูปองมาคำนวณเป็นส่วนลดอีกต่อไป
+        total_deductions = 0.0
 
-        # 4. คำนวณยอดสุทธิหลังหักส่วนลด (นี่คือฐานสำหรับคิด VAT)
-        #    ตัวอย่าง: ยอดขาย 500 - คูปอง 200 = 300
+        # 4. คำนวณยอดสุทธิ (ตอนนี้จะเท่ากับยอดรวม VATable revenue)
         net_subtotal_for_vat = total_vatable_revenue - total_deductions
 
-        # 5. คำนวณ VAT 7% จากยอดสุทธิหลังหักส่วนลด
-        #    ตัวอย่าง: 7% ของ 300 = 21
+        # 5. คำนวณ VAT 7% จากยอดสุทธิ
         total_vat_amount = net_subtotal_for_vat * 0.07
 
-        # 6. คำนวณ "ยอดที่ต้องชำระ" สุดท้าย (ยอดสุทธิ + VAT)
-        #    ตัวอย่าง: 300 + 21 = 321
+        # 6. คำนวณ "ยอดที่ต้องชำระ" สุดท้าย
         final_amount_due = net_subtotal_for_vat + total_vat_amount
         
-        # 7. อัปเดตค่าบนหน้าจอ "SO ยอดขายสินค้า..."
-        #    - 'รวมยอดขาย SO' จะแสดงยอดก่อนหักส่วนลด
-        #    - 'VAT 7%' จะแสดง VAT ที่คำนวณจากยอดหลังหักส่วนลดแล้ว
-        #    - 'ยอดที่ต้องชำระ' คือยอดสุดท้ายที่ลูกค้าต้องจ่าย
-        self.so_subtotal_var.set(f"{total_vatable_revenue:,.2f}") # แสดงยอดเต็มก่อนหัก
+        # 7. อัปเดตค่าบนหน้าจอ
+        self.so_subtotal_var.set(f"{total_vatable_revenue:,.2f}")
         self.so_vat_var.set(f"{total_vat_amount:,.2f}")
         self.so_grand_total_var.set(f"{final_amount_due:,.2f}")
         # --- END: สิ้นสุดการแก้ไข Logic ---

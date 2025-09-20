@@ -19,12 +19,14 @@ from history_windows import SOPopupWindow
 
 
 class SOPopupWindow(CTkToplevel):
-    def __init__(self, master, sales_data, so_shared_vars, sale_theme):
+    def __init__(self, master, app_container, sales_data, so_shared_vars, sale_theme, on_save_callback=None):
         super().__init__(master)
         self.master = master
+        self.app_container = app_container # <-- รับ app_container
         self.sales_data = sales_data
         self.so_shared_vars = so_shared_vars
         self.sale_theme = sale_theme
+        self.on_save_callback = on_save_callback # <-- รับ callback
         
         self.popup_widgets = {}
         self.trace_ids_for_so_calc = []
@@ -106,35 +108,54 @@ class SOPopupWindow(CTkToplevel):
         # Section 2: Sales and Services
         f2 = self._create_so_section_frame(parent_frame, "ยอดขายและบริการ")
         self._add_item_row_with_vat(f2, "ยอดขายสินค้า/บริการ:", 'sales_amount_entry', 'sales_service_vat_option', 1)
-        self._add_item_row_with_vat(f2, "ค่าบริการตัด/เจาะ:", 'cutting_drilling_fee_entry', 'cutting_drilling_fee_vat_option', 2)
-        self._add_item_row_with_vat(f2, "ค่าบริการอื่นๆ:", 'other_service_fee_entry', 'other_service_fee_vat_option', 3)
+        self._add_form_row(f2, "VAT 7%:", CTkLabel(f2, textvariable=self.so_shared_vars['sales_vat_calc_var']), 'sales_vat_display', 2)
+        self._add_item_row_with_vat(f2, "ค่าบริการตัด/เจาะ:", 'cutting_drilling_fee_entry', 'cutting_drilling_fee_vat_option', 3)
+        self._add_item_row_with_vat(f2, "ค่าบริการอื่นๆ:", 'other_service_fee_entry', 'other_service_fee_vat_option', 4)
         
         # Section 3: Shipping Cost
         f3 = self._create_so_section_frame(parent_frame, "ค่าจัดส่ง")
         self._add_item_row_with_vat(f3, "ค่าจัดส่ง:", 'shipping_cost_entry', 'shipping_vat_option_var', 1)
-        self._add_form_row(f3, "วันที่จัดส่ง:", DateSelector(f3, dropdown_style=self.master.dropdown_style), 'delivery_date_selector', 2)
+        self._add_form_row(f3, "VAT 7%:", CTkLabel(f3, textvariable=self.so_shared_vars['shipping_vat_calc_var']), 'shipping_vat_display', 2)
+        self._add_form_row(f3, "วันที่จัดส่ง:", DateSelector(f3, dropdown_style=self.master.dropdown_style), 'delivery_date_selector', 3)
 
-        f4 = self._create_so_section_frame(parent_frame, "ค่าธรรมเนียมและส่วนลด")
-        self._add_item_row_with_vat(f4, "ค่าธรรมเนียมบัตร:", 'credit_card_fee_entry', 'credit_card_fee_vat_option_var', 1)
-        self._add_form_row(f4, "ค่าธรรมเนียมโอน:", NumericEntry(f4), 'transfer_fee_entry', 2)
-        self._add_form_row(f4, "ภาษีหัก ณ ที่จ่าย:", NumericEntry(f4), 'wht_fee_entry', 3)
-        self._add_form_row(f4, "ค่านายหน้า:", NumericEntry(f4), 'brokerage_fee_entry', 4)
-        self._add_form_row(f4, "คูปอง:", NumericEntry(f4), 'coupon_value_entry', 5)
-        self._add_form_row(f4, "ของแถม:", NumericEntry(f4), 'giveaway_value_entry', 6)
-        # +++ END: สิ้นสุด Section ใหม่ +++
+        # Section 4: Delivery Note (ที่เพิ่มเข้ามาใหม่)
+        f4 = self._create_so_section_frame(parent_frame, "Delivery Note")
+        delivery_options = [
+            "ซัพพลายเออร์จัดส่ง", "Aplus Logistic ส่งหน้างาน", "ลูกค้ารับเองที่ซัพ",
+            "ลูกค้ารับเองที่คลัง 132", "ย้ายเข้าคลัง Aplus Logistic รอลูกค้ารับที่คลัง",
+            "ย้ายเข้าคลัง Aplus Logistic รอ Aplus Logistic จัดส่ง",
+            "ย้ายเข้าคลัง Lalamove รอลูกค้ารับที่คลัง 132", "ส่ง Lalamove ให้ลูกค้าหน้างาน",
+            "Aplus Logistic+ฝากส่งขนส่ง", "Lalamove +ฝากส่งขนส่ง"
+        ]
+        self._add_form_row(f4, "การจัดส่ง:", CTkOptionMenu(f4, variable=self.so_shared_vars['delivery_type_var'], values=delivery_options, **self.master.dropdown_style), 'delivery_type_menu', 1)
+        self._add_form_row(f4, "Location เข้ารับ:", CTkEntry(f4, placeholder_text="ใส่ อำเภอ, จังหวัด หรือ Google map link"), 'pickup_location_entry', 2)
+        self._add_form_row(f4, "ค่าย้าย:", NumericEntry(f4), 'relocation_cost_entry', 3)
+        self._add_form_row(f4, "วันที่ย้ายเข้าคลัง:", DateSelector(f4, dropdown_style=self.master.dropdown_style), 'date_to_wh_selector', 4)
+        self._add_form_row(f4, "วันที่จัดส่งลูกค้า:", DateSelector(f4, dropdown_style=self.master.dropdown_style), 'date_to_customer_selector', 5)
+        self._add_form_row(f4, "ทะเบียนเข้ารับ:", CTkEntry(f4), 'pickup_rego_entry', 6)
 
-        # Section 6: Payment Details (ย้ายมาไว้ตรงนี้เพื่อให้เห็นข้อมูลการชำระเงินครบถ้วน)
+        # Section 5: Fees and Discounts
+        f5 = self._create_so_section_frame(parent_frame, "ค่าธรรมเนียมและส่วนลด")
+        self._add_item_row_with_vat(f5, "ค่าธรรมเนียมบัตร:", 'credit_card_fee_entry', 'credit_card_fee_vat_option_var', 1)
+        self._add_form_row(f5, "ค่าธรรมเนียมโอน:", NumericEntry(f5), 'transfer_fee_entry', 2)
+        self._add_form_row(f5, "ภาษีหัก ณ ที่จ่าย:", NumericEntry(f5), 'wht_fee_entry', 3)
+        self._add_form_row(f5, "ค่านายหน้า:", NumericEntry(f5), 'brokerage_fee_entry', 4)
+        self._add_form_row(f5, "คูปอง:", NumericEntry(f5), 'coupon_value_entry', 5)
+        self._add_form_row(f5, "ของแถม:", NumericEntry(f5), 'giveaway_value_entry', 6)
+
+        # Section 6: Payment Details
         f6 = self._create_so_section_frame(parent_frame, "รายละเอียดการโอนชำระ")
         self._add_form_row(f6, "ยอดโอนชำระ 1:", NumericEntry(f6), 'payment1_amount_entry', 1)
         self._add_form_row(f6, "ยอดโอนชำระ 2:", NumericEntry(f6), 'payment2_amount_entry', 2)
         self._add_form_row(f6, "วันที่ชำระ:", DateSelector(f6, dropdown_style=self.master.dropdown_style), 'payment_date_selector', 3)
-        self._add_form_row(f6, "ชำระจริงก่อน VAT:", NumericEntry(f6), 'payment_before_vat_entry', 4)
-        self._add_form_row(f6, "ชำระจริง NO VAT:", NumericEntry(f6), 'payment_no_vat_entry', 5)
-
+        self._add_form_row(f6, "ชำระก่อน VAT:", NumericEntry(f6), 'payment_before_vat_entry', 4)
+        self._add_form_row(f6, "ชำระ NO VAT:", NumericEntry(f6), 'payment_no_vat_entry', 5)
+        
         # Section 7: SO Summary
         f7 = self._create_so_section_frame(parent_frame, "SO สรุปยอดรวม VAT")
-        self._add_form_row(f7, "ยอดรวมที่ต้องชำระ:", CTkLabel(f7, textvariable=self.so_shared_vars['so_grand_total_var']), 'grand_total_display', 1)
-        self._add_form_row(f7, "ผลต่าง (โอน vs ยอดรวม):", CTkLabel(f7, textvariable=self.so_shared_vars['difference_amount_var']), 'difference_display', 3)
+        self._add_form_row(f7, "ยอดรวมที่ต้องชำระ:", CTkLabel(f7, textvariable=self.so_shared_vars['so_grand_total_var'], font=CTkFont(size=14, weight="bold")), 'grand_total_display', 1)
+        self._add_form_row(f7, "ตรวจสอบยอด SO vs โอน:", CTkLabel(f7, textvariable=self.so_shared_vars['so_vs_payment_result_var']), 'so_check_display', 2)
+        self._add_form_row(f7, "ผลต่าง:", CTkLabel(f7, textvariable=self.so_shared_vars['difference_amount_var']), 'difference_display', 3)
 
         # Section 8: Cash Verification
         f8 = self._create_so_section_frame(parent_frame, "ตรวจสอบยอดชำระเงินสด")
@@ -179,52 +200,81 @@ class SOPopupWindow(CTkToplevel):
 
         def get_float_from_entry(entry_key):
             entry_widget = w_widgets.get(entry_key)
-            if entry_widget:
-                if hasattr(entry_widget, '_entry') and entry_widget._entry.winfo_exists():
-                    try: return utils.convert_to_float(entry_widget.get())
-                    except (tk.TclError, ValueError): return 0.0
-                else: return 0.0
+            if entry_widget and entry_widget.winfo_exists():
+                try: return utils.convert_to_float(entry_widget.get())
+                except (tk.TclError, ValueError): return 0.0
             return 0.0
 
+        # --- 1. ดึงข้อมูลตัวเลขจากฟอร์มทั้งหมด ---
         sales = get_float_from_entry('sales_amount_entry')
         shipping = get_float_from_entry('shipping_cost_entry')
         card_fee = get_float_from_entry('credit_card_fee_entry')
         cutting_drilling = get_float_from_entry('cutting_drilling_fee_entry')
         other_service = get_float_from_entry('other_service_fee_entry')
         
-        total_vatable_subtotal, total_cashable_services_and_fees = 0.0, 0.0
+        # ดึงค่าภาษีหัก ณ ที่จ่าย (WHT)
+        wht = get_float_from_entry('wht_fee_entry')
         
-        items_to_process = [(sales, w_vars['sales_service_vat_option'].get()), (cutting_drilling, w_vars['cutting_drilling_fee_vat_option'].get()), (other_service, w_vars['other_service_fee_vat_option'].get()), (shipping, w_vars['shipping_vat_option_var'].get()), (card_fee, w_vars['credit_card_fee_vat_option_var'].get())]
-        for amount, option in items_to_process:
-            if option == "VAT": total_vatable_subtotal += amount
-            else: total_cashable_services_and_fees += amount
-            
-        so_grand_total = total_vatable_subtotal * 1.07
-        w_vars['so_grand_total_var'].set(f"{so_grand_total:,.2f}")
+        # --- 2. แยกรายการที่ต้องคิด VAT และรายการที่เป็นเงินสด ---
+        total_vatable_revenue = 0.0
+        total_cashable_services_and_fees = 0.0
+        
+        items_to_process = [
+            (sales, w_vars['sales_service_vat_option'].get(), w_vars.get('sales_vat_calc_var')),
+            (cutting_drilling, w_vars['cutting_drilling_fee_vat_option'].get(), w_vars.get('cutting_drilling_vat_calc_var')),
+            (other_service, w_vars['other_service_fee_vat_option'].get(), w_vars.get('other_service_vat_calc_var')),
+            (shipping, w_vars['shipping_vat_option_var'].get(), w_vars.get('shipping_vat_calc_var')),
+            (card_fee, w_vars['credit_card_fee_vat_option_var'].get(), w_vars.get('card_fee_vat_calc_var'))
+        ]
 
+        for amount, option, var_display in items_to_process:
+            item_vat = 0.0
+            if option == "VAT":
+                total_vatable_revenue += amount
+                item_vat = amount * 0.07
+            else: # ถ้าไม่ใช่ VAT จะถือเป็น CASH
+                total_cashable_services_and_fees += amount
+            
+            if var_display: # อัปเดตช่องแสดง VAT ย่อย (ถ้ามี)
+                var_display.set(f"{item_vat:,.2f}")
+
+        # --- 3. [นี่คือสูตรที่ถูกต้อง] ---
+        # ยอดที่ต้องชำระ = (ยอดรวมรายการ VAT ทั้งหมด * 1.07) - ยอดหักภาษี ณ ที่จ่าย (WHT)
+        # ส่วนลดอื่นๆ (คูปอง, ของแถม) จะไม่ถูกนำมาคำนวณในยอดที่ลูกค้าต้องจ่าย
+        final_grand_total = (total_vatable_revenue * 1.07) - wht
+        w_vars['so_grand_total_var'].set(f"{final_grand_total:,.2f}")
+
+        # --- 4. คำนวณส่วนต่างการชำระ ---
         payment1 = get_float_from_entry('payment1_amount_entry')
         payment2 = get_float_from_entry('payment2_amount_entry')
-        so_vs_payment_diff = (payment1 + payment2) - so_grand_total
+        so_vs_payment_diff = (payment1 + payment2) - final_grand_total
         w_vars['difference_amount_var'].set(f"{so_vs_payment_diff:,.2f}")
 
+        # --- 5. อัปเดต UI แสดงผลการตรวจสอบยอดโอน ---
         def set_check_result(label_widget_key, var, diff_val, plus_text, minus_text):
             label_widget_ref = w_widgets.get(label_widget_key)
+            if not (label_widget_ref and label_widget_ref.winfo_exists()): return
             color_map = {"-": ("gray85", "black"), "ok": ("#BBF7D0", "#15803D"), "bad": ("#FECACA", "#B91C1C")}
             if abs(diff_val) < 0.01: state, text = "ok", "ถูกต้อง"
             elif diff_val > 0: state, text = "ok", f"{plus_text} (+{abs(diff_val):,.2f})"
-            else: state, text = "bad", f"{minus_text} (-{abs(diff_val):,.2f})"
-            if label_widget_ref and label_widget_ref.winfo_exists():
-                var.set(text)
-                if isinstance(label_widget_ref, CTkLabel): label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1], text=text)
-                elif isinstance(label_widget_ref, CTkEntry):
-                    current_state = label_widget_ref.cget("state")
-                    if current_state == "readonly": label_widget_ref.configure(state="normal")
-                    label_widget_ref.delete(0, "end"); label_widget_ref.insert(0, text)
-                    label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1])
-                    if current_state == "readonly": label_widget_ref.configure(state="readonly")
+            else: state, text = "bad", f"{minus_text} ({abs(diff_val):,.2f})"
+            var.set(text)
+            label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1], text=text)
 
         set_check_result('so_check_display', w_vars.get('so_vs_payment_result_var'), so_vs_payment_diff, "ยอดโอนเกิน", "ยอดโอนขาด")
 
+        # --- 6. คำนวณยอดเงินสด ---
+        cash_product_val = get_float_from_entry('cash_product_input_entry')
+        cash_required_total = cash_product_val + total_cashable_services_and_fees
+        w_vars['cash_required_total_var'].set(f"{cash_required_total:,.2f}")
+        
+        actual_cash_payment = get_float_from_entry('cash_actual_payment_entry')
+        cash_diff = actual_cash_payment - cash_required_total
+        
+        set_check_result('cash_check_display', w_vars.get('cash_verification_result_var'), cash_diff, "เงินสดเกิน", "เงินสดขาด")
+
+
+        # --- 6. คำนวณยอดเงินสด ---
         cash_product_val = get_float_from_entry('cash_product_input_entry')
         cash_required_total = cash_product_val + total_cashable_services_and_fees
         w_vars['cash_required_total_var'].set(f"{cash_required_total:,.2f}")
@@ -239,9 +289,7 @@ class SOPopupWindow(CTkToplevel):
 
         def set_val(widget_or_var, value):
             if not widget_or_var: return
-            
-            if not (hasattr(widget_or_var, 'winfo_exists') and widget_or_var.winfo_exists()) and not isinstance(widget_or_var, tk.StringVar):
-                return
+            if not (hasattr(widget_or_var, 'winfo_exists') and widget_or_var.winfo_exists()) and not isinstance(widget_or_var, tk.StringVar): return
 
             if isinstance(widget_or_var, (CTkEntry, NumericEntry, AutoCompleteEntry)):
                 state = widget_or_var.cget("state")
@@ -260,6 +308,7 @@ class SOPopupWindow(CTkToplevel):
             elif isinstance(widget_or_var, CTkOptionMenu):
                 widget_or_var.set(str(value) if pd.notna(value) and value else widget_or_var.cget("values")[0])
 
+        # Key map ที่เพิ่มฟิลด์ใหม่ทั้งหมดเข้ามา
         key_map = {
             'bill_date': 'bill_date_selector', 'customer_name': 'customer_name_entry', 'customer_id': 'customer_id_entry',
             'credit_term': 'credit_term_entry', 'sales_service_amount': 'sales_amount_entry', 'cutting_drilling_fee': 'cutting_drilling_fee_entry',
@@ -267,23 +316,19 @@ class SOPopupWindow(CTkToplevel):
             'credit_card_fee': 'credit_card_fee_entry', 'transfer_fee': 'transfer_fee_entry', 'wht_3_percent': 'wht_fee_entry',
             'brokerage_fee': 'brokerage_fee_entry', 'coupons': 'coupon_value_entry', 'giveaways': 'giveaway_value_entry',
             'payment_date': 'payment_date_selector', 'cash_product_input': 'cash_product_input_entry', 'cash_actual_payment': 'cash_actual_payment_entry',
+            'payment_before_vat': 'payment_before_vat_entry', 'payment_no_vat': 'payment_no_vat_entry',
             'sales_service_vat_option': 'sales_service_vat_option', 'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
             'other_service_fee_vat_option': 'other_service_fee_vat_option', 'shipping_vat_option': 'shipping_vat_option_var',
-            'credit_card_fee_vat_option': 'credit_card_fee_vat_option_var', 'so_grand_total': 'so_grand_total_var',
-            'so_vs_payment_result': 'so_vs_payment_result_var', 'difference_amount': 'difference_amount_var',
-            'cash_required_total': 'cash_required_total_var', 'cash_verification_result': 'cash_verification_result_var',
-            'delivery_type': 'delivery_type_var', 'pickup_location': 'pickup_location_entry',
-            'relocation_cost': 'relocation_cost_entry', 'date_to_warehouse': 'date_to_wh_selector',
-            'date_to_customer': 'date_to_customer_selector', 'pickup_registration': 'pickup_rego_entry'
+            'credit_card_fee_vat_option': 'credit_card_fee_vat_option_var', 'delivery_type': 'delivery_type_var', 
+            'pickup_location': 'pickup_location_entry', 'relocation_cost': 'relocation_cost_entry', 
+            'date_to_warehouse': 'date_to_wh_selector', 'date_to_customer': 'date_to_customer_selector', 
+            'pickup_registration': 'pickup_rego_entry'
         }
         
+        # ล้างฟอร์มก่อนกรอกข้อมูลใหม่
         for key, widget in self.popup_widgets.items():
             if isinstance(widget, (CTkEntry, NumericEntry, AutoCompleteEntry)): set_val(widget, "")
             elif isinstance(widget, DateSelector): set_val(widget, None)
-            elif isinstance(widget, CTkLabel): widget.configure(text="")
-        
-        for key, var in self.so_shared_vars.items():
-            if isinstance(var, tk.StringVar): var.set("")
         
         if data is not None:
             for db_key, w_key in key_map.items():
@@ -291,17 +336,76 @@ class SOPopupWindow(CTkToplevel):
                 if widget_or_var:
                     set_val(widget_or_var, data.get(db_key))
             
-            payment1_entry = self.popup_widgets.get('payment1_amount_entry')
-            if payment1_entry: set_val(payment1_entry, data.get('total_payment_amount'))
+            set_val(self.popup_widgets.get('payment1_amount_entry'), data.get('total_payment_amount'))
+            set_val(self.popup_widgets.get('payment2_amount_entry'), 0.0) # Reset payment2
         
         self.update_idletasks()
         self._so_update_final_calculations()
 
     def _save_so_changes(self):
+        """(เวอร์ชันใหม่) รวบรวมข้อมูลและบันทึกลงฐานข้อมูลโดยตรงจาก Pop-up"""
         if self.sales_data is None: 
             messagebox.showerror("ข้อผิดพลาด", "ไม่มีข้อมูล SO ให้บันทึก", parent=self)
             return
-        self.master._save_so_changes_from_popup(self.sales_data.get('id'), self.so_shared_vars, self.popup_widgets)
+
+        so_id = self.sales_data.get('id')
+        updated_data = {}
+        
+        key_map = {
+            'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id', 'credit_term_entry': 'credit_term',
+            'pickup_location_entry': 'pickup_location', 'pickup_rego_entry': 'pickup_registration',
+            'bill_date_selector': 'bill_date', 'delivery_date_selector': 'delivery_date', 'payment_date_selector': 'payment_date',
+            'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
+            'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
+            'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
+            'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
+            'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
+            'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
+            'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
+            'cash_actual_payment_entry': 'cash_actual_payment'
+        }
+
+        for widget_key, data_key in key_map.items():
+            value = None
+            if widget_key in self.popup_widgets:
+                widget = self.popup_widgets[widget_key]
+                if widget and widget.winfo_exists():
+                    if isinstance(widget, DateSelector): value = widget.get_date()
+                    elif isinstance(widget, (NumericEntry, CTkEntry)):
+                        value = widget.get()
+                        if any(k in data_key for k in ['amount', 'cost', 'fee', 'wht', 'percent', 'coupons', 'giveaways']):
+                            value = utils.convert_to_float(value)
+            if value is not None: updated_data[data_key] = value
+
+        shared_vars_map = {
+            'delivery_type_var': 'delivery_type', 'sales_service_vat_option': 'sales_service_vat_option',
+            'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option', 'other_service_fee_vat_option': 'other_service_fee_vat_option',
+            'shipping_vat_option_var': 'shipping_vat_option', 'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option'
+        }
+        for var_key, data_key in shared_vars_map.items():
+            if var_key in self.so_shared_vars: updated_data[data_key] = self.so_shared_vars[var_key].get()
+
+        p1 = utils.convert_to_float(self.popup_widgets.get('payment1_amount_entry').get())
+        p2 = utils.convert_to_float(self.popup_widgets.get('payment2_amount_entry').get())
+        updated_data['total_payment_amount'] = p1 + p2
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                set_clauses = [f'"{k}" = %s' for k in updated_data.keys()]
+                params = list(updated_data.values()) + [so_id]
+                sql_update = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
+                cursor.execute(sql_update, tuple(params))
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข SO เรียบร้อยแล้ว", parent=self)
+            if self.on_save_callback:
+                self.on_save_callback() # เรียก callback เพื่อ refresh หน้าจอหลัก
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
 
 class SalesDataViewerWindow(CTkToplevel):
     def __init__(self, master, app_container, so_number):
@@ -2480,6 +2584,22 @@ class SODetailViewer(CTkToplevel):
         CTkLabel(parent, text=value_text, font=CTkFont(size=14), wraplength=400, justify="left").grid(
             row=row_index, column=1, padx=(10, 15), pady=4, sticky="ew")
 
+    def _add_detail_row_with_vat(self, parent, row_index, label_text, value, vat_option):
+        # แสดงแถวข้อมูลหลักเหมือนเดิม
+        self._add_detail_row(parent, row_index, label_text, value, sub_text=vat_option)
+        
+        # คำนวณและแสดงแถว VAT เฉพาะเมื่อเป็น "VAT"
+        if vat_option == 'VAT' and isinstance(value, (int, float)):
+            vat_amount = value * 0.07
+            
+            # สร้าง Label เยื้องเข้าไปเล็กน้อยเพื่อความสวยงาม
+            CTkLabel(parent, text="  └─ ยอด VAT 7%", font=CTkFont(size=12, slant="italic"), text_color="gray50").grid(
+                row=row_index + 1, column=0, padx=(25, 10), pady=(0, 4), sticky="w")
+            CTkLabel(parent, text=f"{vat_amount:,.2f}", font=CTkFont(size=12, slant="italic"), text_color="gray50").grid(
+                row=row_index + 1, column=1, padx=(10, 15), pady=(0, 4), sticky="w")
+            return 2 # คืนค่า 2 เพื่อบอกว่าใช้ไป 2 แถว
+        return 1 # คืนค่า 1 ถ้าใช้ไปแถวเดียว
+  
 
     def _display_so_details(self, so_data):
         header_map = self.app_container.HEADER_MAP

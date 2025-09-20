@@ -19,24 +19,37 @@ import bcrypt
 import traceback
 import os
 import shutil
-from hr_windows import HRVerificationWindow, PayoutDetailWindow, PayoutCalculationViewer
-from tkinter import ttk, filedialog
-from hr_windows import CalculationDetailViewer
-from hr_windows import HRVerificationWindow, PayoutDetailWindow, PayoutCalculationViewer, SOPopupWindow # <--- เพิ่ม SOPopupWindow เข้าไปตรงนี้
-from tkinter import ttk, filedialog
 
+# --- START: แก้ไขการ Import และลงทะเบียนฟอนต์ ---
 import matplotlib
 matplotlib.use('TkAgg')
+from matplotlib.font_manager import fontManager
+
+try:
+    # ใช้ os.path.join เพื่อให้ทำงานได้ทุกระบบปฏิบัติการ
+    font_path = os.path.join('resources', 'THSarabunNew.ttf')
+    if os.path.exists(font_path):
+        fontManager.addfont(font_path)
+        # ตั้งค่าให้ Matplotlib รู้จักและใช้ฟอนต์นี้เป็นหลัก
+        matplotlib.rc('font', family='TH Sarabun New')
+    else:
+        print("Warning: ไม่พบฟอนต์ THSarabunNew.ttf ในโฟลเดอร์ resources")
+except Exception as e:
+    print(f"Error registering font for matplotlib: {e}")
+# --- END ---
+
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from sqlalchemy import create_engine
 
+# (import ส่วนที่เหลือของโปรแกรม)
+from hr_windows import HRVerificationWindow, PayoutDetailWindow, PayoutCalculationViewer, SOPopupWindow, CalculationDetailViewer
+from history_windows import PurchaseDetailWindow
 from custom_widgets import NumericEntry, DateSelector
 import utils
 import business_logic
-
 # --- DIALOG CLASSES ---
 
 class ManualEntryDialog(CTkToplevel):
@@ -300,6 +313,16 @@ class HRScreen(CTkFrame):
         self.selected_payout_ids = set(); self.select_all_var = tk.IntVar(value=0)
         self.theme = self.app_container.THEME["hr"]
         
+        # --- START: เพิ่มโค้ดส่วนนี้ ---
+        # สร้าง attribute 'dropdown_style' ที่หน้าต่าง Pop-up ต้องการ
+        self.dropdown_style = {
+            "fg_color": "white",
+            "text_color": "black",
+            "button_color": self.theme.get("primary", "#3B82F6"),
+            "button_hover_color": self.theme.get("header", "#2563EB")
+        }
+        # --- END ---
+        
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
         self.period_options = ["ปีนี้", "เดือนนี้"] + self.thai_months
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
@@ -315,33 +338,29 @@ class HRScreen(CTkFrame):
         self.tab_view = CTkTabview(self, corner_radius=10, border_width=1, segmented_button_selected_color=self.theme["primary"], segmented_button_unselected_hover_color="#A7F3D0", fg_color=self.cget("fg_color"), command=self._on_tab_selected)
         self.tab_view.grid(row=1, column=0, pady=10, padx=20, sticky="nsew")
 
-        # --- START: แก้ไขลำดับแท็บ ---
-        # ย้าย edit_data_tab มาไว้ก่อน compare_commission_tab
         self.dashboard_tab = self.tab_view.add("Dashboard สรุปภาพรวม")
         self.sales_target_tab = self.tab_view.add("วิเคราะห์เป้าการขาย")
         self.manage_users_tab = self.tab_view.add("จัดการผู้ใช้งาน")
-        self.edit_data_tab = self.tab_view.add("แก้ไขข้อมูล (SO/PO)") # <-- ตำแหน่งใหม่
+        self.edit_data_tab = self.tab_view.add("แก้ไขข้อมูล (SO/PO)")
         self.compare_commission_tab = self.tab_view.add("เปรียบเทียบ / ดูประวัติ")
         self.process_commission_tab = self.tab_view.add("ประมวลผลและจ่ายค่าคอม")
         self.payout_history_tab = self.tab_view.add("ประวัติการจ่ายค่าคอม")
         self.audit_log_tab = self.tab_view.add("บันทึกกิจกรรม")
         
-        # ย้ายการเรียกฟังก์ชันสร้าง UI ให้ตรงกับลำดับใหม่
         self._create_dashboard_tab(self.dashboard_tab)
         self._create_sales_target_tab(self.sales_target_tab)
         self._create_manage_users_tab(self.manage_users_tab)
-        self._create_edit_data_tab(self.edit_data_tab) # <-- ตำแหน่งใหม่
+        self._create_edit_data_tab(self.edit_data_tab)
         self._create_compare_commission_tab(self.compare_commission_tab)
         self._create_process_commission_tab(self.process_commission_tab)
         self._create_payout_history_tab(self.payout_history_tab)
         self._create_audit_log_tab(self.audit_log_tab)
-        # --- END ---
 
         self.tab_view.set("จัดการผู้ใช้งาน")
         self.after(100, self._initial_load)
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
-    
+        
     def _create_edit_data_tab(self, parent_tab):
         """สร้าง UI สำหรับหน้า Master Edit SO/PO"""
         parent_tab.grid_columnconfigure(0, weight=1)
@@ -417,51 +436,44 @@ class HRScreen(CTkFrame):
             traceback.print_exc()
 
     def _open_so_editor_for_hr(self, so_id):
-        """เปิดหน้าต่างแก้ไข SO สำหรับ HR"""
+        """เปิดหน้าต่างแก้ไข SO สำหรับ HR (ฉบับแก้ไข ส่ง app_container และ callback)"""
         try:
             so_df = pd.read_sql_query("SELECT * FROM commissions WHERE id = %s", self.pg_engine, params=(so_id,))
             if so_df.empty:
                 messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูล SO ID: {so_id}", parent=self)
                 return
             
-            # เราต้องสร้าง StringVars จำลองที่ SOPopupWindow ต้องการ
-            so_shared_vars = {}
-            so_shared_vars['delivery_type_var'] = tk.StringVar()
-            so_shared_vars['sales_service_vat_option'] = tk.StringVar()
-            so_shared_vars['cutting_drilling_fee_vat_option'] = tk.StringVar()
-            so_shared_vars['other_service_fee_vat_option'] = tk.StringVar()
-            so_shared_vars['shipping_vat_option_var'] = tk.StringVar()
-            so_shared_vars['credit_card_fee_vat_option_var'] = tk.StringVar()
-            so_shared_vars['so_grand_total_var'] = tk.StringVar()
-            so_shared_vars['so_vs_payment_result_var'] = tk.StringVar()
-            so_shared_vars['difference_amount_var'] = tk.StringVar()
-            so_shared_vars['cash_required_total_var'] = tk.StringVar()
-            so_shared_vars['cash_verification_result_var'] = tk.StringVar()
-            
-            # เรียกใช้ SOPopupWindow จาก hr_windows.py
+            so_shared_vars = {'delivery_type_var': tk.StringVar(), 'sales_service_vat_option': tk.StringVar(),'cutting_drilling_fee_vat_option': tk.StringVar(),'other_service_fee_vat_option': tk.StringVar(),'shipping_vat_option_var': tk.StringVar(),'credit_card_fee_vat_option_var': tk.StringVar(),'so_grand_total_var': tk.StringVar(),'so_vs_payment_result_var': tk.StringVar(),'difference_amount_var': tk.StringVar(),'cash_required_total_var': tk.StringVar(),'cash_verification_result_var': tk.StringVar(),'sales_vat_calc_var': tk.StringVar(value="0.00"),'cutting_drilling_vat_calc_var': tk.StringVar(value="0.00"),'other_service_vat_calc_var': tk.StringVar(value="0.00"),'shipping_vat_calc_var': tk.StringVar(value="0.00"),'card_fee_vat_calc_var': tk.StringVar(value="0.00")}
+
             SOPopupWindow(
                 master=self,
+                app_container=self.app_container,
                 sales_data=so_df.iloc[0].to_dict(),
                 so_shared_vars=so_shared_vars,
-                sale_theme=self.app_container.THEME["sale"]
+                sale_theme=self.app_container.THEME["sale"],
+                on_save_callback=self._search_so_po
             )
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข SO ได้: {e}", parent=self)
             traceback.print_exc()
 
+
     def _open_po_editor_for_hr(self, po_id):
-        """เปิดหน้าต่างแก้ไข PO สำหรับ HR"""
+        """เปิดหน้าต่างแก้ไข PO สำหรับ HR (เวอร์ชันแก้ไข: เรียกหน้าต่างโดยตรง)"""
         try:
-            # เรียกใช้ฟังก์ชันกลางที่อยู่ใน main_app ผ่าน app_container
-            # โดยส่ง callback กลับมาให้ค้นหาใหม่หลังจากแก้ไขเสร็จ
-            self.app_container.show_purchase_detail_window(
+            # เรียกใช้ PurchaseDetailWindow โดยตรง
+            PurchaseDetailWindow(
+                master=self,
+                app_container=self.app_container,
                 purchase_id=po_id,
-                on_save_callback=self._search_so_po 
+                on_save_callback=self._search_so_po # callback เพื่อ refresh หน้าค้นหาหลังบันทึก
             )
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข PO ได้: {e}", parent=self)
             traceback.print_exc()
 
+    
+    
     def _on_tab_selected(self):
         selected_tab_name = self.tab_view.get()
         if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
@@ -943,15 +955,154 @@ class HRScreen(CTkFrame):
         
     def _on_tab_selected(self):
         selected_tab_name = self.tab_view.get()
-        if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded: self._update_dashboard(); self._dashboard_loaded = True
+        
+        # --- START: เพิ่มเงื่อนไขสำหรับแท็บ "แก้ไขข้อมูล (SO/PO)" ---
+        if selected_tab_name == "แก้ไขข้อมูล (SO/PO)":
+            self._load_hr_edit_queue() # <-- ให้โหลดคิวงานเป็นค่าเริ่มต้น
+        # --- END ---
+        
+        elif selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded: self._update_dashboard(); self._dashboard_loaded = True
         elif selected_tab_name == "วิเคราะห์เป้าการขาย" and not self._sales_target_loaded: self._update_sales_target_dashboard(); self._sales_target_loaded = True
         elif selected_tab_name == "จัดการผู้ใช้งาน" and not self._users_loaded: self._populate_users_table(); self._users_loaded = True
         elif selected_tab_name == "เปรียบเทียบ / ดูประวัติ" and not self._compare_commission_loaded: self._compare_commission_loaded = True
         elif selected_tab_name == "ประมวลผลและจ่ายค่าคอม" and not self._process_commission_loaded: self._on_sale_selected_for_process(); self._process_commission_loaded = True
-        elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded:
-            self._load_payout_history()
-            self._payout_history_loaded = True
+        elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded: self._load_payout_history(); self._payout_history_loaded = True
         elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded: self._populate_audit_log_table(); self._audit_log_loaded = True
+
+    def _create_edit_data_tab(self, parent_tab):
+        """(เวอร์ชันแก้ไข) สร้าง UI สำหรับหน้า Master Edit SO/PO"""
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1)
+
+        search_frame = CTkFrame(parent_tab)
+        search_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        search_frame.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(search_frame, text="ค้นหาเฉพาะ SO/PO:", font=self.label_font).grid(row=0, column=0, padx=10, pady=10)
+        self.master_edit_search_entry = CTkEntry(search_frame, font=self.entry_font, placeholder_text="กรอก SO หรือ PO ที่ต้องการค้นหา...")
+        self.master_edit_search_entry.grid(row=0, column=1, padx=(0,5), pady=10, sticky="ew")
+        
+        # --- START: เพิ่มปุ่ม "ล้างการค้นหา" ---
+        search_button = CTkButton(search_frame, text="ค้นหา", command=self._search_so_po, width=80)
+        search_button.grid(row=0, column=2, padx=5, pady=10)
+        
+        clear_button = CTkButton(search_frame, text="ล้าง / แสดงคิวงาน", command=self._load_hr_edit_queue, fg_color="gray", width=120)
+        clear_button.grid(row=0, column=3, padx=5, pady=10)
+        # --- END ---
+
+        self.master_edit_results_frame = CTkScrollableFrame(parent_tab, label_text="ผลการค้นหา / คิวงานที่ต้องตรวจสอบ")
+        self.master_edit_results_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.master_edit_results_frame.grid_columnconfigure(0, weight=1)
+
+    def _load_hr_edit_queue(self):
+        """(ฟังก์ชันใหม่) โหลดคิวงาน SO ที่มีสถานะ 'PO Sent' มาแสดงเป็นค่าเริ่มต้น"""
+        for widget in self.master_edit_results_frame.winfo_children():
+            widget.destroy()
+        self.master_edit_search_entry.delete(0, 'end')
+
+        try:
+            query = "SELECT id, so_number, customer_name, sale_key FROM commissions WHERE status = 'PO Sent' AND is_active = 1 ORDER BY timestamp DESC;"
+            df = pd.read_sql_query(query, self.pg_engine)
+
+            if df.empty:
+                CTkLabel(self.master_edit_results_frame, text="ไม่มี SO ที่รอการตรวจสอบในคิวงาน").pack(pady=20)
+                return
+
+            for _, row in df.iterrows():
+                self._create_so_card_for_editing(self.master_edit_results_frame, row.to_dict())
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการโหลดคิวงาน: {e}", parent=self)
+
+    def _search_so_po(self):
+        """(เวอร์ชันแก้ไข) ค้นหาข้อมูล SO และ PO เฉพาะตาม Keyword"""
+        for widget in self.master_edit_results_frame.winfo_children():
+            widget.destroy()
+            
+        keyword = self.master_edit_search_entry.get().strip().upper()
+        if not keyword:
+            self._load_hr_edit_queue()
+            return
+
+        search_term = keyword
+        if search_term.startswith("SO"): search_term = search_term[2:]
+        elif search_term.startswith("PO"): search_term = search_term[2:]
+        
+        try:
+            so_query = "SELECT id, so_number, customer_name, sale_key FROM commissions WHERE so_number ILIKE %s AND is_active = 1"
+            po_query = "SELECT id, so_number, po_number, supplier_name FROM purchase_orders WHERE po_number ILIKE %s"
+
+            so_df = pd.read_sql_query(so_query, self.pg_engine, params=(f"%{search_term}%",))
+            po_df = pd.read_sql_query(po_query, self.pg_engine, params=(f"%{search_term}%",))
+
+            if so_df.empty and po_df.empty:
+                CTkLabel(self.master_edit_results_frame, text=f"ไม่พบข้อมูลสำหรับ '{keyword}'").pack(pady=20)
+                return
+
+            if not so_df.empty:
+                CTkLabel(self.master_edit_results_frame, text="ผลการค้นหา: Sales Orders (SO)", font=self.label_font).pack(anchor="w", padx=10, pady=(10,0))
+                for _, row in so_df.iterrows():
+                    self._create_so_card_for_editing(self.master_edit_results_frame, row.to_dict())
+
+            if not po_df.empty:
+                CTkLabel(self.master_edit_results_frame, text="ผลการค้นหา: Purchase Orders (PO)", font=self.label_font).pack(anchor="w", padx=10, pady=(10,0))
+                for _, row in po_df.iterrows():
+                    po_id = int(row['id'])
+                    po_card = CTkFrame(self.master_edit_results_frame, border_width=1)
+                    po_card.pack(fill="x", padx=10, pady=5)
+                    info = f"PO: {row['po_number']} | SO: {row['so_number']} | Supplier: {row['supplier_name']}"
+                    CTkLabel(po_card, text=info).pack(side="left", padx=10, pady=5)
+                    CTkButton(po_card, text="แก้ไข PO", command=lambda pid=po_id: self._open_po_editor_for_hr(pid)).pack(side="right", padx=10, pady=5)
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการค้นหา: {e}", parent=self)
+
+    def _create_so_card_for_editing(self, parent, so_data):
+        """(ฟังก์ชันใหม่) Helper สำหรับสร้าง SO Card ที่มีปุ่มแสดง PO ย่อย"""
+        so_id = int(so_data['id'])
+        so_number = so_data['so_number']
+
+        so_card = CTkFrame(parent, border_width=1, fg_color="#F0F9FF")
+        so_card.pack(fill="x", padx=10, pady=8)
+        so_card.grid_columnconfigure(0, weight=1)
+        
+        header_frame = CTkFrame(so_card, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        header_frame.grid_columnconfigure(0, weight=1)
+        
+        info_text = f"SO: {so_number}  |  ลูกค้า: {so_data.get('customer_name','N/A')}  |  เซลส์: {so_data.get('sale_key','N/A')}"
+        CTkLabel(header_frame, text=info_text, font=self.entry_font).grid(row=0, column=0, sticky="w")
+
+        action_frame = CTkFrame(header_frame, fg_color="transparent")
+        action_frame.grid(row=0, column=1, sticky="e")
+        
+        po_container = CTkFrame(so_card, fg_color="#FFFFFF") # Frame นี้จะถูกซ่อนไว้ในตอนแรก
+        
+        CTkButton(action_frame, text="แก้ไข SO", width=100, command=lambda sid=so_id: self._open_so_editor_for_hr(sid)).pack(side="left", padx=5)
+        CTkButton(action_frame, text="แสดง/ซ่อน POs", width=120, fg_color="gray", command=lambda s_num=so_number, container=po_container: self._toggle_po_list(s_num, container)).pack(side="left", padx=5)
+
+    def _toggle_po_list(self, so_number, container):
+        """(ฟังก์ชันใหม่) แสดง/ซ่อน และโหลดรายการ PO ที่เกี่ยวข้องกับ SO"""
+        if container.winfo_viewable():
+            container.grid_forget()
+        else:
+            container.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
+            if not container.winfo_children(): # โหลดข้อมูล PO เฉพาะครั้งแรกที่กด
+                try:
+                    query = "SELECT id, po_number, supplier_name, status FROM purchase_orders WHERE so_number = %s"
+                    df = pd.read_sql_query(query, self.pg_engine, params=(so_number,))
+                    if df.empty:
+                        CTkLabel(container, text="- ไม่พบ PO ที่เกี่ยวข้อง -").pack(padx=10, pady=10)
+                        return
+                    for _, row in df.iterrows():
+                        po_id = int(row['id'])
+                        po_card = CTkFrame(container, border_width=1, border_color="#E2E8F0")
+                        po_card.pack(fill="x", padx=10, pady=5)
+                        info = f"  - PO: {row['po_number']} | Supplier: {row['supplier_name']} | สถานะ: {row['status']}"
+                        CTkLabel(po_card, text=info).pack(side="left", padx=10, pady=5)
+                        CTkButton(po_card, text="แก้ไข PO", width=100, command=lambda pid=po_id: self._open_po_editor_for_hr(pid)).pack(side="right", padx=10, pady=5)
+                except Exception as e:
+                    messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการโหลด PO ย่อย: {e}", parent=self)
     
     def _show_loading(self, frame_to_clear):
         for widget in frame_to_clear.winfo_children(): widget.destroy()
@@ -980,10 +1131,43 @@ class HRScreen(CTkFrame):
         except Exception as e: print(f"Error getting sales vs target data: {e}"); messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self); return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales'])
 
     def _create_sales_vs_target_chart(self, parent_frame, data_df):
-        if hasattr(self, 'sales_target_chart_canvas') and self.sales_target_chart_canvas: self.sales_target_chart_canvas.get_tk_widget().destroy()
-        for widget in parent_frame.winfo_children(): widget.destroy()
-        if data_df.empty: CTkLabel(parent_frame, text="ไม่พบข้อมูลพนักงานขายที่มีการตั้งเป้าหมาย", font=self.header_font_table).pack(expand=True); return
-        fig = Figure(figsize=(10, 6), dpi=100, facecolor=self.theme["bg"]); ax = fig.add_subplot(111); ax.set_facecolor(self.theme["bg"]); font_name = 'Tahoma'; formatter = FuncFormatter(lambda y, pos: f'{y:,.0f}'); ax.yaxis.set_major_formatter(formatter); x = np.arange(len(data_df['sale_name'])); width = 0.35; rects1 = ax.bar(x - width/2, data_df['total_sales'], width, label='ยอดขายจริง', color=self.theme["primary"]); rects2 = ax.bar(x + width/2, data_df['sales_target'], width, label='ยอดเป้าหมาย', color='#CBD5E1', edgecolor='#94A3B8', linewidth=1); ax.set_ylabel('ยอดขาย (บาท)', fontname=font_name, fontsize=12); ax.set_title('กราฟเปรียบเทียบยอดขายจริงกับยอดเป้าหมาย', fontname=font_name, fontsize=18, weight="bold"); ax.set_xticks(x); ax.set_xticklabels(data_df['sale_name'], rotation=45, ha="right", fontname=font_name, fontsize=11); ax.legend(prop={'family': font_name, 'size': 12}); ax.grid(axis='y', linestyle='--', alpha=0.7); ax.bar_label(rects1, padding=3, fmt='{:,.0f}', fontsize=9); ax.bar_label(rects2, padding=3, fmt='{:,.0f}', fontsize=9); fig.tight_layout(); canvas = FigureCanvasTkAgg(fig, master=parent_frame); canvas.draw(); canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10); self.sales_target_chart_canvas = canvas
+        if hasattr(self, 'sales_target_chart_canvas') and self.sales_target_chart_canvas:
+            self.sales_target_chart_canvas.get_tk_widget().destroy()
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+            
+        if data_df.empty:
+            CTkLabel(parent_frame, text="ไม่พบข้อมูลพนักงานขายที่มีการตั้งเป้าหมาย", font=self.header_font_table).pack(expand=True)
+            return
+
+        # ไม่ต้องกำหนด font_name แล้ว เพราะเราตั้งค่า Default ไว้แล้ว
+        fig = Figure(figsize=(10, 6), dpi=100, facecolor=self.theme["bg"])
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(self.theme["bg"])
+        
+        formatter = FuncFormatter(lambda y, pos: f'{y:,.0f}')
+        ax.yaxis.set_major_formatter(formatter)
+
+        x = np.arange(len(data_df['sale_name']))
+        width = 0.35
+        rects1 = ax.bar(x - width/2, data_df['total_sales'], width, label='ยอดขายจริง', color=self.theme["primary"])
+        rects2 = ax.bar(x + width/2, data_df['sales_target'], width, label='ยอดเป้าหมาย', color='#CBD5E1', edgecolor='#94A3B8', linewidth=1)
+
+        ax.set_ylabel('ยอดขาย (บาท)', fontsize=12)
+        ax.set_title('กราฟเปรียบเทียบยอดขายจริงกับยอดเป้าหมาย', fontsize=18, weight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels(data_df['sale_name'], rotation=45, ha="right", fontsize=11)
+        ax.legend(prop={'size': 12})
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+
+        ax.bar_label(rects1, padding=3, fmt='{:,.0f}', fontsize=9)
+        ax.bar_label(rects2, padding=3, fmt='{:,.0f}', fontsize=9)
+        
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=parent_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.sales_target_chart_canvas = canvas
 
     def _get_po_status_summary(self, start_date, end_date):
         try: query = "SELECT status, COUNT(id) as count FROM purchase_orders WHERE timestamp BETWEEN %s AND %s GROUP BY status"; df = pd.read_sql_query(query, self.pg_engine, params=(start_date, end_date)); return df
@@ -1107,8 +1291,8 @@ class HRScreen(CTkFrame):
 
         bars = ax.bar(data_df['sale_name'], data_df['total_sales'], color=bar_colors)
         
-        ax.set_ylabel('ยอดขาย (บาท)', fontname='Tahoma', fontsize=12)
-        ax.set_title('สรุปยอดขายตามพนักงาน (Active)', fontname='Tahoma', fontsize=16, weight="bold")
+        ax.set_ylabel('ยอดขาย (บาท)', fontsize=12)
+        ax.set_title('สรุปยอดขายตามพนักงาน (Active)', fontsize=16, weight="bold")
         
         if len(data_df) > 4:
             ax.tick_params(axis='x', rotation=45)
@@ -1117,7 +1301,7 @@ class HRScreen(CTkFrame):
         ax.yaxis.set_major_formatter(formatter)
         ax.grid(axis='y', linestyle='--', alpha=0.7)
 
-        ax.bar_label(bars, fmt='{:,.0f}', padding=3, fontname='Tahoma', fontsize=9)
+        ax.bar_label(bars, fmt='{:,.0f}', padding=3, fontsize=9)
         
         fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
@@ -1563,20 +1747,20 @@ class HRScreen(CTkFrame):
             self.current_comparison_salesperson = selected_salesperson
             # --- START: จุดที่แก้ไข Query ---
             base_query = """SELECT c.*, po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, u.sale_name 
-                          FROM commissions c 
-                          JOIN sales_users u ON c.sale_key = u.sale_key
-                          LEFT JOIN (
-                                SELECT 
-                                    so_number, 
-                                    SUM(total_cost) as cogs_db,
-                                    SUM(shipping_to_stock_cost) as po_shipping_stock,
-                                    SUM(shipping_to_site_cost) as po_shipping_site,
-                                    SUM(relocation_cost) as po_relocation
-                                FROM purchase_orders 
-                                WHERE status = 'Approved' 
-                                GROUP BY so_number
-                            ) po ON c.so_number = po.so_number
-                          WHERE c.is_active = 1 AND c.status = 'Forwarded_To_HR'"""
+                            FROM commissions c 
+                            JOIN sales_users u ON c.sale_key = u.sale_key
+                            LEFT JOIN (
+                                    SELECT 
+                                        so_number, 
+                                        SUM(total_cost) as cogs_db,
+                                        SUM(shipping_to_stock_cost) as po_shipping_stock,
+                                        SUM(shipping_to_site_cost) as po_shipping_site,
+                                        SUM(relocation_cost) as po_relocation
+                                    FROM purchase_orders 
+                                    WHERE status = 'Approved' 
+                                    GROUP BY so_number
+                                ) po ON c.so_number = po.so_number
+                            WHERE c.is_active = 1 AND c.status = 'PO Sent'""" # <--- แก้ไขที่บรรทัดนี้
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 

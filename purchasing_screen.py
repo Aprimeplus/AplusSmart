@@ -1027,6 +1027,8 @@ class PurchasingScreen(CTkFrame):
         self.so_form_widgets['payment2_method_var'] = self.payment2_method_var
         self.so_form_widgets['delivery_type_var'] = self.delivery_type_var
 
+    
+
     def _create_header(self):
         header_frame = CTkFrame(self, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,5))
@@ -1134,9 +1136,21 @@ class PurchasingScreen(CTkFrame):
         self._update_tasks_badge()
     
     def _open_so_popup(self):
-        if self.current_commission_data is None: messagebox.showinfo("ข้อมูล SO", "กรุณาเลือก SO Number ก่อน", parent=self); return
-        if self.sales_data_popup and self.sales_data_popup.winfo_exists(): self.sales_data_popup.focus(); return
-        self.sales_data_popup = SOPopupWindow(self, sales_data=self.current_commission_data, so_shared_vars=self.so_form_widgets, sale_theme=self.sale_theme)
+        if self.current_commission_data is None:
+            messagebox.showinfo("ข้อมูล SO", "กรุณาเลือก SO Number ก่อน", parent=self)
+            return
+        if self.sales_data_popup and self.sales_data_popup.winfo_exists():
+            self.sales_data_popup.focus()
+            return
+        
+        self.sales_data_popup = SOPopupWindow(
+            master=self,
+            app_container=self.app_container,
+            sales_data=self.current_commission_data,
+            so_shared_vars=self.so_form_widgets,
+            sale_theme=self.sale_theme,
+            on_save_callback=lambda: self._on_so_selected(self.so_entry.get(), is_editing=True)
+        )
     
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         updated_data = {}

@@ -451,6 +451,8 @@ class PurchasingManagerScreen(CTkFrame):
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูลเพื่อพิมพ์: {e}", parent=self)
             traceback.print_exc()
 
+       
+
     def _create_header(self):
         header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
         CTkLabel(header_frame, text=f"หน้าจอหัวหน้าฝ่ายจัดซื้อ: {self.user_name}", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
@@ -603,34 +605,34 @@ class PurchasingManagerScreen(CTkFrame):
 
                 # เงื่อนไข: ถ้า PO ทุกใบของ SO นี้ถูกอนุมัติครบแล้ว
                 if total_pos > 0 and total_pos == approved_pos:
-                    print(f"All POs for SO {so_number} are approved. Forwarding to Sale Manager.")
+                    print(f"All POs for SO {so_number} are approved. Forwarding to HR.")
                     
-                    # <<< START: แก้ไข Query ตรงนี้ >>>
-                    # เพิ่มเงื่อนไข "AND is_active = 1" เพื่อให้แน่ใจว่าเราอัปเดต SO เวอร์ชันล่าสุดเสมอ
-                    new_so_status = 'Pending Sale Manager Approval'
+                    # <<< START: จุดแก้ไขสำคัญ >>>
+                    # เปลี่ยนสถานะ SO เป็น 'PO Sent' เพื่อส่งไปให้ HR
+                    new_so_status = 'PO Sent'
                     cursor.execute("""
                         UPDATE commissions SET status = %s 
                         WHERE so_number = %s AND is_active = 1
                     """, (new_so_status, so_number))
                     # <<< END: สิ้นสุดการแก้ไข >>>
 
-                    # สร้าง Notification (ส่วนนี้ทำงานถูกต้องอยู่แล้ว)
-                    cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sales Manager' AND status = 'Active'")
-                    manager_keys = [row[0] for row in cursor.fetchall()]
+                    # สร้าง Notification แจ้งเตือนฝ่าย HR
+                    cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'HR' AND status = 'Active'")
+                    hr_keys = [row[0] for row in cursor.fetchall()]
                     
-                    message = f"SO: {so_number} รอการตรวจสอบและอนุมัติจากท่าน"
-                    for manager_key in manager_keys:
+                    message = f"SO: {so_number} มี PO ที่อนุมัติครบแล้ว รอการตรวจสอบจากท่าน"
+                    for hr_key in hr_keys:
                         cursor.execute("""
                             INSERT INTO notifications (user_key_to_notify, message, is_read) 
                             VALUES (%s, %s, FALSE)
-                        """, (manager_key, message))
+                        """, (hr_key, message))
                     
                     conn.commit()
                 else:
                     print(f"SO {so_number} still has pending POs ({approved_pos}/{total_pos} approved). Waiting for completion.")
                     
         except Exception as e:
-            print(f"Error in _check_and_forward_so_to_sale_manager: {e}")
+            print(f"Error in _check_and_forward_so_to_hr: {e}") 
             if conn: conn.rollback()
             traceback.print_exc()
         finally:
