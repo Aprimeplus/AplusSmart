@@ -122,7 +122,7 @@ class PurchaseDetailWindow(CTkToplevel):
     def __init__(self, master, app_container, purchase_id, on_save_callback=None, **kwargs):
         super().__init__(master)
         self.title(f"รายละเอียด/แก้ไขใบสั่งซื้อ (PO ID: {purchase_id})")
-        self.geometry("1200x900")
+        self.geometry("900x800")
         
         self.app_container = app_container
         self.purchase_id = purchase_id
@@ -138,6 +138,7 @@ class PurchaseDetailWindow(CTkToplevel):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
+        # กลับมาใช้ ScrollableFrame แบบเดี่ยวเหมือนเดิม
         self.scroll_frame = CTkScrollableFrame(self)
         self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         self.scroll_frame.grid_columnconfigure(0, weight=1)
@@ -148,6 +149,22 @@ class PurchaseDetailWindow(CTkToplevel):
         self.transient(master)
         self.grab_set()
 
+    def _create_dropdown_row(self, parent, row_index, label, value, key, options):
+        """ฟังก์ชัน Helper ใหม่สำหรับสร้างแถว Dropdown ให้สวยงามขึ้น"""
+        CTkLabel(parent, text=f"{label}:").grid(row=row_index, column=0, padx=10, pady=5, sticky="w")
+        
+        entry_var = tk.StringVar()
+        initial_value = str(value) if value is not None and str(value) in options else options[0]
+        entry_var.set(initial_value)
+        
+        # กำหนดความกว้างของ Dropdown และผูก command
+        entry = CTkOptionMenu(parent, variable=entry_var, values=options, width=250, # <-- กำหนดความกว้าง
+                            command=self._recalculate_summary_totals)
+        
+        entry.grid(row=row_index, column=1, padx=10, pady=5, sticky="w") # <-- เปลี่ยนเป็น sticky="w"
+        self.po_entries[key] = entry_var
+        return entry
+    
     def _on_bank_selected(self, selected_bank, account_entry_widget):
         """
         เมื่อเลือกธนาคาร ให้ค้นหาเลขบัญชีล่าสุดที่เคยใช้กับซัพพลายเออร์และธนาคารนี้
@@ -243,6 +260,7 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_approval_info_section(self.scroll_frame, self.po_data)
         
         self._recalculate_summary_totals()
+        self.after(100, self._adjust_window_height_to_content)
 
     def _create_section(self, parent, title):
         section_frame = CTkFrame(parent, corner_radius=10, border_width=1)
@@ -419,6 +437,9 @@ class PurchaseDetailWindow(CTkToplevel):
         row_frame.destroy()
         self._recalculate_summary_totals()
 
+    # (ในไฟล์ history_windows.py ภายในคลาส PurchaseDetailWindow)
+# ให้นำฟังก์ชันนี้ไปวางทับของเดิม
+
     def _create_shipping_section(self, parent, data):
         shipping_frame = self._create_section(parent, "ข้อมูลการจัดส่ง")
         current_row = 1
@@ -430,31 +451,31 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าสต๊อก:", data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost", is_numeric=True)
         current_row += 1
 
-        # --- START: เพิ่มช่องแสดง VAT สำหรับค่าส่งเข้าสต๊อก ---
         CTkLabel(shipping_frame, text="VAT 7%:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         stock_vat_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
         stock_vat_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
         self.po_entries["shipping_to_stock_vat_display"] = stock_vat_display
         current_row += 1
-        # --- END ---
 
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าสต๊อก:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         stock_date_selector = DateSelector(shipping_frame)
         stock_date_selector.set_date(data.get("shipping_to_stock_date"))
-        stock_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        stock_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="w") # <-- sticky="w"
         self.po_entries["shipping_to_stock_date"] = stock_date_selector
         current_row += 1
 
-        self._create_editable_row(shipping_frame, current_row, "ประเภท VAT:", data.get("shipping_to_stock_vat_type"), key="shipping_to_stock_vat_type", widget_class=CTkOptionMenu, options=["VAT", "CASH"])
+        # --- START: เปลี่ยนไปใช้ Helper ใหม่สำหรับ Dropdown ---
+        self._create_dropdown_row(shipping_frame, current_row, "ประเภท VAT", data.get("shipping_to_stock_vat_type"), key="shipping_to_stock_vat_type", options=["VAT", "CASH"])
         current_row += 1
         
         shipper_options = ["ซัพพลายเออร์จัดส่ง", "Aplus Logistic", "Lalamove/Others"]
-        self._create_editable_row(shipping_frame, current_row, "ผู้จัดส่ง:", data.get("shipping_to_stock_shipper"), key="shipping_to_stock_shipper", widget_class=CTkOptionMenu, options=shipper_options)
+        self._create_dropdown_row(shipping_frame, current_row, "ผู้จัดส่ง", data.get("shipping_to_stock_shipper"), key="shipping_to_stock_shipper", options=shipper_options)
         current_row += 1
 
         wht_options = ["ไม่มีหัก", "1%", "3%"]
-        self._create_editable_row(shipping_frame, current_row, "หัก ณ ที่จ่าย:", data.get("shipping_to_stock_wht_type"), key="shipping_to_stock_wht_type", widget_class=CTkOptionMenu, options=wht_options)
+        self._create_dropdown_row(shipping_frame, current_row, "หัก ณ ที่จ่าย", data.get("shipping_to_stock_wht_type"), key="shipping_to_stock_wht_type", options=wht_options)
         current_row += 1
+        # --- END ---
         
         self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_stock_notes"), key="shipping_to_stock_notes")
         current_row += 1
@@ -466,76 +487,88 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าไซต์:", data.get("shipping_to_site_cost"), key="shipping_to_site_cost", is_numeric=True)
         current_row += 1
         
-        # --- START: เพิ่มช่องแสดง VAT สำหรับค่าส่งเข้าไซต์ ---
         CTkLabel(shipping_frame, text="VAT 7%:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         site_vat_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
         site_vat_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
         self.po_entries["shipping_to_site_vat_display"] = site_vat_display
         current_row += 1
-        # --- END ---
 
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าไซต์:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         site_date_selector = DateSelector(shipping_frame)
         site_date_selector.set_date(data.get("shipping_to_site_date"))
-        site_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        site_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="w") # <-- sticky="w"
         self.po_entries["shipping_to_site_date"] = site_date_selector
         current_row += 1
         
-        self._create_editable_row(shipping_frame, current_row, "ประเภท VAT:", data.get("shipping_to_site_vat_type"), key="shipping_to_site_vat_type", widget_class=CTkOptionMenu, options=["VAT", "CASH"])
+        # --- START: เปลี่ยนไปใช้ Helper ใหม่สำหรับ Dropdown ---
+        self._create_dropdown_row(shipping_frame, current_row, "ประเภท VAT", data.get("shipping_to_site_vat_type"), key="shipping_to_site_vat_type", options=["VAT", "CASH"])
         current_row += 1
         
-        self._create_editable_row(shipping_frame, current_row, "ผู้จัดส่ง:", data.get("shipping_to_site_shipper"), key="shipping_to_site_shipper", widget_class=CTkOptionMenu, options=shipper_options)
+        self._create_dropdown_row(shipping_frame, current_row, "ผู้จัดส่ง", data.get("shipping_to_site_shipper"), key="shipping_to_site_shipper", options=shipper_options)
         current_row += 1
 
-        self._create_editable_row(shipping_frame, current_row, "หัก ณ ที่จ่าย:", data.get("shipping_to_site_wht_type"), key="shipping_to_site_wht_type", widget_class=CTkOptionMenu, options=wht_options)
+        self._create_dropdown_row(shipping_frame, current_row, "หัก ณ ที่จ่าย", data.get("shipping_to_site_wht_type"), key="shipping_to_site_wht_type", options=wht_options)
         current_row += 1
+        # --- END ---
         
         self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_site_notes"), key="shipping_to_site_notes")
         current_row += 1
 
-        # --- ค่าย้าย (ถ้ามี) ---
         self._create_editable_row(shipping_frame, current_row, "ค่าย้าย:", data.get("relocation_cost"), key="relocation_cost", is_numeric=True)
 
     def _create_summary_section(self, parent, data):
         summary_frame = self._create_section(parent, "สรุปยอด")
         
         # --- ยอดรวมต้นทุนสินค้า ---
-        CTkLabel(summary_frame, text="ยอดรวมต้นทุนสินค้า (คำนวณ):", anchor="w").grid(row=1, column=0, columnspan=2, padx=10, pady=3, sticky="w")
-        self.total_cost_label = CTkLabel(summary_frame, text="0.00", anchor="w")
-        self.total_cost_label.grid(row=1, column=2, padx=10, pady=3, sticky="w")
+        CTkLabel(summary_frame, text="ยอดรวมต้นทุนสินค้า (คำนวณ):", anchor="w").grid(row=1, column=0, padx=10, pady=3, sticky="w")
+        self.total_cost_label = CTkLabel(summary_frame, text="0.00", anchor="e")
+        self.total_cost_label.grid(row=1, column=1, padx=10, pady=3, sticky="e") # จัดชิดขวา
         
         # --- ส่วนลดท้ายบิล ---
+        # ใช้ _create_editable_row เหมือนเดิม เพราะเป็นแถวมาตรฐาน (Label: Entry)
         self._create_editable_row(summary_frame, 2, "ส่วนลดท้ายบิล:", data.get("bill_discount"), key="bill_discount", is_numeric=True)
         
         # --- น้ำหนักรวม ---
-        CTkLabel(summary_frame, text="น้ำหนักรวม (คำนวณ):", anchor="w").grid(row=3, column=0, columnspan=2, padx=10, pady=3, sticky="w")
-        self.total_weight_label = CTkLabel(summary_frame, text="0.00 kg", anchor="w")
-        self.total_weight_label.grid(row=3, column=2, padx=10, pady=3, sticky="w")
+        CTkLabel(summary_frame, text="น้ำหนักรวม (คำนวณ):", anchor="w").grid(row=3, column=0, padx=10, pady=3, sticky="w")
+        self.total_weight_label = CTkLabel(summary_frame, text="0.00 kg", anchor="e")
+        self.total_weight_label.grid(row=3, column=1, padx=10, pady=3, sticky="e") # จัดชิดขวา
 
         # --- START: แก้ไขส่วน Checkbox และ Entry ของ WHT และ VAT ---
+        # เราจะสร้างและจัดวาง widget เองเพื่อการควบคุมที่สมบูรณ์
         
         # --- ภาษีหัก ณ ที่จ่าย (3%) ---
         self.wht_checkbox = CTkCheckBox(summary_frame, text="ภาษีหัก ณ ที่จ่าย (3%):", command=self._recalculate_summary_totals)
-        self.wht_checkbox.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky="w")
-        wht_entry = self._create_editable_row(summary_frame, 4, "", data.get("wht_3_percent"), key="wht_3_percent", is_numeric=True)
-        wht_entry.grid(row=4, column=2) # จัดตำแหน่ง Entry ใหม่
+        self.wht_checkbox.grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        
+        # สร้าง Entry แยกต่างหาก
+        wht_entry = FormattedNumericEntry(summary_frame, command=self._recalculate_summary_totals)
+        wht_entry.set(data.get("wht_3_percent", 0.0))
+        # จัดวางในคอลัมน์ที่ 1 และให้ขยายเต็มความกว้าง (sticky="ew")
+        wht_entry.grid(row=4, column=1, padx=10, pady=5, sticky="ew") 
+        self.po_entries['wht_3_percent'] = wht_entry # อย่าลืมเก็บ reference ไว้
         if data.get("wht_3_percent_checked"):
             self.wht_checkbox.select()
 
         # --- ภาษีมูลค่าเพิ่ม (7%) ---
         self.vat_checkbox = CTkCheckBox(summary_frame, text="ภาษีมูลค่าเพิ่ม (7%):", command=self._recalculate_summary_totals)
-        self.vat_checkbox.grid(row=5, column=0, columnspan=2, padx=10, pady=5, sticky="w")
-        vat_entry = self._create_editable_row(summary_frame, 5, "", data.get("vat_7_percent"), key="vat_7_percent", is_numeric=True)
-        vat_entry.grid(row=5, column=2) # จัดตำแหน่ง Entry ใหม่
+        self.vat_checkbox.grid(row=5, column=0, padx=10, pady=5, sticky="w")
+
+        # สร้าง Entry แยกต่างหาก
+        vat_entry = FormattedNumericEntry(summary_frame, command=self._recalculate_summary_totals)
+        vat_entry.set(data.get("vat_7_percent", 0.0))
+        # จัดวางในคอลัมน์ที่ 1 และให้ขยายเต็มความกว้าง (sticky="ew")
+        vat_entry.grid(row=5, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries['vat_7_percent'] = vat_entry # อย่าลืมเก็บ reference ไว้
         if data.get("vat_7_percent_checked") is not False: # ถ้าเป็น True หรือ None (ไม่มีข้อมูล) ให้ติ๊กไว้ก่อน
             self.vat_checkbox.select()
 
         # --- END ---
 
         # --- ยอดรวมที่ต้องชำระ ---
-        CTkLabel(summary_frame, text="ยอดรวมที่ต้องชำระ (คำนวณ):", anchor="w", font=CTkFont(weight="bold")).grid(row=6, column=0, columnspan=2, padx=10, pady=3, sticky="w")
-        self.grand_total_label = CTkLabel(summary_frame, text="0.00", anchor="w", font=CTkFont(weight="bold"))
-        self.grand_total_label.grid(row=6, column=2, padx=10, pady=3, sticky="w")
+        CTkLabel(summary_frame, text="ยอดรวมที่ต้องชำระ (คำนวณ):", anchor="w", font=CTkFont(weight="bold")).grid(row=6, column=0, padx=10, pady=3, sticky="w")
+        self.grand_total_label = CTkLabel(summary_frame, text="0.00", anchor="e", font=CTkFont(weight="bold"))
+        self.grand_total_label.grid(row=6, column=1, padx=10, pady=3, sticky="e") # จัดชิดขวา
+
 
     # <<< START: เพิ่ม Section ใหม่สำหรับข้อมูลการอนุมัติ >>>
     def _create_approval_info_section(self, parent, data):
@@ -757,36 +790,35 @@ class PurchaseDetailWindow(CTkToplevel):
         self._recalculate_summary_totals()
 
     def _create_action_buttons(self):
-        button_frame = CTkFrame(self)
-        button_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        # เราได้เปลี่ยนตัวแปรตรงนี้ในการแก้ไขครั้งก่อน
+        self.button_frame = CTkFrame(self)
+        self.button_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         
         # --- Manager/Director View ---
         if self.user_role in ['Purchasing Manager', 'Director']:
-            # --- START: แก้ไขส่วนนี้ ---
-            # 1. เพิ่มคอลัมน์สำหรับปุ่มใหม่
-            button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+            # ดังนั้น เราต้องใช้ self.button_frame ในส่วนที่เหลือด้วย
+            self.button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
-            approve_button = CTkButton(button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D")
+            approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D")
             approve_button.grid(row=0, column=0, padx=5, sticky="ew")
 
-            reject_button = CTkButton(button_frame, text="ปฏิเสธ (Reject)", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C")
+            reject_button = CTkButton(self.button_frame, text="ปฏิเสธ (Reject)", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C")
             reject_button.grid(row=0, column=1, padx=5, sticky="ew")
 
-            # 2. เพิ่มปุ่ม "บันทึกการแก้ไข"
-            save_button = CTkButton(button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB")
+            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB")
             save_button.grid(row=0, column=2, padx=5, sticky="ew")
 
-            close_button = CTkButton(button_frame, text="ปิด", command=self.destroy, fg_color="gray")
+            close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray")
             close_button.grid(row=0, column=3, padx=5, sticky="ew")
-            # --- END ---
 
         # --- HR/PU Staff View ---
         else:
-            button_frame.grid_columnconfigure(0, weight=1)
-            save_button = CTkButton(button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
+            # และในส่วนนี้ด้วยเช่นกัน
+            self.button_frame.grid_columnconfigure(0, weight=1)
+            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
             save_button.pack(side="left", padx=10, pady=10)
         
-            close_button = CTkButton(button_frame, text="ปิด", command=self.destroy, fg_color="gray")
+            close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray")
             close_button.pack(side="right", padx=10, pady=10)
     
     def _approve_po(self):
@@ -839,6 +871,42 @@ class PurchaseDetailWindow(CTkToplevel):
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
         finally:
             if conn: self.app_container.release_connection(conn)
+    
+    def _adjust_window_height_to_content(self):
+        """คำนวณและปรับความสูงของหน้าต่างให้พอดีกับเนื้อหาทั้งหมด"""
+        self.update_idletasks()
+
+        content_height = self.scroll_frame.winfo_reqheight()
+        buttons_height = self.button_frame.winfo_reqheight()
+        
+        total_needed_height = content_height + buttons_height + 40 
+
+        screen_height = self.winfo_screenheight()
+        max_height = screen_height - 80 
+        final_height = min(total_needed_height, max_height)
+        
+        current_width = self.winfo_width()
+        if current_width < 900:
+            current_width = 900
+            
+        self.geometry(f"{current_width}x{final_height}")
+        self._position_window() # <-- เปลี่ยนจากการเรียก center_window มาเป็นฟังก์ชันใหม่
+
+    def _position_window(self):
+        """(ชื่อเดิม center_window) จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลางแนวนอน และยึดตำแหน่งบนสุดไว้"""
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        
+        # จัดกึ่งกลางแนวนอนเหมือนเดิม
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        
+        # --- START: จุดแก้ไขสำคัญ ---
+        # ยึดตำแหน่งบนสุดของหน้าต่าง (แกน Y) ไว้ที่ 40 pixels จากขอบจอบนเสมอ
+        y = 40
+        # --- END ---
+        
+        self.geometry(f'{width}x{height}+{x}+{y}')
 
     def _save_changes(self):
         self._recalculate_summary_totals()
