@@ -259,6 +259,11 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_payments_section(self.scroll_frame, self.payments_data)
         self._create_approval_info_section(self.scroll_frame, self.po_data)
         
+        # --- START: เพิ่มโค้ด 1 บรรทัดนี้ที่ท้ายสุดของฟังก์ชัน ---
+        # เพิ่ม Frame ที่มองไม่เห็น (fg_color="transparent") เพื่อดันเนื้อหาทั้งหมดขึ้นไปด้านบน
+        CTkFrame(self.scroll_frame, fg_color="transparent").pack(expand=True, fill="both")
+        # --- END ---
+
         self._recalculate_summary_totals()
         self.after(100, self._adjust_window_height_to_content)
 
@@ -519,55 +524,48 @@ class PurchaseDetailWindow(CTkToplevel):
     def _create_summary_section(self, parent, data):
         summary_frame = self._create_section(parent, "สรุปยอด")
         
+        # --- กำหนดสไตล์สำหรับป้ายแสดงผล ---
+        display_font = CTkFont(size=14, weight="bold")
+        grand_total_font = CTkFont(size=18, weight="bold")
+        display_fg_color = ("gray85", "gray18") # สีพื้นหลังสำหรับโหมดสว่าง/มืด
+
         # --- ยอดรวมต้นทุนสินค้า ---
-        CTkLabel(summary_frame, text="ยอดรวมต้นทุนสินค้า (คำนวณ):", anchor="w").grid(row=1, column=0, padx=10, pady=3, sticky="w")
-        self.total_cost_label = CTkLabel(summary_frame, text="0.00", anchor="e")
-        self.total_cost_label.grid(row=1, column=1, padx=10, pady=3, sticky="e") # จัดชิดขวา
+        CTkLabel(summary_frame, text="ยอดรวมต้นทุนสินค้า:", anchor="w").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.total_cost_label = CTkLabel(summary_frame, text="0.00", font=display_font, fg_color=display_fg_color, corner_radius=5)
+        self.total_cost_label.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
         
         # --- ส่วนลดท้ายบิล ---
-        # ใช้ _create_editable_row เหมือนเดิม เพราะเป็นแถวมาตรฐาน (Label: Entry)
         self._create_editable_row(summary_frame, 2, "ส่วนลดท้ายบิล:", data.get("bill_discount"), key="bill_discount", is_numeric=True)
         
         # --- น้ำหนักรวม ---
-        CTkLabel(summary_frame, text="น้ำหนักรวม (คำนวณ):", anchor="w").grid(row=3, column=0, padx=10, pady=3, sticky="w")
-        self.total_weight_label = CTkLabel(summary_frame, text="0.00 kg", anchor="e")
-        self.total_weight_label.grid(row=3, column=1, padx=10, pady=3, sticky="e") # จัดชิดขวา
+        CTkLabel(summary_frame, text="น้ำหนักรวม:", anchor="w").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.total_weight_label = CTkLabel(summary_frame, text="0.00 kg", font=display_font, fg_color=display_fg_color, corner_radius=5)
+        self.total_weight_label.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
 
-        # --- START: แก้ไขส่วน Checkbox และ Entry ของ WHT และ VAT ---
-        # เราจะสร้างและจัดวาง widget เองเพื่อการควบคุมที่สมบูรณ์
-        
         # --- ภาษีหัก ณ ที่จ่าย (3%) ---
         self.wht_checkbox = CTkCheckBox(summary_frame, text="ภาษีหัก ณ ที่จ่าย (3%):", command=self._recalculate_summary_totals)
         self.wht_checkbox.grid(row=4, column=0, padx=10, pady=5, sticky="w")
-        
-        # สร้าง Entry แยกต่างหาก
         wht_entry = FormattedNumericEntry(summary_frame, command=self._recalculate_summary_totals)
         wht_entry.set(data.get("wht_3_percent", 0.0))
-        # จัดวางในคอลัมน์ที่ 1 และให้ขยายเต็มความกว้าง (sticky="ew")
         wht_entry.grid(row=4, column=1, padx=10, pady=5, sticky="ew") 
-        self.po_entries['wht_3_percent'] = wht_entry # อย่าลืมเก็บ reference ไว้
+        self.po_entries['wht_3_percent'] = wht_entry
         if data.get("wht_3_percent_checked"):
             self.wht_checkbox.select()
 
         # --- ภาษีมูลค่าเพิ่ม (7%) ---
         self.vat_checkbox = CTkCheckBox(summary_frame, text="ภาษีมูลค่าเพิ่ม (7%):", command=self._recalculate_summary_totals)
         self.vat_checkbox.grid(row=5, column=0, padx=10, pady=5, sticky="w")
-
-        # สร้าง Entry แยกต่างหาก
         vat_entry = FormattedNumericEntry(summary_frame, command=self._recalculate_summary_totals)
         vat_entry.set(data.get("vat_7_percent", 0.0))
-        # จัดวางในคอลัมน์ที่ 1 และให้ขยายเต็มความกว้าง (sticky="ew")
         vat_entry.grid(row=5, column=1, padx=10, pady=5, sticky="ew")
-        self.po_entries['vat_7_percent'] = vat_entry # อย่าลืมเก็บ reference ไว้
-        if data.get("vat_7_percent_checked") is not False: # ถ้าเป็น True หรือ None (ไม่มีข้อมูล) ให้ติ๊กไว้ก่อน
+        self.po_entries['vat_7_percent'] = vat_entry
+        if data.get("vat_7_percent_checked") is not False:
             self.vat_checkbox.select()
 
-        # --- END ---
-
         # --- ยอดรวมที่ต้องชำระ ---
-        CTkLabel(summary_frame, text="ยอดรวมที่ต้องชำระ (คำนวณ):", anchor="w", font=CTkFont(weight="bold")).grid(row=6, column=0, padx=10, pady=3, sticky="w")
-        self.grand_total_label = CTkLabel(summary_frame, text="0.00", anchor="e", font=CTkFont(weight="bold"))
-        self.grand_total_label.grid(row=6, column=1, padx=10, pady=3, sticky="e") # จัดชิดขวา
+        CTkLabel(summary_frame, text="ยอดรวมที่ต้องชำระ:", anchor="w", font=CTkFont(size=16, weight="bold")).grid(row=6, column=0, padx=10, pady=(10, 5), sticky="w")
+        self.grand_total_label = CTkLabel(summary_frame, text="0.00", font=grand_total_font, fg_color="#16A34A", text_color="white", corner_radius=5)
+        self.grand_total_label.grid(row=6, column=1, padx=10, pady=(10, 5), sticky="ew")
 
 
     # <<< START: เพิ่ม Section ใหม่สำหรับข้อมูลการอนุมัติ >>>
@@ -587,50 +585,68 @@ class PurchaseDetailWindow(CTkToplevel):
     # <<< END >>>
 
     def _recalculate_summary_totals(self, *args):
+        # --- START: เพิ่มการตรวจสอบว่าหน้าต่างยังอยู่หรือไม่ ---
+        # ถ้าหน้าต่างหลักถูกปิดไปแล้ว ก็ไม่ต้องคำนวณอะไรต่อ
+        if not self.winfo_exists():
+            return
+        # --- END ---
+
         total_cost = 0.0
         total_weight = 0.0
         
         for item_row in self.item_entries:
             try:
                 widgets = item_row['widgets']
+                # --- START: เพิ่มการตรวจสอบให้วิดเจ็ตในแถว ---
+                # เช็คว่าเฟรมของแถวนี้ยังอยู่ไหม ถ้าโดนลบไปแล้วก็ข้ามไป
+                if not widgets['quantity'].winfo_exists():
+                    continue
+                # --- END ---
+
                 qty = widgets['quantity'].get_value()
                 price = widgets['unit_price'].get_value()
                 discount = widgets['discount_value'].get_value()
                 weight = widgets['total_weight'].get_value()
                 
-                # --- START: แก้ไขสูตรคำนวณส่วนลด ---
-                # 1. ดึงประเภทของส่วนลดจาก StringVar ที่เราเก็บไว้
                 discount_type = widgets['discount_type_var'].get()
                 
-                # 2. คำนวณราคาก่อนหักส่วนลด
                 line_total = qty * price
                 
-                # 3. คำนวณยอดส่วนลดตามประเภท
                 discount_amount = 0.0
                 if discount_type == '%':
                     discount_amount = line_total * (discount / 100.0)
-                else: # กรณีเป็น 'บาท'
+                else:
                     discount_amount = discount
                 
-                # 4. คำนวณราคาสุดท้ายหลังหักส่วนลด
                 item_total = line_total - discount_amount
-                # --- END ---
 
-                if hasattr(widgets['total_price_label'], 'configure'):
+                # --- START: เพิ่ม .winfo_exists() check ก่อน .configure() ---
+                if widgets['total_price_label'].winfo_exists():
                     widgets['total_price_label'].configure(text=f"{item_total:,.2f}")
+                # --- END ---
                 
                 total_cost += item_total
                 total_weight += weight
             except (ValueError, TypeError, KeyError):
-                if hasattr(item_row.get('widgets', {}).get('total_price_label'), 'configure'):
-                    item_row['widgets']['total_price_label'].configure(text="Error")
+                # --- START: เพิ่ม .winfo_exists() check ก่อน .configure() ---
+                total_price_label = item_row.get('widgets', {}).get('total_price_label')
+                if total_price_label and total_price_label.winfo_exists():
+                    total_price_label.configure(text="Error")
+                # --- END ---
 
-        if hasattr(self, 'total_cost_label'):
+        # --- START: เพิ่ม .winfo_exists() check ให้กับป้ายสรุปผล ---
+        if hasattr(self, 'total_cost_label') and self.total_cost_label.winfo_exists():
             self.total_cost_label.configure(text=f"{total_cost:,.2f}")
-        if hasattr(self, 'total_weight_label'):
+        if hasattr(self, 'total_weight_label') and self.total_weight_label.winfo_exists():
             self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
+        # --- END ---
         
         try:
+            # --- START: ตรวจสอบก่อนดึงค่าจาก self.po_entries ---
+            if not self.po_entries['shipping_to_stock_cost'].winfo_exists():
+                return # ออกจากการคำนวณทันทีถ้า Widget สำคัญถูกทำลายไปแล้ว
+            # --- END ---
+            
             shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value()
             shipping_stock_vat_type = self.po_entries['shipping_to_stock_vat_type'].get()
             shipping_stock_wht_type = self.po_entries['shipping_to_stock_wht_type'].get()
@@ -650,117 +666,224 @@ class PurchaseDetailWindow(CTkToplevel):
             shipping_stock_wht_type, shipping_site_wht_type = "ไม่มีหัก", "ไม่มีหัก"
             wht_entry, vat_entry = None, None
 
-        # คำนวณ VAT ของค่าขนส่งเพื่อแสดงผล
         stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
         site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
 
-        # อัปเดตช่องแสดงผล VAT ที่เราสร้างขึ้นใหม่
-        utils.set_entry_text(self.po_entries.get("shipping_to_stock_vat_display"), f"{stock_vat_amount:,.2f}")
-        utils.set_entry_text(self.po_entries.get("shipping_to_site_vat_display"), f"{site_vat_amount:,.2f}")
+        # --- START: เพิ่ม .winfo_exists() check ---
+        stock_vat_display = self.po_entries.get("shipping_to_stock_vat_display")
+        if stock_vat_display and stock_vat_display.winfo_exists():
+            utils.set_entry_text(stock_vat_display, f"{stock_vat_amount:,.2f}")
 
-        # --- START: เพิ่ม Logic การคำนวณ WHT ของค่าขนส่ง ---
+        site_vat_display = self.po_entries.get("shipping_to_site_vat_display")
+        if site_vat_display and site_vat_display.winfo_exists():
+            utils.set_entry_text(site_vat_display, f"{site_vat_amount:,.2f}")
+        # --- END ---
+
         shipping_stock_wht_amount = shipping_stock * (0.01 if shipping_stock_wht_type == '1%' else 0.03 if shipping_stock_wht_type == '3%' else 0)
         shipping_site_wht_amount = shipping_site * (0.01 if shipping_site_wht_type == '1%' else 0.03 if shipping_site_wht_type == '3%' else 0)
-        # --- END ---
 
         base_for_tax = total_cost - bill_discount
         if shipping_stock_vat_type == 'VAT': base_for_tax += shipping_stock
         if shipping_site_vat_type == 'VAT': base_for_tax += shipping_site
 
-        vat_amount_total = base_for_tax * 0.07 if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() == 1 else 0.0
-        wht_amount_products = base_for_tax * 0.03 if hasattr(self, 'wht_checkbox') and self.wht_checkbox.get() == 1 else 0.0
+        # --- START: เพิ่ม .winfo_exists() check ---
+        vat_checkbox_exists = hasattr(self, 'vat_checkbox') and self.vat_checkbox.winfo_exists()
+        wht_checkbox_exists = hasattr(self, 'wht_checkbox') and self.wht_checkbox.winfo_exists()
 
-        if vat_entry: vat_entry.set(vat_amount_total)
-        if wht_entry: wht_entry.set(wht_amount_products)
+        vat_amount_total = base_for_tax * 0.07 if vat_checkbox_exists and self.vat_checkbox.get() == 1 else 0.0
+        wht_amount_products = base_for_tax * 0.03 if wht_checkbox_exists and self.wht_checkbox.get() == 1 else 0.0
+
+        if vat_entry and vat_entry.winfo_exists(): vat_entry.set(vat_amount_total)
+        if wht_entry and wht_entry.winfo_exists(): wht_entry.set(wht_amount_products)
+        # --- END ---
 
         non_vat_costs = 0.0
         if shipping_stock_vat_type == 'CASH': non_vat_costs += shipping_stock
         if shipping_site_vat_type == 'CASH': non_vat_costs += shipping_site
         non_vat_costs += relocation_cost
         
-        # --- START: แก้ไขสูตร Grand Total ให้รวม WHT จากค่าขนส่งด้วย ---
         total_wht_deduction = wht_amount_products + shipping_stock_wht_amount + shipping_site_wht_amount
         grand_total = base_for_tax + vat_amount_total - total_wht_deduction + non_vat_costs
-        # --- END ---
         
-        if hasattr(self, 'grand_total_label'):
+        # --- START: เพิ่ม .winfo_exists() check ให้กับป้าย Grand Total ---
+        if hasattr(self, 'grand_total_label') and self.grand_total_label.winfo_exists():
             self.grand_total_label.configure(text=f"{grand_total:,.2f}")
 
+    
     def _create_payments_section(self, parent, payments_list):
+        """แก้ไขส่วนการชำระเงินให้แสดงผลถูกต้องและไม่ซ้อนทับ"""
         self.payments_frame = self._create_section(parent, "การชำระเงิน")
-        
         self.payments_frame.grid_columnconfigure(0, weight=1)
 
-        # --- START: เพิ่ม Header และปรับสัดส่วน ---
-        headers = ["ประเภทการชำระ", "ยอดเงิน", "วันที่ชำระ", "ธนาคาร", "เลขที่บัญชี"]
-        col_weights = [2, 2, 2, 2, 3] # ปรับสัดส่วนคอลัมน์ใหม่
-        
-        header_container = CTkFrame(self.payments_frame, fg_color="transparent")
-        header_container.grid(row=1, column=0, sticky="ew", padx=10, pady=(0,5))
-
-        for i, header_text in enumerate(headers):
-            header_container.grid_columnconfigure(i, weight=col_weights[i])
-            CTkLabel(header_container, text=header_text, font=CTkFont(size=14, weight="bold")).grid(row=0, column=i, padx=5, pady=5, sticky="w")
-        # --- END ---
-        
-        self.payments_content_frame = CTkFrame(self.payments_frame, fg_color="transparent")
-        self.payments_content_frame.grid(row=2, column=0, sticky="ew", padx=10)
-        self.payments_content_frame.grid_columnconfigure(0, weight=1)
-
         if payments_list:
+            # มีข้อมูล Payment: สร้าง Headers และแสดง Rows
+            self._create_payment_headers()
+            
+            # สร้าง Content Frame เมื่อมีข้อมูลเท่านั้น
+            self.payments_content_frame = CTkFrame(self.payments_frame, fg_color="transparent")
+            self.payments_content_frame.grid(row=2, column=0, sticky="ew", padx=10)
+            self.payments_content_frame.grid_columnconfigure(0, weight=1)
+            
             for payment in payments_list:
                 self._add_payment_row(payment)
+                
+            # ปุ่มเพิ่ม - เมื่อมีข้อมูลแล้ว
+            self._create_add_button(3)
+        else:
+            # ไม่มีข้อมูล Payment: แสดงข้อความสั้นๆ
+            self.payment_empty_label = CTkLabel(
+                self.payments_frame, 
+                text="ยังไม่มีรายการชำระเงิน", 
+                text_color="gray50", 
+                font=CTkFont(size=14, slant="italic"),
+                height=30
+            )
+            self.payment_empty_label.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+            
+            # ปุ่มเพิ่ม - เมื่อยังไม่มีข้อมูล
+            self._create_add_button(2)
+    
+    def _create_add_button(self, row_position):
+        """สร้างปุ่ม 'เพิ่มการชำระเงิน' ในตำแหน่งที่ถูกต้อง"""
+        self.add_payment_button = CTkButton(
+            self.payments_frame, 
+            text="+ เพิ่มการชำระเงิน", 
+            command=self._handle_add_payment_button_click,
+            width=180,
+            height=35
+        )
+        self.add_payment_button.grid(row=row_position, column=0, pady=(10, 5), padx=10, sticky="w")
 
-        add_button = CTkButton(self.payments_frame, text="+ เพิ่มการชำระเงิน", command=self._add_payment_row)
-        add_button.grid(row=3, column=0, pady=10, padx=10, sticky="w")
+
+    def _create_payment_headers(self):
+        """สร้างหัวตารางสำหรับ Payment - เรียกใช้เฉพาะเมื่อมีข้อมูล"""
+        headers = ["ประเภทการชำระ", "ยอดเงิน", "วันที่ชำระ", "ธนาคาร", "เลขที่บัญชี"]
+        col_weights = [2, 2, 2, 2, 3]
+        
+        self.payments_header_container = CTkFrame(self.payments_frame, fg_color="transparent")
+        self.payments_header_container.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
+
+        for i, header_text in enumerate(headers):
+            self.payments_header_container.grid_columnconfigure(i, weight=col_weights[i])
+            CTkLabel(
+                self.payments_header_container, 
+                text=header_text, 
+                font=CTkFont(size=14, weight="bold")
+            ).grid(row=0, column=i, padx=5, pady=5, sticky="w")
+
+    def _handle_add_payment_button_click(self):
+        """จัดการการเพิ่ม Payment แถวใหม่ - แก้ไขการจัดวาง"""
+        # ตรวจสอบว่าเป็นการเพิ่มครั้งแรกหรือไม่
+        is_first_add = (hasattr(self, 'payment_empty_label') and 
+                        self.payment_empty_label is not None and 
+                        self.payment_empty_label.winfo_exists())
+
+        if is_first_add:
+            # ลบป้าย "ยังไม่มีข้อมูล" ทิ้ง
+            self.payment_empty_label.destroy()
+            self.payment_empty_label = None
+            
+            # ลบปุ่มเพิ่มเก่า
+            if hasattr(self, 'add_payment_button'):
+                self.add_payment_button.destroy()
+            
+            # สร้าง Headers ขึ้นมาใหม่
+            self._create_payment_headers()
+            
+            # สร้าง Content Frame สำหรับแถวข้อมูล
+            self.payments_content_frame = CTkFrame(self.payments_frame, fg_color="transparent")
+            self.payments_content_frame.grid(row=2, column=0, sticky="ew", padx=10)
+            self.payments_content_frame.grid_columnconfigure(0, weight=1)
+            
+            # สร้างปุ่มเพิ่มในตำแหน่งใหม่
+            self._create_add_button(3)
+
+        # เพิ่มข้อมูลเปล่าเข้าไปใน data list
+        if not hasattr(self, 'payments_data'):
+            self.payments_data = []
+        self.payments_data.append({})
+
+        # เพิ่มแถว Widget ใหม่
+        self._add_payment_row()
+
+        
+    def _add_new_payment_and_redraw(self):
+        """
+        เพิ่มข้อมูลการชำระเงินใหม่เข้าไปใน data list และสั่ง redraw UI ใหม่ทั้งหมด
+        เพื่อให้ UI แสดงผลตามสถานะข้อมูลล่าสุด
+        """
+        if not hasattr(self, 'payments_data'):
+            self.payments_data = []
+        self.payments_data.append({})
+
+        # --- START: จุดแก้ไข ---
+        # เปลี่ยนจากการเรียกตรงๆ มาเป็นการหน่วงเวลาเล็กน้อยด้วย after_idle
+        # เพื่อรอให้ event อื่นๆ จัดการตัวเองให้เสร็จก่อน
+        self.after_idle(self._create_formatted_view)
+    # --- END ---
 
     def _add_payment_row(self, payment_data=None):
-        if payment_data is None: payment_data = {}
+        if payment_data is None: 
+            payment_data = {}
 
         row_frame = CTkFrame(self.payments_content_frame, fg_color="transparent")
-        row_frame.grid(row=len(self.payment_entries), column=0, sticky="ew", pady=2)
-        row_frame.grid_columnconfigure((0,1,2,3), weight=2)
-        row_frame.grid_columnconfigure(4, weight=3)
-        row_frame.grid_columnconfigure(5, weight=0)
+        row_frame.pack(fill="x", pady=2)
+        
+        # แก้ไข: กำหนดน้ำหนักคอลัมน์ให้ถูกต้องและเพิ่มคอลัมน์สำหรับปุ่มลบ
+        row_frame.grid_columnconfigure(0, weight=2)  # ประเภทการชำระ
+        row_frame.grid_columnconfigure(1, weight=2)  # ยอดเงิน  
+        row_frame.grid_columnconfigure(2, weight=2)  # วันที่ชำระ
+        row_frame.grid_columnconfigure(3, weight=2)  # ธนาคาร
+        row_frame.grid_columnconfigure(4, weight=3)  # เลขที่บัญชี
+        row_frame.grid_columnconfigure(5, weight=0)  # ปุ่มลบ (ไม่ขยาย)
 
+        # ประเภทการชำระ
         payment_types = ["Payment 1", "Payment 2", "Full Payment", "CN Refund"]
         type_var = tk.StringVar(value=payment_data.get('payment_type', payment_types[0]))
-        type_menu = CTkOptionMenu(row_frame, variable=type_var, values=payment_types)
-        type_menu.grid(row=0, column=0, padx=(0,5), sticky="ew")
+        type_menu = CTkOptionMenu(row_frame, variable=type_var, values=payment_types, width=120)
+        type_menu.grid(row=0, column=0, padx=(0, 5), sticky="ew")
 
+        # ยอดเงิน
         amount_entry = FormattedNumericEntry(row_frame)
         amount_entry.set(payment_data.get('amount', 0.0))
         amount_entry.grid(row=0, column=1, padx=5, sticky="ew")
         
+        # วันที่ชำระ
         date_selector = DateSelector(row_frame)
         date_selector.set_date(payment_data.get('payment_date'))
         date_selector.grid(row=0, column=2, padx=5, sticky="ew")
         
+        # ธนาคาร
         bank_list = ["ระบุเอง", "BBL", "KBANK", "KTB", "SCB", "TTB", "BAY", "GSB", "BAAC", "UOB", "CIMB"]
         bank_var = tk.StringVar(value=payment_data.get('bank_name', bank_list[0]))
-        
-        account_entry = CTkEntry(row_frame)
-        account_entry.grid(row=0, column=4, padx=5, sticky="ew")
-        
-        # --- START: แก้ไขการสร้าง Dropdown ธนาคาร ---
-        # เพิ่ม command เพื่อเรียกใช้ฟังก์ชัน _on_bank_selected ที่เราสร้างขึ้น
         bank_menu = CTkOptionMenu(row_frame, 
                                 variable=bank_var, 
                                 values=bank_list,
-                                command=lambda bank=bank_var.get(), acc_entry=account_entry: self._on_bank_selected(bank, acc_entry))
-        bank_var.trace_add("write", lambda *args, bv=bank_var, ae=account_entry: self._on_bank_selected(bv.get(), ae))
-        # --- END ---
-        
+                                width=100,
+                                command=lambda bank=bank_var.get(), acc_entry=None: self._on_bank_selected(bank, acc_entry))
         bank_menu.grid(row=0, column=3, padx=5, sticky="ew")
         
+        # เลขที่บัญชี
+        account_entry = CTkEntry(row_frame)
         account_number = payment_data.get('bank_account_number')
         if account_number is not None and pd.notna(account_number):
             account_entry.insert(0, str(account_number))
+        account_entry.grid(row=0, column=4, padx=5, sticky="ew")
         
-        delete_button = CTkButton(row_frame, text="ลบ", width=40, fg_color="#DC2626", hover_color="#B91C1C",
+        # แก้ไข trace สำหรับ bank selection
+        bank_var.trace_add("write", lambda *args, bv=bank_var, ae=account_entry: self._on_bank_selected(bv.get(), ae))
+        
+        # ปุ่มลบ - แก้ไขตำแหน่งและขนาด
+        delete_button = CTkButton(row_frame, 
+                                text="ลบ", 
+                                width=50,  # กำหนดความกว้างคงที่
+                                height=32, # กำหนดความสูงให้พอดีกับ entry
+                                fg_color="#DC2626", 
+                                hover_color="#B91C1C",
                                 command=lambda r=row_frame, p_id=payment_data.get('id'): self._remove_payment_row(r, p_id))
-        delete_button.grid(row=0, column=5, padx=(5,0))
+        delete_button.grid(row=0, column=5, padx=(5, 0), sticky="")  # ไม่ใช้ sticky="ew"
 
+        # เก็บ reference ของ widgets
         self.payment_entries.append({
             'id': payment_data.get('id'),
             'frame': row_frame,

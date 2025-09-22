@@ -21,6 +21,8 @@ from sqlalchemy import create_engine
 from export_utils import export_approved_pos_to_excel
 from pdf_utils import export_approved_pos_to_pdf
 from po_selection_dialog import POSelectionDialog
+from hr_windows import SOPopupWindow
+from history_windows import PurchaseDetailWindow
 
 class RejectionReasonDialog(CTkToplevel):
     def __init__(self, master):
@@ -261,8 +263,15 @@ class PurchasingManagerScreen(CTkFrame):
         self.user_role = user_role
         self.theme = self.app_container.THEME["purchasing"]
         self.header_font = CTkFont(size=16, weight="bold")
+        self.dropdown_style = {
+            "fg_color": "white",
+            "text_color": "black",
+            "button_color": self.theme.get("primary", "#3B82F6"),
+            "button_hover_color": self.theme.get("header", "#2563EB")
+        }
         self.pg_engine = self.app_container.pg_engine
         self.rejection_chart_canvas, self.polling_job_id, self.so_detail_window, self.reopen_window = None, None, None, None
+        self._so_create_string_vars()
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
         from po_selection_dialog import SOSelectionPrintDialog 
@@ -273,6 +282,50 @@ class PurchasingManagerScreen(CTkFrame):
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
+
+    def _so_create_string_vars(self):
+        """สร้าง StringVars ที่จำเป็นสำหรับ SOPopupWindow"""
+        self.so_shared_vars = {}
+        self.so_shared_vars['delivery_type_var'] = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
+        self.so_shared_vars['sales_service_vat_option'] = tk.StringVar(value="VAT")
+        # ... (เพิ่มตัวแปรอื่นๆ ที่จำเป็นสำหรับ SO form) ...
+        # (คัดลอกเนื้อหาทั้งหมดของฟังก์ชันนี้มาจากไฟล์ hr_screen.py ได้เลย)
+        self.so_shared_vars['cutting_drilling_fee_vat_option'] = tk.StringVar(value="VAT")
+        self.so_shared_vars['other_service_fee_vat_option'] = tk.StringVar(value="VAT")
+        self.so_shared_vars['shipping_vat_option_var'] = tk.StringVar(value="VAT")
+        self.so_shared_vars['credit_card_fee_vat_option_var'] = tk.StringVar(value="VAT")
+        self.so_shared_vars['so_grand_total_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['so_vs_payment_result_var'] = tk.StringVar(value="-")
+        self.so_shared_vars['difference_amount_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cash_required_total_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cash_verification_result_var'] = tk.StringVar(value="-")
+        self.so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['other_service_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+    
+    def _open_so_editor_for_mp(self, so_number):
+        """เปิดหน้าต่างแก้ไข SO สำหรับ MP"""
+        try:
+            # ค้นหา SO ID จาก SO Number ก่อน
+            so_df = pd.read_sql_query("SELECT * FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", self.pg_engine, params=(so_number,))
+            if so_df.empty:
+                messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูล SO: {so_number}", parent=self)
+                return
+            
+            # เปิดหน้าต่างแก้ไข SO
+            SOPopupWindow(
+                master=self, 
+                app_container=self.app_container, 
+                sales_data=so_df.iloc[0].to_dict(), 
+                so_shared_vars=self.so_shared_vars, 
+                sale_theme=self.app_container.THEME["sale"],
+                on_save_callback=self._load_data # Refresh หน้าจอหลักหลังบันทึก
+            )
+        except Exception as e:
+            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข SO ได้: {e}", parent=self)
+            traceback.print_exc()
     
     def _prepare_data_for_pdf(self, po_header_data, po_items_data, po_payments_data):
         """
@@ -480,14 +533,31 @@ class PurchasingManagerScreen(CTkFrame):
     def _create_so_group_card(self, row_data):
         so_number, po_count = row_data['so_number'], row_data['po_count']
         card = CTkFrame(self.main_frame, border_width=1, corner_radius=10, fg_color="#F9FAFB")
-        header = CTkFrame(card, fg_color="transparent"); header.pack(fill="x", padx=10, pady=10); header.grid_columnconfigure(0, weight=1)
+        header = CTkFrame(card, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=10)
+        header.grid_columnconfigure(0, weight=1)
+
         CTkLabel(header, text=f"SO: {so_number} (มี {po_count} POs รออนุมัติ)", font=self.header_font).grid(row=0, column=0, sticky="w")
-        action_frame = CTkFrame(header, fg_color="transparent"); action_frame.grid(row=0, column=1, sticky="e")
+        
+        action_frame = CTkFrame(header, fg_color="transparent")
+        action_frame.grid(row=0, column=1, sticky="e")
+        
         detail_frame = CTkFrame(card, fg_color="transparent")
+        
+        # --- START: เพิ่มปุ่ม "แก้ไข SO" ใหม่ ---
+        edit_so_button = CTkButton(action_frame, 
+                                   text="ดู/แก้ไขข้อมูล SO", 
+                                   command=lambda s=so_number: self._open_so_editor_for_mp(s),
+                                   fg_color="#3B82F6", # สีน้ำเงิน
+                                   hover_color="#2563EB")
+        edit_so_button.pack(side="right", padx=5)
+        # --- END ---
+        
         CTkButton(action_frame, text="ดูสรุปรายการสินค้า", command=lambda s=so_number: self._open_so_detail_window(s)).pack(side="right", padx=5)
         CTkButton(action_frame, text="แสดง/ซ่อน PO ย่อย", width=150, command=lambda s=so_number, df=detail_frame: self._toggle_po_details(s, df)).pack(side="right", padx=5)
+        
         return card
-
+    
     def _approve_po(self, po_id):
         conn = self.app_container.get_connection()
         try:
@@ -724,13 +794,15 @@ class PurchasingManagerScreen(CTkFrame):
         if hasattr(event, 'widget') and event.widget is self: self._stop_polling()
         
     def _start_polling(self):
-        self._stop_polling(); self.polling_job_id = self.after(30000, self._perform_polling)
+        self._stop_polling()
+        self.polling_job_id = self.after(300000, self._perform_polling)
         
     def _stop_polling(self):
         if self.polling_job_id: self.after_cancel(self.polling_job_id); self.polling_job_id = None
         
     def _perform_polling(self):
-        self._load_pending_pos(); self.polling_job_id = self.after(30000, self._perform_polling)
+        self._load_pending_pos()
+        self.polling_job_id = self.after(300000, self._perform_polling) #<-- เปลี่ยนเป็น 300000 (5 นาที)
         
     def _create_dashboard_view(self):
         dashboard_frame = CTkFrame(self, corner_radius=10, border_width=1)

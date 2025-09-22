@@ -17,6 +17,7 @@ from PIL import Image, ImageTk
 import traceback
 import re
 from history_windows import SOPopupWindow
+from hr_windows import SOPopupWindow
 from hr_windows import SODetailViewer 
 from export_utils import export_approved_pos_to_excel
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
