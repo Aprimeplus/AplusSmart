@@ -1204,22 +1204,30 @@ class HRVerificationWindow(CTkToplevel):
     def _recalculate_summaries(self):
         """
         คำนวณค่าสรุปทั้งหมดและกำหนดค่าเริ่มต้นที่ถูกต้อง
-        (เวอร์ชันแก้ไข: ไม่รวม PO ที่ถูกตีกลับ)
+        (เวอร์ชันแก้ไข: รวม PO ทุกสถานะยกเว้น Rejected/Draft ใน Final Cost)
         """
-        # --- คำนวณฝั่ง System ---
+        # --- START: แก้ไข Logic การรวมยอดต้นทุนทั้งหมด ---
+        # 1. กรองข้อมูล PO ที่ไม่ใช่ 'Rejected' หรือ 'Draft'
+        #    เพื่อให้ PO ที่กำลัง 'Pending Approval' ถูกนำมาคำนวณด้วย
+        valid_po_df = self.po_data[self.po_data['status'] == 'Approved']
         
-        # <<< START: แก้ไข Logic การรวมยอดต้นทุน >>>
-        # 1. กรองข้อมูลเฉพาะ PO ที่มีสถานะ 'Approved'
-        approved_po_df = self.po_data[self.po_data['status'] == 'Approved']
+        # 2. คำนวณยอดรวมต้นทุนจาก PO ที่ผ่านการกรองแล้ว
+        #    ใช้ grand_total เพื่อให้ได้ยอดที่รวม VAT และหัก WHT ของค่าขนส่งแล้ว
+        po_cost = valid_po_df['grand_total'].sum()
         
-        # 2. คำนวณยอดรวมจาก PO ที่ผ่านการกรองแล้วเท่านั้น
-        po_total_cost_base = approved_po_df['total_cost'].sum()
+        # 3. ดึงค่าใช้จ่ายอื่นๆ จากข้อมูล SO (system_data)
+        brokerage_cost = float(self.system_data.get('brokerage_fee', 0) or 0)
+        transfer_cost = float(self.system_data.get('transfer_fee', 0) or 0)
+        giveaways_cost = float(self.system_data.get('giveaways', 0) or 0)
         
-        # 3. ต้นทุนสุดท้ายคือยอดรวมจาก PO ที่ Approved หรือค่าที่ HR แก้ไขเอง (ถ้ามี)
-        total_cost_system = float(self.cost_overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
-        # <<< END: สิ้นสุดการแก้ไข Logic >>>
+        # 4. รวมเป็นต้นทุนสุดท้ายที่แท้จริง
+        total_cost_from_system = po_cost + brokerage_cost + transfer_cost + giveaways_cost
+        
+        # 5. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี หรือใช้ค่าที่คำนวณได้ถ้าไม่มี
+        total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
+        # --- END: สิ้นสุดการแก้ไข Logic ---
 
-        # --- คำนวณฝั่ง Express และ Sales (เหมือนเดิม) ---
+        # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
         total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
         total_sale_system = (
@@ -1230,7 +1238,6 @@ class HRVerificationWindow(CTkToplevel):
             float(self.system_data.get('coupons', 0) or 0)
         )
 
-        # บันทึกค่าที่คำนวณได้ทั้งหมดไว้ในตัวแปรกลาง
         self.calculated_values = {
             'total_sale_system': total_sale_system,
             'total_sale_express': total_sale_express,
@@ -1238,7 +1245,6 @@ class HRVerificationWindow(CTkToplevel):
             'total_cost_express': total_cost_express
         }
 
-        # Logic การเลือกค่าเริ่มต้น (เหมือนเดิม)
         if self.system_data.get('hr_sale_source') in ['system', 'express']:
             self.final_sale_source.set(self.system_data['hr_sale_source'])
         else:

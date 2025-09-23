@@ -1752,7 +1752,7 @@ class HRScreen(CTkFrame):
                             LEFT JOIN (
                                     SELECT 
                                         so_number, 
-                                        SUM(total_cost) as cogs_db,
+                                        SUM(grand_total) as cogs_db, -- แก้ไขจาก total_cost เป็น grand_total ตรงนี้
                                         SUM(shipping_to_stock_cost) as po_shipping_stock,
                                         SUM(shipping_to_site_cost) as po_shipping_site,
                                         SUM(relocation_cost) as po_relocation
@@ -1760,7 +1760,7 @@ class HRScreen(CTkFrame):
                                     WHERE status = 'Approved' 
                                     GROUP BY so_number
                                 ) po ON c.so_number = po.so_number
-                            WHERE c.is_active = 1 AND c.status = 'PO Sent'""" # <--- แก้ไขที่บรรทัดนี้
+                            WHERE c.is_active = 1 AND c.status = 'PO Sent'"""
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
@@ -1888,7 +1888,7 @@ class HRScreen(CTkFrame):
     def _calculate_final_pu_cost(self, row):
         """
         คำนวณต้นทุนรวมสุดท้ายจากฝั่งระบบ (PU) สำหรับใช้ในหน้าเปรียบเทียบข้อมูล
-        (เวอร์ชันแก้ไข: ใช้ผลรวมจาก PO เป็นหลัก ไม่บวกค่าใช้จ่ายซ้ำซ้อน)
+        (เวอร์ชันแก้ไข: รวมค่าใช้จ่ายทั้งหมดอย่างถูกต้อง)
         """
         overrides = {}
         if pd.notna(row.get('hr_cost_overrides')):
@@ -1897,13 +1897,21 @@ class HRScreen(CTkFrame):
             except (json.JSONDecodeError, TypeError):
                 pass
         
-        # <<< START: แก้ไข Logic การคำนวณ >>>
+        # --- START: แก้ไข Logic การคำนวณทั้งหมด ---
         # 1. ดึงค่าต้นทุนหลัก คือยอดรวมจาก PO ทั้งหมด ('cogs_db')
         po_total_cost_base = float(row.get('cogs_db', 0) or 0)
 
-        # 2. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี หรือใช้ค่าจาก PO ถ้าไม่มี
-        final_cost = float(overrides.get('ต้นทุนรวมจาก PO', po_total_cost_base))
-        # <<< END >>>
+        # 2. ดึงค่าใช้จ่ายอื่นๆ จากข้อมูล SO (row)
+        brokerage_cost = float(row.get('brokerage_fee', 0) or 0)
+        transfer_cost = float(row.get('transfer_fee', 0) or 0)
+        giveaways_cost = float(row.get('giveaways', 0) or 0)
+        
+        # 3. รวมเป็นต้นทุนทั้งหมดจากฝั่ง System
+        total_system_cost = po_total_cost_base + brokerage_cost + transfer_cost + giveaways_cost
+        
+        # 4. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี หรือใช้ค่าที่คำนวณได้ถ้าไม่มี
+        final_cost = float(overrides.get('ต้นทุนรวม', total_system_cost))
+        # --- END ---
         
         return final_cost
 
@@ -1949,11 +1957,16 @@ class HRScreen(CTkFrame):
                 db_compare_df['credit_card_fee']
             )
             
+            # --- START: แก้ไขการคำนวณส่วนนี้เพื่อเลี่ยง Warning ---
+            # ของเดิม: db_compare_df['payment_before_vat_po'] = db_compare_df['po_shipping_stock'].fillna(0) + db_compare_df['po_shipping_site'].fillna(0)
+            
+            # ของใหม่: แปลงเป็นตัวเลขก่อน แล้วค่อยเติม 0
+            stock_cost = pd.to_numeric(db_compare_df['po_shipping_stock'], errors='coerce').fillna(0)
+            site_cost = pd.to_numeric(db_compare_df['po_shipping_site'], errors='coerce').fillna(0)
+            db_compare_df['payment_before_vat_po'] = stock_cost + site_cost
+            # --- END ---
+
             db_compare_df['cost_db'] = db_compare_df.apply(self._calculate_final_pu_cost, axis=1)
-            db_compare_df['payment_before_vat_po'] = db_compare_df['po_shipping_stock'].fillna(0) + db_compare_df['po_shipping_site'].fillna(0)
-
-           
-
             db_compare_df['gp_db'] = db_compare_df['sales_service_amount'] - db_compare_df['cost_db']
             db_compare_df['margin_db'] = (db_compare_df['gp_db'] / db_compare_df['sales_service_amount'].replace(0, np.nan)) * 100
 
@@ -1976,15 +1989,12 @@ class HRScreen(CTkFrame):
                 if row['_merge'] == 'right_only': return 'มีใน Express, ไม่มีในระบบ'
                 if row['_merge'] == 'left_only': return 'มีในระบบ, ไม่มีใน Express'
                 
-                # <<< START: เพิ่ม Logic ตรวจสอบการขาดทุนเป็นอันดับแรก >>>
                 final_system_sale = row['sales_for_comparison']
                 final_system_cost = row['cost_db']
 
                 if pd.notna(final_system_sale) and pd.notna(final_system_cost) and final_system_cost > final_system_sale:
                     return "‼️ ขายขาดทุน (ตรวจสอบด่วน)"
-                # <<< END >>>
-
-                # ถ้าไม่ขาดทุน ค่อยตรวจสอบความถูกต้องของข้อมูลต่อไป
+                
                 sale_ok = final_system_sale >= row['sales_uploaded']
                 cost_ok = final_system_cost >= row['cost_uploaded']
                 
@@ -2013,56 +2023,34 @@ class HRScreen(CTkFrame):
                 'sales_service_amount': 'ยอดขาย/บริการ (ระบบ)'
             }
 
-            # --- START: แทนที่โค้ดเก่าด้วยส่วนนี้ ---
-            # 1. ตรวจสอบให้แน่ใจว่าคอลัมน์ทั้งหมดที่เราต้องการมีอยู่ใน DataFrame
             for key in display_order_map.keys():
                 if key not in merged_df.columns:
                     merged_df[key] = np.nan
             
-            # 2. เลือกเฉพาะคอลัมน์ที่ต้องการตามลำดับ และสร้าง DataFrame ใหม่
             self.comparison_df = merged_df[list(display_order_map.keys())].copy()
-
-            # 3. เปลี่ยนชื่อคอลัมน์เป็นภาษาไทย
             self.comparison_df.rename(columns=display_order_map, inplace=True)
 
-            
-            self.comparison_df.rename(columns=display_order_map, inplace=True)
-
-            numeric_cols = [
-            'ยอดขาย (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 
-                'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน'
-            ]
+            numeric_cols = ['ยอดขาย (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน']
             summary_data = self.comparison_df[numeric_cols].sum().to_dict()
             
-            # 2. สร้างแถวสรุป (Summary Row)
             summary_row = pd.Series(summary_data)
-            summary_row['เลขที่ SO'] = 'ยอดรวม (Total)' # ใส่ข้อความในคอลัมน์แรก
-            summary_row['สถานะ'] = '' # ปล่อยคอลัมน์สถานะให้ว่าง
+            summary_row['เลขที่ SO'] = 'ยอดรวม (Total)'
+            summary_row['สถานะ'] = ''
             
-            # 3. เพิ่มแถวสรุปเข้าไปใน DataFrame หลัก
             self.comparison_df = pd.concat([self.comparison_df, summary_row.to_frame().T], ignore_index=True)
                 
             status_colors = {
-                "ผ่านเกณฑ์": "#BBF7D0", 
-                "ยอดขายต่ำกว่า Express": "#FECACA", 
-                "ต้นทุนต่ำกว่า Express": "#FEF08A",
-                "มีใน Express, ไม่มีในระบบ": "#FECACA", 
-                "มีในระบบ, ไม่มีใน Express": "#FEF08A",
-                "ข้อมูลไม่ตรงกัน": "#FED7AA",
-                "กำไรดี": "#BBF7D0", 
-                "กำไรน้อย": "#FEF08A", 
-                "ขาดทุน": "#FECACA", 
-                "ยืนยันแล้ว (รอผล)": "#E5E7EB",
-                "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171", # <<< เพิ่มสถานะและสีแดงสำหรับขายขาดทุน
+                "ผ่านเกณฑ์": "#BBF7D0", "ยอดขายต่ำกว่า Express": "#FECACA", 
+                "ต้นทุนต่ำกว่า Express": "#FEF08A", "มีใน Express, ไม่มีในระบบ": "#FECACA", 
+                "มีในระบบ, ไม่มีใน Express": "#FEF08A", "ข้อมูลไม่ตรงกัน": "#FED7AA",
+                "กำไรดี": "#BBF7D0", "กำไรน้อย": "#FEF08A", "ขาดทุน": "#FECACA", 
+                "ยืนยันแล้ว (รอผล)": "#E5E7EB", "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171",
             }
             
             self.results_frame_label.configure(text="ผลลัพธ์การเปรียบเทียบ (ดับเบิลคลิกเพื่อตรวจสอบ)")
             self._create_styled_dataframe_table(self.results_frame, self.comparison_df, "", status_column="สถานะ", status_colors=status_colors, on_row_click=self._on_tree_double_click)
             self.export_button.pack(side="right", padx=10, pady=10)
             self.finalize_button.pack(side="right", padx=10, pady=10)
-            
-           
-            # --- END: สิ้นสุดการแก้ไข ---
 
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเปรียบเทียบข้อมูล: {e}\n\n{traceback.format_exc()}", parent=self)
@@ -2129,15 +2117,15 @@ class HRScreen(CTkFrame):
                         LEFT JOIN (
                                 SELECT 
                                     so_number, 
-                                    SUM(total_cost) as cogs_db,
+                                    SUM(grand_total) as cogs_db,
                                     SUM(shipping_to_stock_cost) as po_shipping_stock,
                                     SUM(shipping_to_site_cost) as po_shipping_site,
                                     SUM(relocation_cost) as po_relocation
                                 FROM purchase_orders 
-                                WHERE status = 'Approved' 
+                                WHERE status = 'Approved'
                                 GROUP BY so_number
                             ) po ON c.so_number = po.so_number
-                        WHERE c.is_active = 1 AND c.status = 'Forwarded_To_HR'"""
+                        WHERE c.is_active = 1 AND c.status = 'PO Sent'""" # <<< แก้ไขเงื่อนไข status ตรงนี้
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
