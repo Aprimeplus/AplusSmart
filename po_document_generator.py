@@ -128,7 +128,7 @@ def _build_left_column(header_data, styles, P, PB, format_num, width):
 
 def _build_right_column(header_data, items_data, payments_data, styles, P, PB, format_num, width):
     """
-    สร้างคอลัมน์ขวา (เวอร์ชันแก้ไข Default เลขที่บัญชี)
+    สร้างคอลัมน์ขวา (เวอร์ชันแก้ไข SPAN ของตาราง Header ลบช่องเปล่าใต้ Supplier Name และ Remark)
     """
     story = []
     
@@ -138,7 +138,8 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     MASTER_COL_WIDTHS = [w * scale_factor for w in original_widths]
 
     def safe_add_style(styles, style):
-        if style.name not in styles.byName: styles.add(style)
+        if style.name not in styles.byName:
+            styles.add(style)
     
     safe_add_style(styles, ParagraphStyle(name='Small_TH', fontName='THSarabunNew', fontSize=11, leading=13))
     safe_add_style(styles, ParagraphStyle(name='Small_Center_TH', fontName='THSarabunNew', fontSize=11, leading=13, alignment=1))
@@ -147,42 +148,49 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     safe_add_style(styles, ParagraphStyle(name='Header_Bold_TH', fontName='THSarabunNew-Bold', fontSize=12, leading=14, alignment=1))
     safe_add_style(styles, ParagraphStyle(name='Product_Name_TH', fontName='THSarabunNew', fontSize=10, leading=12, wordWrap='CJK'))
     
-    def make_para(text, style='Small_TH'): return Paragraph(str(text) if text is not None else '', styles[style])
+    def make_para(text, style='Small_TH'):
+        return Paragraph(str(text) if text is not None else '', styles[style])
 
     approver_name = header_data.get('approved_by')
     auditor_text = f"ผู้ตรวจสอบ: {approver_name}" if approver_name else ''
     
+    # --- HEADER GRID ---
     header_data_grid = [
         [PB('ลำดับ', 'Small_TH'), None, make_para('COST AUDITOR', 'Header_Bold_TH'), None, PB('แผนก', 'Small_TH'), make_para(header_data.get('department', ''))],
-        [PB('ชื่อ', 'Small_TH'), None, make_para(header_data.get('user_name', '')), None, None, None],
+        [PB('ชื่อ', 'Small_TH'), None, make_para(header_data.get('user_name', '')), None, PB('RR Number', 'Small_TH'), make_para(header_data.get('rr_number', ''))],
         [PB('PO NUMBER', 'Small_TH'), None, make_para(header_data.get('po_number', '')), None, None, None],
-        [PB('Supplier Name', 'Small_TH'), None, make_para(header_data.get('supplier_name', ''), 'Small_Wrapped_TH'), None, None, None],
-        [make_para(''), None, None, None, make_para(auditor_text, 'Small_Right_TH'), None]
+        [PB('Supplier Name', 'Small_TH'), make_para(header_data.get('supplier_name', ''), 'Small_Wrapped_TH'), PB('REMARK', 'Small_TH'), make_para(header_data.get('remark', ''), 'Small_Wrapped_TH'), None, None]
     ]
     header_table = Table(header_data_grid, colWidths=MASTER_COL_WIDTHS)
+    
+    # --- TABLE STYLE (แก้ไขแล้ว) ---
     header_table.setStyle(TableStyle([ 
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), 
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
         ('LEFTPADDING', (0,0), (-1,-1), 3), 
-        ('SPAN', (0,0), (1,0)), 
-        ('SPAN', (2,0), (3,0)), 
-        ('SPAN', (4,0), (5,0)), 
-        ('SPAN', (0,1), (1,1)), 
-        ('SPAN', (2,1), (5,1)), 
-        ('SPAN', (0,2), (1,2)), 
-        ('SPAN', (2,2), (5,2)), 
-        ('SPAN', (0,3), (1,3)), 
-        ('SPAN', (2,3), (5,3)),
-        ('SPAN', (0,4), (3,4)), 
-        ('SPAN', (4,4), (5,4)), 
-        ('BACKGROUND', (0,0), (1,0), colors.HexColor("#DDEBF7")), 
-        ('BACKGROUND', (2,0), (3,0), colors.HexColor("#DDEBF7")), 
-        ('BACKGROUND', (4,0), (5,0), colors.HexColor("#DDEBF7")), 
+        # แถว 0
+        ('SPAN', (0,0), (1,0)), ('SPAN', (2,0), (3,0)), ('SPAN', (4,0), (5,0)), 
+        # แถว 1
+        ('SPAN', (0,1), (1,1)), ('SPAN', (2,1), (3,1)), 
+        # แถว 2
+        ('SPAN', (0,2), (1,2)), ('SPAN', (2,2), (5,2)), 
+        # แถว 3 (Supplier + Remark) - แก้ไขการ SPAN
+        ('SPAN', (0,3), (0,3)),   # Supplier Name label (ไม่ SPAN)
+        ('SPAN', (2,3), (3,3)),   # REMARK label + value
+        ('SPAN', (4,3), (5,3)),   # ช่องเปล่า
+        
+        # สีพื้นหลัง
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#DDEBF7")), 
         ('BACKGROUND', (0,1), (1,1), colors.HexColor("#DDEBF7")), 
-        ('BACKGROUND', (0,2), (1,2), colors.HexColor("#DDEBF7")), 
+        ('BACKGROUND', (4,1), (5,1), colors.HexColor("#DDEBF7")),
+        ('BACKGROUND', (0,2), (1,2), colors.HexColor("#DDEBF7")),
+        ('BACKGROUND', (0,3), (0,3), colors.HexColor("#DDEBF7")),
+        ('BACKGROUND', (2,3), (2,3), colors.HexColor("#DDEBF7")),
     ]))
+    # --- END ---
     story.append(header_table)
 
+    # ... (ส่วนที่เหลือของฟังก์ชันเหมือนเดิม) ...
     item_header = [ make_para("ลำดับ", 'Small_Center_TH'), make_para("สถานะ", 'Small_Center_TH'), make_para("ชื่อสินค้า", 'Small_Center_TH'), make_para("จำนวน", 'Small_Center_TH'), make_para("ราคา", 'Small_Center_TH'), make_para("รวม", 'Small_Center_TH'),]
     purchased_record_header = [make_para("PURCHASED RECORD", 'Header_Bold_TH')]
     item_rows = []
@@ -197,11 +205,7 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     story.append(item_table)
     
     deposit_amount = 0.0; full_payment_amount = 0.0; cn_refund_amount = 0.0; latest_deposit_date = None
-    full_payment_date = None
-    cn_refund_date = None
-    display_bank_name = ""
-    display_account_number = ""
-
+    full_payment_date = None; cn_refund_date = None; display_bank_name = ""; display_account_number = ""
     for payment in payments_data:
         p_type = payment.get('payment_type'); amount = payment.get('amount', 0); p_date = payment.get('payment_date')
         if p_type in ["Payment 1", "Payment 2"]:
@@ -216,37 +220,9 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
 
     grand_total = header_data.get('grand_total', 0) or 0.0; total_paid = deposit_amount + full_payment_amount; balance_due = grand_total - total_paid
     
-    payment_data_top = [
-        [PB('เลขที่บัญชี', 'Small_TH'), None, make_para(display_account_number), None, PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(header_data.get('total_cost', 0)), 'Small_Right_TH')],
-        [PB('ธนาคาร', 'Small_TH'), None, make_para(display_bank_name), None, PB('Vat 7%', 'Small_TH'), make_para(format_num(header_data.get('vat_7_percent_amount', 0)), 'Small_Right_TH')],
-        [PB('ประเภท', 'Small_TH'), None, make_para(header_data.get('bank_account_type', ''), 'Small_TH'), None, PB('รวมทั้งสิ้น', 'Small_TH'), make_para(format_num(grand_total), 'Small_Right_TH')],
-        [PB('มัดจำ', 'Small_TH'), None, make_para(format_num(deposit_amount), 'Small_Right_TH'), '', make_para('วันที่'), make_para(str(latest_deposit_date) if latest_deposit_date else '', 'Small_Center_TH')],
-        [PB('ยอดค้าง', 'Small_TH'), None, make_para(format_num(balance_due), 'Small_Right_TH'), '', make_para('วันที่'), make_para('', 'Small_Center_TH')],
-        [PB('ชำระเต็ม', 'Small_TH'), None, make_para(format_num(full_payment_amount), 'Small_Right_TH'), '', make_para('วันที่'), make_para(str(full_payment_date) if full_payment_date else '', 'Small_Center_TH')],
-        [PB('CN/คืนส่วนต่าง', 'Small_TH'), None, make_para(format_num(cn_refund_amount), 'Small_Right_TH'), '', make_para('วันที่'), make_para(str(cn_refund_date) if cn_refund_date else '', 'Small_Center_TH')],
-        # --- START: แก้ไขกลับเป็นค่าเดิม ---
-        [PB('ค่าจัดส่งรับจ้าง', 'Small_Center_TH'), None, None, None, make_para('วันที่จัดส่ง'), make_para('..../../..', 'Small_Center_TH')],
-        # --- END ---
-        [PB('ชื่อบริษัทจัดส่ง', 'Small_TH'), None, make_para(header_data.get('shipper_1', '')), None, PB('รอบส่ง', 'Small_TH'), make_para(header_data.get('delivery_round', ''), 'Small_TH')],
-        [PB('ประเภทรถ', 'Small_TH'), None, make_para(''), make_para('ค่าจัดส่ง'), make_para('หัก 1%'), make_para('หัก 3%')],
-        [None, None, make_para(format_num(header_data.get('shipping_to_stock_cost', 0) + header_data.get('shipping_to_site_cost', 0)), 'Small_Right_TH'), make_para(format_num(header_data.get('shipping_wht_1_percent_amount',0)), 'Small_Right_TH'), make_para(format_num(header_data.get('shipping_wht_3_percent_amount',0)), 'Small_Right_TH'), PB('ยอดชำระจริง', 'Small_TH')],
-    ]
+    payment_data_top = [ [PB('เลขที่บัญชี', 'Small_TH'), None, make_para(display_account_number), None, PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(header_data.get('total_cost', 0)), 'Small_Right_TH')], [PB('ธนาคาร', 'Small_TH'), None, make_para(display_bank_name), None, PB('Vat 7%', 'Small_TH'), make_para(format_num(header_data.get('vat_7_percent_amount', 0)), 'Small_Right_TH')], [PB('ประเภท', 'Small_TH'), None, make_para(header_data.get('bank_account_type', ''), 'Small_TH'), None, PB('รวมทั้งสิ้น', 'Small_TH'), make_para(format_num(grand_total), 'Small_Right_TH')], [PB('มัดจำ', 'Small_TH'), None, make_para(format_num(deposit_amount), 'Small_Right_TH'), '', make_para('วันที่'), make_para(str(latest_deposit_date) if latest_deposit_date else '', 'Small_Center_TH')], [PB('ยอดค้าง', 'Small_TH'), None, make_para(format_num(balance_due), 'Small_Right_TH'), '', make_para('วันที่'), make_para('', 'Small_Center_TH')], [PB('ชำระเต็ม', 'Small_TH'), None, make_para(format_num(full_payment_amount), 'Small_Right_TH'), '', make_para('วันที่'), make_para(str(full_payment_date) if full_payment_date else '', 'Small_Center_TH')], [PB('CN/คืนส่วนต่าง', 'Small_TH'), None, make_para(format_num(cn_refund_amount), 'Small_Right_TH'), '', make_para('วันที่'), make_para(str(cn_refund_date) if cn_refund_date else '', 'Small_Center_TH')], [PB('ค่าจัดส่งรับจ้าง', 'Small_Center_TH'), None, None, None, make_para('วันที่จัดส่ง'), make_para('..../../..', 'Small_Center_TH')], [PB('ชื่อบริษัทจัดส่ง', 'Small_TH'), None, make_para(header_data.get('shipper_1', '')), None, PB('รอบส่ง', 'Small_TH'), make_para(header_data.get('delivery_round', ''), 'Small_TH')], [PB('ประเภทรถ', 'Small_TH'), None, make_para(''), make_para('ค่าจัดส่ง'), make_para('หัก 1%'), make_para('หัก 3%')], [None, None, make_para(format_num(header_data.get('shipping_to_stock_cost', 0) + header_data.get('shipping_to_site_cost', 0)), 'Small_Right_TH'), make_para(format_num(header_data.get('shipping_wht_1_percent_amount',0)), 'Small_Right_TH'), make_para(format_num(header_data.get('shipping_wht_3_percent_amount',0)), 'Small_Right_TH'), PB('ยอดชำระจริง', 'Small_TH')], ]
     payment_table_top = Table(payment_data_top, colWidths=MASTER_COL_WIDTHS)
-    payment_table_top.setStyle(TableStyle([ 
-        ('GRID', (0,0), (-1,-1), 0.5, colors.black), 
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
-        ('LEFTPADDING', (0,0), (-1,-1), 3), 
-        ('SPAN', (0,0), (1,0)), ('SPAN', (2,0), (3,0)), 
-        ('SPAN', (0,1), (1,1)), ('SPAN', (2,1), (3,1)), 
-        ('SPAN', (0,2), (1,2)), ('SPAN', (2,2), (3,2)), 
-        ('SPAN', (0,3), (1,3)), ('SPAN', (0,4), (1,4)), 
-        ('SPAN', (0,5), (1,5)), ('SPAN', (0,6), (1,6)), 
-        ('SPAN', (0,7), (3,7)), ('SPAN', (0,8), (1,8)), 
-        ('SPAN', (2,8), (3,8)), ('SPAN', (0,9), (1,9)), 
-        ('SPAN', (0,10), (1,10)), ('SPAN', (5,10), (5,10)), 
-        ('LINEABOVE', (0,7), (-1,7), 1, colors.black),
-        ('LINEAFTER', (2, 3), (2, 6), 0.5, colors.white),
-    ]))
+    payment_table_top.setStyle(TableStyle([ ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 3), ('SPAN', (0,0), (1,0)), ('SPAN', (2,0), (3,0)), ('SPAN', (0,1), (1,1)), ('SPAN', (2,1), (3,1)), ('SPAN', (0,2), (1,2)), ('SPAN', (2,2), (3,2)), ('SPAN', (0,3), (1,3)), ('SPAN', (0,4), (1,4)), ('SPAN', (0,5), (1,5)), ('SPAN', (0,6), (1,6)), ('SPAN', (0,7), (3,7)), ('SPAN', (0,8), (1,8)), ('SPAN', (2,8), (3,8)), ('SPAN', (0,9), (1,9)), ('SPAN', (0,10), (1,10)), ('SPAN', (5,10), (5,10)), ('LINEABOVE', (0,7), (-1,7), 1, colors.black), ('LINEAFTER', (2, 3), (2, 6), 0.5, colors.white), ]))
     story.append(payment_table_top)
     
     summary_data = [ [PB('ยอดชำระจริง', 'Small_TH'), make_para(''), make_para('วัน................เดือน................ปี.......', 'Small_Center_TH')], [PB('Remark*', 'Small_TH'), make_para(header_data.get('remark', ''), 'Small_Wrapped_TH'), None] ]

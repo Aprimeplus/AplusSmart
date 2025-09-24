@@ -2230,6 +2230,7 @@ class PurchasingScreen(CTkFrame):
             
             'total_cost': utils.convert_to_float(self.total_cost_entry.get()),
             'total_weight': utils.convert_to_float(self.total_weight_summary_entry.get()),
+            'bill_discount': utils.convert_to_float(self.end_of_bill_discount_entry.get()),
             'wht_3_percent_checked': bool(self.vat3_checkbox.get()),
             'wht_3_percent_amount': utils.convert_to_float(self.vat3_entry.get()),
             'vat_7_percent_checked': bool(self.vat_checkbox.get()),
@@ -2504,6 +2505,8 @@ class PurchasingScreen(CTkFrame):
             else: self.vat_checkbox.deselect()
             if po_data.get("wht_3_percent_checked"): self.vat3_checkbox.select()
             else: self.vat3_checkbox.deselect()
+
+            utils.set_entry_text(self.end_of_bill_discount_entry, f"{po_data.get('bill_discount', 0):.2f}")
 
             # *** แก้ไข: เหลือ Loop การเติมข้อมูลแค่รอบเดียว และใช้วิธีที่ถูกต้อง ***
             for p_data in payments_data:

@@ -1070,11 +1070,12 @@ class PurchaseDetailWindow(CTkToplevel):
                         shipping_to_stock_wht_type = %s, shipping_to_stock_notes = %s,
                         shipping_to_site_vat_type = %s, shipping_to_site_shipper = %s,
                         shipping_to_site_wht_type = %s, shipping_to_site_notes = %s,
-                        wht_3_percent_checked = %s, vat_7_percent_checked = %s
+                        wht_3_percent_checked = %s, vat_7_percent_checked = %s,
+                        bill_discount = %s -- <-- เพิ่มบรรทัดนี้
                     WHERE id = %s
                 """, (
                     self.po_entries['so_number'].get(), self.po_entries['po_number'].get(),
-                    supplier_name, # ใช้ตัวแปรที่ .strip() แล้ว
+                    supplier_name,
                     self.po_entries['credit_term'].get(), self.po_entries['po_mode'].get(),
                     self.po_entries['shipping_to_stock_cost'].get_value(),
                     self.po_entries['shipping_to_stock_date'].get_date(),
@@ -1092,6 +1093,7 @@ class PurchaseDetailWindow(CTkToplevel):
                     self.po_entries['shipping_to_site_notes'].get(),
                     bool(self.wht_checkbox.get()),
                     bool(self.vat_checkbox.get()),
+                    self.po_entries['bill_discount'].get_value(), # <-- เพิ่มบรรทัดนี้
                     self.purchase_id
                 ))
                 
