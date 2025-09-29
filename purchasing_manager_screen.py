@@ -200,8 +200,8 @@ class ReopenPOWindow(CTkToplevel):
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", f"ดึงงาน PO: {po_number} กลับมาเรียบร้อยแล้ว", parent=self)
+            self.master._load_pending_pos() 
             self._load_reopenable_pos()
-            self.master._load_data()
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการ Re-open PO: {e}", parent=self)
@@ -270,6 +270,9 @@ class PurchasingManagerScreen(CTkFrame):
             "button_hover_color": self.theme.get("header", "#2563EB")
         }
         self.pg_engine = self.app_container.pg_engine
+        self.all_pending_df = pd.DataFrame() # เก็บข้อมูล PO ที่รออนุมัติทั้งหมด
+        self.so_cards = {} # เก็บ SO Card Widgets
+        self.po_cards = {} # เก็บ PO Card Widgets
         self.rejection_chart_canvas, self.polling_job_id, self.so_detail_window, self.reopen_window = None, None, None, None
         self._so_create_string_vars()
         self.grid_columnconfigure(0, weight=1)
@@ -510,6 +513,13 @@ class PurchasingManagerScreen(CTkFrame):
         header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
         CTkLabel(header_frame, text=f"หน้าจอหัวหน้าฝ่ายจัดซื้อ: {self.user_name}", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
         button_container = CTkFrame(header_frame, fg_color="transparent"); button_container.pack(side="right")
+        self.approve_all_button = CTkButton(button_container, 
+                                            text="อนุมัติทุกรายการที่ค้างอยู่ (0)", 
+                                            command=self._approve_all_pending_pos,
+                                            fg_color="#84CC16", # สีเขียวมะนาว
+                                            hover_color="#65A30D",
+                                            state="disabled") # เริ่มต้นที่ปิดใช้งาน
+        self.approve_all_button.pack(side="left", padx=10)
         CTkButton(button_container, text="📄 พิมพ์ใบสั่งซื้อ PO", command=self._open_po_print_dialog, fg_color="#7C3AED", hover_color="#6D28D9").pack(side="left", padx=10)
         CTkButton(button_container, text="ดึงงาน PO กลับมาแก้ไข", command=self._open_reopen_po_window, fg_color="#F97316", hover_color="#EA580C").pack(side="left", padx=10)
         CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=lambda: self.app_container.show_history_window()).pack(side="left", padx=(0, 10))
@@ -544,21 +554,28 @@ class PurchasingManagerScreen(CTkFrame):
         
         detail_frame = CTkFrame(card, fg_color="transparent")
         
-        # --- START: เพิ่มปุ่ม "แก้ไข SO" ใหม่ ---
-        edit_so_button = CTkButton(action_frame, 
-                                   text="ดู/แก้ไขข้อมูล SO", 
-                                   command=lambda s=so_number: self._open_so_editor_for_mp(s),
-                                   fg_color="#3B82F6", # สีน้ำเงิน
-                                   hover_color="#2563EB")
-        edit_so_button.pack(side="right", padx=5)
+        # --- START: เพิ่มปุ่ม "อนุมัติทั้งหมด" ใหม่ ---
+        approve_all_button = CTkButton(action_frame, 
+                                    text=f"อนุมัติทั้งหมด ({po_count})", 
+                                    command=lambda s=so_number: self._approve_all_for_so(s),
+                                    fg_color="#16A34A", # สีเขียว
+                                    hover_color="#15803D")
+        approve_all_button.pack(side="right", padx=(10,0))
         # --- END ---
+
+        edit_so_button = CTkButton(action_frame, 
+                                text="ดู/แก้ไขข้อมูล SO", 
+                                command=lambda s=so_number: self._open_so_editor_for_mp(s),
+                                fg_color="#3B82F6",
+                                hover_color="#2563EB")
+        edit_so_button.pack(side="right", padx=5)
         
         CTkButton(action_frame, text="ดูสรุปรายการสินค้า", command=lambda s=so_number: self._open_so_detail_window(s)).pack(side="right", padx=5)
         CTkButton(action_frame, text="แสดง/ซ่อน PO ย่อย", width=150, command=lambda s=so_number, df=detail_frame: self._toggle_po_details(s, df)).pack(side="right", padx=5)
         
         return card
     
-    def _approve_po(self, po_id):
+    def _approve_po(self, po_id, confirm=True):
         conn = self.app_container.get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
@@ -641,20 +658,25 @@ class PurchasingManagerScreen(CTkFrame):
                         cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)", (director_key, message, po_id))
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "อนุมัติรายการเรียบร้อยแล้ว", parent=self)
             
-            # ตรวจสอบว่า SO นี้ควรส่งต่อให้ Sales Manager หรือยัง
+            if confirm: # ถ้าเป็นการกดอนุมัติทีละใบ ให้แสดง popup
+                messagebox.showinfo("สำเร็จ", "อนุมัติรายการเรียบร้อยแล้ว", parent=self)
+            
+            # <<< แก้ไข: เปลี่ยนมาเรียกใช้ฟังก์ชันอัปเดต UI แทนการโหลดใหม่ทั้งหมด >>>
+            self._update_ui_after_action(po_id, so_number)
+            
+            # ตรวจสอบว่า SO นี้ควรส่งต่อให้แผนกอื่นหรือยัง
             if is_final_approval and so_number:
                 self._check_and_forward_so_to_sale_manager(so_number)
-            
-            self._load_data()
 
         except Exception as e:
             if conn: conn.rollback()
-            messagebox.showerror("ผิดพลาด", f"ไม่สามารถอนุมัติได้: {e}", parent=self)
+            if confirm: messagebox.showerror("ผิดพลาด", f"ไม่สามารถอนุมัติได้: {e}", parent=self)
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
+        
+        
 
     def _check_and_forward_so_to_sale_manager(self, so_number):
         conn = self.app_container.get_connection()
@@ -736,7 +758,6 @@ class PurchasingManagerScreen(CTkFrame):
             cursor.execute("INSERT INTO notifications (user_key_to_notify, message, related_po_id) VALUES (%s, %s, %s)", (user_key, message, po_id))
 
     def _reject_po(self, po_id):
-        # 1. เปิดหน้าต่างเพื่อให้กรอกเหตุผล
         dialog = RejectionReasonDialog(self)
         self.wait_window(dialog)
         reason = getattr(dialog, '_reason_string', None)
@@ -745,43 +766,42 @@ class PurchasingManagerScreen(CTkFrame):
 
         conn = self.app_container.get_connection()
         try:
+            # <<< START: จุดที่แก้ไข >>>
+            so_number_to_update = "" # สร้างตัวแปรเปล่าไว้ก่อน
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 
-                # 2. อัปเดตสถานะ PO ให้เป็น 'Rejected' และบันทึกเหตุผล
+                # 1. ดึงข้อมูล SO Number มาเก็บไว้ก่อนที่จะทำ Action
+                cursor.execute("SELECT user_key, po_number, so_number FROM purchase_orders WHERE id = %s", (po_id,))
+                po_info = cursor.fetchone()
+                if not po_info:
+                    messagebox.showerror("ผิดพลาด", "ไม่พบ PO ที่ต้องการปฏิเสธ", parent=self)
+                    return
+                
+                po_creator_key, po_number, so_number_to_update = po_info['user_key'], po_info['po_number'], po_info['so_number']
+
+                # 2. อัปเดตสถานะ PO ให้เป็น 'Rejected' และบันทึกเหตุผล (เหมือนเดิม)
                 cursor.execute("""
                     UPDATE purchase_orders 
                     SET status = 'Rejected', approval_status = 'Rejected', rejection_reason = %s, last_modified_by = %s
                     WHERE id = %s
                 """, (reason.strip(), self.user_key, po_id))
 
-                # 3. สร้าง Notification ส่งกลับไปหาคนสร้าง PO
-                cursor.execute("SELECT user_key, po_number FROM purchase_orders WHERE id = %s", (po_id,))
-                po_info = cursor.fetchone()
-                if po_info:
-                    po_creator_key = po_info['user_key']
-                    po_number = po_info['po_number']
-                    message_to_pu = f"PO: {po_number} ของคุณถูกปฏิเสธโดย Manager\nเหตุผล: {reason.strip()}"
-                    
-                    cursor.execute("""
-                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) 
-                        VALUES (%s, %s, FALSE, %s)
-                    """, (po_creator_key, message_to_pu, po_id))
+                # 3. สร้าง Notification (เหมือนเดิม)
+                message_to_pu = f"PO: {po_number} ของคุณถูกปฏิเสธโดย Manager\nเหตุผล: {reason.strip()}"
+                cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)", 
+                               (po_creator_key, message_to_pu, po_id))
 
-                    # 4. บันทึกเหตุการณ์ลงใน Audit Log พร้อม timestamp
-                    log_details = {
-                        'rejected_by': self.user_key,
-                        'reason': reason.strip()
-                    }
-                    cursor.execute("""
-                        INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) 
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """, 
-                        ('PO Rejected', 'purchase_orders', po_id, po_creator_key, json.dumps(log_details), datetime.now())
-                    )
+                # 4. บันทึก Audit Log (เหมือนเดิม)
+                log_details = {'rejected_by': self.user_key, 'reason': reason.strip()}
+                cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", 
+                               ('PO Rejected', 'purchase_orders', po_id, po_creator_key, json.dumps(log_details), datetime.now()))
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", "ปฏิเสธ PO และส่งกลับให้ฝ่ายจัดซื้อเรียบร้อยแล้ว", parent=self)
-            self._load_data() # โหลดข้อมูลใหม่เพื่อรีเฟรชหน้าจอ
+            
+            # 5. เรียกใช้ฟังก์ชันอัปเดต UI โดยใช้ตัวแปรที่เก็บไว้
+            self._update_ui_after_action(po_id, so_number_to_update)
+            # <<< END: สิ้นสุดการแก้ไข >>>
 
         except Exception as e:
             if conn: conn.rollback()
@@ -789,6 +809,54 @@ class PurchasingManagerScreen(CTkFrame):
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
+
+    def _update_ui_after_action(self, po_id):
+        """
+        (ฟังก์ชันใหม่) อัปเดต UI อย่างชาญฉลาดหลังจากอนุมัติหรือปฏิเสธ PO
+        """
+        # 1. หา PO card ที่เพิ่งกระทำไปแล้วลบออกจากหน้าจอ
+        if po_id in self.po_cards:
+            po_card_widget = self.po_cards.pop(po_id)
+            if po_card_widget.winfo_exists():
+                po_card_widget.destroy()
+
+        # 2. อัปเดต DataFrame หลัก โดยการลบแถวของ PO ที่เพิ่งกระทำออกไป
+        self.all_pending_df = self.all_pending_df[self.all_pending_df['id'] != po_id].copy()
+
+        # 3. อัปเดตปุ่ม "อนุมัติทั้งหมด" และข้อความบน SO Card
+        self._update_all_counts()
+
+    def _update_all_counts(self):
+        """
+        (ฟังก์ชันใหม่) วนลูปเช็ค SO Card ทั้งหมดเพื่ออัปเดตจำนวน PO หรือลบทิ้งถ้าหมดแล้ว
+        """
+        so_to_remove = []
+        for so_number, so_card_widget in self.so_cards.items():
+            if so_card_widget.winfo_exists():
+                # นับจำนวน PO ที่เหลืออยู่ของ SO นี้จาก DataFrame
+                remaining_count = len(self.all_pending_df[self.all_pending_df['so_number'] == so_number])
+                
+                if remaining_count > 0:
+                    # ยังมี PO เหลืออยู่ ให้อัปเดตข้อความ
+                    label = so_card_widget.winfo_children()[0].winfo_children()[0] # หา Label
+                    label.configure(text=f"SO: {so_number} (มี {remaining_count} POs รออนุมัติ)")
+                    # อาจจะต้องอัปเดตปุ่ม "อนุมัติทั้งหมด" ของ SO card ด้วย (ถ้ามี)
+                else:
+                    # ไม่มี PO เหลือแล้ว ลบ SO Card ทิ้ง
+                    so_card_widget.destroy()
+                    so_to_remove.append(so_number)
+            else:
+                 so_to_remove.append(so_number)
+        
+        # ลบ SO ที่ถูกทำลายไปแล้วออกจาก Dictionary
+        for so in so_to_remove:
+            self.so_cards.pop(so, None)
+            
+        # อัปเดตปุ่มใหญ่ด้านบนสุด
+        total_pending_count = len(self.all_pending_df)
+        if hasattr(self, 'approve_all_button') and self.approve_all_button.winfo_exists():
+            self.approve_all_button.configure(text=f"อนุมัติทุกรายการที่ค้างอยู่ ({total_pending_count})")
+            self.approve_all_button.configure(state="normal" if total_pending_count > 0 else "disabled")
 
     def _on_destroy(self, event):
         if hasattr(event, 'widget') and event.widget is self: self._stop_polling()
@@ -910,17 +978,36 @@ class PurchasingManagerScreen(CTkFrame):
         fig.tight_layout(pad=2); canvas = FigureCanvasTkAgg(fig, master=parent_frame); canvas.draw(); canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10); self.rejection_chart_canvas = canvas
         
     def _create_pending_list_view(self):
-        self.main_frame = CTkScrollableFrame(self, label_text="รายการที่รอการอนุมัติ (Grouped by SO)")
-        self.main_frame.grid(row=2, column=0, padx=20, pady=10, sticky="nsew"); self.main_frame.grid_columnconfigure(0, weight=1)
+        # <<< แก้ไข: สร้าง Frame ใหญ่ขึ้นมาครอบอีกชั้นเพื่อใส่ช่องค้นหา >>>
+        container = CTkFrame(self)
+        container.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1)
+
+        # --- ส่วนของช่องค้นหา ---
+        search_frame = CTkFrame(container, fg_color="transparent")
+        search_frame.grid(row=0, column=0, padx=10, pady=(5, 5), sticky="ew")
+        
+        self.search_entry = CTkEntry(search_frame, placeholder_text="🔍 ค้นหาจาก SO, PO, หรือชื่อซัพพลายเออร์...")
+        self.search_entry.pack(fill="x", expand=True)
+        # เมื่อปล่อยปุ่มพิมพ์ ให้เรียกฟังก์ชัน _filter_pending_list
+        self.search_entry.bind("<KeyRelease>", self._filter_pending_list)
+        
+        # --- ส่วนของ Scrollable Frame ---
+        self.main_frame = CTkScrollableFrame(container, label_text="รายการที่รอการอนุมัติ (Grouped by SO)")
+        self.main_frame.grid(row=1, column=0, padx=0, pady=0, sticky="nsew")
+        self.main_frame.grid_columnconfigure(0, weight=1)
         
     def _load_pending_pos(self):
-        for widget in self.main_frame.winfo_children():
-            widget.destroy()
-
+        """
+        (เวอร์ชันแก้ไข) โหลดข้อมูล PO ทั้งหมดมาเก็บไว้ใน DataFrame หลัก
+        แล้วค่อยเรียกใช้ฟังก์ชัน Populate เพื่อวาด UI
+        """
         try:
             params = None
-            df = pd.DataFrame()
-
+            query = ""
+            
+            # Logic การดึงข้อมูลเหมือนเดิม
             if self.user_role == 'Purchasing Manager':
                 query = """
                     (SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
@@ -933,10 +1020,8 @@ class PurchasingManagerScreen(CTkFrame):
                     AND approver_manager1_key != %s)
                     ORDER BY timestamp ASC
                 """
-                # <<< แก้ไข: เปลี่ยนการสร้าง params เป็น Tuple
                 params = (self.user_key,)
-                df = pd.read_sql_query(query, self.app_container.pg_engine, params=params)
-
+                
             elif self.user_role == 'Director':
                 query = """
                     SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
@@ -944,43 +1029,92 @@ class PurchasingManagerScreen(CTkFrame):
                     WHERE status = 'Pending Approval' AND approval_status = 'Pending Director' 
                     ORDER BY timestamp ASC
                 """
-                df = pd.read_sql_query(query, self.app_container.pg_engine)
             
-            if df.empty:
-                CTkLabel(self.main_frame, text="ไม่มีรายการที่รอการอนุมัติ").pack(pady=20)
-                return
-            
-            grouped = df.groupby('so_number').size().reset_index(name='po_count')
-            for _, group_row in grouped.iterrows():
-                so_card = self._create_so_group_card(group_row)
-                so_card.pack(fill="x", padx=10, pady=(10, 5))
+            # <<< START: จุดที่แก้ไข >>>
+            # 1. นำข้อมูลที่โหลดมา เก็บไว้ในตัวแปรหลัก self.all_pending_df
+            if query:
+                self.all_pending_df = pd.read_sql_query(query, self.app_container.pg_engine, params=params if params else None)
+            else:
+                self.all_pending_df = pd.DataFrame()
+
+            # 2. เรียกใช้ฟังก์ชัน _populate_pending_list เพื่อวาด UI จากข้อมูลทั้งหมด
+            self._populate_pending_list(self.all_pending_df)
+            # <<< END: สิ้นสุดการแก้ไข >>>
 
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูล PO ที่รออนุมัติได้: {e}", parent=self)
             traceback.print_exc()
+            self.all_pending_df = pd.DataFrame() # กรณีเกิด Error ให้เคลียร์ข้อมูล
+            self._populate_pending_list(self.all_pending_df)
             
+    def _populate_pending_list(self, df_to_show):
+        """
+        (ฟังก์ชันใหม่) รับ DataFrame เข้ามาแล้ววาด UI ตามข้อมูลในนั้น
+        ใช้ได้ทั้งตอนโหลดครั้งแรกและตอนค้นหา
+        """
+        # ล้าง UI เก่าและ Dictionary ที่เก็บ Widget
+        for widget in self.main_frame.winfo_children():
+            widget.destroy()
+        self.so_cards.clear()
+        self.po_cards.clear()
+
+        # อัปเดตปุ่ม "อนุมัติทั้งหมด"
+        total_pending_count = len(df_to_show)
+        if hasattr(self, 'approve_all_button') and self.approve_all_button.winfo_exists():
+            self.approve_all_button.configure(text=f"อนุมัติทุกรายการที่ค้างอยู่ ({total_pending_count})")
+            self.approve_all_button.configure(state="normal" if total_pending_count > 0 else "disabled")
+
+        if df_to_show.empty:
+            CTkLabel(self.main_frame, text="ไม่พบรายการที่รอการอนุมัติ").pack(pady=20)
+            return
+        
+        # จัดกลุ่มตาม SO และสร้าง Card
+        grouped = df_to_show.groupby('so_number').size().reset_index(name='po_count')
+        for _, group_row in grouped.iterrows():
+            so_number = group_row['so_number']
+            so_card = self._create_so_group_card(group_row)
+            so_card.pack(fill="x", padx=10, pady=(10, 5))
+            # เก็บ SO Card ไว้ใน Dictionary โดยใช้ so_number เป็น key
+            self.so_cards[so_number] = so_card
+              
+    def _filter_pending_list(self, event=None):
+        """
+        (ฟังก์ชันใหม่) กรองข้อมูลใน DataFrame ตามคำค้นหาแล้ววาด UI ใหม่
+        """
+        search_term = self.search_entry.get().lower().strip()
+        if not search_term:
+            filtered_df = self.all_pending_df
+        else:
+            # กรองจากข้อมูลทั้งหมดที่โหลดมา
+            filtered_df = self.all_pending_df[
+                self.all_pending_df['so_number'].str.lower().str.contains(search_term, na=False) |
+                self.all_pending_df['po_number'].str.lower().str.contains(search_term, na=False) |
+                self.all_pending_df['supplier_name'].str.lower().str.contains(search_term, na=False)
+            ]
+        
+        # วาด UI ใหม่จากข้อมูลที่กรองแล้ว
+        self._populate_pending_list(filtered_df)
+
     def _toggle_po_details(self, so_number, detail_frame):
+        # (ฟังก์ชันนี้แก้ไขเล็กน้อยเพื่อใช้ DataFrame ที่เก็บไว้)
         if detail_frame.winfo_viewable():
            detail_frame.pack_forget()
            return
     
         detail_frame.pack(fill="x", padx=10, pady=(0, 10))
         if not detail_frame.winfo_children():
-         try: 
-             if self.user_role == 'Director':
-                status_to_fetch = ('Pending Director',)
-             else:
-                status_to_fetch = ('Pending Mgr 1', 'Pending Mgr 2')
-            
-             query = "SELECT * FROM purchase_orders WHERE so_number = %s AND approval_status IN %s"
-             df_po = pd.read_sql_query(query, self.pg_engine, params=(so_number, status_to_fetch))
-            
-             for _, row in df_po.iterrows():
-                if self.user_role == 'Purchasing Manager' and row['approval_status'] == 'Pending Mgr 2' and row['approver_manager1_key'] == self.user_key:
-                    continue
-                self._create_po_card_widget(detail_frame, row).pack(fill="x", padx=20, pady=(2,5))
-         except Exception as e:
-            CTkLabel(detail_frame, text=f"Error loading PO details: {e}").pack()
+            try:
+                # กรอง PO เฉพาะของ SO นี้จาก DataFrame หลัก
+                df_po = self.all_pending_df[self.all_pending_df['so_number'] == so_number]
+                
+                for _, row in df_po.iterrows():
+                    po_id = row['id']
+                    po_card = self._create_po_card_widget(detail_frame, row)
+                    po_card.pack(fill="x", padx=20, pady=(2,5))
+                    # เก็บ PO Card ไว้ใน Dictionary โดยใช้ po_id เป็น key
+                    self.po_cards[po_id] = po_card
+            except Exception as e:
+                CTkLabel(detail_frame, text=f"Error loading PO details: {e}").pack()
             
     def _create_po_card_widget(self, parent, row_data, from_detail_window=False):
         card = CTkFrame(parent, border_width=1, corner_radius=10)
@@ -1044,19 +1178,137 @@ class PurchasingManagerScreen(CTkFrame):
         except Exception as e: print(f"Error creating notification: {e}")
         
     def _approve_all_for_so(self, so_number):
-        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการอนุมัติ PO ทุกใบสำหรับ SO: {so_number} ใช่หรือไม่?", parent=self): return
+        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการอนุมัติ PO ทุกใบสำหรับ SO: {so_number} ใช่หรือไม่?", parent=self):
+            return
+        
         conn = None
+        approved_count = 0
+        failed_pos = []
         try:
             conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM purchase_orders WHERE so_number = %s AND approval_status IN ('Pending Mgr 1', 'Pending Mgr 2')", (so_number,)); po_ids_to_approve = [row[0] for row in cursor.fetchall()]
-                messagebox.showwarning("ยังไม่รองรับ", "ฟังก์ชันอนุมัติทั้งหมดสำหรับระบบใหม่ยังไม่เปิดใช้งาน กรุณาอนุมัติทีละรายการ", parent=self)
-                return
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # 1. ดึง ID ของ PO ทั้งหมดที่รออนุมัติสำหรับ SO นี้
+                # และสำหรับ Role ปัจจุบัน
+                status_to_fetch = ()
+                if self.user_role == 'Purchasing Manager':
+                    status_to_fetch = ('Pending Mgr 1', 'Pending Mgr 2')
+                elif self.user_role == 'Director':
+                    status_to_fetch = ('Pending Director',)
 
-            conn.commit(); messagebox.showinfo("สำเร็จ", f"อนุมัติ PO ทั้งหมดสำหรับ SO: {so_number} เรียบร้อยแล้ว", parent=self); self._load_data()
+                if not status_to_fetch:
+                    messagebox.showerror("ผิดพลาด", "Role ของคุณไม่สามารถอนุมัติได้", parent=self)
+                    return
+
+                cursor.execute(
+                    "SELECT id, approval_status, approver_manager1_key FROM purchase_orders WHERE so_number = %s AND approval_status IN %s",
+                    (so_number, status_to_fetch)
+                )
+                po_list = cursor.fetchall()
+
+                if not po_list:
+                    messagebox.showinfo("ข้อมูลล่าสุด", "ไม่พบ PO ที่รอการอนุมัติสำหรับ SO นี้", parent=self)
+                    return
+
+                # 2. วนลูปเพื่ออนุมัติทีละใบ
+                for po in po_list:
+                    po_id = po['id']
+                    # ตรวจสอบเงื่อนไขการอนุมัติซ้ำ (สำหรับ Mgr)
+                    if self.user_role == 'Purchasing Manager' and po['approval_status'] == 'Pending Mgr 2' and po['approver_manager1_key'] == self.user_key:
+                        failed_pos.append(po_id)
+                        continue # ข้ามไปทำใบถัดไป
+
+                    # สร้างการอนุมัติ (โค้ดส่วนนี้จะเหมือนใน _approve_po)
+                    try:
+                        self._approve_po(po_id, confirm=False) # ส่ง confirm=False เพื่อไม่ให้ถามซ้ำ
+                        approved_count += 1
+                    except Exception as e:
+                        print(f"Failed to approve PO ID {po_id}: {e}")
+                        failed_pos.append(po_id)
+                
+            # 3. แสดงผลสรุป
+            success_message = f"อนุมัติ PO สำหรับ SO: {so_number} สำเร็จ {approved_count} รายการ"
+            if failed_pos:
+                success_message += f"\n\nเกิดข้อผิดพลาด {len(failed_pos)} รายการ (ID: {', '.join(map(str, failed_pos))})"
+                messagebox.showwarning("อนุมัติสำเร็จบางส่วน", success_message, parent=self)
+            else:
+                messagebox.showinfo("สำเร็จ", success_message, parent=self)
+
+            self._load_pending_pos() # Refresh หน้าจอหลัก
+
         except Exception as e:
-            if conn: conn.rollback(); messagebox.showerror("ผิดพลาด", f"ไม่สามารถอนุมัติทั้งหมดได้: {e}", parent=self)
-        finally: self.app_container.release_connection(conn)
+            if conn: conn.rollback()
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถอนุมัติทั้งหมดได้: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _approve_all_pending_pos(self):
+        # ดึงจำนวน PO ที่ค้างอยู่จากปุ่ม
+        current_pending_text = self.approve_all_button.cget("text")
+        # ใช้ regular expression เพื่อดึงตัวเลขออกจาก string เช่น "อนุมัติ (15)" -> "15"
+        import re
+        match = re.search(r'\((\d+)\)', current_pending_text)
+        if not match: return
+        
+        pending_count = int(match.group(1))
+
+        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการอนุมัติ PO ที่ค้างอยู่ทั้งหมด {pending_count} รายการใช่หรือไม่?\n(ระบบจะอนุมัติเฉพาะรายการที่คุณมีสิทธิ์)", icon="question", parent=self):
+            return
+
+        conn = None
+        approved_count = 0
+        failed_pos = []
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # 1. ดึง ID ของ PO ทั้งหมดที่รออนุมัติสำหรับ Role ปัจจุบัน
+                status_to_fetch = ()
+                if self.user_role == 'Purchasing Manager':
+                    status_to_fetch = ('Pending Mgr 1', 'Pending Mgr 2')
+                elif self.user_role == 'Director':
+                    status_to_fetch = ('Pending Director',)
+
+                if not status_to_fetch:
+                    messagebox.showerror("ผิดพลาด", "Role ของคุณไม่สามารถอนุมัติได้", parent=self)
+                    return
+
+                cursor.execute(
+                    "SELECT id, approval_status, approver_manager1_key FROM purchase_orders WHERE approval_status IN %s",
+                    (status_to_fetch,)
+                )
+                all_pending_pos = cursor.fetchall()
+                
+                # 2. วนลูปเพื่ออนุมัติทีละใบ
+                for po in all_pending_pos:
+                    po_id = po['id']
+                    # ตรวจสอบเงื่อนไขการอนุมัติซ้ำ (สำหรับ Mgr)
+                    if self.user_role == 'Purchasing Manager' and po['approval_status'] == 'Pending Mgr 2' and po['approver_manager1_key'] == self.user_key:
+                        failed_pos.append(po_id)
+                        continue
+
+                    try:
+                        self._approve_po(po_id, confirm=False)
+                        approved_count += 1
+                    except Exception as e:
+                        print(f"Failed to bulk approve PO ID {po_id}: {e}")
+                        failed_pos.append(po_id)
+            
+            # 3. แสดงผลสรุป
+            success_message = f"อนุมัติ PO สำเร็จ {approved_count} รายการ"
+            if failed_pos:
+                success_message += f"\n\nเกิดข้อผิดพลาด/ข้ามการอนุมัติ {len(failed_pos)} รายการ (ID: {', '.join(map(str, failed_pos))})"
+                messagebox.showwarning("อนุมัติสำเร็จบางส่วน", success_message, parent=self)
+            else:
+                messagebox.showinfo("สำเร็จ", success_message, parent=self)
+
+            self._load_pending_pos() # Refresh หน้าจอหลัก
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถอนุมัติทั้งหมดได้: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
         
     def _load_data(self):
         self._update_manager_dashboard()

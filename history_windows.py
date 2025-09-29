@@ -127,6 +127,9 @@ class PurchaseDetailWindow(CTkToplevel):
         self.app_container = app_container
         self.purchase_id = purchase_id
         self.on_save_callback = on_save_callback
+        self._load_supplier_data_for_autocomplete()
+        
+        self.title(f"รายละเอียดใบสั่งซื้อ (PO ID: {self.purchase_id})")
         self.user_role = self.app_container.current_user_role
         
         self.po_entries = {}
@@ -135,10 +138,14 @@ class PurchaseDetailWindow(CTkToplevel):
         self.payment_entries = []
         self.deleted_payment_ids = []
         
+        self.supplier_names_list = self._get_supplier_names()
+
+        # <<< START: เพิ่ม print() ตรงนี้ >>>
+        print(f"DEBUG [2]: self.supplier_names_list in __init__ contains -> {self.supplier_names_list}")
+        # <<< END >>>
+
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
-
-        # กลับมาใช้ ScrollableFrame แบบเดี่ยวเหมือนเดิม
         self.scroll_frame = CTkScrollableFrame(self)
         self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         self.scroll_frame.grid_columnconfigure(0, weight=1)
@@ -148,6 +155,105 @@ class PurchaseDetailWindow(CTkToplevel):
         self.after(50, self._load_and_display_data)
         self.transient(master)
         self.grab_set()
+    
+    def _load_supplier_data_for_autocomplete(self):
+        """โหลดข้อมูล Supplier ทั้งหมดมาเตรียมไว้สำหรับ AutoComplete"""
+        try:
+            df = pd.read_sql("SELECT id, supplier_name, supplier_code, credit_term FROM suppliers ORDER BY supplier_name", self.app_container.pg_engine)
+            self.supplier_completion_data = []
+            for _, row in df.iterrows():
+                self.supplier_completion_data.append({
+                    "id": row['id'],
+                    "name": row['supplier_name'],
+                    "code": row.get('supplier_code', ''),
+                    "term": row.get('credit_term', 'เงินสด')
+                })
+        except Exception as e:
+            print(f"Error loading supplier data for history window: {e}")
+            self.supplier_completion_data = []
+
+    def _on_supplier_selected_in_detail(self, selection_dict):
+        """Callback เมื่อมีการเลือก Supplier จาก AutoComplete ในหน้ารายละเอียด"""
+        if not selection_dict:
+            return
+
+        # อัปเดตข้อมูลในช่อง Supplier Code ผ่าน self.po_entries
+        supplier_code_entry = self.po_entries.get('supplier_code')
+        if supplier_code_entry and supplier_code_entry.winfo_exists():
+            supplier_code_entry.delete(0, tk.END)
+            supplier_code_entry.insert(0, selection_dict.get('code', ''))
+
+        # อัปเดตข้อมูลในช่อง Credit Term ผ่าน self.po_entries
+        credit_term_entry = self.po_entries.get('credit_term')
+        if credit_term_entry and credit_term_entry.winfo_exists():
+            credit_term_map = {'เงินสด': 'เงินสด', '0': 'เงินสด', '7': 'Cr 7', '15': 'Cr 15', '30': 'Cr 30'}
+            term_value = str(selection_dict.get('term', 'เงินสด')).strip()
+            credit_term_entry.delete(0, tk.END)
+            credit_term_entry.insert(0, credit_term_map.get(term_value, term_value))
+
+    def _get_supplier_names(self):
+        """(เวอร์ชันแก้ไข) ดึงรายการชื่อซัพพลายเออร์และทำความสะอาดข้อมูล"""
+        conn = None
+        names = []
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # ดึงข้อมูลเฉพาะชื่อซัพพลายเออร์ที่ไม่ใช่ค่าว่าง
+                cursor.execute("SELECT supplier_name FROM suppliers WHERE supplier_name IS NOT NULL AND supplier_name != '' ORDER BY supplier_name")
+                
+                fetched_rows = cursor.fetchall()
+                cleaned_items = set() # ใช้ set เพื่อกรองข้อมูลซ้ำ
+
+                for row in fetched_rows:
+                    original_name = row[0]
+                    if isinstance(original_name, str):
+                        # .strip() เพื่อลบช่องว่างหน้า-หลัง
+                        clean_name = original_name.strip()
+                        if clean_name: # ตรวจสอบว่าชื่อไม่เป็นค่าว่างหลัง clean
+                            cleaned_items.add(clean_name)
+                
+                names = sorted(list(cleaned_items)) # แปลงกลับเป็น List และเรียงลำดับ
+
+        except Exception as e:
+            print(f"!!! ERROR in _get_supplier_names: {e}")
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+        
+        return names
+
+    def _on_supplier_selected(self, supplier_name_or_code):
+        """เมื่อเลือกซัพพลายเออร์จากรายการ Autocomplete ให้ดึงข้อมูลมาเติม"""
+        input_value = supplier_name_or_code.strip()
+        if not input_value:
+            return
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # 1. ลองค้นหาจาก "ชื่อ" ก่อน
+                cursor.execute("SELECT supplier_code, credit_term FROM suppliers WHERE supplier_name = %s LIMIT 1", (input_value,))
+                supplier_info = cursor.fetchone()
+
+                if supplier_info:
+                    # พบข้อมูลจากชื่อ -> เติมรหัสและ Credit Term
+                    utils.set_entry_text(self.po_entries['supplier_code'], supplier_info['supplier_code'])
+                    utils.set_entry_text(self.po_entries['credit_term'], supplier_info['credit_term'])
+                else:
+                    # 2. ถ้าไม่พบ ให้ลองค้นหาจาก "รหัส"
+                    cursor.execute("SELECT supplier_name, credit_term FROM suppliers WHERE supplier_code = %s LIMIT 1", (input_value,))
+                    supplier_info_by_code = cursor.fetchone()
+                    if supplier_info_by_code:
+                        # พบข้อมูลจากรหัส -> เติมชื่อและ Credit Term (ข้อมูลจะ Sync กัน)
+                        utils.set_entry_text(self.po_entries['supplier_name'], supplier_info_by_code['supplier_name'])
+                        utils.set_entry_text(self.po_entries['credit_term'], supplier_info_by_code['credit_term'])
+
+        except Exception as e:
+            print(f"Error in _on_supplier_selected: {e}")
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
 
     def _create_dropdown_row(self, parent, row_index, label, value, key, options):
         """ฟังก์ชัน Helper ใหม่สำหรับสร้างแถว Dropdown ให้สวยงามขึ้น"""
@@ -219,14 +325,17 @@ class PurchaseDetailWindow(CTkToplevel):
 
                 self.po_data = dict(po_data)
                 
-                # --- START: เพิ่มโค้ดดึง supplier_code จากชื่อ ---
+                # ดึง supplier_code และ credit_term จากชื่อซัพพลายเออร์
                 supplier_name = self.po_data.get('supplier_name')
                 if supplier_name:
-                    cursor.execute("SELECT supplier_code FROM suppliers WHERE supplier_name = %s LIMIT 1", (supplier_name,))
+                    cursor.execute("SELECT supplier_code, credit_term FROM suppliers WHERE supplier_name = %s LIMIT 1", (supplier_name,))
                     supplier_info = cursor.fetchone()
                     if supplier_info:
                         self.po_data['supplier_code'] = supplier_info['supplier_code']
-                # --- END ---
+                        self.po_data['credit_term'] = supplier_info['credit_term']
+                    else:
+                        self.po_data['supplier_code'] = ""
+                        self.po_data['credit_term'] = ""
 
                 cursor.execute("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", (self.purchase_id,))
                 items_data = cursor.fetchall()
@@ -244,7 +353,6 @@ class PurchaseDetailWindow(CTkToplevel):
         finally:
             if conn: self.app_container.release_connection(conn)
 
-    # history_windows.py
 
     def _create_formatted_view(self):
         for widget in self.scroll_frame.winfo_children(): widget.destroy()
@@ -275,21 +383,17 @@ class PurchaseDetailWindow(CTkToplevel):
         return section_frame
     
     def _create_editable_row(self, parent, row_index, label, value, key, is_numeric=False, widget_class=None, options=None):
-        """Helper สำหรับสร้างแถวที่สามารถแก้ไขข้อมูลได้ (เวอร์ชันแก้ไขการตั้งค่า Dropdown)"""
+        """Helper สำหรับสร้างแถวที่สามารถแก้ไขข้อมูลได้"""
         CTkLabel(parent, text=f"{label}:").grid(row=row_index, column=0, padx=10, pady=5, sticky="w")
         
-        # --- START: แก้ไข Logic การสร้าง Widget ---
         if widget_class == CTkOptionMenu:
-            # 1. สร้าง StringVar และ "กำหนดค่าที่ถูกต้อง" ให้มันก่อน
             entry_var = tk.StringVar()
             initial_value = str(value) if value is not None and str(value) in (options or []) else (options[0] if options else "")
             entry_var.set(initial_value)
-
-            # 2. "หลังจากนั้น" ค่อยสร้าง Dropdown โดยใช้ตัวแปรที่ตั้งค่าไว้แล้ว
             entry = CTkOptionMenu(parent, variable=entry_var, values=options or [], command=self._recalculate_summary_totals)
-
-            self.po_entries[key] = entry_var # เก็บ StringVar ไว้สำหรับดึงค่าตอนบันทึกก
-
+            self.po_entries[key] = entry_var 
+        elif isinstance(self.po_entries.get(key), AutoCompleteEntry): # ถ้าเป็น AutoCompleteEntry ให้ข้ามไป
+            return
         elif is_numeric:
             entry = FormattedNumericEntry(parent, command=self._recalculate_summary_totals)
             entry.set(value if value is not None else 0.0)
@@ -298,7 +402,6 @@ class PurchaseDetailWindow(CTkToplevel):
             entry = CTkEntry(parent)
             entry.insert(0, str(value) if value is not None else "")
             self.po_entries[key] = entry
-        # --- END ---
             
         entry.grid(row=row_index, column=1, padx=10, pady=5, sticky="ew")
         return entry
@@ -333,24 +436,45 @@ class PurchaseDetailWindow(CTkToplevel):
 
     def _create_info_section(self, parent, data):
         info_frame = self._create_section(parent, "ข้อมูลทั่วไป")
-        self._create_editable_row(info_frame, 1, "SO Number", data.get("so_number"), key="so_number")
-        self._create_editable_row(info_frame, 2, "PO Number", data.get("po_number"), key="po_number")
-        self._create_editable_row(info_frame, 3, "ชื่อซัพพลายเออร์", data.get("supplier_name"), key="supplier_name")
-        self._create_editable_row(info_frame, 4, "รหัสซัพพลายเออร์", data.get("supplier_code"), key="supplier_code")
-        self._create_editable_row(info_frame, 5, "Credit Term", data.get("credit_term"), key="credit_term")
-        self._create_editable_row(info_frame, 6, "ประเภท PO", data.get("po_mode"), key="po_mode", widget_class=CTkOptionMenu, options=["Single-PO", "Multiple-PO"])
-        self._add_display_row(info_frame, 7, "สถานะ", data.get("status"))
+        current_row = 1
 
-        # <<< START: แก้ไข data.get('po_type') เป็น data.get('po_mode') >>>
-        # <<< และ key='po_type' เป็น key='po_mode' >>>
-        self._create_editable_row(
-            info_frame, 6, "ประเภท PO", data.get("po_mode"), key="po_mode", 
-            widget_class=CTkOptionMenu, 
-            options=["Single-PO", "Multiple-PO"]
+        # --- ส่วนของ Supplier Name ที่ใช้ AutoCompleteEntry ---
+        CTkLabel(info_frame, text="ชื่อซัพพลายเออร์:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        supplier_entry = AutoCompleteEntry(
+            info_frame,
+            completion_list=self.supplier_completion_data,  # ใช้ List of Dictionaries
+            display_key='name',                             # ระบุ Key ที่จะแสดงผล
+            command=self._on_supplier_selected_in_detail    # เรียกใช้ Callback command
         )
-        # <<< END >>>
+        supplier_entry.insert(0, data.get("supplier_name", ""))
+        supplier_entry.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries['supplier_name'] = supplier_entry
+        current_row += 1
 
-        self._add_display_row(info_frame, 7, "สถานะ", data.get("status"))
+        # --- ส่วนของข้อมูลอื่นๆ ที่สามารถแก้ไขได้ ---
+        # เราจะเก็บ reference ของ supplier_code และ credit_term ไว้ใน self.po_entries
+        # เพื่อให้ callback สามารถอัปเดตค่าในช่องเหล่านี้ได้
+        self._create_editable_row(info_frame, current_row, "PO Number", data.get("po_number"), key="po_number")
+        current_row += 1
+        
+        # เมื่อสร้างแถว รหัสซัพพลายเออร์ เราเก็บ widget ที่ return กลับมาไว้
+        supplier_code_widget = self._create_editable_row(info_frame, current_row, "รหัสซัพพลายเออร์", data.get("supplier_code"), key="supplier_code")
+        self.po_entries['supplier_code'] = supplier_code_widget
+        current_row += 1
+        
+        # เมื่อสร้างแถว Credit Term เราเก็บ widget ที่ return กลับมาไว้
+        credit_term_widget = self._create_editable_row(info_frame, current_row, "Credit Term", data.get("credit_term"), key="credit_term")
+        self.po_entries['credit_term'] = credit_term_widget
+        current_row += 1
+        
+        self._create_editable_row(info_frame, current_row, "SO Number", data.get("so_number"), key="so_number")
+        current_row += 1
+        
+        self._create_editable_row(info_frame, current_row, "ประเภท PO", data.get("po_mode"), key="po_mode", widget_class=CTkOptionMenu, options=["Single-PO", "Multiple-PO"])
+        current_row += 1
+        
+        self._add_display_row(info_frame, current_row, "สถานะ", data.get("status"))
+        current_row += 1
 
     def _create_items_section(self, parent, items_list):
         self.items_frame = self._create_section(parent, "รายการสินค้า")
@@ -465,11 +589,10 @@ class PurchaseDetailWindow(CTkToplevel):
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าสต๊อก:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         stock_date_selector = DateSelector(shipping_frame)
         stock_date_selector.set_date(data.get("shipping_to_stock_date"))
-        stock_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="w") # <-- sticky="w"
+        stock_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="w")
         self.po_entries["shipping_to_stock_date"] = stock_date_selector
         current_row += 1
 
-        # --- START: เปลี่ยนไปใช้ Helper ใหม่สำหรับ Dropdown ---
         self._create_dropdown_row(shipping_frame, current_row, "ประเภท VAT", data.get("shipping_to_stock_vat_type"), key="shipping_to_stock_vat_type", options=["VAT", "CASH"])
         current_row += 1
         
@@ -479,6 +602,13 @@ class PurchaseDetailWindow(CTkToplevel):
 
         wht_options = ["ไม่มีหัก", "1%", "3%"]
         self._create_dropdown_row(shipping_frame, current_row, "หัก ณ ที่จ่าย", data.get("shipping_to_stock_wht_type"), key="shipping_to_stock_wht_type", options=wht_options)
+        current_row += 1
+        
+        # --- START: เพิ่มช่องแสดงยอดหัก ณ ที่จ่าย (สต๊อก) ---
+        CTkLabel(shipping_frame, text="ยอดหัก ณ ที่จ่าย:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        stock_wht_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
+        stock_wht_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["shipping_to_stock_wht_display"] = stock_wht_display
         current_row += 1
         # --- END ---
         
@@ -501,11 +631,10 @@ class PurchaseDetailWindow(CTkToplevel):
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าไซต์:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         site_date_selector = DateSelector(shipping_frame)
         site_date_selector.set_date(data.get("shipping_to_site_date"))
-        site_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="w") # <-- sticky="w"
+        site_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="w")
         self.po_entries["shipping_to_site_date"] = site_date_selector
         current_row += 1
         
-        # --- START: เปลี่ยนไปใช้ Helper ใหม่สำหรับ Dropdown ---
         self._create_dropdown_row(shipping_frame, current_row, "ประเภท VAT", data.get("shipping_to_site_vat_type"), key="shipping_to_site_vat_type", options=["VAT", "CASH"])
         current_row += 1
         
@@ -513,6 +642,13 @@ class PurchaseDetailWindow(CTkToplevel):
         current_row += 1
 
         self._create_dropdown_row(shipping_frame, current_row, "หัก ณ ที่จ่าย", data.get("shipping_to_site_wht_type"), key="shipping_to_site_wht_type", options=wht_options)
+        current_row += 1
+        
+        # --- START: เพิ่มช่องแสดงยอดหัก ณ ที่จ่าย (ไซต์) ---
+        CTkLabel(shipping_frame, text="ยอดหัก ณ ที่จ่าย:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        site_wht_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
+        site_wht_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["shipping_to_site_wht_display"] = site_wht_display
         current_row += 1
         # --- END ---
         
@@ -585,33 +721,25 @@ class PurchaseDetailWindow(CTkToplevel):
     # <<< END >>>
 
     def _recalculate_summary_totals(self, *args):
-        # --- START: เพิ่มการตรวจสอบว่าหน้าต่างยังอยู่หรือไม่ ---
-        # ถ้าหน้าต่างหลักถูกปิดไปแล้ว ก็ไม่ต้องคำนวณอะไรต่อ
         if not self.winfo_exists():
             return
-        # --- END ---
-
+            
         total_cost = 0.0
         total_weight = 0.0
         
         for item_row in self.item_entries:
             try:
                 widgets = item_row['widgets']
-                # --- START: เพิ่มการตรวจสอบให้วิดเจ็ตในแถว ---
-                # เช็คว่าเฟรมของแถวนี้ยังอยู่ไหม ถ้าโดนลบไปแล้วก็ข้ามไป
                 if not widgets['quantity'].winfo_exists():
                     continue
-                # --- END ---
 
                 qty = widgets['quantity'].get_value()
                 price = widgets['unit_price'].get_value()
                 discount = widgets['discount_value'].get_value()
                 weight = widgets['total_weight'].get_value()
-                
                 discount_type = widgets['discount_type_var'].get()
                 
                 line_total = qty * price
-                
                 discount_amount = 0.0
                 if discount_type == '%':
                     discount_amount = line_total * (discount / 100.0)
@@ -620,32 +748,24 @@ class PurchaseDetailWindow(CTkToplevel):
                 
                 item_total = line_total - discount_amount
 
-                # --- START: เพิ่ม .winfo_exists() check ก่อน .configure() ---
                 if widgets['total_price_label'].winfo_exists():
                     widgets['total_price_label'].configure(text=f"{item_total:,.2f}")
-                # --- END ---
                 
                 total_cost += item_total
                 total_weight += weight
             except (ValueError, TypeError, KeyError):
-                # --- START: เพิ่ม .winfo_exists() check ก่อน .configure() ---
                 total_price_label = item_row.get('widgets', {}).get('total_price_label')
                 if total_price_label and total_price_label.winfo_exists():
                     total_price_label.configure(text="Error")
-                # --- END ---
 
-        # --- START: เพิ่ม .winfo_exists() check ให้กับป้ายสรุปผล ---
         if hasattr(self, 'total_cost_label') and self.total_cost_label.winfo_exists():
             self.total_cost_label.configure(text=f"{total_cost:,.2f}")
         if hasattr(self, 'total_weight_label') and self.total_weight_label.winfo_exists():
             self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
-        # --- END ---
         
         try:
-            # --- START: ตรวจสอบก่อนดึงค่าจาก self.po_entries ---
             if not self.po_entries['shipping_to_stock_cost'].winfo_exists():
-                return # ออกจากการคำนวณทันทีถ้า Widget สำคัญถูกทำลายไปแล้ว
-            # --- END ---
+                return
             
             shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value()
             shipping_stock_vat_type = self.po_entries['shipping_to_stock_vat_type'].get()
@@ -657,7 +777,6 @@ class PurchaseDetailWindow(CTkToplevel):
 
             relocation_cost = self.po_entries['relocation_cost'].get_value()
             bill_discount = self.po_entries['bill_discount'].get_value()
-            
             wht_entry = self.po_entries.get('wht_3_percent')
             vat_entry = self.po_entries.get('vat_7_percent')
         except (KeyError, ValueError, TypeError):
@@ -669,7 +788,6 @@ class PurchaseDetailWindow(CTkToplevel):
         stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
         site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
 
-        # --- START: เพิ่ม .winfo_exists() check ---
         stock_vat_display = self.po_entries.get("shipping_to_stock_vat_display")
         if stock_vat_display and stock_vat_display.winfo_exists():
             utils.set_entry_text(stock_vat_display, f"{stock_vat_amount:,.2f}")
@@ -677,16 +795,24 @@ class PurchaseDetailWindow(CTkToplevel):
         site_vat_display = self.po_entries.get("shipping_to_site_vat_display")
         if site_vat_display and site_vat_display.winfo_exists():
             utils.set_entry_text(site_vat_display, f"{site_vat_amount:,.2f}")
-        # --- END ---
 
+        # --- START: เพิ่มการคำนวณและแสดงผล WHT ---
         shipping_stock_wht_amount = shipping_stock * (0.01 if shipping_stock_wht_type == '1%' else 0.03 if shipping_stock_wht_type == '3%' else 0)
         shipping_site_wht_amount = shipping_site * (0.01 if shipping_site_wht_type == '1%' else 0.03 if shipping_site_wht_type == '3%' else 0)
+
+        stock_wht_display = self.po_entries.get("shipping_to_stock_wht_display")
+        if stock_wht_display and stock_wht_display.winfo_exists():
+            utils.set_entry_text(stock_wht_display, f"{shipping_stock_wht_amount:,.2f}")
+
+        site_wht_display = self.po_entries.get("shipping_to_site_wht_display")
+        if site_wht_display and site_wht_display.winfo_exists():
+            utils.set_entry_text(site_wht_display, f"{shipping_site_wht_amount:,.2f}")
+        # --- END ---
 
         base_for_tax = total_cost - bill_discount
         if shipping_stock_vat_type == 'VAT': base_for_tax += shipping_stock
         if shipping_site_vat_type == 'VAT': base_for_tax += shipping_site
 
-        # --- START: เพิ่ม .winfo_exists() check ---
         vat_checkbox_exists = hasattr(self, 'vat_checkbox') and self.vat_checkbox.winfo_exists()
         wht_checkbox_exists = hasattr(self, 'wht_checkbox') and self.wht_checkbox.winfo_exists()
 
@@ -695,7 +821,6 @@ class PurchaseDetailWindow(CTkToplevel):
 
         if vat_entry and vat_entry.winfo_exists(): vat_entry.set(vat_amount_total)
         if wht_entry and wht_entry.winfo_exists(): wht_entry.set(wht_amount_products)
-        # --- END ---
 
         non_vat_costs = 0.0
         if shipping_stock_vat_type == 'CASH': non_vat_costs += shipping_stock
@@ -705,7 +830,6 @@ class PurchaseDetailWindow(CTkToplevel):
         total_wht_deduction = wht_amount_products + shipping_stock_wht_amount + shipping_site_wht_amount
         grand_total = base_for_tax + vat_amount_total - total_wht_deduction + non_vat_costs
         
-        # --- START: เพิ่ม .winfo_exists() check ให้กับป้าย Grand Total ---
         if hasattr(self, 'grand_total_label') and self.grand_total_label.winfo_exists():
             self.grand_total_label.configure(text=f"{grand_total:,.2f}")
 
@@ -1054,7 +1178,6 @@ class PurchaseDetailWindow(CTkToplevel):
                         # ถ้ายังไม่มี ให้สร้างใหม่
                         cursor.execute("INSERT INTO suppliers (supplier_name, supplier_code, credit_term) VALUES (%s, %s, %s)",
                                     (supplier_name, supplier_code, self.po_entries['credit_term'].get()))
-                # --- END ---
 
                 total_cost = utils.convert_to_float(self.total_cost_label.cget("text"))
                 grand_total = utils.convert_to_float(self.grand_total_label.cget("text"))
@@ -1071,7 +1194,7 @@ class PurchaseDetailWindow(CTkToplevel):
                         shipping_to_site_vat_type = %s, shipping_to_site_shipper = %s,
                         shipping_to_site_wht_type = %s, shipping_to_site_notes = %s,
                         wht_3_percent_checked = %s, vat_7_percent_checked = %s,
-                        bill_discount = %s -- <-- เพิ่มบรรทัดนี้
+                        bill_discount = %s
                     WHERE id = %s
                 """, (
                     self.po_entries['so_number'].get(), self.po_entries['po_number'].get(),
@@ -1093,18 +1216,17 @@ class PurchaseDetailWindow(CTkToplevel):
                     self.po_entries['shipping_to_site_notes'].get(),
                     bool(self.wht_checkbox.get()),
                     bool(self.vat_checkbox.get()),
-                    self.po_entries['bill_discount'].get_value(), # <-- เพิ่มบรรทัดนี้
+                    self.po_entries['bill_discount'].get_value(),
                     self.purchase_id
                 ))
                 
-                # ... (ส่วนที่เหลือของฟังก์ชันเหมือนเดิม) ...
                 if self.deleted_item_ids:
                     cursor.execute("DELETE FROM purchase_order_items WHERE id IN %s", (tuple(self.deleted_item_ids),))
 
                 for item_row in self.item_entries:
                     widgets, item_id = item_row['widgets'], item_row['id']
                     code, name = widgets['product_code'].get(), widgets['product_name'].get()
-                    warehouse = widgets['warehouse'].get() # <-- ดึงข้อมูล 'คลัง'
+                    warehouse = widgets['warehouse'].get()
                     weight, qty = widgets['total_weight'].get_value(), widgets['quantity'].get_value()
                     price, discount = widgets['unit_price'].get_value(), widgets['discount_value'].get_value()
                     discount_type = widgets['discount_type_var'].get()
@@ -1172,42 +1294,37 @@ class PurchaseHistoryWindow(CTkToplevel):
         # ตั้งเวลาเพื่อเรียกฟังก์ชันค้นหาจริงในอีก 500 มิลลิวินาที (0.5 วินาที)
         self._debounce_job = self.after(500, self._apply_filters)
 
-    def __init__(self, master, app_container, sale_key_filter=None, on_row_double_click=None):
+    def __init__(self, master, app_container, purchase_id, on_save_callback=None, **kwargs):
         super().__init__(master)
+        self.title(f"รายละเอียด/แก้ไขใบสั่งซื้อ (PO ID: {purchase_id})")
+        self.geometry("900x800")
+        
         self.app_container = app_container
-        self.pg_engine = app_container.pg_engine
-        self.sale_key_filter = sale_key_filter
-        self.on_row_double_click_callback = on_row_double_click
-        self.df = None
+        self.purchase_id = purchase_id
+        self.on_save_callback = on_save_callback
+        self.user_role = self.app_container.current_user_role
         
-        # --- ตัวแปรสำหรับ Pagination และ Filter ---
-        self.current_page = 0
-        self.rows_per_page = 50
-        self.total_rows = 0
-        self.total_pages = 0
-        self.active_tab = "drafts"
+        self.po_entries = {}
+        self.item_entries = []
+        self.deleted_item_ids = []
+        self.payment_entries = []
+        self.deleted_payment_ids = []
         
-        # --- ตัวแปรสำหรับ UI และฟิลเตอร์เดือน/ปี ---
-        self.title(f"ประวัติการบันทึกของ: {self.sale_key_filter}")
-        self.geometry("1400x700")
-        try: self.theme = master.THEME["sale"]
-        except (AttributeError, KeyError): self.theme = {"header": "#1D4ED8", "primary": "#3B82F6"}
-        
-        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-        self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
-        self.month_var = tk.StringVar(value="ทุกเดือน")
-        self.year_var = tk.StringVar(value="ทุกปี")
-        
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        # --- START: เพิ่มบรรทัดนี้ ---
+        self.supplier_names_list = self._get_supplier_names() 
+        # --- END ---
 
-        # --- สร้าง UI Layout ใหม่ ---
-        self._create_new_layout()
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.scroll_frame = CTkScrollableFrame(self)
+        self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.scroll_frame.grid_columnconfigure(0, weight=1)
         
-        self.after(50, self._load_initial_data)
+        self._create_action_buttons()
+
+        self.after(50, self._load_and_display_data)
         self.transient(master)
         self.grab_set()
-        self.focus()
     
     def _create_new_layout(self):
         """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างประวัติ PO"""

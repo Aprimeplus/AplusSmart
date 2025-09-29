@@ -169,11 +169,13 @@ class AppContainer(CTk):
             }
         self.pg_engine = None
         self.current_user_key = None
+        self._resize_timer = None
+        self.bind("<Configure>", self._on_window_resize_or_move)
         self.notification_poll_id = None
         try:
             db_params = {"host": "192.168.1.60", "dbname": "aplus_com_test", "user": "app_user", "password": "cailfornia123"}
             self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, **db_params)
-            self.pg_engine = create_engine(f'postgresql+psycopg2://{db_params["user"]}:{db_params["password"]}@{db_params["host"]}:5432/{db_params["dbname"]}')
+            self.pg_engine = create_engine(f'postgresql+psycopg2://{db_params["user"]}:{db_params["password"]}@{db_params["host"]}:5432/{db_params["dbname"]}?client_encoding=utf8')
             conn = self.get_connection()
             print("Database connection pool created successfully.")
             self.release_connection(conn)
@@ -196,6 +198,20 @@ class AppContainer(CTk):
             return
         self._create_initial_db_tables()
         self.show_login_screen()
+    
+    def _on_window_resize_or_move(self, event):
+        """
+        จัดการ Event เมื่อหน้าต่างถูกย้ายหรือปรับขนาด
+        โดยจะหน่วงเวลาการอัปเดตเพื่อป้องกันอาการกระตุก (Debouncing)
+        """
+        # ยกเลิกการจับเวลาครั้งเก่า (ถ้ามี) เพื่อไม่ให้คำสั่งซ้ำซ้อน
+        if self._resize_timer is not None:
+            self.after_cancel(self._resize_timer)
+        
+        # เริ่มจับเวลาใหม่ รอ 250ms (0.25 วินาที) ถ้าไม่มีการขยับอีก
+        # โปรแกรมถึงจะทำการ update_idletasks เพื่อวาดหน้าจอใหม่แค่ครั้งเดียว
+        # การเพิ่มเวลารอจะทำให้การลากหน้าต่างลื่นขึ้นมากสำหรับ UI ที่ซับซ้อน
+        self._resize_timer = self.after(250, self.update_idletasks)
 
     def show_po_edit_window_for_hr(self, po_id, refresh_callback):
         """เปิดหน้าต่างสำหรับให้ HR แก้ไขข้อมูล PO โดยเฉพาะ"""

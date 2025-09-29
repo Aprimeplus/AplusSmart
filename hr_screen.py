@@ -305,6 +305,8 @@ class HRScreen(CTkFrame):
 
         self.header_map = app_container.HEADER_MAP
 
+        self.sales_keys_list = self._get_sale_keys()
+
         self.db_df, self.uploaded_df, self.comparison_df, self.user_df, self.comparison_log_df = None, None, None, None, None
         self.initial_commission_result = None
         self.current_comm_df = None
@@ -385,66 +387,95 @@ class HRScreen(CTkFrame):
         self.master_edit_results_frame.grid_columnconfigure(0, weight=1)
 
     def _search_so_po(self):
-        """ค้นหาข้อมูล SO และ PO จากฐานข้อมูลตาม Keyword"""
+        """(เวอร์ชันแก้ไข) ค้นหาข้อมูล SO และ PO เฉพาะตาม Keyword และกรองตามเซลส์"""
         for widget in self.master_edit_results_frame.winfo_children():
             widget.destroy()
             
         keyword = self.master_edit_search_entry.get().strip().upper()
         if not keyword:
-            CTkLabel(self.master_edit_results_frame, text="กรุณากรอก SO หรือ PO Number เพื่อค้นหา").pack(pady=20)
+            self._load_hr_edit_queue()
             return
 
-        try:
-            # ใช้ UNION ALL เพื่อค้นหาจากทั้ง 2 ตารางในครั้งเดียว
-            query = """
-                (SELECT 'SO' as type, id, so_number as number, customer_name as detail, status FROM commissions WHERE so_number ILIKE %s AND is_active = 1)
-                UNION ALL
-                (SELECT 'PO' as type, id, po_number as number, supplier_name as detail, status FROM purchase_orders WHERE po_number ILIKE %s)
-                ORDER BY number;
-            """
-            df = pd.read_sql_query(query, self.pg_engine, params=(f"%{keyword}%", f"%{keyword}%"))
+        search_term = keyword
+        if search_term.startswith("SO"): search_term = search_term[2:]
+        elif search_term.startswith("PO"): search_term = search_term[2:]
+        
+        # --- START: เพิ่ม Logic การกรองตามเซลส์ ---
+        selected_sale = self.master_edit_sale_var.get()
+        sale_filter_so = ""
+        sale_filter_po = ""
+        params_so = [f"%{search_term}%"]
+        params_po = [f"%{search_term}%"]
 
-            if df.empty:
-                CTkLabel(self.master_edit_results_frame, text=f"ไม่พบข้อมูลสำหรับ '{keyword}'").pack(pady=20)
+        if selected_sale != "ทั้งหมด":
+            sale_filter_so = " AND sale_key = %s"
+            params_so.append(selected_sale)
+            
+            # สำหรับ PO ต้อง Join เพื่อหา sale_key จาก commissions
+            sale_filter_po = " AND p.so_number IN (SELECT so_number FROM commissions WHERE sale_key = %s)"
+            params_po.append(selected_sale)
+        # --- END ---
+        
+        try:
+            so_query = f"SELECT id, so_number, customer_name, sale_key FROM commissions WHERE so_number ILIKE %s AND is_active = 1 {sale_filter_so}"
+            po_query = f"SELECT p.id, p.so_number, p.po_number, p.supplier_name FROM purchase_orders p WHERE p.po_number ILIKE %s {sale_filter_po}"
+
+            so_df = pd.read_sql_query(so_query, self.pg_engine, params=tuple(params_so))
+            po_df = pd.read_sql_query(po_query, self.pg_engine, params=tuple(params_po))
+
+            if so_df.empty and po_df.empty:
+                CTkLabel(self.master_edit_results_frame, text=f"ไม่พบข้อมูลสำหรับ '{keyword}' ของเซลส์ '{selected_sale}'").pack(pady=20)
                 return
 
-            for _, row in df.iterrows():
-                card = CTkFrame(self.master_edit_results_frame, border_width=1)
-                card.pack(fill="x", padx=10, pady=5)
-                card.grid_columnconfigure(0, weight=1)
+            if not so_df.empty:
+                CTkLabel(self.master_edit_results_frame, text="ผลการค้นหา: Sales Orders (SO)", font=self.label_font).pack(anchor="w", padx=10, pady=(10,0))
+                for _, row in so_df.iterrows():
+                    self._create_so_card_for_editing(self.master_edit_results_frame, row.to_dict())
 
-                info_frame = CTkFrame(card, fg_color="transparent")
-                info_frame.grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-                record_type = row['type']
-                record_id = int(row['id'])
-                
-                info_text = f"ประเภท: {record_type} | หมายเลข: {row['number']} | {row['detail']}"
-                CTkLabel(info_frame, text=info_text, font=self.entry_font).pack(anchor="w")
-                CTkLabel(info_frame, text=f"สถานะปัจจุบัน: {row['status']}", font=CTkFont(size=12, weight="bold")).pack(anchor="w")
-
-                if record_type == 'SO':
-                    edit_command = lambda r_id=record_id: self._open_so_editor_for_hr(r_id)
-                else: # PO
-                    edit_command = lambda r_id=record_id: self._open_po_editor_for_hr(r_id)
-
-                edit_button = CTkButton(card, text="แก้ไข", command=edit_command)
-                edit_button.grid(row=0, column=1, padx=10, pady=5, sticky="e")
+            if not po_df.empty:
+                CTkLabel(self.master_edit_results_frame, text="ผลการค้นหา: Purchase Orders (PO)", font=self.label_font).pack(anchor="w", padx=10, pady=(10,0))
+                for _, row in po_df.iterrows():
+                    po_id = int(row['id'])
+                    po_card = CTkFrame(self.master_edit_results_frame, border_width=1)
+                    po_card.pack(fill="x", padx=10, pady=5)
+                    info = f"PO: {row['po_number']} | SO: {row['so_number']} | Supplier: {row['supplier_name']}"
+                    CTkLabel(po_card, text=info).pack(side="left", padx=10, pady=5)
+                    CTkButton(po_card, text="แก้ไข PO", command=lambda pid=po_id: self._open_po_editor_for_hr(pid)).pack(side="right", padx=10, pady=5)
 
         except Exception as e:
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการค้นหา: {e}", parent=self)
-            traceback.print_exc()
 
     def _open_so_editor_for_hr(self, so_id):
-        """เปิดหน้าต่างแก้ไข SO สำหรับ HR (ฉบับแก้ไข ส่ง app_container และ callback)"""
+        """เปิดหน้าต่างแก้ไข SO สำหรับ HR (ฉบับแก้ไข เพิ่ม StringVars ที่ขาดไป)"""
         try:
             so_df = pd.read_sql_query("SELECT * FROM commissions WHERE id = %s", self.pg_engine, params=(so_id,))
             if so_df.empty:
                 messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูล SO ID: {so_id}", parent=self)
                 return
             
-            so_shared_vars = {'delivery_type_var': tk.StringVar(), 'sales_service_vat_option': tk.StringVar(),'cutting_drilling_fee_vat_option': tk.StringVar(),'other_service_fee_vat_option': tk.StringVar(),'shipping_vat_option_var': tk.StringVar(),'credit_card_fee_vat_option_var': tk.StringVar(),'so_grand_total_var': tk.StringVar(),'so_vs_payment_result_var': tk.StringVar(),'difference_amount_var': tk.StringVar(),'cash_required_total_var': tk.StringVar(),'cash_verification_result_var': tk.StringVar(),'sales_vat_calc_var': tk.StringVar(value="0.00"),'cutting_drilling_vat_calc_var': tk.StringVar(value="0.00"),'other_service_vat_calc_var': tk.StringVar(value="0.00"),'shipping_vat_calc_var': tk.StringVar(value="0.00"),'card_fee_vat_calc_var': tk.StringVar(value="0.00")}
+            # เราต้องสร้าง StringVars จำลองที่ SOPopupWindow ต้องการ
+            so_shared_vars = {}
+            so_shared_vars['delivery_type_var'] = tk.StringVar()
+            so_shared_vars['sales_service_vat_option'] = tk.StringVar()
+            so_shared_vars['cutting_drilling_fee_vat_option'] = tk.StringVar()
+            so_shared_vars['other_service_fee_vat_option'] = tk.StringVar()
+            so_shared_vars['shipping_vat_option_var'] = tk.StringVar()
+            so_shared_vars['credit_card_fee_vat_option_var'] = tk.StringVar()
+            so_shared_vars['so_grand_total_var'] = tk.StringVar()
+            so_shared_vars['so_vs_payment_result_var'] = tk.StringVar()
+            so_shared_vars['difference_amount_var'] = tk.StringVar()
+            so_shared_vars['cash_required_total_var'] = tk.StringVar()
+            so_shared_vars['cash_verification_result_var'] = tk.StringVar()
+            
+            # --- START: เพิ่ม StringVars สำหรับแสดง VAT ที่ขาดไป ---
+            so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
+            so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
+            so_shared_vars['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
+            so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
+            so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+            # --- END ---
 
+            # เรียกใช้ SOPopupWindow จาก hr_windows.py
             SOPopupWindow(
                 master=self,
                 app_container=self.app_container,
@@ -456,24 +487,28 @@ class HRScreen(CTkFrame):
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข SO ได้: {e}", parent=self)
             traceback.print_exc()
-
-
+    
     def _open_po_editor_for_hr(self, po_id):
-        """เปิดหน้าต่างแก้ไข PO สำหรับ HR (เวอร์ชันแก้ไข: เรียกหน้าต่างโดยตรง)"""
+        """เปิดหน้าต่างแก้ไข PO สำหรับ HR"""
         try:
-            # เรียกใช้ PurchaseDetailWindow โดยตรง
+            # ตรวจสอบว่ามี PO ID นี้อยู่จริงหรือไม่
+            po_df = pd.read_sql_query("SELECT id FROM purchase_orders WHERE id = %s", self.pg_engine, params=(po_id,))
+            if po_df.empty:
+                messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูล PO ID: {po_id}", parent=self)
+                return
+
+            # เรียกใช้ PurchaseDetailWindow จาก history_windows.py
+            # และส่ง callback function ไปด้วยเพื่อให้หน้าจอ Refresh หลังบันทึก
             PurchaseDetailWindow(
                 master=self,
                 app_container=self.app_container,
-                purchase_id=po_id,
-                on_save_callback=self._search_so_po # callback เพื่อ refresh หน้าค้นหาหลังบันทึก
+                purchase_id=int(po_id),
+                on_save_callback=self._search_so_po # ใช้ฟังก์ชันค้นหาเพื่อโหลดข้อมูลใหม่
             )
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข PO ได้: {e}", parent=self)
             traceback.print_exc()
-
-    
-    
+        
     def _on_tab_selected(self):
         selected_tab_name = self.tab_view.get()
         if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
@@ -970,42 +1005,62 @@ class HRScreen(CTkFrame):
         elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded: self._populate_audit_log_table(); self._audit_log_loaded = True
 
     def _create_edit_data_tab(self, parent_tab):
-        """(เวอร์ชันแก้ไข) สร้าง UI สำหรับหน้า Master Edit SO/PO"""
+        """(เวอร์ชันแก้ไข) สร้าง UI สำหรับหน้า Master Edit SO/PO พร้อมฟิลเตอร์"""
         parent_tab.grid_columnconfigure(0, weight=1)
         parent_tab.grid_rowconfigure(1, weight=1)
 
         search_frame = CTkFrame(parent_tab)
         search_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        search_frame.grid_columnconfigure(1, weight=1)
+        search_frame.grid_columnconfigure(3, weight=1)
 
-        CTkLabel(search_frame, text="ค้นหาเฉพาะ SO/PO:", font=self.label_font).grid(row=0, column=0, padx=10, pady=10)
-        self.master_edit_search_entry = CTkEntry(search_frame, font=self.entry_font, placeholder_text="กรอก SO หรือ PO ที่ต้องการค้นหา...")
-        self.master_edit_search_entry.grid(row=0, column=1, padx=(0,5), pady=10, sticky="ew")
+        # --- START: เพิ่ม Dropdown สำหรับเลือกเซลส์ ---
+        CTkLabel(search_frame, text="เลือกเซลส์:", font=self.label_font).grid(row=0, column=0, padx=(10,5), pady=10)
+        self.master_edit_sale_var = tk.StringVar(value="ทั้งหมด")
+        self.master_edit_sale_menu = CTkOptionMenu(
+            search_frame, 
+            variable=self.master_edit_sale_var, 
+            values=["ทั้งหมด"] + self.sales_keys_list,
+            command=lambda _: self._load_hr_edit_queue() # เมื่อเลือกเซลส์ ให้โหลดคิวงานใหม่
+        )
+        self.master_edit_sale_menu.grid(row=0, column=1, padx=5, pady=10)
+        # --- END ---
         
-        # --- START: เพิ่มปุ่ม "ล้างการค้นหา" ---
+        CTkLabel(search_frame, text="ค้นหาเฉพาะ SO/PO:", font=self.label_font).grid(row=0, column=2, padx=(20,5), pady=10)
+        self.master_edit_search_entry = CTkEntry(search_frame, font=self.entry_font, placeholder_text="กรอก SO หรือ PO...")
+        self.master_edit_search_entry.grid(row=0, column=3, padx=5, pady=10, sticky="ew")
+        
         search_button = CTkButton(search_frame, text="ค้นหา", command=self._search_so_po, width=80)
-        search_button.grid(row=0, column=2, padx=5, pady=10)
+        search_button.grid(row=0, column=4, padx=5, pady=10)
         
         clear_button = CTkButton(search_frame, text="ล้าง / แสดงคิวงาน", command=self._load_hr_edit_queue, fg_color="gray", width=120)
-        clear_button.grid(row=0, column=3, padx=5, pady=10)
-        # --- END ---
+        clear_button.grid(row=0, column=5, padx=5, pady=10)
 
         self.master_edit_results_frame = CTkScrollableFrame(parent_tab, label_text="ผลการค้นหา / คิวงานที่ต้องตรวจสอบ")
         self.master_edit_results_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
         self.master_edit_results_frame.grid_columnconfigure(0, weight=1)
 
     def _load_hr_edit_queue(self):
-        """(ฟังก์ชันใหม่) โหลดคิวงาน SO ที่มีสถานะ 'PO Sent' มาแสดงเป็นค่าเริ่มต้น"""
+        """(เวอร์ชันแก้ไข) โหลดคิวงาน SO ตามเซลส์ที่เลือก"""
         for widget in self.master_edit_results_frame.winfo_children():
             widget.destroy()
         self.master_edit_search_entry.delete(0, 'end')
 
         try:
-            query = "SELECT id, so_number, customer_name, sale_key FROM commissions WHERE status = 'PO Sent' AND is_active = 1 ORDER BY timestamp DESC;"
-            df = pd.read_sql_query(query, self.pg_engine)
+            # --- START: เพิ่ม Logic การกรองตามเซลส์ ---
+            base_query = "SELECT id, so_number, customer_name, sale_key FROM commissions WHERE status = 'PO Sent' AND is_active = 1"
+            params = []
+            
+            selected_sale = self.master_edit_sale_var.get()
+            if selected_sale != "ทั้งหมด":
+                base_query += " AND sale_key = %s"
+                params.append(selected_sale)
+            
+            query = base_query + " ORDER BY timestamp DESC;"
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+            # --- END ---
 
             if df.empty:
-                CTkLabel(self.master_edit_results_frame, text="ไม่มี SO ที่รอการตรวจสอบในคิวงาน").pack(pady=20)
+                CTkLabel(self.master_edit_results_frame, text=f"ไม่พบ SO ที่รอการตรวจสอบในคิวงานของ: {selected_sale}").pack(pady=20)
                 return
 
             for _, row in df.iterrows():

@@ -1,9 +1,16 @@
+# purchasing_windows.py (ฉบับแก้ไขสมบูรณ์)
+
 import customtkinter as ctk
 from tkinter import messagebox, StringVar, TclError
 import psycopg2
 import pandas as pd
 from datetime import datetime
 import traceback
+
+from custom_widgets import AutoCompleteEntry, DateSelector
+import utils
+import psycopg2.extras
+
 
 class PurchaseOrderWindow(ctk.CTkToplevel):
     def __init__(self, master, app_container, po_id=None, on_close_callback=None):
@@ -13,353 +20,294 @@ class PurchaseOrderWindow(ctk.CTkToplevel):
         self.po_id = po_id
         self.on_close_callback = on_close_callback
         self.item_widgets = []
-
-        self.title(f"ใบสั่งซื้อ (PO) - {'แก้ไข' if self.po_id else 'สร้างใหม่'}")
-        self.geometry("900x700")
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        # --- ตัวแปรสำหรับคำนวณอัตโนมัติ ---
-        self.total_po_shipping_cost = 0.0
-        self.shipping_cost_var = StringVar(value="0.00")
-
-        # --- Main Frame ---
-        main_frame = ctk.CTkFrame(self)
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_rowconfigure(1, weight=1)
-
-        # --- PO Details Frame ---
-        self.po_details_frame = ctk.CTkFrame(main_frame)
-        self.po_details_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-        self.po_details_frame.grid_columnconfigure(1, weight=1)
-
-        # Supplier, PO Number, SO Number
-        ctk.CTkLabel(self.po_details_frame, text="Supplier:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        self.entry_supplier = ctk.CTkEntry(self.po_details_frame)
-        self.entry_supplier.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-
-        ctk.CTkLabel(self.po_details_frame, text="PO Number:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.entry_po_number = ctk.CTkEntry(self.po_details_frame)
-        self.entry_po_number.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
-
-        ctk.CTkLabel(self.po_details_frame, text="SO Number:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        self.entry_so_number = ctk.CTkEntry(self.po_details_frame)
-        self.entry_so_number.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+        self.deleted_item_ids = []
+        self.po_entries = {}
         
-        # Total Cost (Read-only)
-        ctk.CTkLabel(self.po_details_frame, text="Total Cost (excl. Shipping):").grid(row=3, column=0, padx=10, pady=5, sticky="w")
-        self.total_cost_var = StringVar(value="0.00")
-        ctk.CTkLabel(self.po_details_frame, textvariable=self.total_cost_var, font=("Arial", 12, "bold")).grid(row=3, column=1, padx=10, pady=5, sticky="w")
-
-        # --- START: เปลี่ยนช่องกรอกค่าขนส่งเป็นป้ายแสดงผล ---
-        ctk.CTkLabel(self.po_details_frame, text="ค่าขนส่ง PO (ก่อน VAT):").grid(row=4, column=0, padx=10, pady=5, sticky="w")
-        self.shipping_value_label = ctk.CTkLabel(self.po_details_frame, textvariable=self.shipping_cost_var, font=("Arial", 12, "bold"))
-        self.shipping_value_label.grid(row=4, column=1, padx=10, pady=5, sticky="w")
+        # --- START: แก้ไขการโหลดข้อมูล ---
+        self.supplier_completion_data = []
+        self._load_supplier_data_for_autocomplete() # เรียกใช้ฟังก์ชันใหม่
         # --- END ---
 
-        # --- Items Frame ---
-        items_outer_frame = ctk.CTkFrame(main_frame)
-        items_outer_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-        items_outer_frame.grid_columnconfigure(0, weight=1)
-        items_outer_frame.grid_rowconfigure(1, weight=1)
+        self.title(f"ใบสั่งซื้อ (PO) - {'แก้ไข' if self.po_id else 'สร้างใหม่'}")
+        self.geometry("900x800")
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        ctk.CTkLabel(items_outer_frame, text="รายการสินค้า (PO Items)", font=("Arial", 14, "bold")).grid(row=0, column=0, pady=(5,10))
+        self.total_cost_var = StringVar(value="0.00")
 
-        self.items_canvas = ctk.CTkCanvas(items_outer_frame, highlightthickness=0)
-        self.items_scrollbar = ctk.CTkScrollbar(items_outer_frame, orientation="vertical", command=self.items_canvas.yview)
-        self.scrollable_items_frame = ctk.CTkFrame(self.items_canvas)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
-        self.scrollable_items_frame.bind("<Configure>", lambda e: self.items_canvas.configure(scrollregion=self.items_canvas.bbox("all")))
-        self.items_canvas.create_window((0, 0), window=self.scrollable_items_frame, anchor="nw")
-        self.items_canvas.configure(yscrollcommand=self.items_scrollbar.set)
+        main_scroll_frame = ctk.CTkScrollableFrame(self)
+        main_scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        main_scroll_frame.grid_columnconfigure(0, weight=1)
 
-        self.items_canvas.grid(row=1, column=0, sticky="nsew")
-        self.items_scrollbar.grid(row=1, column=1, sticky="ns")
+        self._create_po_details_section(main_scroll_frame)
+        self._create_shipping_section(main_scroll_frame)
+        self._create_items_section(main_scroll_frame)
 
-        # Header
-        header_frame = ctk.CTkFrame(self.scrollable_items_frame)
-        header_frame.pack(fill="x", expand=True, pady=2)
-        ctk.CTkLabel(header_frame, text="Description", width=250).pack(side="left", fill="x", expand=True, padx=5)
-        ctk.CTkLabel(header_frame, text="Qty", width=50).pack(side="left", padx=5)
-        ctk.CTkLabel(header_frame, text="Cost/Unit", width=100).pack(side="left", padx=5)
-        ctk.CTkLabel(header_frame, text="Shipping to Stock", width=100).pack(side="left", padx=5)
-        ctk.CTkLabel(header_frame, text="Shipping to Site", width=100).pack(side="left", padx=5)
-        ctk.CTkLabel(header_frame, text="", width=45).pack(side="left", padx=5) # For delete button
-
-        # --- Buttons Frame ---
-        buttons_frame = ctk.CTkFrame(main_frame)
-        buttons_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
-        buttons_frame.grid_columnconfigure(0, weight=1) # Center button
-
-        self.add_item_button = ctk.CTkButton(buttons_frame, text="เพิ่มรายการ", command=self._add_item_row)
-        self.add_item_button.grid(row=0, column=0, padx=10, pady=10)
-
-        self.submit_button = ctk.CTkButton(self, text="Submit PO", command=self._submit_po)
-        self.submit_button.pack(pady=10)
+        self.submit_button = ctk.CTkButton(self, text="บันทึกและส่งอนุมัติ (Submit PO)", command=self._submit_po)
+        self.submit_button.grid(row=2, column=0, pady=10, padx=10, sticky="ew")
 
         if self.po_id:
             self._load_po_data()
+        else:
+            self._add_item_row()
+
+        self.transient(master)
+        self.grab_set()
+
+    def _create_section_frame(self, parent, title):
+        frame = ctk.CTkFrame(parent, corner_radius=10, border_width=1)
+        frame.pack(fill="x", padx=5, pady=8)
+        frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(size=16, weight="bold")).grid(
+            row=0, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="w")
+        return frame
+
+    def _create_po_details_section(self, parent):
+        po_details_frame = self._create_section_frame(parent, "ข้อมูลทั่วไป")
+
+        # --- START: แก้ไขการสร้าง AutoCompleteEntry ---
+        ctk.CTkLabel(po_details_frame, text="Supplier:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        entry_supplier = AutoCompleteEntry(
+            po_details_frame,
+            completion_list=self.supplier_completion_data,
+            display_key='name',
+            command=self._on_supplier_selected
+        )
+        entry_supplier.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries['supplier_name'] = entry_supplier
+        # --- END ---
+
+        ctk.CTkLabel(po_details_frame, text="PO Number:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        entry_po_number = ctk.CTkEntry(po_details_frame)
+        entry_po_number.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries['po_number'] = entry_po_number
+        
+        ctk.CTkLabel(po_details_frame, text="SO Number:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        entry_so_number = ctk.CTkEntry(po_details_frame)
+        entry_so_number.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries['so_number'] = entry_so_number
+
+        ctk.CTkLabel(po_details_frame, text="Total Cost (excl. Shipping):").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(po_details_frame, textvariable=self.total_cost_var, font=ctk.CTkFont(size=12, weight="bold")).grid(row=4, column=1, padx=10, pady=5, sticky="w")
+
+    def _create_shipping_section(self, parent):
+        shipping_frame = self._create_section_frame(parent, "ข้อมูลการจัดส่ง (ภาพรวม PO)")
+        
+        ctk.CTkLabel(shipping_frame, text="--- ค่าจัดส่งเข้าสต๊อก ---", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, columnspan=2, pady=(5,2), sticky="w", padx=10)
+        ctk.CTkLabel(shipping_frame, text="ค่าส่ง:").grid(row=2, column=0, sticky="w", padx=10, pady=5)
+        self.po_entries['shipping_to_stock_cost'] = utils.FormattedNumericEntry(shipping_frame)
+        self.po_entries['shipping_to_stock_cost'].grid(row=2, column=1, sticky="ew", padx=10, pady=5)
+
+        ctk.CTkLabel(shipping_frame, text="วันที่:").grid(row=3, column=0, sticky="w", padx=10, pady=5)
+        self.po_entries['shipping_to_stock_date'] = DateSelector(shipping_frame)
+        self.po_entries['shipping_to_stock_date'].grid(row=3, column=1, sticky="w", padx=10, pady=5)
+
+        ctk.CTkLabel(shipping_frame, text="--- ค่าจัดส่งเข้าไซต์ ---", font=ctk.CTkFont(weight="bold")).grid(row=4, column=0, columnspan=2, pady=(10,2), sticky="w", padx=10)
+        ctk.CTkLabel(shipping_frame, text="ค่าส่ง:").grid(row=5, column=0, sticky="w", padx=10, pady=5)
+        self.po_entries['shipping_to_site_cost'] = utils.FormattedNumericEntry(shipping_frame)
+        self.po_entries['shipping_to_site_cost'].grid(row=5, column=1, sticky="ew", padx=10, pady=5)
+
+        ctk.CTkLabel(shipping_frame, text="วันที่:").grid(row=6, column=0, sticky="w", padx=10, pady=5)
+        self.po_entries['shipping_to_site_date'] = DateSelector(shipping_frame)
+        self.po_entries['shipping_to_site_date'].grid(row=6, column=1, sticky="w", padx=10, pady=5)
+
+    def _create_items_section(self, parent):
+        items_frame = self._create_section_frame(parent, "รายการสินค้า")
+        header_frame = ctk.CTkFrame(items_frame, fg_color="transparent")
+        header_frame.grid(row=1, column=0, sticky="ew")
+        header_frame.grid_columnconfigure(0, weight=4)
+        header_frame.grid_columnconfigure(1, weight=1)
+        header_frame.grid_columnconfigure(2, weight=2)
+        ctk.CTkLabel(header_frame, text="ชื่อสินค้า/รายละเอียด").grid(row=0, column=0, padx=5, pady=5)
+        ctk.CTkLabel(header_frame, text="จำนวน").grid(row=0, column=1, padx=5, pady=5)
+        ctk.CTkLabel(header_frame, text="ราคา/หน่วย").grid(row=0, column=2, padx=5, pady=5)
+
+        self.items_content_frame = ctk.CTkFrame(items_frame, fg_color="transparent")
+        self.items_content_frame.grid(row=2, column=0, sticky="ew")
+        
+        add_button = ctk.CTkButton(items_frame, text="+ เพิ่มรายการ", command=self._add_item_row)
+        add_button.grid(row=3, column=0, padx=5, pady=10, sticky="w")
+
+    # --- START: เพิ่มฟังก์ชันใหม่สำหรับโหลดข้อมูล ---
+    def _load_supplier_data_for_autocomplete(self):
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            df = pd.read_sql("SELECT id, supplier_name, supplier_code, credit_term FROM suppliers ORDER BY supplier_name", conn)
+            self.supplier_completion_data = []
+            for _, row in df.iterrows():
+                self.supplier_completion_data.append({
+                    "id": row['id'],
+                    "name": row['supplier_name'],
+                    "code": row.get('supplier_code', ''),
+                    "term": row.get('credit_term', 'เงินสด')
+                })
+        except Exception as e:
+            print(f"Error fetching supplier data for PO window: {e}")
+            self.supplier_completion_data = []
+        finally:
+            if conn: self.app_container.release_connection(conn)
+    # --- END ---
+    
+    # --- START: แก้ไขฟังก์ชัน Callback ---
+    def _on_supplier_selected(self, selection_dict):
+        """เมื่อเลือกซัพพลายเออร์, selection_dict คือ dictionary ที่ถูกส่งกลับมา"""
+        # ฟังก์ชันนี้ถูกเรียกใช้โดย command ของ AutoCompleteEntry
+        # ในหน้านี้เราอาจจะไม่ต้องทำอะไรเป็นพิเศษ แต่ต้องมีฟังก์ชันรองรับ
+        if selection_dict:
+            print(f"PO Window: Selected supplier -> {selection_dict.get('name')}")
+        pass
+    # --- END ---
 
     def _load_po_data(self):
         try:
-            # --- START: แก้ไข Query ให้ดึงข้อมูลค่าขนส่งมาให้ครบทุกฟิลด์ ---
-            query_po = """
-                SELECT 
-                    po.*,
-                    -- ตั้งชื่อเล่น (alias) ให้คอลัมน์ค่าขนส่งจากตารางหลัก
-                    -- เพื่อให้ชื่อไม่ซ้ำกับคอลัมน์ในตาราง items และป้องกันความสับสน
-                    po.shipping_to_stock_cost AS main_shipping_stock_cost,
-                    po.shipping_to_site_cost AS main_shipping_site_cost,
-                    po.shipping_to_stock_vat_type,
-                    po.shipping_to_stock_wht_type,
-                    po.shipping_to_stock_date,
-                    po.shipping_to_stock_shipper,
-                    po.shipping_to_stock_notes,
-                    po.shipping_to_site_vat_type,
-                    po.shipping_to_site_wht_type,
-                    po.shipping_to_site_date,
-                    po.shipping_to_site_shipper,
-                    po.shipping_to_site_notes
-                FROM purchase_orders po
-                WHERE po.id = %s
-            """
-            # --- END ---
-
+            query_po = "SELECT * FROM purchase_orders WHERE id = %s"
             po_df = pd.read_sql(query_po, self.pg_engine, params=(self.po_id,))
             if po_df.empty:
                 messagebox.showerror("Error", "PO not found.", parent=self)
                 return
-            po_data = po_df.iloc[0].to_dict()
+            po_data = po_df.iloc[0]
 
-            # เติมข้อมูลทั่วไป (ส่วนนี้ดีอยู่แล้ว)
-            self.entry_supplier.insert(0, po_data.get('supplier_name', ''))
-            self.entry_po_number.insert(0, po_data.get('po_number', ''))
-            self.entry_so_number.insert(0, po_data.get('so_number', ''))
-
-            # --- START: ส่วนที่เพิ่มเข้ามาเพื่อดึงข้อมูลค่าขนส่งโดยละเอียด ---
-
-            # 1. ค่าจัดส่งเข้าสต๊อก (Shipping to Stock)
-            if hasattr(self, 'shipping_to_stock_cost_entry'):
-                self.shipping_to_stock_cost_entry.delete(0, 'end')
-                self.shipping_to_stock_cost_entry.insert(0, f"{po_data.get('main_shipping_stock_cost', 0):.2f}")
+            utils.set_entry_text(self.po_entries['supplier_name'], po_data.get('supplier_name', ''))
+            utils.set_entry_text(self.po_entries['po_number'], po_data.get('po_number', ''))
+            utils.set_entry_text(self.po_entries['so_number'], po_data.get('so_number', ''))
             
-            if hasattr(self, 'shipping_to_stock_vat_var'):
-                self.shipping_to_stock_vat_var.set(po_data.get('shipping_to_stock_vat_type', 'VAT'))
+            self.po_entries['shipping_to_stock_cost'].set(po_data.get('shipping_to_stock_cost', 0))
+            self.po_entries['shipping_to_stock_date'].set_date(po_data.get('shipping_to_stock_date'))
+            self.po_entries['shipping_to_site_cost'].set(po_data.get('shipping_to_site_cost', 0))
+            self.po_entries['shipping_to_site_date'].set_date(po_data.get('shipping_to_site_date'))
 
-            if hasattr(self, 'shipping_to_stock_wht_var'):
-                self.shipping_to_stock_wht_var.set(po_data.get('shipping_to_stock_wht_type', 'ไม่มีหัก'))
-            
-            if hasattr(self, 'shipping_to_stock_date_selector'):
-                self.shipping_to_stock_date_selector.set_date(po_data.get('shipping_to_stock_date'))
-            
-            if hasattr(self, 'shipping_to_stock_type_var'):
-                self.shipping_to_stock_type_var.set(po_data.get('shipping_to_stock_shipper', 'ซัพพลายเออร์จัดส่ง'))
-            
-            if hasattr(self, 'shipping_to_stock_notes_entry'):
-                self.shipping_to_stock_notes_entry.delete(0, 'end')
-                self.shipping_to_stock_notes_entry.insert(0, po_data.get('shipping_to_stock_notes', ''))
-
-            # 2. ค่าจัดส่งเข้าไซต์ (Shipping to Site)
-            if hasattr(self, 'shipping_to_site_cost_entry'):
-                self.shipping_to_site_cost_entry.delete(0, 'end')
-                self.shipping_to_site_cost_entry.insert(0, f"{po_data.get('main_shipping_site_cost', 0):.2f}")
-
-            if hasattr(self, 'shipping_to_site_vat_var'):
-                self.shipping_to_site_vat_var.set(po_data.get('shipping_to_site_vat_type', 'VAT'))
-
-            if hasattr(self, 'shipping_to_site_wht_var'):
-                self.shipping_to_site_wht_var.set(po_data.get('shipping_to_site_wht_type', 'ไม่มีหัก'))
-
-            if hasattr(self, 'shipping_to_site_date_selector'):
-                self.shipping_to_site_date_selector.set_date(po_data.get('shipping_to_site_date'))
-
-            if hasattr(self, 'shipping_to_site_type_var'):
-                self.shipping_to_site_type_var.set(po_data.get('shipping_to_site_shipper', 'ซัพพลายเออร์จัดส่ง'))
-
-            if hasattr(self, 'shipping_to_site_notes_entry'):
-                self.shipping_to_site_notes_entry.delete(0, 'end')
-                self.shipping_to_site_notes_entry.insert(0, po_data.get('shipping_to_site_notes', ''))
-
-            # --- END ---
-
-            # โหลดรายการสินค้า (ส่วนนี้ดีอยู่แล้ว)
             query_items = "SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id"
             items_df = pd.read_sql(query_items, self.pg_engine, params=(self.po_id,))
             for index, row in items_df.iterrows():
                 self._add_item_row(row.to_dict())
             
-            # สั่งให้คำนวณยอดรวมทั้งหมดอีกครั้งหลังจากโหลดข้อมูลครบ
             self._update_totals() 
-
         except Exception as e:
             messagebox.showerror("Database Error", f"Failed to load PO data: {e}", parent=self)
             traceback.print_exc()
 
     def _add_item_row(self, item=None):
-        item_frame = ctk.CTkFrame(self.scrollable_items_frame)
-        item_frame.pack(fill="x", expand=True, pady=2, padx=2)
+        item_frame = ctk.CTkFrame(self.items_content_frame, fg_color="transparent")
+        item_frame.pack(fill="x", expand=True, pady=2)
+        item_frame.grid_columnconfigure(0, weight=4)
+        item_frame.grid_columnconfigure(1, weight=1)
+        item_frame.grid_columnconfigure(2, weight=2)
+        item_frame.grid_columnconfigure(3, weight=0)
 
-        desc_var = StringVar(value=item.get('description', '') if item else "")
-        entry_desc = ctk.CTkEntry(item_frame, textvariable=desc_var)
-        entry_desc.pack(side="left", fill="x", expand=True, padx=5, pady=5)
-
-        qty_var = StringVar(value=str(item.get('quantity', 1)) if item else "1")
-        entry_qty = ctk.CTkEntry(item_frame, textvariable=qty_var, width=50)
-        entry_qty.pack(side="left", padx=5, pady=5)
-
-        cost_var = StringVar(value=str(item.get('cost_per_unit', '')) if item else "")
-        entry_cost = ctk.CTkEntry(item_frame, textvariable=cost_var, width=100)
-        entry_cost.pack(side="left", padx=5, pady=5)
+        entry_desc = ctk.CTkEntry(item_frame)
+        entry_desc.grid(row=0, column=0, padx=5, pady=2, sticky="ew")
         
-        shipping_stock_var = StringVar(value=str(item.get('shipping_to_stock_cost', '')) if item else "")
-        entry_shipping_stock = ctk.CTkEntry(item_frame, textvariable=shipping_stock_var, width=100)
-        entry_shipping_stock.pack(side="left", padx=5, pady=5)
+        entry_qty = utils.FormattedNumericEntry(item_frame, command=self._update_totals)
+        entry_qty.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
 
-        shipping_site_var = StringVar(value=str(item.get('shipping_to_site_cost', '')) if item else "")
-        entry_shipping_site = ctk.CTkEntry(item_frame, textvariable=shipping_site_var, width=100)
-        entry_shipping_site.pack(side="left", padx=5, pady=5)
+        entry_cost = utils.FormattedNumericEntry(item_frame, command=self._update_totals)
+        entry_cost.grid(row=0, column=2, padx=5, pady=2, sticky="ew")
 
-        # --- START: สั่งให้คำนวณใหม่ทุกครั้งที่มีการเปลี่ยนแปลง ---
-        qty_var.trace_add("write", self._update_totals)
-        cost_var.trace_add("write", self._update_totals)
-        shipping_stock_var.trace_add("write", self._update_totals)
-        shipping_site_var.trace_add("write", self._update_totals)
-        # --- END ---
+        delete_button = ctk.CTkButton(item_frame, text="ลบ", width=40, fg_color="#DC2626", hover_color="#B91C1C", 
+                                      command=lambda f=item_frame, i=item.get('id') if item else None: self._delete_item_row(f, i))
+        delete_button.grid(row=0, column=3, padx=5, pady=2)
 
-        delete_button = ctk.CTkButton(item_frame, text="X", width=20, command=lambda f=item_frame: self._delete_item_row(f))
-        delete_button.pack(side="left", padx=5, pady=5)
+        if item:
+            entry_desc.insert(0, item.get('product_name', ''))
+            entry_qty.set(item.get('quantity', 1))
+            entry_cost.set(item.get('unit_price', 0))
 
         self.item_widgets.append({
-            'frame': item_frame, 'desc_var': desc_var, 'qty_var': qty_var, 'cost_var': cost_var,
-            'shipping_stock_var': shipping_stock_var, 'shipping_site_var': shipping_site_var,
-            'id': item.get('id', None) if item else None
+            'frame': item_frame, 'desc_entry': entry_desc, 'qty_entry': entry_qty, 'cost_entry': entry_cost,
+            'id': item.get('id') if item else None
         })
         self._update_totals()
 
-    def _delete_item_row(self, frame_to_delete):
+    def _delete_item_row(self, frame_to_delete, item_id):
+        if item_id is not None:
+            self.deleted_item_ids.append(item_id)
+        
         self.item_widgets = [row for row in self.item_widgets if row['frame'] != frame_to_delete]
         frame_to_delete.destroy()
         self._update_totals()
 
     def _update_totals(self, *args):
-        """คำนวณผลรวมค่าสินค้าและค่าขนส่งจากทุกรายการ และอัปเดตหน้าจอ"""
         total_cost = 0.0
-        total_shipping = 0.0
         for item_row in self.item_widgets:
             try:
-                qty = float(item_row['qty_var'].get() or 0)
-                cost_per_unit = float(item_row['cost_var'].get() or 0)
-                stock_shipping = float(item_row['shipping_stock_var'].get() or 0)
-                site_shipping = float(item_row['shipping_site_var'].get() or 0)
-                
+                qty = item_row['qty_entry'].get_value()
+                cost_per_unit = item_row['cost_entry'].get_value()
                 total_cost += qty * cost_per_unit
-                total_shipping += stock_shipping + site_shipping
             except (ValueError, TclError):
-                continue # Skip if a field is empty or invalid
-        
-        self.total_cost = total_cost
-        self.total_po_shipping_cost = total_shipping
-        
+                continue
         self.total_cost_var.set(f"{total_cost:,.2f}")
-        self.shipping_cost_var.set(f"{total_shipping:,.2f}")
 
     def _submit_po(self):
-        supplier_name = self.entry_supplier.get().strip()
-        po_number = self.entry_po_number.get().strip()
-        so_number = self.entry_so_number.get().strip()
+        supplier_name = self.po_entries['supplier_name'].get().strip()
+        po_number = self.po_entries['po_number'].get().strip()
+        so_number = self.po_entries['so_number'].get().strip()
 
-        if not supplier_name or not po_number:
-            messagebox.showwarning("Input Error", "Supplier Name and PO Number are required.", parent=self)
+        if not supplier_name or not so_number:
+            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก Supplier และ SO Number", parent=self)
             return
 
-        # Use the calculated total cost and shipping cost
-        total_cost = self.total_cost
-        po_shipping_cost = self.total_po_shipping_cost
+        total_cost = utils.convert_to_float(self.total_cost_var.get())
+        header_data = {
+            'supplier_name': supplier_name, 'po_number': po_number, 'so_number': so_number,
+            'total_cost': total_cost, 'user_key': self.app_container.current_user_key,
+            'shipping_to_stock_cost': self.po_entries['shipping_to_stock_cost'].get_value(),
+            'shipping_to_stock_date': self.po_entries['shipping_to_stock_date'].get_date(),
+            'shipping_to_site_cost': self.po_entries['shipping_to_site_cost'].get_value(),
+            'shipping_to_site_date': self.po_entries['shipping_to_site_date'].get_date()
+        }
         
         items_data = []
         for row in self.item_widgets:
-            desc = row['desc_var'].get().strip()
-            if not desc: continue # Skip empty rows
+            desc = row['desc_entry'].get().strip()
+            if not desc: continue
             items_data.append({
-                'id': row['id'],
-                'description': desc,
-                'quantity': float(row['qty_var'].get() or 0),
-                'cost_per_unit': float(row['cost_var'].get() or 0),
-                'shipping_to_stock_cost': float(row['shipping_stock_var'].get() or 0),
-                'shipping_to_site_cost': float(row['shipping_site_var'].get() or 0),
+                'id': row['id'], 'product_name': desc, 'quantity': row['qty_entry'].get_value(),
+                'unit_price': row['cost_entry'].get_value(),
+                'total_price': row['qty_entry'].get_value() * row['cost_entry'].get_value()
             })
         
         if not items_data:
-            messagebox.showwarning("Input Error", "At least one item is required.", parent=self)
+            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ", parent=self)
             return
             
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                if self.po_id: # UPDATE logic
-                    update_po_query = """
-                        UPDATE purchase_orders SET 
-                        supplier_name=%s, po_number=%s, so_number=%s, total_cost=%s,
-                        shipping_to_stock_cost=%s, shipping_to_site_cost=%s,
-                        last_updated_by=%s, last_updated_at=NOW()
-                        WHERE id=%s;
-                    """
-                    # For simplicity in this example, I'm summing all shipping into shipping_to_site_cost
-                    # You might have separate columns or different logic
-                    cursor.execute(update_po_query, (
-                        supplier_name, po_number, so_number, total_cost,
-                        0, po_shipping_cost, # Saving total shipping into shipping_to_site_cost
-                        self.app_container.current_user_id, self.po_id
-                    ))
-                else: # INSERT logic
-                    insert_po_query = """
-                        INSERT INTO purchase_orders (supplier_name, po_number, so_number, total_cost, 
-                        shipping_to_stock_cost, shipping_to_site_cost, status, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
-                    """
-                    cursor.execute(insert_po_query, (
-                        supplier_name, po_number, so_number, total_cost,
-                        0, po_shipping_cost, # Saving total shipping into shipping_to_site_cost
-                        'Pending Approval', self.app_container.current_user_id
-                    ))
+                if self.po_id:
+                    set_clauses = [f"{key} = %s" for key in header_data.keys()]
+                    params = list(header_data.values()) + [self.po_id]
+                    cursor.execute(f"UPDATE purchase_orders SET {', '.join(set_clauses)} WHERE id = %s", tuple(params))
+                else:
+                    columns = header_data.keys()
+                    values = [f"%({key})s" for key in columns]
+                    cursor.execute(f"INSERT INTO purchase_orders ({', '.join(columns)}) VALUES ({', '.join(values)}) RETURNING id", header_data)
                     self.po_id = cursor.fetchone()[0]
 
-                # --- Handle Items (Delete, Update, Insert) ---
-                existing_item_ids = {item['id'] for item in items_data if item['id']}
-                cursor.execute("DELETE FROM purchase_order_items WHERE purchase_order_id = %s AND id NOT IN %s",
-                               (self.po_id, tuple(existing_item_ids) if existing_item_ids else (None,)))
+                if self.deleted_item_ids:
+                    cursor.execute("DELETE FROM purchase_order_items WHERE id IN %s", (tuple(self.deleted_item_ids),))
 
                 for item in items_data:
-                    if item['id']: # Update existing item
-                        update_item_query = """
-                            UPDATE purchase_order_items SET
-                            description=%s, quantity=%s, cost_per_unit=%s,
-                            shipping_to_stock_cost=%s, shipping_to_site_cost=%s
-                            WHERE id=%s;
-                        """
-                        cursor.execute(update_item_query, (
-                            item['description'], item['quantity'], item['cost_per_unit'],
-                            item['shipping_to_stock_cost'], item['shipping_to_site_cost'], item['id']
-                        ))
-                    else: # Insert new item
-                        insert_item_query = """
-                            INSERT INTO purchase_order_items (purchase_order_id, description, quantity, 
-                            cost_per_unit, shipping_to_stock_cost, shipping_to_site_cost)
-                            VALUES (%s, %s, %s, %s, %s, %s);
-                        """
-                        cursor.execute(insert_item_query, (
-                            self.po_id, item['description'], item['quantity'], item['cost_per_unit'],
-                            item['shipping_to_stock_cost'], item['shipping_to_site_cost']
-                        ))
+                    item['purchase_order_id'] = self.po_id
+                    if item.get('id'):
+                        cursor.execute("""
+                            UPDATE purchase_order_items SET product_name=%(product_name)s, quantity=%(quantity)s, unit_price=%(unit_price)s, total_price=%(total_price)s
+                            WHERE id=%(id)s """, item)
+                    else:
+                        cursor.execute("""
+                            INSERT INTO purchase_order_items (purchase_order_id, product_name, quantity, unit_price, total_price)
+                            VALUES (%(purchase_order_id)s, %(product_name)s, %(quantity)s, %(unit_price)s, %(total_price)s) """, item)
 
             conn.commit()
-            messagebox.showinfo("Success", "Purchase Order saved successfully.", parent=self)
+            messagebox.showinfo("สำเร็จ", "บันทึกใบสั่งซื้อเรียบร้อยแล้ว", parent=self)
             self._on_close()
-
         except psycopg2.Error as e:
             if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"Failed to save PO: {e}", parent=self)
+            messagebox.showerror("Database Error", f"ไม่สามารถบันทึก PO ได้: {e}", parent=self)
+            traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
 

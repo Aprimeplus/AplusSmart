@@ -715,7 +715,7 @@ class CommissionApp(CTkFrame):
         try:
             df = pd.read_sql("SELECT customer_name, customer_code, credit_term FROM customers ORDER BY customer_name", self.pg_engine)
             
-            # --- START: สร้างข้อมูลโครงสร้างใหม่ ---
+            # --- สร้างข้อมูลโครงสร้างใหม่ ---
             self.customer_completion_data = []
             for _, row in df.iterrows():
                 display_text = f"{row['customer_code']} - {row['customer_name']}"
@@ -729,10 +729,11 @@ class CommissionApp(CTkFrame):
             # สร้าง Map สำหรับการอ้างอิงข้อมูล
             self.customer_data_map = {item['display']: item for item in self.customer_completion_data}
 
-            # ส่งข้อมูลชุดใหม่ไปยัง AutoCompleteEntry
-            if hasattr(self, 'customer_id_entry'):
-                self.customer_id_entry.completion_list = self.customer_completion_data
-            # --- END: สิ้นสุดการแก้ไข ---
+            # <<< START: เพิ่มเติมส่วนที่ขาดไป >>>
+            # ตรวจสอบว่า widget ถูกสร้างแล้วหรือยัง ก่อนที่จะอัปเดตข้อมูลเข้าไป
+            if hasattr(self, 'customer_id_entry') and self.customer_id_entry.winfo_exists():
+                self.customer_id_entry.update_completion_list(self.customer_completion_data)
+            # <<< END: สิ้นสุดการเพิ่มเติม >>>
 
         except Exception as e:
             print(f"Error loading customer data: {e}")
@@ -747,11 +748,16 @@ class CommissionApp(CTkFrame):
         """
         customer_name = ''
         credit_term = 'เงินสด'
+        customer_code = ''
 
         if isinstance(selection_data, dict):
             # กรณีที่ 1: ผู้ใช้เลือกจาก AutoComplete (ได้ข้อมูลมาเป็น dict)
             customer_name = selection_data.get('name', '')
             credit_term = selection_data.get('term', 'เงินสด')
+            customer_code = selection_data.get('code', '')
+
+            self.customer_id_entry.delete(0, tk.END)
+            self.customer_id_entry.insert(0, customer_code)
 
         elif isinstance(selection_data, str) and selection_data:
             # กรณีที่ 2: โหลดข้อมูลเก่า (ได้ข้อมูลมาเป็น string ของ customer_code)
@@ -809,13 +815,15 @@ class CommissionApp(CTkFrame):
         self.old_customer_frame.grid(row=4, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         self.old_customer_frame.grid_columnconfigure(1, weight=1)
 
+        # <<< START: แก้ไขการเรียกใช้ AutoCompleteEntry ตรงนี้ >>>
         self.customer_id_entry = AutoCompleteEntry(
-            self.old_customer_frame, 
-            completion_list=self.customer_completion_data, # <<< ใช้ข้อมูลชุดใหม่
-            command_on_select=self._on_customer_id_selected, 
-            display_key_on_select='code', 
+            master=self.old_customer_frame, 
+            completion_list=self.customer_completion_data,
+            display_key='display',  # แก้ไข: เพิ่ม display_key ที่จำเป็น
+            command=self._on_customer_id_selected, # แก้ไข: เปลี่ยนชื่อ argument เป็น command
             placeholder_text="ค้นหารหัสหรือชื่อลูกค้า..."
         )
+        # <<< END: สิ้นสุดการแก้ไข >>>
 
         self._add_form_row(self.old_customer_frame, "รหัสลูกค้า:", self.customer_id_entry, 0)
 

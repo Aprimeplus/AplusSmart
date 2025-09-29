@@ -757,6 +757,14 @@ class HRVerificationWindow(CTkToplevel):
         self.so_form_widgets['difference_amount_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['cash_required_total_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['cash_verification_result_var'] = tk.StringVar(value="-")
+        
+        # --- START: เพิ่ม 5 บรรทัดนี้เข้าไป ---
+        # สร้าง StringVars สำหรับแสดง VAT ของแต่ละรายการที่ขาดไป
+        self.so_form_widgets['sales_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
 
     # hr_windows.py (ภายในคลาส HRVerificationWindow)
 
@@ -1013,6 +1021,14 @@ class HRVerificationWindow(CTkToplevel):
         self.so_form_widgets['difference_amount_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['cash_required_total_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['cash_verification_result_var'] = tk.StringVar(value="-")
+        
+        # --- START: เพิ่ม 5 บรรทัดนี้เข้าไป ---
+        # สร้าง StringVars สำหรับแสดง VAT ของแต่ละรายการที่ขาดไป
+        self.so_form_widgets['sales_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
 
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         """
@@ -1093,12 +1109,13 @@ class HRVerificationWindow(CTkToplevel):
     def _open_so_editor_popup(self):
         """เปิดหน้าต่าง SOPopupWindow สำหรับให้ HR แก้ไขข้อมูล SO โดยละเอียด"""
         SOPopupWindow(
-            master=self, 
-            sales_data=self.system_data, 
-            so_shared_vars=self.so_form_widgets, 
-            sale_theme=self.sale_theme
+            master=self,
+            app_container=self.app_container, # <-- เพิ่มบรรทัดนี้ที่ขาดไป
+            sales_data=self.system_data,
+            so_shared_vars=self.so_form_widgets,
+            sale_theme=self.sale_theme,
+            on_save_callback=self._update_all_calculations_and_ui
         )
-
     def _on_cell_double_click(self, event):
         """จัดการ Event เมื่อมีการดับเบิลคลิกที่เซลล์ในตาราง"""
         tree = event.widget

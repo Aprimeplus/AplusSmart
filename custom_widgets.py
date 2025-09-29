@@ -1,10 +1,11 @@
-# custom_widgets.py (ฉบับสมบูรณ์)
+# custom_widgets.py (เวอร์ชันแก้ไขโครงสร้าง Popup)
 
 import customtkinter as ctk
 from datetime import datetime
 import tkinter as tk
 import pandas as pd
 from thefuzz import process, fuzz
+from tkinter import font as tkFont 
 
 class NumericEntry(ctk.CTkEntry):
     def __init__(self, master, **kwargs):
@@ -88,128 +89,136 @@ class DateSelector(ctk.CTkFrame):
         self.month_var.set(thai_months_rev.get(date_obj.strftime("%m"), ""))
         self.year_var.set(str(date_obj.year + 543))
 
-# อยู่ในไฟล์ custom_widgets.py
-
+# ==============================================================================
+# <<< START: โค้ดที่แก้ไขของ AutoCompleteEntry ทั้งคลาส >>>
+# ==============================================================================
 class AutoCompleteEntry(ctk.CTkEntry):
-    def __init__(self, master, completion_list, command_on_select=None, display_key_on_select='name', **kwargs):
-        super().__init__(master, **kwargs)
+    def __init__(self, master, completion_list, display_key, **kwargs):
+        self.var = tk.StringVar()
+        self.command = kwargs.pop('command', None)
+        super().__init__(master, textvariable=self.var, **kwargs)
+        
         self.completion_list = completion_list
-        self.command_on_select = command_on_select
-        self.display_key_on_select = display_key_on_select # <<< แก้ไข: เพิ่มตัวแปรใหม่
-        self._suggestions_toplevel = None
-        self._suggestion_buttons = []
-        self.bind("<KeyRelease>", self._on_key_release)
-        self.bind("<FocusOut>", self._on_focus_out)
-        self.bind("<Escape>", lambda e: self._hide_suggestions())
-    
-    def set_completion_list(self, new_list: list):
-        """
-        เมธอดสำหรับอัปเดตรายการคำใบ้ (suggestion list) จากภายนอก
-        """
+        self.display_key = display_key
+        
+        self._map_display_to_object = {}
+        self._choices = []
+        self.update_completion_list(self.completion_list)
+
+        self.popup = None
+        self.listbox = None
+        
+        self.var.trace_add("write", self._on_text_change)
+        
+        self.bind("<FocusOut>", self._hide_popup)
+        self.bind("<Down>", self._focus_on_listbox)
+        self.bind("<Escape>", self._hide_popup)
+        self.bind("<Configure>", self._reposition_popup)
+
+    def update_completion_list(self, new_list):
         self.completion_list = new_list
-        # ล้างข้อความในช่องค้นหาเมื่อมีการรีเฟรช
-        self.delete(0, tk.END)
-        print(f"AutoComplete list updated with {len(new_list)} items.")
+        self._map_display_to_object = {str(item.get(self.display_key, '')): item for item in self.completion_list}
+        self._choices = list(self._map_display_to_object.keys())
 
-    def _on_key_release(self, event):
-        if event.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Caps_Lock", "Tab", "Up", "Down", "Left", "Right", "Return", "Escape"):
+    def _on_text_change(self, *args, **kwargs):
+        current_text = self.var.get()
+        if not current_text:
+            self._hide_popup()
             return
         
-        typed_text = self.get().lower()
-        if not typed_text:
-            self._hide_suggestions()
-            return
+        results = process.extract(current_text, self._choices, scorer=fuzz.partial_ratio, limit=10)
+        self.matches = [result[0] for result in results if result[1] > 70]
 
-        if not self.completion_list or not isinstance(self.completion_list[0], dict):
-            return
-
-        # --- START: แก้ไข Logic การค้นหาให้เข้ากันได้ ---
-        
-        choices_map = {f"{item.get('name', '')} {item.get('code', '')}".lower(): item for item in self.completion_list}
-        
-        # 1. ดึงผลลัพธ์ทั้งหมด 10 อันดับแรกออกมาก่อน (โดยไม่ใช้ score_cutoff)
-        all_results = process.extract(typed_text, choices_map.keys(), scorer=fuzz.partial_ratio, limit=10)
-        
-        # 2. กรองผลลัพธ์ด้วยตนเอง โดยเอาเฉพาะที่มีคะแนนความคล้ายตั้งแต่ 70% ขึ้นไป
-        filtered_results = [result for result in all_results if result[1] >= 70]
-        
-        # 3. แปลงผลลัพธ์กลับไปเป็นลิสต์ของ Dictionary เดิม
-        filtered_list = [choices_map[result[0]] for result in filtered_results]
-        
-        # --- END: สิ้นสุดการแก้ไข ---
-
-        if not filtered_list:
-            self._hide_suggestions()
-            return
-        
-        self._show_suggestions(filtered_list)
-
-    def _show_suggestions(self, suggestions):
-        if self._suggestions_toplevel is None or not self._suggestions_toplevel.winfo_exists():
-            self._suggestions_toplevel = ctk.CTkToplevel(self)
-            self._suggestions_toplevel.overrideredirect(True)
-        
-        for btn in self._suggestion_buttons:
-            btn.destroy()
-        self._suggestion_buttons.clear()
-
-        # --- START: เพิ่ม Logic คำนวณความกว้างอัตโนมัติ ---
-        # 1. หาข้อความที่ยาวที่สุดในลิสต์ผลลัพธ์
-        longest_suggestion_text = ""
-        if suggestions:
-            longest_suggestion_text = max((item['display'] for item in suggestions), key=len)
-
-        # 2. คำนวณความกว้างเป็นพิกเซลจากข้อความที่ยาวที่สุด
-        font = self.cget("font")
-        if longest_suggestion_text:
-            # เพิ่ม Padding เข้าไปเล็กน้อยเพื่อให้ไม่ชิดขอบเกินไป
-            required_width = font.measure(longest_suggestion_text) + 40 
+        if self.matches:
+            if self.popup is None or not self.popup.winfo_exists():
+                self._create_popup()
+            
+            self.listbox.delete(0, tk.END)
+            for item in self.matches:
+                self.listbox.insert(tk.END, item)
+            self._show_popup()
         else:
-            required_width = self.winfo_width()
+            self._hide_popup()
 
-        # 3. ทำให้แน่ใจว่าความกว้างที่คำนวณได้ จะไม่น้อยกว่าความกว้างของช่อง Entry เอง
-        min_width = self.winfo_width()
-        final_width = max(required_width, min_width)
-        # --- END: สิ้นสุด Logic คำนวณความกว้าง ---
+    def _create_popup(self):
+        self.popup = tk.Toplevel(self)
+        self.popup.overrideredirect(True)
+        self.popup.withdraw()
 
-        for item in suggestions[:10]:
-            display_text = item['display']
-            btn = ctk.CTkButton(
-                self._suggestions_toplevel, 
-                text=display_text, 
-                anchor="w", 
-                fg_color="white", 
-                text_color="black", 
-                hover_color="#E5E7EB"
-            )
-            btn.pack(fill="x", expand=True)
-            btn.configure(command=lambda i=item: self._on_suggestion_click(i))
-            self._suggestion_buttons.append(btn)
-        
-        x, y = self.winfo_rootx(), self.winfo_rooty() + self.winfo_height()
-        
-        # --- ใช้ความกว้างใหม่ที่คำนวณได้ในการกำหนดขนาดหน้าต่าง ---
-        self._suggestions_toplevel.geometry(f"{final_width}x{self._suggestions_toplevel.winfo_reqheight()}+{x}+{y}")
-        
-        self._suggestions_toplevel.lift()
-        self._suggestions_toplevel.deiconify()
+        font_object = self.cget("font")
+        font_tuple = (font_object.cget("family"), font_object.cget("size"))
+        mode_index = 1 if ctk.get_appearance_mode().lower() == "dark" else 0
+        bg_color = self.cget("fg_color")[mode_index]
+        text_color = self.cget("text_color")[mode_index]
+        border_color = self.cget("border_color")[mode_index]
 
-    def _hide_suggestions(self):
-        if self._suggestions_toplevel and self._suggestions_toplevel.winfo_exists():
-            self._suggestions_toplevel.withdraw()
+        self.listbox = tk.Listbox(self.popup, 
+                                  font=font_tuple, bg=bg_color, fg=text_color,
+                                  selectbackground=border_color, selectforeground=text_color,
+                                  highlightthickness=1, highlightcolor=border_color,
+                                  borderwidth=0, activestyle="none")
+        self.listbox.pack(fill="both", expand=True)
+                                  
+        self.listbox.bind("<ButtonRelease-1>", self._on_select)
+        self.listbox.bind("<Return>", self._on_select)
+        self.listbox.bind("<Escape>", self._hide_popup)
+    
+    def _show_popup(self):
+        if not self.popup or not self.winfo_exists() or not hasattr(self, 'matches') or not self.matches:
+            self._hide_popup()
+            return
 
-   
-    def _on_suggestion_click(self, selection_dict):
-        self._hide_suggestions()
-        self.delete(0, tk.END)
+        # <<< START: แก้ไข Logic การคำนวณความกว้าง >>>
+        # บวกความกว้างเพิ่มเข้าไปอีก 350 pixels จากความกว้างของช่องกรอกข้อมูล
+        # วิธีนี้จะทำให้มีพื้นที่เพียงพอสำหรับชื่อที่ยาวมากๆ
+        width = self.winfo_width() + 350
+        # <<< END >>>
+
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height() + 2
         
-        display_value = selection_dict.get(self.display_key_on_select, '')
-        self.insert(0, display_value)
+        listbox_height = min(len(self.matches), 7)
+        row_height = 25
+        height = listbox_height * row_height
         
-        if self.command_on_select:
-            self.command_on_select(selection_dict) 
+        self.popup.geometry(f"{width}x{height}+{x}+{y}")
+        self.popup.deiconify()
+        self.popup.lift()
+
+    def _hide_popup(self, event=None):
+        if self.popup:
+            self.after(150, lambda: self.popup.withdraw() if self.popup and self.popup.winfo_exists() else None)
+
+    def _reposition_popup(self, event=None):
+        if self.popup and self.popup.winfo_viewable():
+            self._show_popup()
+            
+    def _focus_on_listbox(self, event=None):
+        if self.listbox and self.popup and self.popup.winfo_viewable():
+            self.listbox.focus_set()
+            self.listbox.selection_set(0)
+            return "break"
+            
+    def _on_select(self, event=None):
+        if not self.listbox or not self.listbox.curselection():
+            return "break"
+            
+        selection_text = self.listbox.get(self.listbox.curselection())
         
-        self.winfo_toplevel().focus_set()
+        trace_info = self.var.trace_info()
+        if trace_info: self.var.trace_vdelete("w", trace_info[0][1])
         
-    def _on_focus_out(self, event):
-        self.after(200, self._hide_suggestions)
+        self.var.set(selection_text)
+        
+        self.var.trace_add("write", self._on_text_change)
+
+        self._hide_popup()
+        self.icursor(tk.END)
+        self.focus_set()
+        
+        if self.command:
+            selected_object = self._map_display_to_object.get(selection_text)
+            if selected_object:
+                self.command(selected_object)
+                
+        return "break"
