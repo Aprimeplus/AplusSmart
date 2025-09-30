@@ -2068,14 +2068,15 @@ class HRScreen(CTkFrame):
             
             display_order_map = {
                 'so_number': 'เลขที่ SO',
-                'sales_for_comparison': 'ยอดขาย (ระบบ)',
+                'sales_service_amount': 'ยอดขาย/บริการ (ระบบ)',
+                'shipping_cost': 'ค่าขนส่ง (ระบบ)', # <-- เพิ่มคอลัมน์ค่าขนส่งตรงนี้
+                'sales_for_comparison': 'ยอดขายรวม (ระบบ)', # <-- เปลี่ยนชื่อเพื่อความชัดเจน
                 'sales_uploaded': 'ยอดขาย (Express)',
                 'cost_db': 'ต้นทุน (ระบบ)',
                 'cost_uploaded': 'ต้นทุน (Express)',
                 'ผลต่างยอดขาย': 'ผลต่างยอดขาย',
                 'ผลต่างต้นทุน': 'ผลต่างต้นทุน',
-                'สถานะ': 'สถานะ',
-                'sales_service_amount': 'ยอดขาย/บริการ (ระบบ)'
+                'สถานะ': 'สถานะ'
             }
 
             for key in display_order_map.keys():
@@ -2085,7 +2086,8 @@ class HRScreen(CTkFrame):
             self.comparison_df = merged_df[list(display_order_map.keys())].copy()
             self.comparison_df.rename(columns=display_order_map, inplace=True)
 
-            numeric_cols = ['ยอดขาย (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน']
+            # แก้ไข 'ยอดขาย (ระบบ)' ให้เป็น 'ยอดขายรวม (ระบบ)' ในบรรทัดนี้
+            numeric_cols = ['ยอดขายรวม (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน']
             summary_data = self.comparison_df[numeric_cols].sum().to_dict()
             
             summary_row = pd.Series(summary_data)

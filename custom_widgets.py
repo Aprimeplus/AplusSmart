@@ -108,8 +108,14 @@ class AutoCompleteEntry(ctk.CTkEntry):
         self.popup = None
         self.listbox = None
         
-        self.var.trace_add("write", self._on_text_change)
+        # ตัวแปรสำหรับติดตาม ID ของ trace เพื่อจัดการการเปิด/ปิด
+        # เราจะไม่เพิ่ม trace ในตอนนี้ เพื่อให้สามารถตั้งค่าเริ่มต้นได้โดยไม่แสดง popup
+        self._trace_id = None
         
+        # ผูก KeyRelease เพื่อเริ่มการค้นหาและเพิ่ม trace เมื่อผู้ใช้เริ่มพิมพ์
+        self.bind("<KeyRelease>", self._start_autocomplete)
+        
+        # บันทึกการผูก Event อื่นๆ เหมือนเดิม
         self.bind("<FocusOut>", self._hide_popup)
         self.bind("<Down>", self._focus_on_listbox)
         self.bind("<Escape>", self._hide_popup)
@@ -120,12 +126,29 @@ class AutoCompleteEntry(ctk.CTkEntry):
         self._map_display_to_object = {str(item.get(self.display_key, '')): item for item in self.completion_list}
         self._choices = list(self._map_display_to_object.keys())
 
+    def _start_autocomplete(self, event=None):
+        """
+        เริ่มการ trace เมื่อมีการปล่อยปุ่มใดๆ (ผู้ใช้เริ่มพิมพ์)
+        และเรียกใช้ _on_text_change ทันทีเพื่อเริ่มต้นการค้นหา
+        """
+        # เพิ่ม trace เมื่อ KeyRelease ถูกเรียกครั้งแรก
+        if self._trace_id is None:
+            self._trace_id = self.var.trace_add("write", self._on_text_change)
+        
+        # เรียกใช้ _on_text_change ทันทีเพื่อเริ่มต้นการค้นหา
+        self._on_text_change()
+
     def _on_text_change(self, *args, **kwargs):
         current_text = self.var.get()
-        if not current_text:
+        
+        # <<< START: การแก้ไข: ซ่อน Popup หากไม่มีข้อความหรือข้อความมีแต่ช่องว่าง >>>
+        # ใช้ .strip() เพื่อตรวจสอบว่ามีข้อความที่พิมพ์จริงหรือไม่ (ไม่ใช่แค่ space bar)
+        if not current_text or not current_text.strip():
             self._hide_popup()
             return
+        # <<< END: การแก้ไข >>>
         
+        # ใช้ fuzz.partial_ratio ในการค้นหาตามเดิม
         results = process.extract(current_text, self._choices, scorer=fuzz.partial_ratio, limit=10)
         self.matches = [result[0] for result in results if result[1] > 70]
 
@@ -139,6 +162,7 @@ class AutoCompleteEntry(ctk.CTkEntry):
             self._show_popup()
         else:
             self._hide_popup()
+
 
     def _create_popup(self):
         self.popup = tk.Toplevel(self)
