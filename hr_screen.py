@@ -1807,7 +1807,7 @@ class HRScreen(CTkFrame):
                             LEFT JOIN (
                                     SELECT 
                                         so_number, 
-                                        SUM(grand_total) as cogs_db, -- แก้ไขจาก total_cost เป็น grand_total ตรงนี้
+                                        SUM(grand_total) as cogs_db, 
                                         SUM(shipping_to_stock_cost) as po_shipping_stock,
                                         SUM(shipping_to_site_cost) as po_shipping_site,
                                         SUM(relocation_cost) as po_relocation
@@ -1815,7 +1815,7 @@ class HRScreen(CTkFrame):
                                     WHERE status = 'Approved' 
                                     GROUP BY so_number
                                 ) po ON c.so_number = po.so_number
-                            WHERE c.is_active = 1 AND c.status = 'PO Sent'"""
+                            WHERE c.is_active = 1"""
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
@@ -2180,7 +2180,7 @@ class HRScreen(CTkFrame):
                                 WHERE status = 'Approved'
                                 GROUP BY so_number
                             ) po ON c.so_number = po.so_number
-                        WHERE c.is_active = 1 AND c.status = 'PO Sent'""" # <<< แก้ไขเงื่อนไข status ตรงนี้
+                        WHERE c.is_active = 1""" 
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
