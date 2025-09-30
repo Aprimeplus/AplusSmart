@@ -628,6 +628,82 @@ class HRVerificationWindow(CTkToplevel):
         self.transient(master)
         self.grab_set()
 
+    def _create_comparison_table(self, parent_frame):
+        """สร้างตารางเปรียบเทียบแบบ Excel-light (มี zebra striping + row divider)"""
+        columns = (
+            "so_number", "system_sale", "express_sale",
+            "system_cost", "express_cost",
+            "diff_sale", "diff_cost", "status"
+        )
+
+        # --- สร้าง Style สำหรับ Treeview ---
+        style = ttk.Style()
+        style.theme_use("default")
+
+        style.configure(
+            "Treeview",
+            background="white",
+            foreground="black",
+            rowheight=25,
+            fieldbackground="white",
+            borderwidth=1
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=("Segoe UI", 10, "bold"),
+            background="#4CAF50",
+            foreground="white"
+        )
+
+        style.map("Treeview", background=[("selected", "#90CAF9")])
+
+        # --- สร้าง Treeview ---
+        tree = ttk.Treeview(
+            parent_frame,
+            columns=columns,
+            show="headings",
+            height=20
+        )
+
+        headers = [
+            "เลขที่ SO", "ยอดขาย (ระบบ)", "ยอดขาย (Express)",
+            "ต้นทุน (ระบบ)", "ต้นทุน (Express)",
+            "ผลต่างยอดขาย", "ผลต่างต้นทุน", "สถานะ"
+        ]
+
+        for col, header in zip(columns, headers):
+            tree.heading(col, text=header)
+            anchor = "center" if col in ["so_number", "status"] else "e"
+            tree.column(col, width=120, anchor=anchor, stretch=True)
+
+        # --- Scrollbar ---
+        vsb = ttk.Scrollbar(parent_frame, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(parent_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscroll=vsb.set, xscroll=hsb.set)
+
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
+        parent_frame.grid_rowconfigure(0, weight=1)
+        parent_frame.grid_columnconfigure(0, weight=1)
+
+        # --- ตั้งค่า zebra striping ---
+        tree.tag_configure("oddrow", background="white")
+        tree.tag_configure("evenrow", background="#F2F2F2")
+
+        # --- ตัวอย่างข้อมูล (จริง ๆ คุณจะ insert จาก system/excel data) ---
+        example_data = [
+            ("SO6809AM005", "6,840.00", "6,840.00", "4,000.00", "3,738.32", "0.00", "261.68", "ผ่านการตรวจ"),
+            ("SO6809AM010", "17,415.00", "19,315.00", "16,167.17", "12,124.65", "-1,900.00", "4,042.52", "ผ่านการตรวจ"),
+        ]
+
+        for i, row in enumerate(example_data):
+            tag = "evenrow" if i % 2 == 0 else "oddrow"
+            tree.insert("", "end", values=row, tags=(tag,))
+
+        self.comparison_tree = tree
+
     def _create_new_ui_layout(self):
         """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างนี้"""
         # --- Header ---
@@ -830,21 +906,31 @@ class HRVerificationWindow(CTkToplevel):
     def _create_revenue_table(self):
         revenue_keys = ['sales_service_amount', 'shipping_cost', 'cutting_drilling_fee', 'other_service_fee', 'credit_card_fee']
         revenue_headers = self.app_container.HEADER_MAP
-        
-        # Header
-        CTkLabel(self.revenue_table_frame, text="หัวข้อ", font=CTkFont(weight="bold")).grid(row=1, column=0, padx=5, pady=2, sticky="w")
-        CTkLabel(self.revenue_table_frame, text="ข้อมูลในระบบ", font=CTkFont(weight="bold")).grid(row=1, column=1, padx=5, pady=2, sticky="e")
-        CTkLabel(self.revenue_table_frame, text="ข้อมูลจาก Express", font=CTkFont(weight="bold")).grid(row=1, column=2, padx=5, pady=2, sticky="e")
 
-        # Data Rows
-        for i, key in enumerate(revenue_keys):
+        # --- Table Header ---
+        headers = ["หัวข้อ", "ข้อมูลในระบบ", "ข้อมูลจาก Express"]
+        for col, text in enumerate(headers):
+            header_cell = ctk.CTkFrame(self.revenue_table_frame, border_width=1, corner_radius=0)
+            header_cell.grid(row=0, column=col, sticky="nsew")
+            ctk.CTkLabel(header_cell, text=text, font=ctk.CTkFont(weight="bold")).pack(padx=5, pady=5)
+
+        # --- Table Rows ---
+        for i, key in enumerate(revenue_keys, start=1):
             header = revenue_headers.get(key, key)
             system_val = self.system_data.get(key, 0)
             excel_val = self.excel_data.get(key, 'N/A')
-            
-            CTkLabel(self.revenue_table_frame, text=header).grid(row=i+2, column=0, padx=5, pady=2, sticky="w")
-            CTkLabel(self.revenue_table_frame, text=f"{system_val:,.2f}").grid(row=i+2, column=1, padx=5, pady=2, sticky="e")
-            CTkLabel(self.revenue_table_frame, text=f"{excel_val if isinstance(excel_val, str) else f'{excel_val:,.2f}'}").grid(row=i+2, column=2, padx=5, pady=2, sticky="e")
+
+            row_values = [
+                header,
+                f"{system_val:,.2f}",
+                excel_val if isinstance(excel_val, str) else f"{excel_val:,.2f}"
+            ]
+
+            for col, value in enumerate(row_values):
+                bg_color = "#F9FAFB" if i % 2 == 0 else "white"  # zebra stripe
+                cell = ctk.CTkFrame(self.revenue_table_frame, border_width=1, fg_color=bg_color, corner_radius=0)
+                cell.grid(row=i, column=col, sticky="nsew")
+                ctk.CTkLabel(cell, text=value, anchor="w").pack(padx=5, pady=5)
 
     def _create_cost_table(self):
         cost_keys = ['final_cost_amount', 'giveaways', 'brokerage_fee', 'wht_3_percent', 'transfer_fee']

@@ -1035,8 +1035,6 @@ class PurchasingScreen(CTkFrame):
         self.so_form_widgets['payment2_method_var'] = self.payment2_method_var
         self.so_form_widgets['delivery_type_var'] = self.delivery_type_var
 
-    
-
     def _create_header(self):
         header_frame = CTkFrame(self, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,5))
