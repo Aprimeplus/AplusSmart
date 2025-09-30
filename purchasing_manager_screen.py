@@ -810,9 +810,9 @@ class PurchasingManagerScreen(CTkFrame):
         finally:
             if conn: self.app_container.release_connection(conn)
 
-    def _update_ui_after_action(self, po_id):
+    def _update_ui_after_action(self, po_id, so_number):
         """
-        (ฟังก์ชันใหม่) อัปเดต UI อย่างชาญฉลาดหลังจากอนุมัติหรือปฏิเสธ PO
+        (เวอร์ชันแก้ไข) อัปเดต UI อย่างชาญฉลาดหลังจากอนุมัติหรือปฏิเสธ PO
         """
         # 1. หา PO card ที่เพิ่งกระทำไปแล้วลบออกจากหน้าจอ
         if po_id in self.po_cards:
@@ -823,36 +823,34 @@ class PurchasingManagerScreen(CTkFrame):
         # 2. อัปเดต DataFrame หลัก โดยการลบแถวของ PO ที่เพิ่งกระทำออกไป
         self.all_pending_df = self.all_pending_df[self.all_pending_df['id'] != po_id].copy()
 
-        # 3. อัปเดตปุ่ม "อนุมัติทั้งหมด" และข้อความบน SO Card
-        self._update_all_counts()
+        # 3. อัปเดตการ์ด SO และปุ่มสรุปทั้งหมด
+        self._update_all_counts(so_number_to_update=so_number)
 
-    def _update_all_counts(self):
+    def _update_all_counts(self, so_number_to_update=None):
         """
-        (ฟังก์ชันใหม่) วนลูปเช็ค SO Card ทั้งหมดเพื่ออัปเดตจำนวน PO หรือลบทิ้งถ้าหมดแล้ว
+        (เวอร์ชันแก้ไข) อัปเดต SO Card ที่เกี่ยวข้อง และปุ่มสรุปด้านบน
         """
-        so_to_remove = []
-        for so_number, so_card_widget in self.so_cards.items():
-            if so_card_widget.winfo_exists():
+        if so_number_to_update:
+            so_card_widget = self.so_cards.get(so_number_to_update)
+            if so_card_widget and so_card_widget.winfo_exists():
                 # นับจำนวน PO ที่เหลืออยู่ของ SO นี้จาก DataFrame
-                remaining_count = len(self.all_pending_df[self.all_pending_df['so_number'] == so_number])
+                remaining_count = len(self.all_pending_df[self.all_pending_df['so_number'] == so_number_to_update])
                 
                 if remaining_count > 0:
                     # ยังมี PO เหลืออยู่ ให้อัปเดตข้อความ
-                    label = so_card_widget.winfo_children()[0].winfo_children()[0] # หา Label
-                    label.configure(text=f"SO: {so_number} (มี {remaining_count} POs รออนุมัติ)")
-                    # อาจจะต้องอัปเดตปุ่ม "อนุมัติทั้งหมด" ของ SO card ด้วย (ถ้ามี)
+                    label = so_card_widget.winfo_children()[0].winfo_children()[0]
+                    label.configure(text=f"SO: {so_number_to_update} (มี {remaining_count} POs รออนุมัติ)")
+                    
+                    # อัปเดตปุ่ม "อนุมัติทั้งหมด" ของ SO card นั้นๆ
+                    action_frame = so_card_widget.winfo_children()[0].winfo_children()[1]
+                    approve_all_button = action_frame.winfo_children()[0]
+                    approve_all_button.configure(text=f"อนุมัติทั้งหมด ({remaining_count})")
                 else:
                     # ไม่มี PO เหลือแล้ว ลบ SO Card ทิ้ง
                     so_card_widget.destroy()
-                    so_to_remove.append(so_number)
-            else:
-                 so_to_remove.append(so_number)
+                    self.so_cards.pop(so_number_to_update, None)
         
-        # ลบ SO ที่ถูกทำลายไปแล้วออกจาก Dictionary
-        for so in so_to_remove:
-            self.so_cards.pop(so, None)
-            
-        # อัปเดตปุ่มใหญ่ด้านบนสุด
+        # อัปเดตปุ่มใหญ่ด้านบนสุดเสมอ
         total_pending_count = len(self.all_pending_df)
         if hasattr(self, 'approve_all_button') and self.approve_all_button.winfo_exists():
             self.approve_all_button.configure(text=f"อนุมัติทุกรายการที่ค้างอยู่ ({total_pending_count})")

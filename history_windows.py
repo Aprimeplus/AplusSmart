@@ -1166,16 +1166,12 @@ class PurchaseDetailWindow(CTkToplevel):
                 supplier_code = self.po_entries['supplier_code'].get().strip()
                 
                 if supplier_name and supplier_code:
-                    # ตรวจสอบว่ามี Supplier ชื่อนี้อยู่แล้วหรือไม่
                     cursor.execute("SELECT id FROM suppliers WHERE supplier_name = %s", (supplier_name,))
                     existing_supplier = cursor.fetchone()
-                    
                     if existing_supplier:
-                        # ถ้ามี ให้อัปเดตรหัสและ Credit Term
                         cursor.execute("UPDATE suppliers SET supplier_code = %s, credit_term = %s WHERE id = %s", 
                                     (supplier_code, self.po_entries['credit_term'].get(), existing_supplier[0]))
                     else:
-                        # ถ้ายังไม่มี ให้สร้างใหม่
                         cursor.execute("INSERT INTO suppliers (supplier_name, supplier_code, credit_term) VALUES (%s, %s, %s)",
                                     (supplier_name, supplier_code, self.po_entries['credit_term'].get()))
 
@@ -1230,7 +1226,6 @@ class PurchaseDetailWindow(CTkToplevel):
                     weight, qty = widgets['total_weight'].get_value(), widgets['quantity'].get_value()
                     price, discount = widgets['unit_price'].get_value(), widgets['discount_value'].get_value()
                     discount_type = widgets['discount_type_var'].get()
-                    
                     line_total = qty * price
                     discount_amount = (line_total * (discount / 100.0)) if discount_type == "%" else discount
                     total = line_total - discount_amount
@@ -1255,26 +1250,24 @@ class PurchaseDetailWindow(CTkToplevel):
                     cursor.execute("DELETE FROM purchase_order_payments WHERE id IN %s", (tuple(self.deleted_payment_ids),))
                 for payment_row in self.payment_entries:
                     widgets, payment_id = payment_row['widgets'], payment_row['id']
-                    p_type = widgets['type_var'].get()
-                    p_amount = widgets['amount_entry'].get_value()
-                    p_date = widgets['date_selector'].get_date()
-                    p_bank = widgets['bank_var'].get()
-                    p_account = widgets['account_entry'].get()
+                    p_type, p_amount, p_date = widgets['type_var'].get(), widgets['amount_entry'].get_value(), widgets['date_selector'].get_date()
+                    p_bank, p_account = widgets['bank_var'].get(), widgets['account_entry'].get()
                     if payment_id:
-                        cursor.execute("""
-                            UPDATE purchase_order_payments SET payment_type = %s, amount = %s, payment_date = %s, bank_name = %s, bank_account_number = %s WHERE id = %s
-                        """, (p_type, p_amount, p_date, p_bank, p_account, payment_id))
+                        cursor.execute("UPDATE purchase_order_payments SET payment_type = %s, amount = %s, payment_date = %s, bank_name = %s, bank_account_number = %s WHERE id = %s", (p_type, p_amount, p_date, p_bank, p_account, payment_id))
                     else:
-                        cursor.execute("""
-                            INSERT INTO purchase_order_payments (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number) VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (self.purchase_id, p_type, p_amount, p_date, p_bank, p_account))
+                        cursor.execute("INSERT INTO purchase_order_payments (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number) VALUES (%s, %s, %s, %s, %s, %s)", (self.purchase_id, p_type, p_amount, p_date, p_bank, p_account))
                 log_details = { "message": f"PO ID {self.purchase_id} edited by {self.user_role} ({self.app_container.current_user_key})" }
-                cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", ('PO Edited', 'purchase_orders', self.purchase_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
+                cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", ('PO Edited', 'purchase_orders', self.purchase_id, self.app_container.current_user_key, json.dumps(log_details, default=str), datetime.now()))
+            
             conn.commit()
             messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข PO เรียบร้อยแล้ว", parent=self)
+            
             if self.on_save_callback: 
                 self.on_save_callback()
-            self.destroy()
+            
+            # --- จุดที่แก้ไข: ลบบรรทัด self.destroy() ออก ---
+            # self.destroy() 
+            
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
@@ -1294,35 +1287,36 @@ class PurchaseHistoryWindow(CTkToplevel):
         # ตั้งเวลาเพื่อเรียกฟังก์ชันค้นหาจริงในอีก 500 มิลลิวินาที (0.5 วินาที)
         self._debounce_job = self.after(500, self._apply_filters)
 
-    def __init__(self, master, app_container, purchase_id, on_save_callback=None, **kwargs):
+    def __init__(self, master, app_container, on_save_callback=None, **kwargs):
         super().__init__(master)
-        self.title(f"รายละเอียด/แก้ไขใบสั่งซื้อ (PO ID: {purchase_id})")
-        self.geometry("900x800")
+        self.title("ประวัติใบสั่งซื้อ (PO History)")
+        self.geometry("1200x700")
         
         self.app_container = app_container
-        self.purchase_id = purchase_id
+        self.pg_engine = app_container.pg_engine
         self.on_save_callback = on_save_callback
         self.user_role = self.app_container.current_user_role
         
-        self.po_entries = {}
-        self.item_entries = []
-        self.deleted_item_ids = []
-        self.payment_entries = []
-        self.deleted_payment_ids = []
+        # --- ตัวแปรสำหรับ Pagination และ Filter ---
+        self.all_po_df = None
+        self.filtered_df = None
+        self.current_page = 0
+        self.rows_per_page = 50
         
-        # --- START: เพิ่มบรรทัดนี้ ---
-        self.supplier_names_list = self._get_supplier_names() 
-        # --- END ---
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
+        self.month_var = tk.StringVar(value="ทุกเดือน")
+        self.year_var = tk.StringVar(value="ทุกปี")
 
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        self.scroll_frame = CTkScrollableFrame(self)
-        self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        self.scroll_frame.grid_columnconfigure(0, weight=1)
         
-        self._create_action_buttons()
-
-        self.after(50, self._load_and_display_data)
+        # --- สร้าง UI Layout ใหม่ ---
+        self._create_new_layout()
+        
+        # --- เริ่มโหลดข้อมูล ---
+        self.after(50, self._load_initial_data)
+        
         self.transient(master)
         self.grab_set()
     
@@ -1859,21 +1853,28 @@ class CommissionHistoryWindow(CTkToplevel):
             self._populate_history_table()
 
 class SOPopupWindow(CTkToplevel):
-    def __init__(self, master, sales_data, so_shared_vars, sale_theme):
+    def __init__(self, master, app_container, sales_data, so_shared_vars, sale_theme, on_save_callback=None):
         super().__init__(master)
         self.master = master
+        self.app_container = app_container # <<< เพิ่มบรรทัดนี้
         self.sales_data = sales_data
         self.so_shared_vars = so_shared_vars
         self.sale_theme = sale_theme
+        self.on_save_callback = on_save_callback # <<< เพิ่มบรรทัดนี้
         self.popup_widgets = {}
         self.trace_ids_for_so_calc = []
+
+        # เคลียร์และสร้าง StringVar ที่จำเป็นสำหรับ Pop-up นี้โดยเฉพาะ
         self.so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['other_service_fee_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+        # <<< เพิ่มเติม: StringVar สำหรับค่าย้ายใน Pop-up >>>
+        self.so_shared_vars['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
+        
         self.title(f"ข้อมูล Sales Order (SO: {sales_data.get('so_number', 'N/A')})")
-        self.geometry("700x700")
+        self.geometry("700x750") # ขยายความสูงเผื่อ
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -1884,7 +1885,6 @@ class SOPopupWindow(CTkToplevel):
         self._so_bind_events()
         self.after(100, lambda: self._populate_so_form(self.sales_data))
 
-        # ปุ่มปิดจะอยู่ด้านล่างปุ่ม Save
         self.protocol("WM_DELETE_WINDOW", self._on_popup_close)
         self.transient(master)
         self.grab_set()
@@ -1969,7 +1969,10 @@ class SOPopupWindow(CTkToplevel):
         ]
         self._add_form_row(f4, "การจัดส่ง:", CTkOptionMenu(f4, variable=self.so_shared_vars['delivery_type_var'], values=delivery_options, **self.master.dropdown_style), 'delivery_type_menu', 1)
         self._add_form_row(f4, "Location เข้ารับ:", CTkEntry(f4, placeholder_text="ใส่ อำเภอ, จังหวัด หรือ Google map link"), 'pickup_location_entry', 2)
-        self._add_form_row(f4, "ค่าย้าย:", NumericEntry(f4), 'relocation_cost_entry', 3)
+
+        # --- เพิ่มส่วน "ค่าย้าย" พร้อม VAT ---
+        self._add_item_row_with_vat(f4, "ค่าย้าย:", 'relocation_cost_entry', 'relocation_cost_vat_option', 'relocation_vat_calc_var', 3)
+
         self._add_form_row(f4, "วันที่ย้ายเข้าคลัง:", DateSelector(f4, dropdown_style=self.master.dropdown_style), 'date_to_wh_selector', 4)
         self._add_form_row(f4, "วันที่จัดส่งลูกค้า:", DateSelector(f4, dropdown_style=self.master.dropdown_style), 'date_to_customer_selector', 5)
         self._add_form_row(f4, "ทะเบียนเข้ารับ:", CTkEntry(f4), 'pickup_rego_entry', 6)
@@ -2015,7 +2018,8 @@ class SOPopupWindow(CTkToplevel):
             "shipping_cost_entry", "credit_card_fee_entry", "transfer_fee_entry",
             "wht_fee_entry", "coupon_value_entry", "giveaway_value_entry",
             "brokerage_fee_entry", "payment1_amount_entry", "payment2_amount_entry",
-            "cash_product_input_entry", "cash_actual_payment_entry"
+            "cash_product_input_entry", "cash_actual_payment_entry",
+            "relocation_cost_entry" # <<< เพิ่มเติม: relocation_cost_entry
         ]
         for key in widgets_to_bind_keys:
             if key in self.popup_widgets and isinstance(self.popup_widgets[key], (CTkEntry, NumericEntry)):
@@ -2024,7 +2028,8 @@ class SOPopupWindow(CTkToplevel):
         radio_vars_keys = [
             'sales_service_vat_option', 'cutting_drilling_fee_vat_option',
             'other_service_fee_vat_option', 'shipping_vat_option_var',
-            'credit_card_fee_vat_option_var'
+            'credit_card_fee_vat_option_var',
+            'relocation_cost_vat_option' # <<< เพิ่มเติม: relocation_cost_vat_option
         ]
         for key in radio_vars_keys:
             if key in self.so_shared_vars and isinstance(self.so_shared_vars[key], tk.StringVar):

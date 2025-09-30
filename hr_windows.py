@@ -30,6 +30,9 @@ class SOPopupWindow(CTkToplevel):
         
         self.popup_widgets = {}
         self.trace_ids_for_so_calc = []
+        self.so_shared_vars['relocation_cost_vat_option_var'] = tk.StringVar(value="VAT") # <--- แก้ไขโดยการเพิ่ม _cost_
+        self.so_shared_vars['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
+
 
         self.title(f"ข้อมูล Sales Order (SO: {sales_data.get('so_number', 'N/A')})")
         self.geometry("700x800")
@@ -51,7 +54,7 @@ class SOPopupWindow(CTkToplevel):
         button_frame = CTkFrame(main_frame, fg_color="transparent")
         button_frame.grid(row=1, column=0, pady=(5, 15))
 
-        save_button = CTkButton(button_frame, text="บันทึกและปิด", command=self._save_and_close, fg_color="#16A34A", hover_color="#15803D")
+        save_button = CTkButton(button_frame, text="บันทึก", command=self._save_so_changes, fg_color="#16A34A", hover_color="#15803D")
         save_button.pack(side="left", padx=10)
 
         close_button = CTkButton(button_frame, text="ยกเลิก", command=self._on_popup_close, fg_color="gray")
@@ -86,16 +89,34 @@ class SOPopupWindow(CTkToplevel):
         widget.grid(row=row_index, column=1, columnspan=2, padx=(10, 15), pady=4, sticky="ew")
         self.popup_widgets[key] = widget
 
-    def _add_item_row_with_vat(self, parent, label_text, entry_key, radio_key, row_index):
-        entry_widget = NumericEntry(parent)
-        radio_var = self.so_shared_vars[radio_key]
-        CTkLabel(parent, text=label_text, font=CTkFont(size=14)).grid(row=row_index, column=0, padx=15, pady=5, sticky="w")
-        entry_widget.grid(row=row_index, column=1, padx=(10, 15), pady=5, sticky="ew")
-        radio_frame = CTkFrame(parent, fg_color="transparent")
-        radio_frame.grid(row=row_index, column=2, padx=(10, 15), pady=5, sticky="w")
-        CTkRadioButton(radio_frame, text="VAT", variable=radio_var, value="VAT").pack(side="left", padx=5)
-        CTkRadioButton(radio_frame, text="NO VAT", variable=radio_var, value="NO VAT").pack(side="left", padx=5)
-        self.popup_widgets[entry_key] = entry_widget
+    def _add_item_row_with_vat(self, parent, label_text, entry_key, vat_option_key, vat_display_var_key, row_index):
+        """
+        (เวอร์ชันแก้ไข) ฟังก์ชัน Helper ที่จะสร้างแถวข้อมูลพร้อมช่องกรอก, ตัวเลือก VAT, และป้ายแสดงยอด VAT
+        """
+        CTkLabel(parent, text=label_text, font=CTkFont(size=14)).grid(
+            row=row_index, column=0, padx=(15, 10), pady=4, sticky="w"
+        )
+        
+        # Frame หลักสำหรับจัดวาง Entry, Radio, และ VAT display
+        item_frame = CTkFrame(parent, fg_color="transparent")
+        item_frame.grid(row=row_index, column=1, columnspan=2, padx=(10, 15), pady=4, sticky="ew")
+        item_frame.grid_columnconfigure(0, weight=1)
+
+        # ช่องกรอกตัวเลข
+        amount_entry = NumericEntry(item_frame)
+        amount_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.popup_widgets[entry_key] = amount_entry
+
+        # ตัวเลือก VAT/CASH
+        vat_frame = CTkFrame(item_frame, fg_color="transparent")
+        vat_frame.pack(side="left")
+        CTkRadioButton(vat_frame, text="VAT", variable=self.so_shared_vars[vat_option_key], value="VAT").pack(side="left")
+        CTkRadioButton(vat_frame, text="CASH", variable=self.so_shared_vars[vat_option_key], value="NO VAT").pack(side="left", padx=5)
+
+        # <<< เพิ่มเติม: ป้ายแสดงยอด VAT ที่คำนวณแล้ว >>>
+        # ใช้ vat_display_var_key ที่รับเข้ามาใหม่
+        vat_label = CTkLabel(item_frame, textvariable=self.so_shared_vars[vat_display_var_key], font=CTkFont(size=12), text_color="gray50")
+        vat_label.pack(side="left", padx=(10, 0))
 
     def _create_so_data_form_content(self, parent_frame):
         # Section 1: Sales Details
@@ -107,18 +128,17 @@ class SOPopupWindow(CTkToplevel):
 
         # Section 2: Sales and Services
         f2 = self._create_so_section_frame(parent_frame, "ยอดขายและบริการ")
-        self._add_item_row_with_vat(f2, "ยอดขายสินค้า/บริการ:", 'sales_amount_entry', 'sales_service_vat_option', 1)
-        self._add_form_row(f2, "VAT 7%:", CTkLabel(f2, textvariable=self.so_shared_vars['sales_vat_calc_var']), 'sales_vat_display', 2)
-        self._add_item_row_with_vat(f2, "ค่าบริการตัด/เจาะ:", 'cutting_drilling_fee_entry', 'cutting_drilling_fee_vat_option', 3)
-        self._add_item_row_with_vat(f2, "ค่าบริการอื่นๆ:", 'other_service_fee_entry', 'other_service_fee_vat_option', 4)
+        # <<< แก้ไข: เพิ่ม Argument 'vat_display_var_key' ที่ขาดไปให้ครบ >>>
+        self._add_item_row_with_vat(f2, "ยอดขายสินค้า/บริการ:", 'sales_amount_entry', 'sales_service_vat_option', 'sales_vat_calc_var', 1)
+        self._add_item_row_with_vat(f2, "ค่าบริการตัด/เจาะ:", 'cutting_drilling_fee_entry', 'cutting_drilling_fee_vat_option', 'cutting_drilling_vat_calc_var', 2)
+        self._add_item_row_with_vat(f2, "ค่าบริการอื่นๆ:", 'other_service_fee_entry', 'other_service_fee_vat_option', 'other_service_vat_calc_var', 3)
         
         # Section 3: Shipping Cost
         f3 = self._create_so_section_frame(parent_frame, "ค่าจัดส่ง")
-        self._add_item_row_with_vat(f3, "ค่าจัดส่ง:", 'shipping_cost_entry', 'shipping_vat_option_var', 1)
-        self._add_form_row(f3, "VAT 7%:", CTkLabel(f3, textvariable=self.so_shared_vars['shipping_vat_calc_var']), 'shipping_vat_display', 2)
-        self._add_form_row(f3, "วันที่จัดส่ง:", DateSelector(f3, dropdown_style=self.master.dropdown_style), 'delivery_date_selector', 3)
+        self._add_item_row_with_vat(f3, "ค่าจัดส่ง:", 'shipping_cost_entry', 'shipping_vat_option_var', 'shipping_vat_calc_var', 1)
+        self._add_form_row(f3, "วันที่จัดส่ง:", DateSelector(f3, dropdown_style=self.master.dropdown_style), 'delivery_date_selector', 2)
 
-        # Section 4: Delivery Note (ที่เพิ่มเข้ามาใหม่)
+        # Section 4: Delivery Note
         f4 = self._create_so_section_frame(parent_frame, "Delivery Note")
         delivery_options = [
             "ซัพพลายเออร์จัดส่ง", "Aplus Logistic ส่งหน้างาน", "ลูกค้ารับเองที่ซัพ",
@@ -129,14 +149,14 @@ class SOPopupWindow(CTkToplevel):
         ]
         self._add_form_row(f4, "การจัดส่ง:", CTkOptionMenu(f4, variable=self.so_shared_vars['delivery_type_var'], values=delivery_options, **self.master.dropdown_style), 'delivery_type_menu', 1)
         self._add_form_row(f4, "Location เข้ารับ:", CTkEntry(f4, placeholder_text="ใส่ อำเภอ, จังหวัด หรือ Google map link"), 'pickup_location_entry', 2)
-        self._add_form_row(f4, "ค่าย้าย:", NumericEntry(f4), 'relocation_cost_entry', 3)
+        self._add_item_row_with_vat(f4, "ค่าย้าย:", 'relocation_cost_entry', 'relocation_cost_vat_option_var', 'relocation_vat_calc_var', 3)
         self._add_form_row(f4, "วันที่ย้ายเข้าคลัง:", DateSelector(f4, dropdown_style=self.master.dropdown_style), 'date_to_wh_selector', 4)
         self._add_form_row(f4, "วันที่จัดส่งลูกค้า:", DateSelector(f4, dropdown_style=self.master.dropdown_style), 'date_to_customer_selector', 5)
         self._add_form_row(f4, "ทะเบียนเข้ารับ:", CTkEntry(f4), 'pickup_rego_entry', 6)
 
         # Section 5: Fees and Discounts
         f5 = self._create_so_section_frame(parent_frame, "ค่าธรรมเนียมและส่วนลด")
-        self._add_item_row_with_vat(f5, "ค่าธรรมเนียมบัตร:", 'credit_card_fee_entry', 'credit_card_fee_vat_option_var', 1)
+        self._add_item_row_with_vat(f5, "ค่าธรรมเนียมบัตร:", 'credit_card_fee_entry', 'credit_card_fee_vat_option_var', 'card_fee_vat_calc_var', 1)
         self._add_form_row(f5, "ค่าธรรมเนียมโอน:", NumericEntry(f5), 'transfer_fee_entry', 2)
         self._add_form_row(f5, "ภาษีหัก ณ ที่จ่าย:", NumericEntry(f5), 'wht_fee_entry', 3)
         self._add_form_row(f5, "ค่านายหน้า:", NumericEntry(f5), 'brokerage_fee_entry', 4)
@@ -175,7 +195,7 @@ class SOPopupWindow(CTkToplevel):
             "shipping_cost_entry", "credit_card_fee_entry", "transfer_fee_entry",
             "wht_fee_entry", "coupon_value_entry", "giveaway_value_entry",
             "brokerage_fee_entry", "payment1_amount_entry", "payment2_amount_entry",
-            "cash_product_input_entry", "cash_actual_payment_entry"
+            "cash_product_input_entry", "cash_actual_payment_entry","relocation_cost_entry" 
         ]
         for key in widgets_to_bind_keys:
             if key in self.popup_widgets and isinstance(self.popup_widgets[key], (CTkEntry, NumericEntry)):
@@ -184,7 +204,7 @@ class SOPopupWindow(CTkToplevel):
         radio_vars_keys = [
             'sales_service_vat_option', 'cutting_drilling_fee_vat_option',
             'other_service_fee_vat_option', 'shipping_vat_option_var',
-            'credit_card_fee_vat_option_var'
+            'credit_card_fee_vat_option_var','relocation_cost_vat_option_var'
         ]
         for key in radio_vars_keys:
             if key in self.so_shared_vars and isinstance(self.so_shared_vars[key], tk.StringVar):
@@ -220,11 +240,12 @@ class SOPopupWindow(CTkToplevel):
         total_cashable_services_and_fees = 0.0
         
         items_to_process = [
-            (sales, w_vars['sales_service_vat_option'].get(), w_vars.get('sales_vat_calc_var')),
-            (cutting_drilling, w_vars['cutting_drilling_fee_vat_option'].get(), w_vars.get('cutting_drilling_vat_calc_var')),
-            (other_service, w_vars['other_service_fee_vat_option'].get(), w_vars.get('other_service_vat_calc_var')),
-            (shipping, w_vars['shipping_vat_option_var'].get(), w_vars.get('shipping_vat_calc_var')),
-            (card_fee, w_vars['credit_card_fee_vat_option_var'].get(), w_vars.get('card_fee_vat_calc_var'))
+            (get_float_from_entry('sales_amount_entry'), w_vars['sales_service_vat_option'].get(), w_vars.get('sales_vat_calc_var')),
+            (get_float_from_entry('cutting_drilling_fee_entry'), w_vars['cutting_drilling_fee_vat_option'].get(), w_vars.get('cutting_drilling_vat_calc_var')),
+            (get_float_from_entry('other_service_fee_entry'), w_vars['other_service_fee_vat_option'].get(), w_vars.get('other_service_vat_calc_var')),
+            (get_float_from_entry('shipping_cost_entry'), w_vars['shipping_vat_option_var'].get(), w_vars.get('shipping_vat_calc_var')),
+            (get_float_from_entry('credit_card_fee_entry'), w_vars['credit_card_fee_vat_option_var'].get(), w_vars.get('card_fee_vat_calc_var')),
+            (get_float_from_entry('relocation_cost_entry'), w_vars['relocation_cost_vat_option_var'].get(), w_vars.get('relocation_vat_calc_var'))
         ]
 
         for amount, option, var_display in items_to_process:
@@ -316,7 +337,7 @@ class SOPopupWindow(CTkToplevel):
             'credit_card_fee': 'credit_card_fee_entry', 'transfer_fee': 'transfer_fee_entry', 'wht_3_percent': 'wht_fee_entry',
             'brokerage_fee': 'brokerage_fee_entry', 'coupons': 'coupon_value_entry', 'giveaways': 'giveaway_value_entry',
             'payment_date': 'payment_date_selector', 'cash_product_input': 'cash_product_input_entry', 'cash_actual_payment': 'cash_actual_payment_entry',
-            'payment_before_vat': 'payment_before_vat_entry', 'payment_no_vat': 'payment_no_vat_entry',
+            'payment_before_vat': 'payment_before_vat_entry', 'payment_no_vat': 'payment_no_vat_entry', 'relocation_cost_vat_option': 'relocation_cost_vat_option_var',
             'sales_service_vat_option': 'sales_service_vat_option', 'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
             'other_service_fee_vat_option': 'other_service_fee_vat_option', 'shipping_vat_option': 'shipping_vat_option_var',
             'credit_card_fee_vat_option': 'credit_card_fee_vat_option_var', 'delivery_type': 'delivery_type_var', 
@@ -380,6 +401,7 @@ class SOPopupWindow(CTkToplevel):
         shared_vars_map = {
             'delivery_type_var': 'delivery_type', 'sales_service_vat_option': 'sales_service_vat_option',
             'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option', 'other_service_fee_vat_option': 'other_service_fee_vat_option',
+            'relocation_cost_vat_option_var': 'relocation_cost_vat_option',
             'shipping_vat_option_var': 'shipping_vat_option', 'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option'
         }
         for var_key, data_key in shared_vars_map.items():

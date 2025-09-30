@@ -1006,6 +1006,8 @@ class PurchasingScreen(CTkFrame):
         self.so_form_widgets['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['payment_total_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['relocation_cost_vat_option_var'] = tk.StringVar(value="VAT")
+        self.so_form_widgets['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['so_subtotal_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['so_vat_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['so_grand_total_var'] = tk.StringVar(value="0.00")

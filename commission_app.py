@@ -527,6 +527,8 @@ class CommissionApp(CTkFrame):
         self.other_service_vat_calc_var = tk.StringVar(value="0.00")
         self.shipping_vat_calc_var = tk.StringVar(value="0.00")
         self.card_fee_vat_calc_var = tk.StringVar(value="0.00")
+        self.relocation_vat_option_var = tk.StringVar(value="VAT")
+        self.relocation_vat_calc_var = tk.StringVar(value="0.00")
         self.payment_total_var = tk.StringVar(value="0.00")
         self.so_subtotal_var = tk.StringVar(value="0.00")
         self.so_vat_var = tk.StringVar(value="0.00")
@@ -580,7 +582,9 @@ class CommissionApp(CTkFrame):
             "shipping_cost_entry", "credit_card_fee_entry", "transfer_fee_entry",
             "wht_fee_entry", "coupon_value_entry", "giveaway_value_entry",
             "brokerage_fee_entry", "payment1_amount_entry", "payment2_amount_entry",
-            "cash_product_input_entry", "cash_actual_payment_entry"
+            "cash_product_input_entry", "cash_actual_payment_entry",
+            # <<< เพิ่มเติม: เพิ่ม relocation_cost_entry เข้าไปใน list นี้ >>>
+            "relocation_cost_entry"
         ]
 
         for widget_name in widgets_to_bind_names:
@@ -591,7 +595,7 @@ class CommissionApp(CTkFrame):
         for var in [
             self.sales_service_vat_option, self.cutting_drilling_fee_vat_option,
             self.other_service_fee_vat_option, self.shipping_vat_option_var,
-            self.credit_card_fee_vat_option_var
+            self.credit_card_fee_vat_option_var,self.relocation_vat_option_var
         ]:
             var.trace_add("write", self._update_final_calculations)
 
@@ -685,6 +689,8 @@ class CommissionApp(CTkFrame):
         set_entry_value(self.brokerage_fee_entry, data.get('brokerage_fee'))
         set_entry_value(self.coupon_value_entry, data.get('coupons'))
         set_entry_value(self.giveaway_value_entry, data.get('giveaways'))
+        set_radio_button(self.relocation_vat_option_var, data.get('relocation_cost_vat_option'))
+
 
         payment1 = data.get('total_payment_amount', 0.0) # Simplified for now
         set_entry_value(self.payment1_amount_entry, payment1)
@@ -870,68 +876,67 @@ class CommissionApp(CTkFrame):
 
     # <<< START: CODE REPLACEMENT >>>
     def _populate_other_expenses_frame(self, parent):
-        # 1. สร้าง Frame หลักที่จะครอบทั้งสองส่วน
+        # <<< แก้ไข: จัด Layout ของ Frame นี้ใหม่ทั้งหมด >>>
         details_container = CTkFrame(parent, fg_color="transparent")
         details_container.pack(fill="x", expand=True, pady=10)
-
-        # 2. กำหนดให้มี 2 คอลัมน์ที่ขยายขนาดเท่าๆ กัน
         details_container.grid_columnconfigure(0, weight=1)
         details_container.grid_columnconfigure(1, weight=1)
 
-        # 3. สร้าง Frame สำหรับคอลัมน์ซ้าย (ส่วนลด/รายการเพิ่มเติม)
+        # --- คอลัมน์ซ้าย: ส่วนลด/รายการเพิ่มเติม ---
         discounts_frame = self._create_section_frame(details_container, "ส่วนลด/รายการเพิ่มเติม")
         discounts_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-
         self.brokerage_fee_entry = NumericEntry(discounts_frame)
         self._add_form_row(discounts_frame, "ค่านายหน้า:", self.brokerage_fee_entry, 1)
-
         self.coupon_value_entry = NumericEntry(discounts_frame)
         self._add_form_row(discounts_frame, "คูปอง:", self.coupon_value_entry, 2)
-
         self.giveaway_value_entry = NumericEntry(discounts_frame)
         self._add_form_row(discounts_frame, "ของแถม:", self.giveaway_value_entry, 3)
 
-        # 4. สร้าง Frame สำหรับคอลัมน์ขวา (Delivery Note)
+        # --- คอลัมน์ขวา: Delivery Note ---
         delivery_frame = self._create_section_frame(details_container, "Delivery Note")
         delivery_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        delivery_frame.grid_columnconfigure(1, weight=1) # ทำให้คอลัมน์ที่ 2 ขยายได้
 
         delivery_options = [
-            "ซัพพลายเออร์จัดส่ง",
-            "Aplus Logistic ส่งหน้างาน",
-            "ลูกค้ารับเองที่ซัพ",
-            "ลูกค้ารับเองที่คลัง 132",
-            "ย้ายเข้าคลัง Aplus Logistic รอลูกค้ารับที่คลัง",
+            "ซัพพลายเออร์จัดส่ง", "Aplus Logistic ส่งหน้างาน", "ลูกค้ารับเองที่ซัพ",
+            "ลูกค้ารับเองที่คลัง 132", "ย้ายเข้าคลัง Aplus Logistic รอลูกค้ารับที่คลัง",
             "ย้ายเข้าคลัง Aplus Logistic รอ Aplus Logistic จัดส่ง",
-            "ย้ายเข้าคลัง Lalamove รอลูกค้ารับที่คลัง 132",
-            "ส่ง Lalamove ให้ลูกค้าหน้างาน",
-            "Aplus Logistic+ฝากส่งขนส่ง", # <-- Add this line
-            "Lalamove +ฝากส่งขนส่ง"      # <-- Add this line
+            "ย้ายเข้าคลัง Lalamove รอลูกค้ารับที่คลัง 132", "ส่ง Lalamove ให้ลูกค้าหน้างาน",
+            "Aplus Logistic+ฝากส่งขนส่ง", "Lalamove +ฝากส่งขนส่ง"
         ]
-        self.delivery_type_menu = CTkOptionMenu(delivery_frame, 
-                                                variable=self.delivery_type_var, 
-                                                values=delivery_options, 
-                                                command=self._on_delivery_type_change, # <<< ตรวจสอบว่ามีบรรทัดนี้
-                                                **self.dropdown_style)
-        
+        self.delivery_type_menu = CTkOptionMenu(delivery_frame, variable=self.delivery_type_var, values=delivery_options, command=self._on_delivery_type_change, **self.dropdown_style)
         self._add_form_row(delivery_frame, "การจัดส่ง:", self.delivery_type_menu, 1)
 
         self.pickup_location_entry = CTkEntry(delivery_frame, placeholder_text="ใส่ อำเภอ, จังหวัด หรือ Google map link")
         self._add_form_row(delivery_frame, "Location เข้ารับ:", self.pickup_location_entry, 2)
 
-        self.relocation_cost_entry = NumericEntry(delivery_frame)
-        self._add_form_row(delivery_frame, "ค่าย้าย:", self.relocation_cost_entry, 3)
-
-        self.date_to_wh_label = CTkLabel(delivery_frame, text="วันที่ย้ายเข้าคลัง:", font=CTkFont(size=14))
-        self.date_to_wh_label.grid(row=4, column=0, padx=15, pady=4, sticky="w")
+        # --- ส่วนของ "ค่าย้าย" ที่แก้ไขใหม่ ---
+        CTkLabel(delivery_frame, text="ค่าย้าย:", font=CTkFont(size=14)).grid(row=3, column=0, padx=15, pady=5, sticky="w")
+        relocation_entry_frame = CTkFrame(delivery_frame, fg_color="transparent")
+        relocation_entry_frame.grid(row=3, column=1, padx=(10,15), pady=5, sticky="ew")
+        self.relocation_cost_entry = NumericEntry(relocation_entry_frame)
+        self.relocation_cost_entry.pack(side="left", fill="x", expand=True, padx=(0,5))
         
+        relocation_radio_frame = CTkFrame(relocation_entry_frame, fg_color="transparent")
+        relocation_radio_frame.pack(side="left")
+        CTkRadioButton(relocation_radio_frame, text="VAT", variable=self.relocation_vat_option_var, value="VAT").pack(side="left", padx=5)
+        CTkRadioButton(relocation_radio_frame, text="CASH", variable=self.relocation_vat_option_var, value="NO VAT").pack(side="left", padx=5)
+
+        # --- ช่องแสดงผล VAT ของ "ค่าย้าย" ---
+        self.relocation_vat_display = CTkEntry(delivery_frame, textvariable=self.relocation_vat_calc_var, state="readonly", fg_color="gray85")
+        self._add_form_row(delivery_frame, "VAT 7% (ค่าย้าย):", self.relocation_vat_display, 4)
+
+        # --- Widget ที่เหลือ ถูกเลื่อนลำดับแถวลงมา ---
+        self.date_to_wh_label = CTkLabel(delivery_frame, text="วันที่ย้ายเข้าคลัง:", font=CTkFont(size=14))
+        self.date_to_wh_label.grid(row=5, column=0, padx=15, pady=4, sticky="w")
         self.date_to_wh_selector = DateSelector(delivery_frame, dropdown_style=self.dropdown_style)
-        self.date_to_wh_selector.grid(row=4, column=1, columnspan=2, padx=(10, 15), pady=4, sticky="ew")
+        self.date_to_wh_selector.grid(row=5, column=1, columnspan=2, padx=(10, 15), pady=4, sticky="ew")
 
         self.date_to_customer_selector = DateSelector(delivery_frame, dropdown_style=self.dropdown_style)
-        self._add_form_row(delivery_frame, "วันที่จัดส่งลูกค้า:", self.date_to_customer_selector, 5)
+        self._add_form_row(delivery_frame, "วันที่จัดส่งลูกค้า:", self.date_to_customer_selector, 6)
 
         self.pickup_rego_entry = CTkEntry(delivery_frame)
-        self._add_form_row(delivery_frame, "ทะเบียนเข้ารับ:", self.pickup_rego_entry, 6)
+        self._add_form_row(delivery_frame, "ทะเบียนเข้ารับ:", self.pickup_rego_entry, 7)
     # <<< END: CODE REPLACEMENT >>>
 
 
@@ -1103,18 +1108,16 @@ class CommissionApp(CTkFrame):
         SubmitSODialog(self, self.app_container, self.sale_key, self.sale_name)
 
     def _update_final_calculations(self, *args):
-        # --- 1. รวบรวมข้อมูลตัวเลขจากฟอร์ม (เหมือนเดิม) ---
+        # --- 1. รวบรวมข้อมูล ---
         sales = utils.convert_to_float(self.sales_amount_entry.get())
         shipping = utils.convert_to_float(self.shipping_cost_entry.get())
         card_fee = utils.convert_to_float(self.credit_card_fee_entry.get())
         cutting_drilling = utils.convert_to_float(self.cutting_drilling_fee_entry.get())
         other_service = utils.convert_to_float(self.other_service_fee_entry.get())
+        # <<< เพิ่มเติม: ดึงค่า "ค่าย้าย" >>>
+        relocation = utils.convert_to_float(self.relocation_cost_entry.get())
         
-        # ดึงค่ามาเพื่อแสดงผลเท่านั้น ไม่นำไปคำนวณ
-        brokerage = utils.convert_to_float(self.brokerage_fee_entry.get())
-        coupons = utils.convert_to_float(self.coupon_value_entry.get())
-        
-        # --- 2. แยกรายการที่จะนำไปคิด VAT และรายการเงินสด (เหมือนเดิม) ---
+        # --- 2. แยกรายการ VAT / CASH ---
         total_vatable_revenue = 0.0
         total_cashable_services_and_fees = 0.0
 
@@ -1123,7 +1126,9 @@ class CommissionApp(CTkFrame):
             (cutting_drilling, self.cutting_drilling_fee_vat_option.get(), self.cutting_drilling_vat_calc_var),
             (other_service, self.other_service_fee_vat_option.get(), self.other_service_vat_calc_var),
             (shipping, self.shipping_vat_option_var.get(), self.shipping_vat_calc_var),
-            (card_fee, self.credit_card_fee_vat_option_var.get(), self.card_fee_vat_calc_var)
+            (card_fee, self.credit_card_fee_vat_option_var.get(), self.card_fee_vat_calc_var),
+            # <<< เพิ่มเติม: นำ "ค่าย้าย" เข้ามาใน list การคำนวณ >>>
+            (relocation, self.relocation_vat_option_var.get(), self.relocation_vat_calc_var)
         ]
 
         for amount, option, var_display in items_to_process:
@@ -1131,9 +1136,11 @@ class CommissionApp(CTkFrame):
             if option == "VAT":
                 total_vatable_revenue += amount
                 item_vat = amount * 0.07
-            else:
+            else: # NO VAT / CASH
                 total_cashable_services_and_fees += amount
-            var_display.set(f"{item_vat:,.2f}")
+            
+            if var_display: # ตรวจสอบเผื่อกรณีไม่มี display var
+                var_display.set(f"{item_vat:,.2f}")
 
         # --- START: แก้ไข Logic การคำนวณ ---
         # 3. [แก้ไข] ไม่นำค่านายหน้าและคูปองมาคำนวณเป็นส่วนลดอีกต่อไป
@@ -1233,6 +1240,7 @@ class CommissionApp(CTkFrame):
             "brokerage_fee": utils.convert_to_float(self.brokerage_fee_entry.get()),
             "coupons": utils.convert_to_float(self.coupon_value_entry.get()),
             "giveaways": utils.convert_to_float(self.giveaway_value_entry.get()),
+            "relocation_cost_vat_option": self.relocation_vat_option_var.get(),
             # <<< START: ADD NEW DATA GATHERING >>>
             "delivery_type": self.delivery_type_var.get(),
             "pickup_location": self.pickup_location_entry.get().strip(),
@@ -1458,6 +1466,7 @@ class CommissionApp(CTkFrame):
         self.other_service_fee_vat_option.set("VAT")
         self.shipping_vat_option_var.set("VAT")
         self.credit_card_fee_vat_option_var.set("VAT")
+        self.relocation_vat_option_var.set("VAT")
 
         self.payment1_method_var.set("ไม่เลือก")
         self.payment2_method_var.set("ไม่เลือก")
