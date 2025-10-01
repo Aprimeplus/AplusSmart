@@ -1991,7 +1991,8 @@ class HRScreen(CTkFrame):
                 'id', 'so_number', 'sales_service_amount', 'shipping_cost', 'relocation_cost', 
                 'brokerage_fee', 'transfer_fee', 'status', 'final_margin', 
                 'hr_cost_overrides', 'cogs_db', 'po_shipping_stock', 'po_shipping_site', 'po_relocation',
-                'cutting_drilling_fee', 'other_service_fee', 'credit_card_fee'
+                'cutting_drilling_fee', 'other_service_fee', 'credit_card_fee',
+                'hr_sale_source', 'hr_cost_source' # <-- เพิ่ม 2 field นี้เพื่อให้แน่ใจว่ามีอยู่
             ]
             for col in required_cols:
                 if col not in self.db_df.columns: self.db_df[col] = np.nan
@@ -2031,6 +2032,16 @@ class HRScreen(CTkFrame):
             
             merged_df['sales_uploaded'] = merged_df['sales_uploaded'].fillna(0) - merged_df['shipping_cost'].fillna(0)
 
+            # +++ START: เพิ่มโค้ดส่วนนี้เพื่อสร้างคอลัมน์แสดงผล +++
+            # แปลงข้อมูล 'system'/'express' ให้เป็น 'ระบบ'/'Express' หรือ 'ยังไม่เลือก'
+            merged_df['แหล่งยอดขาย'] = merged_df['hr_sale_source'].apply(
+                lambda x: 'ระบบ' if x == 'system' else ('Express' if x == 'express' else 'ยังไม่เลือก')
+            )
+            merged_df['แหล่งต้นทุน'] = merged_df['hr_cost_source'].apply(
+                lambda x: 'ระบบ' if x == 'system' else ('Express' if x == 'express' else 'ยังไม่เลือก')
+            )
+            # +++ END +++
+
             def determine_status_and_color(row):
                 if row['status'] == 'HR Verified':
                     final_margin = row['final_margin']
@@ -2059,18 +2070,20 @@ class HRScreen(CTkFrame):
             merged_df['ผลต่างยอดขาย'] = merged_df['sales_service_amount'].fillna(0) - merged_df['sales_uploaded'].fillna(0)
             merged_df['ผลต่างต้นทุน'] = merged_df['cost_db'].fillna(0) - merged_df['cost_uploaded'].fillna(0)
             
-            # +++ START: เพิ่ม 'ค่าย้าย (ระบบ)' เข้ามาใน Dictionary นี้ +++
+            # +++ START: เพิ่ม 2 คอลัมน์ใหม่เข้ามาใน Dictionary นี้ +++
             display_order_map = {
                 'so_number': 'เลขที่ SO',
                 'sales_service_amount': 'ยอดขาย/บริการ (ระบบ)',
                 'shipping_cost': 'ค่าขนส่ง (ระบบ)',
-                'relocation_cost': 'ค่าย้าย (ระบบ)', # <--- เพิ่มบรรทัดนี้
+                'relocation_cost': 'ค่าย้าย (ระบบ)',
                 'sales_for_comparison': 'ยอดขายรวม (ระบบ)',
                 'sales_uploaded': 'ยอดขาย (Express)',
                 'cost_db': 'ต้นทุน (ระบบ)',
                 'cost_uploaded': 'ต้นทุน (Express)',
                 'ผลต่างยอดขาย': 'ผลต่างยอดขาย',
                 'ผลต่างต้นทุน': 'ผลต่างต้นทุน',
+                'แหล่งยอดขาย': 'แหล่งยอดขาย',
+                'แหล่งต้นทุน': 'แหล่งต้นทุน',
                 'สถานะ': 'สถานะ'
             }
             # +++ END +++
@@ -2710,6 +2723,8 @@ class HRScreen(CTkFrame):
                         foreground="white", relief="flat", padding=(10, 10))
         style.map("Modern.Treeview.Heading",
                 background=[('active', self.theme.get("primary", "#3B82F6"))])
+        
+        # คงความสูงของแถวไว้ที่ 32 เพื่อแก้ปัญหา "ตัวเลขติดกัน"
         style.configure("Modern.Treeview", 
                         rowheight=32, font=self.entry_font,
                         background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#111827")
@@ -2720,35 +2735,40 @@ class HRScreen(CTkFrame):
         tree = ttk.Treeview(tree_frame, columns=columns, show='headings', style="Modern.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
         
-        # <<< START: เพิ่ม Tag สำหรับแถวสรุป >>>
         tree.tag_configure('summary_row', background='#E5E7EB', font=CTkFont(size=14, weight="bold"))
-        # <<< END >>>
-
+        
         if status_colors:
             for tag_name, color in status_colors.items():
                 tree.tag_configure(tag_name, background=color)
 
+        # +++ START: กำหนดความกว้างแต่ละคอลัมน์แบบเจาะจง +++
+        column_configs = {
+            'เลขที่ SO': {'width': 150, 'anchor': 'w'},
+            'ยอดขาย/บริการ (ระบบ)': {'width': 130, 'anchor': 'e'},
+            'ค่าขนส่ง (ระบบ)': {'width': 110, 'anchor': 'e'},
+            'ค่าย้าย (ระบบ)': {'width': 110, 'anchor': 'e'},
+            'ยอดขายรวม (ระบบ)': {'width': 130, 'anchor': 'e'},
+            'ยอดขาย (Express)': {'width': 130, 'anchor': 'e'},
+            'ต้นทุน (ระบบ)': {'width': 130, 'anchor': 'e'},
+            'ต้นทุน (Express)': {'width': 130, 'anchor': 'e'},
+            'ผลต่างยอดขาย': {'width': 110, 'anchor': 'e'},
+            'ผลต่างต้นทุน': {'width': 110, 'anchor': 'e'},
+            'แหล่งยอดขาย': {'width': 90, 'anchor': 'center'},
+            'แหล่งต้นทุน': {'width': 90, 'anchor': 'center'},
+            'สถานะ': {'width': 220, 'anchor': 'w'}
+        }
+
         for col_id in columns:
+            config = column_configs.get(col_id, {'width': 120, 'anchor': 'w'}) # ใช้ค่า default หากไม่พบคอลัมน์
             tree.heading(col_id, text=col_id, anchor='center')
-            width = 150 
-            anchor = 'w'
-            if any(s in col_id for s in ['ยอด', 'ต้นทุน', 'ผลต่าง', 'Margin']): 
-                width = 140
-                anchor = 'e'
-            elif any(s in col_id for s in ['ID', 'Key']): 
-                width = 80
-                anchor = 'center'
-            elif 'สถานะ' in col_id:
-                width = 200
-            tree.column(col_id, width=width, anchor=anchor)
+            # กำหนด stretch=False เพื่อป้องกันคอลัมน์ขยายเอง
+            tree.column(col_id, width=config['width'], anchor=config['anchor'], stretch=False)
+        # +++ END +++
 
         for index, row in df.iterrows():
             tags_tuple = ()
-
-            # <<< START: ตรวจสอบและกำหนด Tag ให้กับแถวสรุป >>>
             if row.get('เลขที่ SO') == 'ยอดรวม (Total)':
                 tags_tuple += ('summary_row',)
-            # <<< END >>>
             elif status_colors and status_column and status_column in df.columns:
                 status_val = str(row.get(status_column, ''))
                 if status_val in status_colors:
@@ -2767,9 +2787,10 @@ class HRScreen(CTkFrame):
                 else:
                     values.append("")
 
-            iid_value = row[iid_column] if iid_column and iid_column in df.columns else str(index)
+            iid_value = row['เลขที่ SO'] if 'เลขที่ SO' in df.columns else str(index)
             tree.insert("", "end", values=values, tags=tags_tuple, iid=str(iid_value))
         
+        # เพิ่ม Scrollbar ทั้งแนวตั้งและแนวนอน
         v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
@@ -2777,7 +2798,7 @@ class HRScreen(CTkFrame):
         h_scroll.grid(row=1, column=0, sticky='ew')
         
         if on_row_click: 
-            tree.bind("<<TreeviewSelect>>", lambda e: on_row_click(e, tree, df))
+            tree.bind("<Double-1>", lambda e: on_row_click(e, tree, self.comparison_df))
 
     def _get_archive_date_range(self, year, month=None):
         """สร้างช่วงวันที่เริ่มต้นและสิ้นสุดสำหรับการ Archive"""

@@ -1756,7 +1756,6 @@ class HRVerificationWindow(CTkToplevel):
                   "payment_no_vat"      
               ]
               
-              # +++ เพิ่มบรรทัดนี้เพื่อสร้าง list 'set_clauses' ขึ้นมาก่อน +++
               set_clauses = [f"{col} = %s" for col in columns_to_update]
               
               params = [self.system_data.get(col) for col in columns_to_update]
@@ -1780,12 +1779,18 @@ class HRVerificationWindow(CTkToplevel):
 
           conn.commit()
           messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไขข้อมูลเรียบร้อยแล้ว", parent=self)
+          
+          # +++ เพิ่มโค้ด 2 บรรทัดนี้เข้าไปท้ายสุดของ try block +++
+          if self.refresh_callback:
+              self.refresh_callback() # สั่งให้หน้าจอหลัก Refresh ทันที!
+
       except Exception as e:
           if conn: conn.rollback()
           messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึก: {e}", parent=self)
           traceback.print_exc()
       finally:
           if conn: self.app_container.release_connection(conn)
+
 
     def _verify_and_save_data(self):
         # --- ดึงค่าจากตัวแปรกลางที่คำนวณไว้แล้ว ---
