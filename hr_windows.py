@@ -604,6 +604,14 @@ class HRVerificationWindow(CTkToplevel):
         self.final_cost_source = tk.StringVar(value="system")
         self.final_sale_source.trace_add("write", self._update_selection_display)
         self.final_cost_source.trace_add("write", self._update_selection_display)
+        self.final_sale_source = tk.StringVar(value="system")
+        self.final_cost_source = tk.StringVar(value="system")
+        self.final_sale_source.trace_add("write", self._update_selection_display)
+        self.final_cost_source.trace_add("write", self._update_selection_display)
+        self.final_sale_source = tk.StringVar(value="system")
+        self.final_cost_source = tk.StringVar(value="system")
+        self.final_sale_source.trace_add("write", self._update_selection_display)
+        self.final_cost_source.trace_add("write", self._update_selection_display)
 
         self._so_create_string_vars() # สร้าง StringVars สำหรับหน้าต่างแก้ไข SO
 
@@ -627,7 +635,69 @@ class HRVerificationWindow(CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.transient(master)
         self.grab_set()
+     
+    def _create_new_ui_layout(self):
+        """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างนี้"""
+        # --- Header ---
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
+        ctk.CTkLabel(header_frame, text=f"SO Number: {self.so_number}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
+        
+        detail_button_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        detail_button_frame.pack(side="right")
+        ctk.CTkButton(detail_button_frame, text="ดูข้อมูล SO", command=self._view_so_data).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(detail_button_frame, text="✏️ แก้ไขข้อมูล SO", command=self._open_so_editor_popup).pack(side="left", padx=(5, 0))
 
+        # --- Main Scrollable Frame (สำหรับเนื้อหาทั้งหมด) ---
+        scroll_frame = ctk.CTkScrollableFrame(self, fg_color="#F0F2F5")
+        scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        scroll_frame.grid_columnconfigure((0, 1), weight=1)
+
+        sales_card = CTkFrame(scroll_frame, corner_radius=10)
+        sales_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self._create_summary_card(sales_card, "ยอดขายรวมสุดท้าย (Final Sales)", "sales")
+
+        cost_card = CTkFrame(scroll_frame, corner_radius=10)
+        cost_card.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        self._create_summary_card(cost_card, "ยอดต้นทุนรวมสุดท้าย (Final Cost)", "cost")
+        # +++ END +++
+        
+        # +++ START: สร้างส่วนให้ HR เลือกแหล่งข้อมูล +++
+        self._create_final_summary_section(scroll_frame) # <--- เรียกฟังก์ชันใหม่
+        # +++ END +++
+
+        self.po_container_frame = CTkFrame(scroll_frame, fg_color="transparent")
+
+        # การ์ดสรุปยอดขาย
+        sales_card = ctk.CTkFrame(scroll_frame, corner_radius=10)
+        sales_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self._create_summary_card(sales_card, "ยอดขายรวมสุดท้าย (Final Sales)", "sales")
+
+        # การ์ดสรุปต้นทุน
+        cost_card = ctk.CTkFrame(scroll_frame, corner_radius=10)
+        cost_card.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        self._create_summary_card(cost_card, "ยอดต้นทุนรวมสุดท้าย (Final Cost)", "cost")
+        
+        # ส่วนเลือกแหล่งข้อมูล (Radio buttons)
+        self._create_final_summary_section(scroll_frame)
+        
+        # ส่วนแสดงรายการ PO
+        self.po_container_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        self.po_container_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+        self.po_container_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self.po_container_frame, text="ใบสั่งซื้อ (PO) ที่เกี่ยวข้อง", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(0, 5))
+
+        # --- Action Buttons Frame (ย้ายมาไว้ด้านล่างสุด นอก ScrollFrame) ---
+        action_frame = ctk.CTkFrame(self, fg_color="transparent")
+        action_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=(10, 15))
+        action_frame.grid_columnconfigure((0, 1, 2, 3), weight=1) # ทำให้ปุ่มขยายเต็มพื้นที่เท่าๆ กัน
+
+        ctk.CTkButton(action_frame, text="ตีกลับให้ฝ่ายขาย (Reject)", height=40, fg_color="#D97706", hover_color="#B45309", command=self._reject_to_salesperson).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        ctk.CTkButton(action_frame, text="เลื่อนไปเดือนถัดไป (Defer)", height=40, fg_color="#64748B", hover_color="#475569", command=self._defer_so).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ctk.CTkButton(action_frame, text="บันทึกการแก้ไข", height=40, fg_color="#3B82F6", hover_color="#2563EB", command=self._save_intermediate_changes).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+        ctk.CTkButton(action_frame, text="ยืนยันข้อมูลถูกต้อง (Verify)", height=40, fg_color="#16A34A", hover_color="#15803D", command=self._verify_and_save_data).grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+
+    
     def _create_comparison_table(self, parent_frame):
         """สร้างตารางเปรียบเทียบแบบ Excel-light (มี zebra striping + row divider)"""
         columns = (
@@ -704,49 +774,36 @@ class HRVerificationWindow(CTkToplevel):
 
         self.comparison_tree = tree
 
-    def _create_new_ui_layout(self):
-        """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างนี้"""
-        # --- Header ---
-        header_frame = CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
-        CTkLabel(header_frame, text=f"SO Number: {self.so_number}", font=CTkFont(size=20, weight="bold")).pack(side="left")
+    
+    
+    def _create_summary_card(self, parent, title, card_type):
+        """Helper function สำหรับสร้างการ์ดสรุป"""
+        parent.grid_columnconfigure(0, weight=1)
+        CTkLabel(parent, text=title, font=CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=15, pady=(10, 0), sticky="w")
         
-        detail_button_frame = CTkFrame(header_frame, fg_color="transparent")
-        detail_button_frame.pack(side="right")
-        CTkButton(detail_button_frame, text="ดูข้อมูล SO", command=self._view_so_data).pack(side="left", padx=(0, 5))
-        CTkButton(detail_button_frame, text="✏️ แก้ไขข้อมูล SO", command=self._open_so_editor_popup).pack(side="left", padx=(5, 0))
+        value_label = CTkLabel(parent, text="0.00", font=CTkFont(size=32, weight="bold"))
+        value_label.grid(row=1, column=0, padx=15, pady=(0, 5), sticky="w")
 
-        # --- Main Scrollable Frame ---
-        scroll_frame = CTkScrollableFrame(self, fg_color="#F0F2F5")
-        scroll_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
-        scroll_frame.grid_columnconfigure((0, 1), weight=1)
+        source_label = CTkLabel(parent, text="Source: System", font=CTkFont(size=12), text_color="gray50")
+        source_label.grid(row=2, column=0, padx=15, pady=(0, 10), sticky="w")
 
-        sales_card = CTkFrame(scroll_frame, corner_radius=10)
-        sales_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        self._create_summary_card(sales_card, "ยอดขายรวมสุดท้าย (Final Sales)", "sales")
+        if card_type == "sales":
+            self.final_sales_label = value_label
+            self.final_sales_source_label = source_label
+        else: # cost
+            self.final_cost_label = value_label
+            self.final_cost_source_label = source_label 
 
-        cost_card = CTkFrame(scroll_frame, corner_radius=10)
-        cost_card.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        self._create_summary_card(cost_card, "ยอดต้นทุนรวมสุดท้าย (Final Cost)", "cost")
-        
-        self.po_container_frame = CTkFrame(scroll_frame, fg_color="transparent")
-        self.po_container_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
-        self.po_container_frame.grid_columnconfigure(0, weight=1)
-        CTkLabel(self.po_container_frame, text="ใบสั่งซื้อ (PO) ที่เกี่ยวข้อง", font=CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(0, 5))
+            # --- เพิ่มโค้ดส่วนนี้เข้าไป ---
+            CTkLabel(parent, text="ตัวคูณต้นทุน (Cost Multiplier):", font=CTkFont(size=12)).grid(row=3, column=0, padx=(15, 5), pady=(10, 0), sticky="w")
+            multiplier_options = ["1.01", "1.02", "1.03", "1.04", "1.05"]
 
-        # --- Action Buttons Frame (ด้านล่างสุด) ---
-        action_frame = CTkFrame(self, fg_color="transparent")
-        action_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=(10, 15))
-        action_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+            # self.cost_multiplier_var ถูกสร้างใน __init__ แล้ว
+            self.cost_multiplier_menu = CTkOptionMenu(parent, variable=self.cost_multiplier_var, values=multiplier_options)
+            self.cost_multiplier_menu.grid(row=4, column=0, padx=15, pady=(0, 10), sticky="w")
 
-        # <<< START: แก้ไข command ของปุ่มนี้ >>>
-        # เปลี่ยนจาก _reject_to_purchasing เป็น _reject_to_salesperson
-        CTkButton(action_frame, text="ตีกลับให้ฝ่ายขาย (Reject)", height=40, fg_color="#D97706", hover_color="#B45309", command=self._reject_to_salesperson).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        # <<< END >>>
-        
-        CTkButton(action_frame, text="เลื่อนไปเดือนถัดไป (Defer)", height=40, fg_color="#64748B", hover_color="#475569", command=self._defer_so).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        CTkButton(action_frame, text="บันทึกการแก้ไข", height=40, fg_color="#3B82F6", hover_color="#2563EB", command=self._save_intermediate_changes).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
-        CTkButton(action_frame, text="ยืนยันข้อมูลถูกต้อง (Verify)", height=40, fg_color="#16A34A", hover_color="#15803D", command=self._verify_and_save_data).grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+    # (วางฟังก์ชันนี้ต่อจาก _create_summary_card)
+    
 
     def _populate_po_cards(self):
         """สร้างการ์ดสำหรับ PO แต่ละใบ"""
@@ -1092,22 +1149,29 @@ class HRVerificationWindow(CTkToplevel):
     # อยู่ในไฟล์ hr_windows.py ภายในคลาส HRVerificationWindow
 
     def _update_selection_display(self, *args):
+        # ดึงค่าที่คำนวณไว้แล้ว
+        total_sale_system = self.calculated_values.get('total_sale_system', 0.0)
+        total_sale_express = self.calculated_values.get('total_sale_express', 0.0)
+        total_cost_system = self.calculated_values.get('total_cost_system', 0.0)
+        total_cost_express = self.calculated_values.get('total_cost_express', 0.0)
+        
+        # อัปเดตข้อความบน Radio Buttons
+        self.sales_system_radio.configure(text=f"จากระบบ (System): {total_sale_system:,.2f} บาท")
+        self.sales_express_radio.configure(text=f"จากไฟล์ (Express): {total_sale_express:,.2f} บาท")
+        self.cost_system_radio.configure(text=f"จากระบบ (System): {total_cost_system:,.2f} บาท")
+        self.cost_express_radio.configure(text=f"จากไฟล์ (Express): {total_cost_express:,.2f} บาท")
+
         # อัปเดตการ์ดสรุปยอดขาย
-        final_sales_val = self.calculated_values.get('total_sale_system', 0.0)
         source_sales = self.final_sale_source.get()
-        if source_sales == "express":
-            final_sales_val = self.calculated_values.get('total_sale_express', 0.0)
-        self.final_sales_label.configure(text=f"{final_sales_val:,.2f} บาท")
+        final_sales_val = total_sale_system if source_sales == "system" else total_sale_express
+        self.final_sales_label.configure(text=f"{final_sales_val:,.2f}")
         self.final_sales_source_label.configure(text=f"ที่มา: {'System' if source_sales == 'system' else 'Express'}")
 
         # อัปเดตการ์ดสรุปต้นทุน
-        final_cost_val = self.calculated_values.get('total_cost_system', 0.0)
         source_cost = self.final_cost_source.get()
-        if source_cost == "express":
-            final_cost_val = self.calculated_values.get('total_cost_express', 0.0)
-        self.final_cost_label.configure(text=f"{final_cost_val:,.2f} บาท")
+        final_cost_val = total_cost_system if source_cost == "system" else total_cost_express
+        self.final_cost_label.configure(text=f"{final_cost_val:,.2f}")
         self.final_cost_source_label.configure(text=f"ที่มา: {'System' if source_cost == 'system' else 'Express'}")
-
 
     def _so_create_string_vars(self):
         """สร้าง StringVars ที่จำเป็นสำหรับ SOPopupWindow"""
@@ -1329,35 +1393,35 @@ class HRVerificationWindow(CTkToplevel):
     def _recalculate_summaries(self):
         """
         คำนวณค่าสรุปทั้งหมดและกำหนดค่าเริ่มต้นที่ถูกต้อง
-        (เวอร์ชันแก้ไข: รวม PO ทุกสถานะยกเว้น Rejected/Draft ใน Final Cost)
+        (เวอร์ชันแก้ไข: หักค่าขนส่งออกจากต้นทุนระบบ)
         """
-        # --- START: แก้ไข Logic การรวมยอดต้นทุนทั้งหมด ---
-        # 1. กรองข้อมูล PO ที่ไม่ใช่ 'Rejected' หรือ 'Draft'
-        #    เพื่อให้ PO ที่กำลัง 'Pending Approval' ถูกนำมาคำนวณด้วย
         valid_po_df = self.po_data[self.po_data['status'] == 'Approved']
         
-        # 2. คำนวณยอดรวมต้นทุนจาก PO ที่ผ่านการกรองแล้ว
-        #    ใช้ grand_total เพื่อให้ได้ยอดที่รวม VAT และหัก WHT ของค่าขนส่งแล้ว
         po_cost = valid_po_df['grand_total'].sum()
         
-        # 3. ดึงค่าใช้จ่ายอื่นๆ จากข้อมูล SO (system_data)
+        # +++ START: เพิ่มโค้ดส่วนนี้ +++
+        # ดึงยอดรวมค่าขนส่งจาก PO ที่ Approved แล้ว
+        po_shipping_cost = (valid_po_df['shipping_to_stock_cost'].sum() + 
+                            valid_po_df['shipping_to_site_cost'].sum())
+        # +++ END +++
+
         brokerage_cost = float(self.system_data.get('brokerage_fee', 0) or 0)
         transfer_cost = float(self.system_data.get('transfer_fee', 0) or 0)
         giveaways_cost = float(self.system_data.get('giveaways', 0) or 0)
         
-        # 4. รวมเป็นต้นทุนสุดท้ายที่แท้จริง
-        total_cost_from_system = po_cost + brokerage_cost + transfer_cost + giveaways_cost
+        # แก้ไขสูตร total_cost_from_system ให้หักค่าขนส่งออก
+        total_cost_from_system = (po_cost + brokerage_cost + transfer_cost + giveaways_cost) - po_shipping_cost
         
-        # 5. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี หรือใช้ค่าที่คำนวณได้ถ้าไม่มี
         total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
-        # --- END: สิ้นสุดการแก้ไข Logic ---
 
         # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
-        total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
+        system_shipping_cost = float(self.system_data.get('shipping_cost', 0) or 0)
+        original_express_sale = float(self.excel_data.get('sales_uploaded', 0) or 0)
+        total_sale_express = original_express_sale - system_shipping_cost
+
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
         total_sale_system = (
             float(self.system_data.get('sales_service_amount', 0) or 0) +
-            float(self.system_data.get('shipping_cost', 0) or 0) +
             float(self.system_data.get('cutting_drilling_fee', 0) or 0) +
             float(self.system_data.get('other_service_fee', 0) or 0) -
             float(self.system_data.get('coupons', 0) or 0)
@@ -1414,42 +1478,47 @@ class HRVerificationWindow(CTkToplevel):
         paned_window.add(right_pane, width=700)
         self._create_costing_info_column(right_pane)
 
-    def _create_final_summary_section(self):
-        """สร้าง Widget ในส่วนสรุป (จะถูกเรียกแค่ครั้งเดียว)"""
-        frame = CTkFrame(self, border_width=1)
-        frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
-        frame.grid_columnconfigure((1, 3), weight=1)
+    def _create_final_summary_section(self, parent_scroll_frame):
+        """(ฉบับปรับปรุง UI) สร้าง Widget ในส่วนสรุปและเลือกแหล่งข้อมูล"""
+        
+        # Frame หลักสำหรับส่วนนี้ทั้งหมด
+        frame = CTkFrame(parent_scroll_frame, border_width=1, corner_radius=10)
+        frame.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        
+        # --- ตั้งค่าให้ Frame หลักมี 2 คอลัมน์ที่ขยายเท่ากัน ---
+        frame.grid_columnconfigure((0, 1), weight=1)
 
-        CTkLabel(frame, text="สรุปและเลือกข้อมูลเพื่อคำนวณ Margin/Commission", font=CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=4, padx=10, pady=10)
+        # หัวข้อหลัก (อยู่ตรงกลางด้านบน)
+        CTkLabel(frame, text="สรุปและเลือกข้อมูลเพื่อคำนวณ Margin/Commission", font=CTkFont(size=16, weight="bold")).grid(
+            row=0, column=0, columnspan=2, padx=10, pady=10)
 
-        # --- ส่วนเลือกยอดขาย ---
-        sales_frame = CTkFrame(frame, fg_color="transparent")
-        sales_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-        sales_frame.grid_columnconfigure(1, weight=1)
-        
-        CTkLabel(sales_frame, text="ยอดขายรวมทั้งหมด:", font=CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
-        
-        # +++ START: แก้ไขโดยการเพิ่ม self. เข้าไปข้างหน้าชื่อตัวแปร +++
-        self.sales_system_radio = CTkRadioButton(sales_frame, text="", variable=self.final_sale_source, value="system")
-        self.sales_system_radio.grid(row=1, column=0, columnspan=2, sticky="w", padx=20)
-        
-        self.sales_express_radio = CTkRadioButton(sales_frame, text="", variable=self.final_sale_source, value="express")
-        self.sales_express_radio.grid(row=2, column=0, columnspan=2, sticky="w", padx=20)
-        # +++ END: สิ้นสุดการแก้ไข +++
+        # --- การ์ดฝั่งซ้าย (ยอดขาย) ---
+        sales_frame = CTkFrame(frame, fg_color=("gray90", "gray20"))
+        sales_frame.grid(row=1, column=0, padx=(10, 5), pady=10, sticky="nsew")
+        sales_frame.grid_columnconfigure(0, weight=1) # ทำให้ widget ภายในขยายเต็ม
 
-        # --- ส่วนเลือกยอดต้นทุน ---
-        cost_frame = CTkFrame(frame, fg_color="transparent")
-        cost_frame.grid(row=1, column=2, columnspan=2, padx=10, pady=5, sticky="ew")
-        cost_frame.grid_columnconfigure(1, weight=1)
+        CTkLabel(sales_frame, text="ยอดขายรวมทั้งหมด", font=CTkFont(size=14, weight="bold")).pack(
+            anchor="w", padx=15, pady=(10, 5))
+        
+        self.sales_system_radio = CTkRadioButton(sales_frame, text="จากระบบ: 0.00", variable=self.final_sale_source, value="system")
+        self.sales_system_radio.pack(anchor="w", padx=20, pady=5)
+        
+        self.sales_express_radio = CTkRadioButton(sales_frame, text="จาก Express: 0.00", variable=self.final_sale_source, value="express")
+        self.sales_express_radio.pack(anchor="w", padx=20, pady=(5, 15))
 
-        CTkLabel(cost_frame, text="ยอดต้นทุนรวมทั้งหมด:", font=CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
+        # --- การ์ดฝั่งขวา (ต้นทุน) ---
+        cost_frame = CTkFrame(frame, fg_color=("gray90", "gray20"))
+        cost_frame.grid(row=1, column=1, padx=(5, 10), pady=10, sticky="nsew")
+        cost_frame.grid_columnconfigure(0, weight=1) # ทำให้ widget ภายในขยายเต็ม
         
-        # +++ START: แก้ไขโดยการเพิ่ม self. เข้าไปข้างหน้าชื่อตัวแปร +++
-        self.cost_system_radio = CTkRadioButton(cost_frame, text="", variable=self.final_cost_source, value="system")
-        self.cost_system_radio.grid(row=1, column=0, columnspan=2, sticky="w", padx=20)
+        CTkLabel(cost_frame, text="ยอดต้นทุนรวมทั้งหมด", font=CTkFont(size=14, weight="bold")).pack(
+            anchor="w", padx=15, pady=(10, 5))
         
-        self.cost_express_radio = CTkRadioButton(cost_frame, text="", variable=self.final_cost_source, value="express")
-        self.cost_express_radio.grid(row=2, column=0, columnspan=2, sticky="w", padx=20)
+        self.cost_system_radio = CTkRadioButton(cost_frame, text="จากระบบ: 0.00", variable=self.final_cost_source, value="system")
+        self.cost_system_radio.pack(anchor="w", padx=20, pady=5)
+        
+        self.cost_express_radio = CTkRadioButton(cost_frame, text="จาก Express: 0.00", variable=self.final_cost_source, value="express")
+        self.cost_express_radio.pack(anchor="w", padx=20, pady=(5, 15))
         # +++ END: สิ้นสุดการแก้ไข +++
 
     def _create_sales_info_column(self, parent):
@@ -1686,7 +1755,10 @@ class HRVerificationWindow(CTkToplevel):
                   "payment_before_vat", 
                   "payment_no_vat"      
               ]
+              
+              # +++ เพิ่มบรรทัดนี้เพื่อสร้าง list 'set_clauses' ขึ้นมาก่อน +++
               set_clauses = [f"{col} = %s" for col in columns_to_update]
+              
               params = [self.system_data.get(col) for col in columns_to_update]
 
               cost_overrides_json = json.dumps(self.cost_overrides)
@@ -1704,16 +1776,7 @@ class HRVerificationWindow(CTkToplevel):
               update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
               params.append(so_id)
 
-              # --- START: เพิ่มโค้ดสำหรับ Debug ---
-              print("================ DEBUG SAVE DATA ================")
-              print(f"--- 1. กำลังจะบันทึก cost_overrides: {self.cost_overrides}")
-              print(f"--- 2. คำสั่ง SQL: {cursor.mogrify(update_query, tuple(params)).decode('utf-8')}")
-
               cursor.execute(update_query, tuple(params))
-
-              print(f"--- 3. จำนวนแถวที่ถูกอัปเดต: {cursor.rowcount}")
-              print("=================================================")
-            # --- END: สิ้นสุดโค้ดสำหรับ Debug ---
 
           conn.commit()
           messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไขข้อมูลเรียบร้อยแล้ว", parent=self)

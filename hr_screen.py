@@ -1942,8 +1942,8 @@ class HRScreen(CTkFrame):
 
     def _calculate_final_pu_cost(self, row):
         """
-        คำนวณต้นทุนรวมสุดท้ายจากฝั่งระบบ (PU) สำหรับใช้ในหน้าเปรียบเทียบข้อมูล
-        (เวอร์ชันแก้ไข: รวมค่าใช้จ่ายทั้งหมดอย่างถูกต้อง)
+        คำนวณต้นทุนรวมสุดท้ายจากฝั่งระบบ (PU)
+        (เวอร์ชันแก้ไข: หักค่าขนส่งออกจากต้นทุนรวม)
         """
         overrides = {}
         if pd.notna(row.get('hr_cost_overrides')):
@@ -1952,21 +1952,24 @@ class HRScreen(CTkFrame):
             except (json.JSONDecodeError, TypeError):
                 pass
         
-        # --- START: แก้ไข Logic การคำนวณทั้งหมด ---
-        # 1. ดึงค่าต้นทุนหลัก คือยอดรวมจาก PO ทั้งหมด ('cogs_db')
+        # 1. คำนวณต้นทุนรวมทั้งหมดจากระบบ (เหมือนเดิม)
         po_total_cost_base = float(row.get('cogs_db', 0) or 0)
-
-        # 2. ดึงค่าใช้จ่ายอื่นๆ จากข้อมูล SO (row)
         brokerage_cost = float(row.get('brokerage_fee', 0) or 0)
         transfer_cost = float(row.get('transfer_fee', 0) or 0)
         giveaways_cost = float(row.get('giveaways', 0) or 0)
+        total_system_cost_before_adjust = po_total_cost_base + brokerage_cost + transfer_cost + giveaways_cost
         
-        # 3. รวมเป็นต้นทุนทั้งหมดจากฝั่ง System
-        total_system_cost = po_total_cost_base + brokerage_cost + transfer_cost + giveaways_cost
+        # 2. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี
+        final_cost_before_adjust = float(overrides.get('ต้นทุนรวม', total_system_cost_before_adjust))
         
-        # 4. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี หรือใช้ค่าที่คำนวณได้ถ้าไม่มี
-        final_cost = float(overrides.get('ต้นทุนรวม', total_system_cost))
-        # --- END ---
+        # +++ START: เพิ่มโค้ดส่วนนี้ +++
+        # 3. ดึงค่าขนส่งจากข้อมูล PO ที่ดึงมา
+        total_po_shipping_cost = (float(row.get('po_shipping_stock', 0) or 0) + 
+                                  float(row.get('po_shipping_site', 0) or 0))
+
+        # 4. หักค่าขนส่งออกจากต้นทุนสุดท้าย
+        final_cost = final_cost_before_adjust - total_po_shipping_cost
+        # +++ END +++
         
         return final_cost
 
@@ -1996,31 +1999,23 @@ class HRScreen(CTkFrame):
             
             db_compare_df['so_number'] = db_compare_df['so_number'].astype(str).str.strip()
             
-            revenue_cols = [
+            revenue_cols_system = [
                 'sales_service_amount', 'shipping_cost', 'relocation_cost',
                 'cutting_drilling_fee', 'other_service_fee', 'credit_card_fee'
             ]
-            for col in revenue_cols:
-                db_compare_df[col] = pd.to_numeric(db_compare_df[col], errors='coerce').fillna(0)
+            
+            for col in revenue_cols_system:
+                if col in db_compare_df.columns:
+                    db_compare_df[col] = pd.to_numeric(db_compare_df[col], errors='coerce').fillna(0)
+                else:
+                    db_compare_df[col] = 0
 
-            db_compare_df['sales_for_comparison'] = (
-                db_compare_df['sales_service_amount'] + 
-                db_compare_df['shipping_cost'] + 
-                db_compare_df['relocation_cost'] +
-                db_compare_df['cutting_drilling_fee'] +
-                db_compare_df['other_service_fee'] +
-                db_compare_df['credit_card_fee']
-            )
-            
-            # --- START: แก้ไขการคำนวณส่วนนี้เพื่อเลี่ยง Warning ---
-            # ของเดิม: db_compare_df['payment_before_vat_po'] = db_compare_df['po_shipping_stock'].fillna(0) + db_compare_df['po_shipping_site'].fillna(0)
-            
-            # ของใหม่: แปลงเป็นตัวเลขก่อน แล้วค่อยเติม 0
+            db_compare_df['sales_for_comparison'] = db_compare_df[revenue_cols_system].sum(axis=1)
+
             stock_cost = pd.to_numeric(db_compare_df['po_shipping_stock'], errors='coerce').fillna(0)
             site_cost = pd.to_numeric(db_compare_df['po_shipping_site'], errors='coerce').fillna(0)
             db_compare_df['payment_before_vat_po'] = stock_cost + site_cost
-            # --- END ---
-
+            
             db_compare_df['cost_db'] = db_compare_df.apply(self._calculate_final_pu_cost, axis=1)
             db_compare_df['gp_db'] = db_compare_df['sales_service_amount'] - db_compare_df['cost_db']
             db_compare_df['margin_db'] = (db_compare_df['gp_db'] / db_compare_df['sales_service_amount'].replace(0, np.nan)) * 100
@@ -2028,10 +2023,13 @@ class HRScreen(CTkFrame):
             uploaded_compare_df['so_number'] = uploaded_compare_df['so_number'].astype(str).str.strip()
             uploaded_compare_df['sales_uploaded'] = pd.to_numeric(uploaded_compare_df.get('sales_uploaded'), errors='coerce').fillna(0)
             uploaded_compare_df['cost_uploaded'] = pd.to_numeric(uploaded_compare_df.get('cost_uploaded'), errors='coerce').fillna(0)
+            
             uploaded_compare_df['gp_uploaded'] = uploaded_compare_df['sales_uploaded'] - uploaded_compare_df['cost_uploaded']
             uploaded_compare_df['margin_uploaded'] = (uploaded_compare_df['gp_uploaded'] / uploaded_compare_df['sales_uploaded'].replace(0, np.nan)) * 100
 
             merged_df = pd.merge(db_compare_df, uploaded_compare_df, on='so_number', how='outer', suffixes=('_db', '_uploaded'), indicator=True)
+            
+            merged_df['sales_uploaded'] = merged_df['sales_uploaded'].fillna(0) - merged_df['shipping_cost'].fillna(0)
 
             def determine_status_and_color(row):
                 if row['status'] == 'HR Verified':
@@ -2040,37 +2038,34 @@ class HRScreen(CTkFrame):
                     if final_margin < 0: return 'ขาดทุน'
                     elif final_margin < 10: return 'กำไรน้อย'
                     else: return 'กำไรดี'
-                
                 if row['_merge'] == 'right_only': return 'มีใน Express, ไม่มีในระบบ'
                 if row['_merge'] == 'left_only': return 'มีในระบบ, ไม่มีใน Express'
-                
                 final_system_sale = row['sales_for_comparison']
                 final_system_cost = row['cost_db']
-
+                cost_uploaded = row['cost_uploaded']
                 if pd.notna(final_system_sale) and pd.notna(final_system_cost) and final_system_cost > final_system_sale:
                     return "‼️ ขายขาดทุน (ตรวจสอบด่วน)"
-                
+                if pd.notna(final_system_cost) and final_system_cost > 0 and pd.notna(cost_uploaded) and cost_uploaded < (final_system_cost * 0.5):
+                    return "‼️ ต้นทุน Express ผิดปกติ (<50%)"
                 sale_ok = final_system_sale >= row['sales_uploaded']
                 cost_ok = final_system_cost >= row['cost_uploaded']
-                
-                if sale_ok and cost_ok: 
-                    return "ผ่านเกณฑ์"
-                elif not sale_ok: 
-                    return "ยอดขายต่ำกว่า Express"
-                elif not cost_ok: 
-                    return "ต้นทุนต่ำกว่า Express"
-                else: 
-                    return "ข้อมูลไม่ตรงกัน"
+                if sale_ok and cost_ok: return "ผ่านเกณฑ์"
+                elif not sale_ok: return "ยอดขายต่ำกว่า Express"
+                elif not cost_ok: return "ต้นทุนต่ำกว่า Express"
+                else: return "ข้อมูลไม่ตรงกัน"
 
             merged_df['สถานะ'] = merged_df.apply(determine_status_and_color, axis=1)
+            
             merged_df['ผลต่างยอดขาย'] = merged_df['sales_service_amount'].fillna(0) - merged_df['sales_uploaded'].fillna(0)
             merged_df['ผลต่างต้นทุน'] = merged_df['cost_db'].fillna(0) - merged_df['cost_uploaded'].fillna(0)
             
+            # +++ START: เพิ่ม 'ค่าย้าย (ระบบ)' เข้ามาใน Dictionary นี้ +++
             display_order_map = {
                 'so_number': 'เลขที่ SO',
                 'sales_service_amount': 'ยอดขาย/บริการ (ระบบ)',
-                'shipping_cost': 'ค่าขนส่ง (ระบบ)', # <-- เพิ่มคอลัมน์ค่าขนส่งตรงนี้
-                'sales_for_comparison': 'ยอดขายรวม (ระบบ)', # <-- เปลี่ยนชื่อเพื่อความชัดเจน
+                'shipping_cost': 'ค่าขนส่ง (ระบบ)',
+                'relocation_cost': 'ค่าย้าย (ระบบ)', # <--- เพิ่มบรรทัดนี้
+                'sales_for_comparison': 'ยอดขายรวม (ระบบ)',
                 'sales_uploaded': 'ยอดขาย (Express)',
                 'cost_db': 'ต้นทุน (ระบบ)',
                 'cost_uploaded': 'ต้นทุน (Express)',
@@ -2078,6 +2073,7 @@ class HRScreen(CTkFrame):
                 'ผลต่างต้นทุน': 'ผลต่างต้นทุน',
                 'สถานะ': 'สถานะ'
             }
+            # +++ END +++
 
             for key in display_order_map.keys():
                 if key not in merged_df.columns:
@@ -2086,7 +2082,6 @@ class HRScreen(CTkFrame):
             self.comparison_df = merged_df[list(display_order_map.keys())].copy()
             self.comparison_df.rename(columns=display_order_map, inplace=True)
 
-            # แก้ไข 'ยอดขาย (ระบบ)' ให้เป็น 'ยอดขายรวม (ระบบ)' ในบรรทัดนี้
             numeric_cols = ['ยอดขายรวม (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน']
             summary_data = self.comparison_df[numeric_cols].sum().to_dict()
             
@@ -2102,6 +2097,7 @@ class HRScreen(CTkFrame):
                 "มีในระบบ, ไม่มีใน Express": "#FEF08A", "ข้อมูลไม่ตรงกัน": "#FED7AA",
                 "กำไรดี": "#BBF7D0", "กำไรน้อย": "#FEF08A", "ขาดทุน": "#FECACA", 
                 "ยืนยันแล้ว (รอผล)": "#E5E7EB", "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171",
+                "‼️ ต้นทุน Express ผิดปกติ (<50%)": "#F97316",
             }
             
             self.results_frame_label.configure(text="ผลลัพธ์การเปรียบเทียบ (ดับเบิลคลิกเพื่อตรวจสอบ)")
