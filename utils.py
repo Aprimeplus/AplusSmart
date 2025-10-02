@@ -9,6 +9,48 @@ from datetime import datetime
 from customtkinter import CTkFrame, CTkLabel, CTkScrollableFrame, CTkToplevel, CTkFont, CTkEntry, CTkCheckBox, CTkButton
 from tkinter import messagebox
 
+def convert_to_float(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", ""))
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
+
+def set_entry_text(entry_widget, text):
+    if entry_widget and entry_widget.winfo_exists():
+        is_readonly = entry_widget.cget("state") == "readonly"
+        if is_readonly: entry_widget.configure(state="normal")
+        entry_widget.delete(0, "end")
+        entry_widget.insert(0, str(text))
+        if is_readonly: entry_widget.configure(state="readonly")
+
+### START: เพิ่มฟังก์ชันใหม่นี้เข้าไปต่อท้ายไฟล์ utils.py ###
+def center_window(window: tk.Toplevel):
+    """
+    จัดตำแหน่งหน้าต่าง Toplevel (หรือ CTkToplevel) ให้อยู่ตรงกลางของหน้าต่างแม่ (master)
+    """
+    window.update_idletasks()  # บังคับให้วาด widget เพื่อให้ได้ขนาดที่ถูกต้อง
+
+    # ดึงขนาดของหน้าต่างย่อย
+    window_width = window.winfo_width()
+    window_height = window.winfo_height()
+
+    # ดึงขนาดและตำแหน่งของหน้าต่างแม่
+    master_x = window.master.winfo_x()
+    master_y = window.master.winfo_y()
+    master_width = window.master.winfo_width()
+    master_height = window.master.winfo_height()
+
+    # คำนวณตำแหน่ง X และ Y ที่จะทำให้หน้าต่างย่อยอยู่ตรงกลาง
+    center_x = int(master_x + (master_width / 2) - (window_width / 2))
+    center_y = int(master_y + (master_height / 2) - (window_height / 2))
+
+    # ตั้งค่าตำแหน่งใหม่
+    window.geometry(f"+{center_x}+{center_y}")
+
 # --- ฟังก์ชัน Helper ---
 def convert_to_float(value_str):
     if value_str is None or value_str == '':
@@ -138,3 +180,5 @@ def set_entry_text(entry_widget, text):
         except Exception as e:
             # ป้องกันโปรแกรมแครชถ้าเกิดข้อผิดพลาดที่ไม่คาดคิด
             print(f"Error in set_entry_text for widget {entry_widget}: {e}")
+
+            

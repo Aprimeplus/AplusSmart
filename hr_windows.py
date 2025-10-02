@@ -61,9 +61,36 @@ class SOPopupWindow(CTkToplevel):
         close_button.pack(side="left", padx=10)
 
         self.protocol("WM_DELETE_WINDOW", self._on_popup_close)
+        self.after(100, self._position_window)
         self.transient(master)
         self.grab_set()
     
+    def _position_window(self):
+        """
+        คำนวณขนาดที่เหมาะสมสำหรับหน้าต่าง SO และจัดตำแหน่งให้อยู่กลางจอ
+        """
+        self.update_idletasks()
+
+        # หาขนาดหน้าจอที่หน้าต่างนี้ปรากฏอยู่
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+
+        # กำหนดขนาดหน้าต่างสูงสุดไม่ให้เกิน 90% ของหน้าจอ
+        max_width = int(screen_width * 0.9)
+        max_height = int(screen_height * 0.9)
+        
+        # กำหนดขนาดพื้นฐานที่ต้องการ (กว้าง 800, สูง 850)
+        # แต่ถ้ามันใหญ่กว่าขนาดสูงสุดที่คำนวณได้ ให้ใช้ขนาดสูงสุดแทน
+        final_width = min(800, max_width)
+        final_height = min(850, max_height)
+        
+        # จัดตำแหน่งให้อยู่กลางจอ
+        x = (screen_width // 2) - (final_width // 2)
+        y = (screen_height // 2) - (final_height // 2)
+        
+        # ตั้งค่าทั้งขนาดและตำแหน่งในครั้งเดียว
+        self.geometry(f"{final_width}x{final_height}+{x}+{y}")
+
     def _save_and_close(self):
         self._save_so_changes()
         self._on_popup_close()
@@ -614,6 +641,8 @@ class HRVerificationWindow(CTkToplevel):
         self.final_cost_source.trace_add("write", self._update_selection_display)
 
         self._so_create_string_vars() # สร้าง StringVars สำหรับหน้าต่างแก้ไข SO
+        
+        
 
         self.title(f"สรุปข้อมูล SO: {self.so_number}")
         self.geometry("950x750")
@@ -1391,28 +1420,22 @@ class HRVerificationWindow(CTkToplevel):
 # อยู่ในไฟล์ hr_windows.py ภายในคลาส HRVerificationWindow
 
     def _recalculate_summaries(self):
-        """
-        (เวอร์ชันแก้ไข 4)
-        คำนวณค่าสรุปทั้งหมดโดยไม่หักค่ารถออกจากยอด Express
-        """
         valid_po_df = self.po_data[self.po_data['status'] == 'Approved'].copy()
         
-        # --- Logic การคำนวณต้นทุนสินค้าสุทธิ (เหมือนเดิมและถูกต้องแล้ว) ---
-        total_cost_series = pd.to_numeric(valid_po_df['total_cost'], errors='coerce').fillna(0)
-        shipping_stock_series = pd.to_numeric(valid_po_df['shipping_to_stock_cost'], errors='coerce').fillna(0)
-        shipping_site_series = pd.to_numeric(valid_po_df['shipping_to_site_cost'], errors='coerce').fillna(0)
-        pure_product_cost_series = total_cost_series - shipping_stock_series - shipping_site_series
-        po_cost = pure_product_cost_series.sum()
+        # --- START: แก้ไข Logic การรวมต้นทุนให้ถูกต้อง ---
+        # 1. รวมยอด `total_cost` (ซึ่งตอนนี้คือราคาสินค้าไม่รวมค่าส่งแล้ว) จาก PO ที่ Approved
+        po_cost = pd.to_numeric(valid_po_df['total_cost'], errors='coerce').fillna(0).sum()
+        
+        # 2. ไม่ต้องหักค่าส่งออกอีกต่อไป เพราะข้อมูลต้นทางและ Query ถูกต้องแล้ว
         total_cost_from_system = po_cost
+        # --- END ---
 
         # ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี
         total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
 
-        # --- START: แก้ไขจุดที่เกี่ยวข้องกับค่ารถ ---
-        # ยอดขายจาก Express จะไม่ถูกหักลบด้วยค่ารถอีกต่อไป
+        # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
         original_express_sale = float(self.excel_data.get('sales_uploaded', 0) or 0)
         total_sale_express = original_express_sale 
-        # --- END ---
 
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
         total_sale_system = (
@@ -1429,7 +1452,6 @@ class HRVerificationWindow(CTkToplevel):
             'total_cost_express': total_cost_express
         }
 
-        # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
         if self.system_data.get('hr_sale_source') in ['system', 'express']:
             self.final_sale_source.set(self.system_data['hr_sale_source'])
         else:
@@ -1683,22 +1705,31 @@ class HRVerificationWindow(CTkToplevel):
     
     def _defer_so(self):
         """
-        (เวอร์ชันแก้ไข) เลื่อน SO กลับไปให้เซลส์ใน My Tasks พร้อมเหตุผล
+        (เวอร์ชันแก้ไขสมบูรณ์) เลื่อน SO ไปเดือนถัดไป และอัปเดตสถานะเพื่อซ่อนจากหน้าจอปัจจุบัน
         """
         so_number = self.system_data.get('so_number')
         so_id = self.system_data.get('id')
-        sale_key_to_notify = self.system_data.get('sale_key')
+        current_month = self.system_data.get('commission_month')
+        current_year = self.system_data.get('commission_year')
+        sale_key_to_notify = self.system_data.get('sale_key') # ## เพิ่มบรรทัดนี้
 
-        # 1. ถามเหตุผลในการเลื่อน
-        dialog = CTkInputDialog(text=f"กรุณาระบุเหตุผลที่เลื่อน SO: {so_number}\n(จะถูกส่งกลับไปให้เซลส์)", title="เลื่อน SO กลับไปที่ฝ่ายขาย")
+        # 1. คำนวณเดือนและปีถัดไป
+        next_month = current_month + 1
+        next_year = current_year
+        if next_month > 12:
+            next_month = 1
+            next_year += 1
+
+        # 2. ถามเหตุผลในการเลื่อน
+        dialog = CTkInputDialog(text=f"กรุณาระบุเหตุผลที่เลื่อน SO: {so_number}", title=f"เลื่อน SO ไปเดือน {next_month}/{next_year}")
         reason = dialog.get_input()
         
         if not reason or not reason.strip():
-            return # ผู้ใช้กดยกเลิก
+            return
 
-        # 2. ยืนยันการทำงาน
-        msg = (f"คุณต้องการเลื่อน SO: {so_number} กลับไปให้เซลส์ใช่หรือไม่?\n\n"
-               "SO จะไปปรากฏใน 'งานของฉัน' ของเซลส์เพื่อรอการแก้ไขและนำส่งใหม่")
+        # 3. ยืนยันการทำงาน
+        msg = (f"คุณต้องการเลื่อน SO: {so_number} ไปคำนวณค่าคอมในเดือน {next_month}/{next_year} ใช่หรือไม่?\n\n"
+               "SO นี้จะหายไปจากหน้าเปรียบเทียบของเดือนปัจจุบัน")
         
         if not messagebox.askyesno("ยืนยันการเลื่อน SO", msg, parent=self):
             return
@@ -1707,24 +1738,29 @@ class HRVerificationWindow(CTkToplevel):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 3. อัปเดตสถานะเป็น 'Deferred by HR' และบันทึกเหตุผล
+                # 4. ## แก้ไขคำสั่ง UPDATE ที่สำคัญ ##
+                #    - อัปเดตเดือนและปีสำหรับรอบถัดไป
+                #    - อัปเดตสถานะเป็น 'Deferred by HR' เพื่อให้ถูกกรองออกจากหน้าจอปัจจุบันทันที
                 cursor.execute("""
                     UPDATE commissions 
-                    SET status = 'Deferred by HR', rejection_reason = %s
+                    SET 
+                        status = 'Deferred by HR', 
+                        commission_month = %s, 
+                        commission_year = %s,
+                        rejection_reason = %s
                     WHERE id = %s
-                """, (reason.strip(), so_id))
+                """, (next_month, next_year, f"Deferred to {next_month}/{next_year}: {reason.strip()}", so_id))
                 
-                # 4. สร้าง Notification แจ้งเตือนเซลส์
-                message = f"SO: {so_number} ของคุณถูก 'เลื่อน' โดย HR\nเหตุผล: {reason.strip()}"
+                # 5. ## เพิ่มการสร้าง Notification (เพื่อให้เซลส์ทราบว่า SO ถูกเลื่อน) ##
+                message = f"SO: {so_number} ของคุณถูกเลื่อนไปคิดค่าคอมเดือน {next_month}/{next_year} โดย HR\nเหตุผล: {reason.strip()}"
                 cursor.execute("""
                     INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id)
                     VALUES (%s, %s, FALSE, %s)
                 """, (sale_key_to_notify, message, so_id))
-            
+
             conn.commit()
-            messagebox.showinfo("สำเร็จ", f"เลื่อน SO: {so_number} กลับไปให้เซลส์เรียบร้อยแล้ว", parent=self.master)
+            messagebox.showinfo("สำเร็จ", f"เลื่อน SO: {so_number} ไปยังเดือน {next_month}/{next_year} เรียบร้อยแล้ว", parent=self.master)
             
-            # 5. (ส่วนสำคัญ) ปิดหน้าต่างนี้ ซึ่งจะไปกระตุ้นให้หน้าจอหลักรีเฟรชตัวเอง
             self._on_close()
 
         except Exception as e:

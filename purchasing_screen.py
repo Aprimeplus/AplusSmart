@@ -1055,33 +1055,23 @@ class PurchasingScreen(CTkFrame):
         shipping_stock_wht_amount = 0.0
         shipping_site_wht_amount = 0.0
 
-        # ตรวจสอบค่าส่งเข้าสต๊อก
         if self.shipping_to_stock_type_var.get() == 'ซัพพลายเออร์จัดส่ง':
             stock_wht_type = self.shipping_to_stock_wht_var.get()
-            if stock_wht_type == "1%":
-                shipping_stock_wht_amount = shipping_stock_cost * 0.01
-            elif stock_wht_type == "3%":
-                shipping_stock_wht_amount = shipping_stock_cost * 0.03
+            if stock_wht_type == "1%": shipping_stock_wht_amount = shipping_stock_cost * 0.01
+            elif stock_wht_type == "3%": shipping_stock_wht_amount = shipping_stock_cost * 0.03
             
-            if self.shipping_to_stock_vat_var.get() == 'VAT':
-                supplier_payable_vatable += shipping_stock_cost
-            else:
-                supplier_payable_non_vatable += shipping_stock_cost
+            if self.shipping_to_stock_vat_var.get() == 'VAT': supplier_payable_vatable += shipping_stock_cost
+            else: supplier_payable_non_vatable += shipping_stock_cost
         else:
             separate_shipping_cost += shipping_stock_cost
 
-        # ตรวจสอบค่าส่งเข้าไซต์
         if self.shipping_to_site_type_var.get() == 'ซัพพลายเออร์จัดส่ง':
             site_wht_type = self.shipping_to_site_wht_var.get()
-            if site_wht_type == "1%":
-                shipping_site_wht_amount = shipping_site_cost * 0.01
-            elif site_wht_type == "3%":
-                shipping_site_wht_amount = shipping_site_cost * 0.03
+            if site_wht_type == "1%": shipping_site_wht_amount = shipping_site_cost * 0.01
+            elif site_wht_type == "3%": shipping_site_wht_amount = shipping_site_cost * 0.03
 
-            if self.shipping_to_site_vat_var.get() == 'VAT':
-                supplier_payable_vatable += shipping_site_cost
-            else:
-                supplier_payable_non_vatable += shipping_site_cost
+            if self.shipping_to_site_vat_var.get() == 'VAT': supplier_payable_vatable += shipping_site_cost
+            else: supplier_payable_non_vatable += shipping_site_cost
         else:
             separate_shipping_cost += shipping_site_cost
 
@@ -1097,16 +1087,18 @@ class PurchasingScreen(CTkFrame):
         # --- 5. อัปเดต UI ทั้งหมดในส่วนสรุป ---
         def set_readonly_val(entry, value):
             if entry and entry.winfo_exists():
-               entry.configure(state="normal")
-               entry.delete(0, "end")
-               entry.insert(0, f"{value:,.2f}")
-               entry.configure(state="readonly")
+               entry.configure(state="normal"); entry.delete(0, "end")
+               entry.insert(0, f"{value:,.2f}"); entry.configure(state="readonly")
    
-        total_po_cost = (product_subtotal - end_of_bill_discount) + shipping_stock_cost + shipping_site_cost
+        # --- START: จุดที่แก้ไข ---
+        # ให้ total_po_cost เป็นยอดสินค้าหักส่วนลดท้ายบิลเท่านั้น (ไม่รวมค่าส่ง)
+        total_po_cost = product_subtotal - end_of_bill_discount
         set_readonly_val(self.total_cost_entry, total_po_cost)
+        # --- END ---
+
         set_readonly_val(self.total_weight_summary_entry, overall_total_weight)
         set_readonly_val(self.vat7_entry, vat7_amount)
-        set_readonly_val(self.vat3_entry, product_wht3_amount) # ช่องนี้จะแสดงเฉพาะ WHT 3% ของสินค้า
+        set_readonly_val(self.vat3_entry, product_wht3_amount)
         set_readonly_val(self.grand_total_with_vat_entry, supplier_payable_vatable + supplier_payable_non_vatable + vat7_amount)
         set_readonly_val(self.grand_total_payable_entry, grand_total_payable_to_supplier)
         set_readonly_val(self.separate_shipping_entry, separate_shipping_cost)
@@ -1118,20 +1110,14 @@ class PurchasingScreen(CTkFrame):
         self.shipping_to_stock_vat_display_var.set(f"{stock_vat_display:,.2f}")
         self.shipping_to_site_vat_display_var.set(f"{site_vat_display:,.2f}")
         
-        # อัปเดตช่องแสดงผล WHT ของค่าขนส่ง
         self.shipping_to_stock_wht_display_var.set(f"{shipping_stock_wht_amount:,.2f}")
         self.shipping_to_site_wht_display_var.set(f"{shipping_site_wht_amount:,.2f}")
 
         if hasattr(self, 'balance_due_entry') and self.balance_due_entry.winfo_exists():
-            if abs(balance_due) < 0.01:
-                text, text_color, bg_color = "ยอดชำระครบถ้วน", "#15803D", "#BBF7D0"
-            elif balance_due < 0:
-                text, text_color, bg_color = f"ชำระเกิน {abs(balance_due):,.2f}", "#15803D", "#BBF7D0"
-            else:
-                text, text_color, bg_color = f"ยอดค้างชำระ {balance_due:,.2f}", "#B91C1C", "#FECACA"
-          
-            self.balance_due_var.set(text)
-            self.balance_due_entry.configure(text_color=text_color, fg_color=bg_color)
+            if abs(balance_due) < 0.01: text, text_color, bg_color = "ยอดชำระครบถ้วน", "#15803D", "#BBF7D0"
+            elif balance_due < 0: text, text_color, bg_color = f"ชำระเกิน {abs(balance_due):,.2f}", "#15803D", "#BBF7D0"
+            else: text, text_color, bg_color = f"ยอดค้างชำระ {balance_due:,.2f}", "#B91C1C", "#FECACA"
+            self.balance_due_var.set(text); self.balance_due_entry.configure(text_color=text_color, fg_color=bg_color)
         else:
             self.balance_due_var.set(f"{balance_due:,.2f}")
 

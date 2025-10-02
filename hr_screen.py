@@ -122,6 +122,13 @@ class ComparisonConfigDialog(CTkToplevel):
         sales_frame = CTkFrame(self)
         sales_frame.grid(row=0, column=0, padx=20, pady=10, sticky="ew")
         CTkLabel(sales_frame, text="1. เลือกพนักงานขาย:", font=master.label_font).pack(side="left", padx=10)
+
+        self.placeholder = "กรุณาเลือกพนักงานขาย..."
+        self.selected_sale = tk.StringVar(value=self.placeholder)
+        
+        # เพิ่ม Placeholder เข้าไปเป็นตัวเลือกแรก และเอา "ทั้งหมด" ออก
+        self.sale_dropdown = CTkOptionMenu(sales_frame, variable=self.selected_sale, values=[self.placeholder] + sales_keys, command=self._check_run_button_state)
+
         self.selected_sale = tk.StringVar(value="ทั้งหมด")
         self.sale_dropdown = CTkOptionMenu(sales_frame, variable=self.selected_sale, values=["ทั้งหมด"] + sales_keys, command=self._check_run_button_state)
         self.sale_dropdown.pack(side="left", padx=10, pady=10)
@@ -150,9 +157,17 @@ class ComparisonConfigDialog(CTkToplevel):
         self.run_button.pack(side="left", padx=10)
         CTkButton(button_frame, text="ยกเลิก", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
 
+        utils.center_window(self)
+
     def _check_run_button_state(self, *args):
         has_data = (self.imported_df is not None) or (not self.manual_df.empty)
-        if has_data:
+        
+        ### START: เพิ่มเงื่อนไขการตรวจสอบ ###
+        # ตรวจสอบว่ามีการเลือกเซลส์แล้ว (ไม่ใช่ค่าเริ่มต้น)
+        sale_selected = self.selected_sale.get() != self.placeholder
+        
+        # ปุ่มจะทำงานได้ก็ต่อเมื่อมีข้อมูล และ เลือกเซลส์แล้ว
+        if has_data and sale_selected:
             self.run_button.configure(state="normal")
         else:
             self.run_button.configure(state="disabled")
@@ -1019,6 +1034,9 @@ class HRScreen(CTkFrame):
         CTkLabel(search_frame, text="ค้นหาเฉพาะ SO/PO:", font=self.label_font).grid(row=0, column=2, padx=(20,5), pady=10)
         self.master_edit_search_entry = CTkEntry(search_frame, font=self.entry_font, placeholder_text="กรอก SO หรือ PO...")
         self.master_edit_search_entry.grid(row=0, column=3, padx=5, pady=10, sticky="ew")
+
+        self.master_edit_search_entry.bind("<Return>", lambda event: self._search_so_po())
+        self.master_edit_search_entry.bind("<KP_Enter>", lambda event: self._search_so_po()) # สำหรับ Enter บน Numpad
         
         search_button = CTkButton(search_frame, text="ค้นหา", command=self._search_so_po, width=80)
         search_button.grid(row=0, column=4, padx=5, pady=10)
@@ -1914,22 +1932,25 @@ class HRScreen(CTkFrame):
                             LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
                             LEFT JOIN (
                                     SELECT so_number, 
-                                           SUM(COALESCE(total_cost, 0) - COALESCE(shipping_to_stock_cost, 0) - COALESCE(shipping_to_site_cost, 0)) as cogs_db, 
+                                           SUM(COALESCE(total_cost, 0)) as cogs_db, -- << บรรทัดนี้ที่แก้ไข
                                            SUM(shipping_to_stock_cost) as po_shipping_stock,
                                            SUM(shipping_to_site_cost) as po_shipping_site,
                                            SUM(relocation_cost) as po_relocation
                                     FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
                                 ) po ON c.so_number = po.so_number
-                            WHERE c.is_active = 1"""
+                            WHERE c.is_active = 1 
+                              AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
+            """
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
-            if selected_salesperson != "ทั้งหมด":
-                base_query += " AND c.sale_key = %s"
-                params.append(selected_salesperson)
-            else:
-                base_query += " AND c.sale_key IN (SELECT sale_key FROM sales_users WHERE status = 'Active' AND role = 'Sale')"
-            
+            ### START: แก้ไขส่วนนี้ ###
+            # ตอนนี้ selected_salesperson จะเป็นรหัสของเซลส์เสมอ ไม่ใช่ "ทั้งหมด"
+            # เราจึงสามารถลดรูปเงื่อนไขได้
+            base_query += " AND c.sale_key = %s"
+            params.append(selected_salesperson)
+            ### END ###
+
             data_query = base_query + " ORDER BY c.timestamp DESC"
             
             self.db_df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(params))
@@ -2082,6 +2103,24 @@ class HRScreen(CTkFrame):
                 return
                 
             uploaded_compare_df = pd.concat(comparison_sources, ignore_index=True).drop_duplicates(subset=['so_number'], keep='last')
+
+            ### START: เพิ่มโค้ดส่วนนี้ ###
+            # ดึงรายชื่อ SO ทั้งหมดที่เคยถูก Defer จากฐานข้อมูล
+            deferred_so_query = "SELECT so_number FROM commissions WHERE status = 'Deferred by HR'"
+            deferred_so_df = pd.read_sql(deferred_so_query, self.pg_engine)
+            
+            if not deferred_so_df.empty:
+                deferred_so_list = deferred_so_df['so_number'].tolist()
+                
+                # กรองข้อมูลใน DataFrame ฝั่ง Express เพื่อเอา SO ที่ถูก Defer ออกไป
+                initial_count = len(uploaded_compare_df)
+                uploaded_compare_df['so_number'] = uploaded_compare_df['so_number'].astype(str).str.strip()
+                uploaded_compare_df = uploaded_compare_df[~uploaded_compare_df['so_number'].isin(deferred_so_list)]
+                filtered_count = len(uploaded_compare_df)
+                
+                if initial_count > filtered_count:
+                    print(f"Filtered out {initial_count - filtered_count} deferred SO(s) from the uploaded data.")
+            ### END: สิ้นสุดโค้ดที่เพิ่ม ###
             
             required_cols = [
                 'id', 'so_number', 'sales_service_amount', 'shipping_cost', 'relocation_cost', 
@@ -2284,13 +2323,15 @@ class HRScreen(CTkFrame):
                             LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
                             LEFT JOIN (
                                     SELECT so_number, 
-                                           SUM(COALESCE(total_cost, 0) - COALESCE(shipping_to_stock_cost, 0) - COALESCE(shipping_to_site_cost, 0)) as cogs_db, 
+                                           SUM(COALESCE(total_cost, 0)) as cogs_db, -- << บรรทัดนี้ที่แก้ไข
                                            SUM(shipping_to_stock_cost) as po_shipping_stock,
                                            SUM(shipping_to_site_cost) as po_shipping_site,
                                            SUM(relocation_cost) as po_relocation
                                     FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
                                 ) po ON c.so_number = po.so_number
-                            WHERE c.is_active = 1"""
+                            WHERE c.is_active = 1
+                              AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
+            """
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 

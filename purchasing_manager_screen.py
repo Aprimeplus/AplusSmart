@@ -1026,20 +1026,18 @@ class PurchasingManagerScreen(CTkFrame):
         
         self.search_entry = CTkEntry(search_frame, placeholder_text="🔍 ค้นหาจาก SO, PO, หรือชื่อซัพพลายเออร์...")
         self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        # --- เพิ่ม 2 บรรทัดนี้ ---
+        self.search_entry.bind("<Return>", self._filter_pending_list)
+        self.search_entry.bind("<KP_Enter>", self._filter_pending_list) # สำหรับ Enter บน Numpad
         
-        # +++ START: แก้ไขส่วนนี้ +++
-        # ลบการ bind event <KeyRelease> ออก
-        # self.search_entry.bind("<KeyRelease>", self._debounce_search)
-        
-        # สร้างปุ่ม "ค้นหา" และ "ล้างค่า"
         search_button = CTkButton(search_frame, text="ค้นหา", width=100, command=self._filter_pending_list)
         search_button.pack(side="left", padx=(0, 5))
         
         clear_button = CTkButton(search_frame, text="ล้างค่า", width=100, fg_color="gray", command=self._clear_search)
         clear_button.pack(side="left")
-        # +++ END +++
 
-        # --- ส่วนของ Pagination (เหมือนเดิม) ---
+        # --- ส่วนของ Pagination ---
         pagination_frame = CTkFrame(container, fg_color="transparent")
         pagination_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
 
@@ -1052,7 +1050,7 @@ class PurchasingManagerScreen(CTkFrame):
         self.next_button = CTkButton(pagination_frame, text="หน้าถัดไป >>", command=self._next_page, state="disabled")
         self.next_button.pack(side="right")
         
-        # --- ส่วนของ Scrollable Frame (เหมือนเดิม) ---
+        # --- ส่วนของ Scrollable Frame ---
         self.main_frame = CTkScrollableFrame(container, label_text="รายการที่รอการอนุมัติ (Grouped by SO)")
         self.main_frame.grid(row=2, column=0, padx=0, pady=0, sticky="nsew")
         self.main_frame.grid_columnconfigure(0, weight=1)

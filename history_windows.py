@@ -122,7 +122,7 @@ class PurchaseDetailWindow(CTkToplevel):
     def __init__(self, master, app_container, purchase_id, on_save_callback=None, **kwargs):
         super().__init__(master)
         self.title(f"รายละเอียด/แก้ไขใบสั่งซื้อ (PO ID: {purchase_id})")
-        self.geometry("950x800") # กำหนดขนาดเริ่มต้นที่เหมาะสม
+        self.geometry("100x100")
         
         self.app_container = app_container
         self.purchase_id = purchase_id
@@ -151,11 +151,27 @@ class PurchaseDetailWindow(CTkToplevel):
         # สร้างปุ่ม Action ต่างๆ (จะถูกวางในแถวที่ 1)
         self._create_action_buttons()
         # +++ END +++
+        
+        
 
         self.after(50, self._load_and_display_data)
         self.transient(master)
         self.grab_set()
     
+    def _position_window(self):
+        """จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลางแนวนอน และยึดตำแหน่งบนสุดไว้"""
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        
+        # จัดกึ่งกลางแนวนอนของ "หน้าจอ"
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        
+        # ยึดตำแหน่งบนสุดของหน้าต่าง (แกน Y) ไว้ที่ 40 pixels จากขอบจอบนเสมอ
+        y = 40
+        
+        self.geometry(f'{width}x{height}+{x}+{y}')
+
     def _load_supplier_data_for_autocomplete(self):
         """โหลดข้อมูล Supplier ทั้งหมดมาเตรียมไว้สำหรับ AutoComplete"""
         try:
@@ -369,6 +385,10 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_approval_info_section(self.scroll_frame, self.po_data)
         
         self._recalculate_summary_totals()
+
+        # --- เพิ่มบรรทัดนี้เข้าไปท้ายสุด ---
+        # หน่วงเวลาเล็กน้อยเพื่อให้แน่ใจว่า UI วาดเสร็จแล้วจึงค่อยปรับขนาดและตำแหน่ง
+        self.after(100, self._position_window)
 
     def _create_section(self, parent, title):
         section_frame = CTkFrame(parent, corner_radius=10, border_width=1)
@@ -1036,7 +1056,8 @@ class PurchaseDetailWindow(CTkToplevel):
         self.button_frame = CTkFrame(self, fg_color=("gray85", "gray18"))
         self.button_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
         
-        if self.user_role in ['Purchasing Manager', 'Director']:
+        # --- โค้ดเวอร์ชันเดิมที่ไม่มีปุ่มลบ ---
+        if self.user_role in ['Purchasing Manager', 'Director', 'HR']:
             self.button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
             approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D")
@@ -1110,40 +1131,69 @@ class PurchaseDetailWindow(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
     
     def _adjust_window_height_to_content(self):
-        """คำนวณและปรับความสูงของหน้าต่างให้พอดีกับเนื้อหาทั้งหมด"""
-        self.update_idletasks()
+        """ปรับตำแหน่งหน้าต่างให้อยู่ตรงกลาง (ไม่ปรับขนาดอัตโนมัติแล้ว)"""
+        # เราจะลบโค้ดคำนวณขนาดที่ซับซ้อนออกทั้งหมด
+        # ให้ฟังก์ชันนี้ทำหน้าที่แค่ 'จัดตำแหน่ง' หน้าต่างหลังจากที่ UI ถูกวาดเสร็จแล้วเท่านั้น
+        self._position_window()
 
+        # --- 1. คำนวณความสูงที่เหมาะสม (เหมือนเดิม) ---
         content_height = self.scroll_frame.winfo_reqheight()
         buttons_height = self.button_frame.winfo_reqheight()
+        total_needed_height = content_height + buttons_height + 40
         
-        total_needed_height = content_height + buttons_height + 40 
-
         screen_height = self.winfo_screenheight()
-        max_height = screen_height - 80 
+        max_height = screen_height - 80
         final_height = min(total_needed_height, max_height)
         
-        current_width = self.winfo_width()
-        if current_width < 900:
-            current_width = 900
-            
-        self.geometry(f"{current_width}x{final_height}")
-        self._position_window() # <-- เปลี่ยนจากการเรียก center_window มาเป็นฟังก์ชันใหม่
+        ### START: เพิ่มโค้ดคำนวณความกว้าง ###
+        # --- 2. คำนวณความกว้างที่เหมาะสม ---
+        # ดึงความกว้างที่เนื้อหาต้องการ และบวกเผื่อระยะขอบและ scrollbar
+        content_width = self.scroll_frame.winfo_reqwidth() + 40 
+        
+        screen_width = self.winfo_screenwidth()
+        # กำหนดความกว้างสูงสุดไม่ให้เกินขอบจอ
+        max_width = screen_width - 80
+        
+        # เลือกใช้ความกว้างที่เนื้อหาต้องการ แต่ต้องไม่น้อยกว่า 950 และไม่เกินขอบจอ
+        final_width = max(950, min(content_width, max_width))
+        ### END ###
+
+        # 3. ปรับขนาดหน้าต่างด้วยค่าที่คำนวณได้ใหม่ทั้งหมด
+        self.geometry(f"{final_width}x{final_height}")
+        
+        # 4. จัดตำแหน่งหน้าต่างให้อยู่ตรงกลาง (เหมือนเดิม)
+        self._position_window()
 
     def _position_window(self):
-        """(ชื่อเดิม center_window) จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลางแนวนอน และยึดตำแหน่งบนสุดไว้"""
+        """
+        (เวอร์ชันใหม่) คำนวณขนาดที่เหมาะสมไม่ให้เกิน 90% ของหน้าจอ และจัดตำแหน่งให้อยู่ตรงกลาง
+        """
         self.update_idletasks()
-        width = self.winfo_width()
-        height = self.winfo_height()
+
+        # --- 1. คำนวณขนาดที่เหมาะสม ---
+        # หาขนาดหน้าจอที่หน้าต่างนี้ปรากฏอยู่
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+
+        # กำหนดขนาดหน้าต่างสูงสุดไม่ให้เกิน 90% ของหน้าจอ
+        max_width = int(screen_width * 0.9)
+        max_height = int(screen_height * 0.9)
         
-        # จัดกึ่งกลางแนวนอนเหมือนเดิม
-        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        # --- 2. ตั้งค่าขนาดหน้าต่าง ---
+        # ใช้ขนาดคงที่ที่เราคิดว่าเหมาะสม (เช่น 1200x850)
+        # แต่ถ้ามันใหญ่กว่าขนาดสูงสุดที่คำนวณได้ ให้ใช้ขนาดสูงสุดแทน
+        final_width = min(1350, max_width)
+        final_height = min(850, max_height)
         
-        # --- START: จุดแก้ไขสำคัญ ---
-        # ยึดตำแหน่งบนสุดของหน้าต่าง (แกน Y) ไว้ที่ 40 pixels จากขอบจอบนเสมอ
-        y = 40
-        # --- END ---
+        self.geometry(f"{final_width}x{final_height}")
+
+        # --- 3. จัดตำแหน่งให้อยู่กลางจอ ---
+        # ใช้ขนาดสุดท้ายที่คำนวณได้มาจัดตำแหน่ง
+        x = (screen_width // 2) - (final_width // 2)
+        y = (screen_height // 2) - (final_height // 2)
         
-        self.geometry(f'{width}x{height}+{x}+{y}')
+        # ตั้งค่าตำแหน่ง
+        self.geometry(f"+{x}+{y}")
 
     def _save_changes(self):
         self._recalculate_summary_totals()
@@ -2272,4 +2322,3 @@ class SOPopupWindow(CTkToplevel):
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
-
