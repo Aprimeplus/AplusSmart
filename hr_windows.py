@@ -1392,32 +1392,27 @@ class HRVerificationWindow(CTkToplevel):
 
     def _recalculate_summaries(self):
         """
-        คำนวณค่าสรุปทั้งหมดและกำหนดค่าเริ่มต้นที่ถูกต้อง
-        (เวอร์ชันแก้ไข: หักค่าขนส่งออกจากต้นทุนระบบ)
+        (เวอร์ชันแก้ไข 4)
+        คำนวณค่าสรุปทั้งหมดโดยไม่หักค่ารถออกจากยอด Express
         """
-        valid_po_df = self.po_data[self.po_data['status'] == 'Approved']
+        valid_po_df = self.po_data[self.po_data['status'] == 'Approved'].copy()
         
-        po_cost = valid_po_df['grand_total'].sum()
-        
-        # +++ START: เพิ่มโค้ดส่วนนี้ +++
-        # ดึงยอดรวมค่าขนส่งจาก PO ที่ Approved แล้ว
-        po_shipping_cost = (valid_po_df['shipping_to_stock_cost'].sum() + 
-                            valid_po_df['shipping_to_site_cost'].sum())
-        # +++ END +++
+        # --- Logic การคำนวณต้นทุนสินค้าสุทธิ (เหมือนเดิมและถูกต้องแล้ว) ---
+        total_cost_series = pd.to_numeric(valid_po_df['total_cost'], errors='coerce').fillna(0)
+        shipping_stock_series = pd.to_numeric(valid_po_df['shipping_to_stock_cost'], errors='coerce').fillna(0)
+        shipping_site_series = pd.to_numeric(valid_po_df['shipping_to_site_cost'], errors='coerce').fillna(0)
+        pure_product_cost_series = total_cost_series - shipping_stock_series - shipping_site_series
+        po_cost = pure_product_cost_series.sum()
+        total_cost_from_system = po_cost
 
-        brokerage_cost = float(self.system_data.get('brokerage_fee', 0) or 0)
-        transfer_cost = float(self.system_data.get('transfer_fee', 0) or 0)
-        giveaways_cost = float(self.system_data.get('giveaways', 0) or 0)
-        
-        # แก้ไขสูตร total_cost_from_system ให้หักค่าขนส่งออก
-        total_cost_from_system = (po_cost + brokerage_cost + transfer_cost + giveaways_cost) - po_shipping_cost
-        
+        # ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี
         total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
 
-        # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
-        system_shipping_cost = float(self.system_data.get('shipping_cost', 0) or 0)
+        # --- START: แก้ไขจุดที่เกี่ยวข้องกับค่ารถ ---
+        # ยอดขายจาก Express จะไม่ถูกหักลบด้วยค่ารถอีกต่อไป
         original_express_sale = float(self.excel_data.get('sales_uploaded', 0) or 0)
-        total_sale_express = original_express_sale - system_shipping_cost
+        total_sale_express = original_express_sale 
+        # --- END ---
 
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
         total_sale_system = (
@@ -1434,6 +1429,7 @@ class HRVerificationWindow(CTkToplevel):
             'total_cost_express': total_cost_express
         }
 
+        # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
         if self.system_data.get('hr_sale_source') in ['system', 'express']:
             self.final_sale_source.set(self.system_data['hr_sale_source'])
         else:
@@ -1443,6 +1439,7 @@ class HRVerificationWindow(CTkToplevel):
             self.final_cost_source.set(self.system_data['hr_cost_source'])
         else:
             self.final_cost_source.set("system")
+
             
     def _create_so_info_section(self):
         frame = CTkFrame(self, fg_color="#F0F0F0")
@@ -1686,7 +1683,7 @@ class HRVerificationWindow(CTkToplevel):
     
     def _defer_so(self):
         """
-        [แก้ไข] เลื่อน SO กลับไปให้เซลส์ใน My Tasks พร้อมเหตุผล
+        (เวอร์ชันแก้ไข) เลื่อน SO กลับไปให้เซลส์ใน My Tasks พร้อมเหตุผล
         """
         so_number = self.system_data.get('so_number')
         so_id = self.system_data.get('id')
@@ -1710,7 +1707,7 @@ class HRVerificationWindow(CTkToplevel):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 3. อัปเดตสถานะเป็น Deferred และบันทึกเหตุผล
+                # 3. อัปเดตสถานะเป็น 'Deferred by HR' และบันทึกเหตุผล
                 cursor.execute("""
                     UPDATE commissions 
                     SET status = 'Deferred by HR', rejection_reason = %s
@@ -1727,11 +1724,13 @@ class HRVerificationWindow(CTkToplevel):
             conn.commit()
             messagebox.showinfo("สำเร็จ", f"เลื่อน SO: {so_number} กลับไปให้เซลส์เรียบร้อยแล้ว", parent=self.master)
             
-            self._on_close() # ปิดหน้าต่างและรีเฟรชหน้าหลัก
+            # 5. (ส่วนสำคัญ) ปิดหน้าต่างนี้ ซึ่งจะไปกระตุ้นให้หน้าจอหลักรีเฟรชตัวเอง
+            self._on_close()
 
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
     

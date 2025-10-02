@@ -19,6 +19,7 @@ import bcrypt
 import traceback
 import os
 import shutil
+from tkinter import font as tkfont
 
 # --- START: แก้ไขการ Import และลงทะเบียนฟอนต์ ---
 import matplotlib
@@ -331,6 +332,9 @@ class HRScreen(CTkFrame):
 
         self.history_current_page, self.history_rows_per_page, self.history_total_rows = 0, 20, 0
         self.user_current_page, self.user_rows_per_page, self.user_total_rows = 0, 20, 0
+
+        self.edit_data_current_page = 0
+        self.edit_data_rows_per_page = 15
 
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(1, weight=1)
         header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 0))
@@ -915,7 +919,8 @@ class HRScreen(CTkFrame):
                 FROM commissions c 
                 JOIN sales_users u ON c.sale_key = u.sale_key
                 LEFT JOIN (
-                    SELECT so_number, SUM(total_cost) as cogs_db,
+                    SELECT so_number, 
+                           SUM(COALESCE(total_cost, 0) - COALESCE(shipping_to_stock_cost, 0) - COALESCE(shipping_to_site_cost, 0)) as cogs_db,
                            SUM(shipping_to_stock_cost) as po_shipping_stock,
                            SUM(shipping_to_site_cost) as po_shipping_site,
                            SUM(relocation_cost) as po_relocation
@@ -950,36 +955,23 @@ class HRScreen(CTkFrame):
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างตรวจสอบได้: {e}", parent=self)
             traceback.print_exc()
 
-    def _on_tree_double_click(self, event, tree, df):
+    def _on_tree_double_click(self, event, tree):
         """
-        Callback เมื่อมีการดับเบิลคลิกบนตารางเปรียบเทียบ
-        จะดึง SO Number และเปิดหน้าต่าง HRVerificationWindow
+        Callback เมื่อดับเบิลคลิกบน Treeview (เวอร์ชันกลับมาใช้ Treeview)
         """
         try:
-            # 1. หา item id (iid) ของแถวที่ถูกคลิก
             selected_item_iid = tree.focus()
-            if not selected_item_iid:
-                return
+            if not selected_item_iid: return
 
-            # 2. ดึงข้อมูลทั้งหมดในแถวนั้นออกมา
             values = tree.item(selected_item_iid, "values")
-            if not values:
-                return
+            if not values: return
 
-            # 3. ดึง SO Number จากคอลัมน์แรก (index 0)
-            so_number = values[0]
+            so_number = values[0] # SO Number อยู่คอลัมน์แรกเสมอ
 
-            # 4. ตรวจสอบว่า so_number ไม่ใช่ค่าว่างหรือค่าที่ไม่ถูกต้อง
-            if not so_number or so_number == '0':
-                messagebox.showwarning("ข้อมูลผิดพลาด", "ไม่สามารถระบุ SO Number จากแถวที่เลือกได้", parent=self)
-                return
+            if not so_number or so_number == 'ยอดรวม (Total)': return
                 
-            # 5. เปิดหน้าต่างตรวจสอบข้อมูล
             self._open_verification_window(so_number)
 
-        except (IndexError, ValueError) as e:
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถอ่านข้อมูลจากแถวที่เลือกได้: {e}", parent=self)
-            traceback.print_exc()
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างตรวจสอบได้: {e}", parent=self)
             traceback.print_exc()
@@ -1005,25 +997,24 @@ class HRScreen(CTkFrame):
         elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded: self._populate_audit_log_table(); self._audit_log_loaded = True
 
     def _create_edit_data_tab(self, parent_tab):
-        """(เวอร์ชันแก้ไข) สร้าง UI สำหรับหน้า Master Edit SO/PO พร้อมฟิลเตอร์"""
+        """(เวอร์ชันแก้ไข) สร้าง UI สำหรับหน้า Master Edit SO/PO พร้อมฟิลเตอร์และ Pagination"""
         parent_tab.grid_columnconfigure(0, weight=1)
-        parent_tab.grid_rowconfigure(1, weight=1)
+        parent_tab.grid_rowconfigure(2, weight=1) # แถวที่ 2 (ScrollFrame) จะขยาย
 
+        # --- Frame สำหรับฟิลเตอร์และการค้นหา ---
         search_frame = CTkFrame(parent_tab)
         search_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         search_frame.grid_columnconfigure(3, weight=1)
-
-        # --- START: เพิ่ม Dropdown สำหรับเลือกเซลส์ ---
+        
         CTkLabel(search_frame, text="เลือกเซลส์:", font=self.label_font).grid(row=0, column=0, padx=(10,5), pady=10)
         self.master_edit_sale_var = tk.StringVar(value="ทั้งหมด")
         self.master_edit_sale_menu = CTkOptionMenu(
             search_frame, 
             variable=self.master_edit_sale_var, 
             values=["ทั้งหมด"] + self.sales_keys_list,
-            command=lambda _: self._load_hr_edit_queue() # เมื่อเลือกเซลส์ ให้โหลดคิวงานใหม่
+            command=lambda _: self._load_hr_edit_queue()
         )
         self.master_edit_sale_menu.grid(row=0, column=1, padx=5, pady=10)
-        # --- END ---
         
         CTkLabel(search_frame, text="ค้นหาเฉพาะ SO/PO:", font=self.label_font).grid(row=0, column=2, padx=(20,5), pady=10)
         self.master_edit_search_entry = CTkEntry(search_frame, font=self.entry_font, placeholder_text="กรอก SO หรือ PO...")
@@ -1035,29 +1026,63 @@ class HRScreen(CTkFrame):
         clear_button = CTkButton(search_frame, text="ล้าง / แสดงคิวงาน", command=self._load_hr_edit_queue, fg_color="gray", width=120)
         clear_button.grid(row=0, column=5, padx=5, pady=10)
 
+        # +++ ส่วนของปุ่มแบ่งหน้าที่ขาดไป +++
+        pagination_frame = CTkFrame(parent_tab, fg_color="transparent")
+        pagination_frame.grid(row=1, column=0, padx=10, pady=0, sticky="ew")
+        
+        self.edit_data_prev_button = CTkButton(pagination_frame, text="<< หน้าก่อนหน้า", command=self._edit_data_prev_page, width=120, state="disabled")
+        self.edit_data_prev_button.pack(side="left")
+
+        self.edit_data_page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
+        self.edit_data_page_label.pack(side="left", expand=True)
+
+        self.edit_data_next_button = CTkButton(pagination_frame, text="หน้าถัดไป >>", command=self._edit_data_next_page, width=120, state="disabled")
+        self.edit_data_next_button.pack(side="right")
+        # +++ สิ้นสุดส่วนที่ขาดไป +++
+
         self.master_edit_results_frame = CTkScrollableFrame(parent_tab, label_text="ผลการค้นหา / คิวงานที่ต้องตรวจสอบ")
-        self.master_edit_results_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.master_edit_results_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
         self.master_edit_results_frame.grid_columnconfigure(0, weight=1)
 
+    def _edit_data_prev_page(self):
+        if self.edit_data_current_page > 0:
+            self.edit_data_current_page -= 1
+            self._load_hr_edit_queue()
+
+    def _edit_data_next_page(self):
+        self.edit_data_current_page += 1
+        self._load_hr_edit_queue()
+
     def _load_hr_edit_queue(self):
-        """(เวอร์ชันแก้ไข) โหลดคิวงาน SO ตามเซลส์ที่เลือก"""
+        """(เวอร์ชันแก้ไข) โหลดคิวงาน SO ที่มีสถานะ 'PO Sent'"""
         for widget in self.master_edit_results_frame.winfo_children():
             widget.destroy()
         self.master_edit_search_entry.delete(0, 'end')
 
         try:
-            # --- START: เพิ่ม Logic การกรองตามเซลส์ ---
-            base_query = "SELECT id, so_number, customer_name, sale_key FROM commissions WHERE status = 'PO Sent' AND is_active = 1"
+            # --- START: แก้ไข Query ให้มองหาสถานะ 'PO Sent' ---
+            base_query = "FROM commissions WHERE status = 'PO Sent' AND is_active = 1"
+            # --- END ---
             params = []
             
             selected_sale = self.master_edit_sale_var.get()
             if selected_sale != "ทั้งหมด":
                 base_query += " AND sale_key = %s"
                 params.append(selected_sale)
+
+            count_query = f"SELECT COUNT(*) {base_query}"
+            total_rows = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params)).iloc[0,0]
+            total_pages = (total_rows + self.edit_data_rows_per_page - 1) // self.edit_data_rows_per_page
+
+            offset = self.edit_data_current_page * self.edit_data_rows_per_page
+            data_query = f"SELECT id, so_number, customer_name, sale_key {base_query} ORDER BY timestamp DESC LIMIT %s OFFSET %s"
+            final_params = params + [self.edit_data_rows_per_page, offset]
             
-            query = base_query + " ORDER BY timestamp DESC;"
-            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
-            # --- END ---
+            df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(final_params))
+
+            self.edit_data_page_label.configure(text=f"หน้า {self.edit_data_current_page + 1} / {max(1, total_pages)}")
+            self.edit_data_prev_button.configure(state="normal" if self.edit_data_current_page > 0 else "disabled")
+            self.edit_data_next_button.configure(state="normal" if self.edit_data_current_page < total_pages - 1 else "disabled")
 
             if df.empty:
                 CTkLabel(self.master_edit_results_frame, text=f"ไม่พบ SO ที่รอการตรวจสอบในคิวงานของ: {selected_sale}").pack(pady=20)
@@ -1441,8 +1466,14 @@ class HRScreen(CTkFrame):
         CTkLabel(manage_frame, text="Password:", font=self.label_font).grid(row=5, column=0, padx=20, pady=(10, 2), sticky="w", columnspan=2); self.password_entry = CTkEntry(manage_frame, font=self.entry_font, show="*"); self.password_entry.grid(row=6, column=0, padx=20, pady=5, sticky="ew", columnspan=2)
         CTkLabel(manage_frame, text="ประเภท:", font=self.label_font).grid(row=7, column=0, padx=20, pady=(10, 2), sticky="w", columnspan=2)
         
+        # +++ START: แก้ไขบรรทัดนี้ +++
+        # เพิ่ม 'Sale Support' เข้าไปในลิสต์ของ Role
+        all_roles = ["Sale", "Sale Support", "Sales Manager", "Purchasing Staff", "Purchasing Manager", "Director", "HR"]
+        
         self.role_var = tk.StringVar(value="Sale")
-        self.role_menu = CTkOptionMenu(manage_frame, variable=self.role_var, values=["Sale", "Sales Manager", "Purchasing Staff", "Purchasing Manager", "Director", "HR"], command=self._on_role_changed)
+        self.role_menu = CTkOptionMenu(manage_frame, variable=self.role_var, values=all_roles, command=self._on_role_changed)
+        # +++ END +++
+        
         self.role_menu.grid(row=8, column=0, padx=20, pady=5, sticky="ew", columnspan=2)
         
         self.sale_type_var = tk.StringVar(value="Outbound"); self.sale_type_frame = CTkFrame(manage_frame, fg_color="transparent"); CTkLabel(self.sale_type_frame, text="ประเภท Sale:", font=self.label_font).pack(side="left", padx=(0, 10)); CTkRadioButton(self.sale_type_frame, text="Outbound", variable=self.sale_type_var, value="Outbound").pack(side="left", padx=5); CTkRadioButton(self.sale_type_frame, text="Inbound", variable=self.sale_type_var, value="Inbound").pack(side="left", padx=5)
@@ -1733,17 +1764,14 @@ class HRScreen(CTkFrame):
         parent_tab.grid_columnconfigure(0, weight=1)
         parent_tab.grid_rowconfigure(2, weight=1)
 
+        # --- Frame ควบคุมด้านบน ---
         control_frame = CTkFrame(parent_tab)
         control_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         
         CTkButton(control_frame, text="🚀 เริ่มต้นการเปรียบเทียบใหม่", command=self._start_new_comparison, font=CTkFont(size=16, weight="bold")).pack(side="left", padx=10, pady=10)
         CTkButton(control_frame, text="📖 แสดงประวัติการเปรียบเทียบ", command=self._open_comparison_history_window, fg_color="#64748B").pack(side="left", padx=10, pady=10)
 
-        # --- ปุ่ม "บันทึกผลการเปรียบเทียบนี้" ถูกลบออกจากส่วนนี้แล้ว ---
-
-        self.finalize_button = CTkButton(control_frame, text="✅ ยืนยันข้อมูลและส่งต่อเพื่อคำนวณค่าคอม", 
-                                         fg_color="#16A34A", hover_color="#15803D", 
-                                         command=self._finalize_comparison)
+        self.finalize_button = CTkButton(control_frame, text="✅ ยืนยันข้อมูลและส่งต่อเพื่อคำนวณค่าคอม", fg_color="#16A34A", hover_color="#15803D", command=self._finalize_comparison)
         self.finalize_button.pack(side="right", padx=10, pady=10)
         self.finalize_button.pack_forget()
 
@@ -1753,11 +1781,87 @@ class HRScreen(CTkFrame):
 
         self.results_frame_label = CTkLabel(parent_tab, text="กรุณากด 'เริ่มต้นการเปรียบเทียบใหม่' เพื่อเริ่มใช้งาน", font=self.label_font, text_color="gray")
         self.results_frame_label.grid(row=1, column=0, padx=10, pady=(5, 0), sticky="w")
-
+        
+        # --- Frame สำหรับตาราง (แสดงผลเต็มพื้นที่) ---
         self.results_frame = CTkFrame(parent_tab)
-        self.results_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        self.results_frame.grid(row=2, column=0, pady=(0, 10), padx=10, sticky="nsew")
         self.results_frame.grid_rowconfigure(0, weight=1)
         self.results_frame.grid_columnconfigure(0, weight=1)
+    
+    def _update_summary_pane(self):
+        # +++ START: เพิ่ม Safety Check ตรงนี้ +++
+        # ตรวจสอบก่อนว่า self.summary_pane ถูกสร้างขึ้นแล้วหรือยัง
+        if not hasattr(self, 'summary_pane') or not self.summary_pane.winfo_exists():
+            return # ถ้ายังไม่มี ให้หยุดการทำงานของฟังก์ชันนี้ไปเลย
+        # +++ END +++
+
+        # ล้างข้อมูลเก่าใน Pane
+        for widget in self.summary_pane.winfo_children():
+            widget.destroy()
+
+        if self.comparison_df is None or self.comparison_df.empty:
+            CTkLabel(self.summary_pane, text="ไม่มีข้อมูลสรุป").pack(expand=True)
+            return
+            
+        # กรองเอาเฉพาะแถวข้อมูล ไม่รวมแถว 'ยอดรวม (Total)'
+        df_data = self.comparison_df[self.comparison_df['เลขที่ SO'] != 'ยอดรวม (Total)']
+
+        # --- ส่วนแสดงตัวเลขสรุป (KPIs) ---
+        kpi_frame = CTkFrame(self.summary_pane, fg_color="transparent")
+        kpi_frame.pack(fill="x", padx=15, pady=15)
+        kpi_frame.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(kpi_frame, text="ภาพรวมการเปรียบเทียบ", font=CTkFont(size=18, weight="bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        kpi_font = CTkFont(size=14)
+        kpi_value_font = CTkFont(size=14, weight="bold")
+
+        total_sales = df_data['ยอดขายรวม (ระบบ)'].sum()
+        total_cost = df_data['ต้นทุน (ระบบ)'].sum()
+        total_diff_sales = df_data['ผลต่างยอดขาย'].sum()
+
+        CTkLabel(kpi_frame, text="จำนวน SO ทั้งหมด:", font=kpi_font).grid(row=1, column=0, sticky="w", pady=2)
+        CTkLabel(kpi_frame, text=f"{len(df_data)} รายการ", font=kpi_value_font).grid(row=1, column=1, sticky="e", pady=2)
+        
+        CTkLabel(kpi_frame, text="ยอดขายรวม (ระบบ):", font=kpi_font).grid(row=2, column=0, sticky="w", pady=2)
+        CTkLabel(kpi_frame, text=f"{total_sales:,.2f}", font=kpi_value_font).grid(row=2, column=1, sticky="e", pady=2)
+
+        CTkLabel(kpi_frame, text="ต้นทุนรวม (ระบบ):", font=kpi_font).grid(row=3, column=0, sticky="w", pady=2)
+        CTkLabel(kpi_frame, text=f"{total_cost:,.2f}", font=kpi_value_font).grid(row=3, column=1, sticky="e", pady=2)
+        
+        diff_color = "red" if total_diff_sales < 0 else "green"
+        CTkLabel(kpi_frame, text="ผลต่างยอดขายรวม:", font=kpi_font).grid(row=4, column=0, sticky="w", pady=2)
+        CTkLabel(kpi_frame, text=f"{total_diff_sales:,.2f}", font=kpi_value_font, text_color=diff_color).grid(row=4, column=1, sticky="e", pady=2)
+
+        # --- ส่วนแสดงกราฟวงกลม ---
+        chart_frame = CTkFrame(self.summary_pane, fg_color="transparent")
+        chart_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        status_counts = df_data['สถานะ'].value_counts()
+        
+        if not status_counts.empty:
+            fig = Figure(figsize=(5, 4), dpi=100, facecolor="#F9FAFB")
+            ax = fig.add_subplot(111)
+            
+            status_colors = {
+                "ผ่านเกณฑ์": "#BBF7D0", "ยอดขายต่ำกว่า Express": "#FECACA", "ต้นทุนต่ำกว่า Express": "#FEF08A",
+                "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171", "‼️ ต้นทุน Express ผิดปกติ (<50%)": "#F97316",
+                "ข้อมูลไม่ตรงกัน": "#FED7AA", "มีใน Express, ไม่มีในระบบ": "#E5E7EB", "มีในระบบ, ไม่มีใน Express": "#E5E7EB",
+                "กำไรดี": "#16A34A", "กำไรน้อย": "#FCD34D", "ขาดทุน": "#EF4444", "ยืนยันแล้ว (รอผล)": "#9CA3AF",
+            }
+            colors = [status_colors.get(status, "#D1D5DB") for status in status_counts.index]
+
+            ax.pie(status_counts, labels=status_counts.index, autopct='%1.1f%%', startangle=90, colors=colors, 
+                   textprops={'fontsize': 10, 'fontfamily': 'Tahoma'})
+            ax.set_title('สรุปสถานะรายการ', fontname='Tahoma', fontsize=14, weight="bold")
+            fig.tight_layout()
+
+            if hasattr(self, 'summary_pie_chart_canvas'):
+                self.summary_pie_chart_canvas.get_tk_widget().destroy()
+
+            self.summary_pie_chart_canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+            self.summary_pie_chart_canvas.draw()
+            self.summary_pie_chart_canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def _start_new_comparison(self):
         active_sales_keys = self._get_sale_keys()
@@ -1801,19 +1905,20 @@ class HRScreen(CTkFrame):
         try:
             self.current_comparison_salesperson = selected_salesperson
             # --- START: จุดที่แก้ไข Query ---
-            base_query = """SELECT c.*, po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, u.sale_name 
+            base_query = """SELECT c.*, 
+                                   po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
+                                   u.sale_name,
+                                   ss.sale_name as support_user_name 
                             FROM commissions c 
                             JOIN sales_users u ON c.sale_key = u.sale_key
+                            LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
                             LEFT JOIN (
-                                    SELECT 
-                                        so_number, 
-                                        SUM(grand_total) as cogs_db, 
-                                        SUM(shipping_to_stock_cost) as po_shipping_stock,
-                                        SUM(shipping_to_site_cost) as po_shipping_site,
-                                        SUM(relocation_cost) as po_relocation
-                                    FROM purchase_orders 
-                                    WHERE status = 'Approved' 
-                                    GROUP BY so_number
+                                    SELECT so_number, 
+                                           SUM(COALESCE(total_cost, 0) - COALESCE(shipping_to_stock_cost, 0) - COALESCE(shipping_to_site_cost, 0)) as cogs_db, 
+                                           SUM(shipping_to_stock_cost) as po_shipping_stock,
+                                           SUM(shipping_to_site_cost) as po_shipping_site,
+                                           SUM(relocation_cost) as po_relocation
+                                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
                                 ) po ON c.so_number = po.so_number
                             WHERE c.is_active = 1"""
             # --- END: สิ้นสุดการแก้ไข Query ---
@@ -1942,8 +2047,8 @@ class HRScreen(CTkFrame):
 
     def _calculate_final_pu_cost(self, row):
         """
-        คำนวณต้นทุนรวมสุดท้ายจากฝั่งระบบ (PU)
-        (เวอร์ชันแก้ไข: หักค่าขนส่งออกจากต้นทุนรวม)
+        (เวอร์ชันปรับปรุงตาม Feedback)
+        คำนวณต้นทุนรวมสุดท้ายจากฝั่งระบบ (PU) โดยจะใช้เฉพาะยอดรวมค่าสินค้าจาก PO เท่านั้น
         """
         overrides = {}
         if pd.notna(row.get('hr_cost_overrides')):
@@ -1952,26 +2057,17 @@ class HRScreen(CTkFrame):
             except (json.JSONDecodeError, TypeError):
                 pass
         
-        # 1. คำนวณต้นทุนรวมทั้งหมดจากระบบ (เหมือนเดิม)
-        po_total_cost_base = float(row.get('cogs_db', 0) or 0)
-        brokerage_cost = float(row.get('brokerage_fee', 0) or 0)
-        transfer_cost = float(row.get('transfer_fee', 0) or 0)
-        giveaways_cost = float(row.get('giveaways', 0) or 0)
-        total_system_cost_before_adjust = po_total_cost_base + brokerage_cost + transfer_cost + giveaways_cost
+        # --- START: แก้ไข Logic การคำนวณต้นทุน ---
+        # 1. ดึงต้นทุนสินค้า (cogs_db คือ SUM(total_cost) จาก PO) มาเป็นค่าตั้งต้น
+        total_system_cost = float(row.get('cogs_db', 0) or 0)
         
-        # 2. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี
-        final_cost_before_adjust = float(overrides.get('ต้นทุนรวม', total_system_cost_before_adjust))
-        
-        # +++ START: เพิ่มโค้ดส่วนนี้ +++
-        # 3. ดึงค่าขนส่งจากข้อมูล PO ที่ดึงมา
-        total_po_shipping_cost = (float(row.get('po_shipping_stock', 0) or 0) + 
-                                  float(row.get('po_shipping_site', 0) or 0))
-
-        # 4. หักค่าขนส่งออกจากต้นทุนสุดท้าย
-        final_cost = final_cost_before_adjust - total_po_shipping_cost
-        # +++ END +++
+        # 2. ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี, ไม่เช่นนั้นก็ใช้ค่าจาก PO โดยตรง
+        # ไม่นำค่าใช้จ่ายอื่นๆ (brokerage, transfer, giveaways) จาก SO มารวมแล้ว
+        final_cost = float(overrides.get('ต้นทุนรวม', total_system_cost))
+        # --- END ---
         
         return final_cost
+
 
     def _compare_data(self):
         try:
@@ -2117,6 +2213,8 @@ class HRScreen(CTkFrame):
             self._create_styled_dataframe_table(self.results_frame, self.comparison_df, "", status_column="สถานะ", status_colors=status_colors, on_row_click=self._on_tree_double_click)
             self.export_button.pack(side="right", padx=10, pady=10)
             self.finalize_button.pack(side="right", padx=10, pady=10)
+            self._update_summary_pane()
+            
 
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเปรียบเทียบข้อมูล: {e}\n\n{traceback.format_exc()}", parent=self)
@@ -2177,21 +2275,22 @@ class HRScreen(CTkFrame):
 
         try:
             # --- START: จุดที่แก้ไข Query ---
-            base_query = """SELECT c.*, po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, u.sale_name 
-                        FROM commissions c 
-                        JOIN sales_users u ON c.sale_key = u.sale_key
-                        LEFT JOIN (
-                                SELECT 
-                                    so_number, 
-                                    SUM(grand_total) as cogs_db,
-                                    SUM(shipping_to_stock_cost) as po_shipping_stock,
-                                    SUM(shipping_to_site_cost) as po_shipping_site,
-                                    SUM(relocation_cost) as po_relocation
-                                FROM purchase_orders 
-                                WHERE status = 'Approved'
-                                GROUP BY so_number
-                            ) po ON c.so_number = po.so_number
-                        WHERE c.is_active = 1""" 
+            base_query = """SELECT c.*, 
+                                   po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
+                                   u.sale_name,
+                                   ss.sale_name as support_user_name 
+                            FROM commissions c 
+                            JOIN sales_users u ON c.sale_key = u.sale_key
+                            LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
+                            LEFT JOIN (
+                                    SELECT so_number, 
+                                           SUM(COALESCE(total_cost, 0) - COALESCE(shipping_to_stock_cost, 0) - COALESCE(shipping_to_site_cost, 0)) as cogs_db, 
+                                           SUM(shipping_to_stock_cost) as po_shipping_stock,
+                                           SUM(shipping_to_site_cost) as po_shipping_site,
+                                           SUM(relocation_cost) as po_relocation
+                                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
+                                ) po ON c.so_number = po.so_number
+                            WHERE c.is_active = 1"""
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
@@ -2701,38 +2800,37 @@ class HRScreen(CTkFrame):
         
         container = CTkFrame(parent, fg_color="transparent")
         container.pack(fill="both", expand=True)
-        container.grid_rowconfigure(1, weight=1)
+        container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
 
-        if label_text:
-            CTkLabel(container, text=label_text, font=self.header_font_table).grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        
         tree_frame = CTkFrame(container, fg_color="transparent")
-        tree_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        tree_frame.grid(row=0, column=0, sticky="nsew")
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
         columns = df.columns.tolist()
         
         style = ttk.Style(self)
-        style.theme_use("clam")
-
-        style.configure("Modern.Treeview.Heading", 
-                        font=self.header_font_table, 
-                        background=self.theme.get("header", "#1E40AF"),
-                        foreground="white", relief="flat", padding=(10, 10))
-        style.map("Modern.Treeview.Heading",
-                background=[('active', self.theme.get("primary", "#3B82F6"))])
+        style.theme_use("default") 
         
-        # คงความสูงของแถวไว้ที่ 32 เพื่อแก้ปัญหา "ตัวเลขติดกัน"
-        style.configure("Modern.Treeview", 
-                        rowheight=32, font=self.entry_font,
-                        background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#111827")
-        style.map("Modern.Treeview",
-                background=[('selected', self.theme.get("primary", "#3B82F6"))],
-                foreground=[('selected', "white")])
+        style.configure("Treeview.Heading", 
+                        font=self.header_font_table, 
+                        background="#022c22",
+                        foreground="white", 
+                        relief="flat", 
+                        padding=(10, 8))
+        style.map("Treeview.Heading", background=[('active', "#065f46")])
+        
+        style.configure("Treeview", 
+                        rowheight=32, 
+                        font=self.entry_font,
+                        fieldbackground="#FFFFFF", 
+                        foreground="#111827",
+                        relief="solid", 
+                        borderwidth=0)
+        style.map("Treeview", background=[('selected', self.theme.get("primary", "#3B82F6"))])
 
-        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', style="Modern.Treeview")
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
         tree.grid(row=0, column=0, sticky="nsew")
         
         tree.tag_configure('summary_row', background='#E5E7EB', font=CTkFont(size=14, weight="bold"))
@@ -2741,29 +2839,31 @@ class HRScreen(CTkFrame):
             for tag_name, color in status_colors.items():
                 tree.tag_configure(tag_name, background=color)
 
-        # +++ START: กำหนดความกว้างแต่ละคอลัมน์แบบเจาะจง +++
         column_configs = {
-            'เลขที่ SO': {'width': 150, 'anchor': 'w'},
-            'ยอดขาย/บริการ (ระบบ)': {'width': 130, 'anchor': 'e'},
-            'ค่าขนส่ง (ระบบ)': {'width': 110, 'anchor': 'e'},
-            'ค่าย้าย (ระบบ)': {'width': 110, 'anchor': 'e'},
-            'ยอดขายรวม (ระบบ)': {'width': 130, 'anchor': 'e'},
-            'ยอดขาย (Express)': {'width': 130, 'anchor': 'e'},
+            'เลขที่ SO': {'width': 100, 'anchor': 'w'},
+            'ยอดขาย/บริการ (ระบบ)': {'width': 165, 'anchor': 'e'},
+            'ค่าขนส่ง (ระบบ)': {'width': 130, 'anchor': 'e'},
+            'ค่าย้าย (ระบบ)': {'width': 130, 'anchor': 'e'},
+            'ยอดขายรวม (ระบบ)': {'width': 140, 'anchor': 'e'},
+            'ยอดขาย (Express)': {'width': 145, 'anchor': 'e'},
             'ต้นทุน (ระบบ)': {'width': 130, 'anchor': 'e'},
-            'ต้นทุน (Express)': {'width': 130, 'anchor': 'e'},
-            'ผลต่างยอดขาย': {'width': 110, 'anchor': 'e'},
+            'ต้นทุน (Express)': {'width': 140, 'anchor': 'e'},
+            'ผลต่างยอดขาย': {'width': 120, 'anchor': 'e'},
             'ผลต่างต้นทุน': {'width': 110, 'anchor': 'e'},
-            'แหล่งยอดขาย': {'width': 90, 'anchor': 'center'},
-            'แหล่งต้นทุน': {'width': 90, 'anchor': 'center'},
-            'สถานะ': {'width': 220, 'anchor': 'w'}
+            'แหล่งยอดขาย': {'width': 100, 'anchor': 'center'},
+            'แหล่งต้นทุน': {'width': 100, 'anchor': 'center'},
+            'สถานะ': {'width': 240, 'anchor': 'w'}
         }
 
         for col_id in columns:
-            config = column_configs.get(col_id, {'width': 120, 'anchor': 'w'}) # ใช้ค่า default หากไม่พบคอลัมน์
+            config = column_configs.get(col_id, {'width': 120, 'anchor': 'w'})
             tree.heading(col_id, text=col_id, anchor='center')
-            # กำหนด stretch=False เพื่อป้องกันคอลัมน์ขยายเอง
-            tree.column(col_id, width=config['width'], anchor=config['anchor'], stretch=False)
-        # +++ END +++
+            
+            # +++ START: แก้ไขบรรทัดนี้ +++
+            # เพิ่ม 'เลขที่ SO' กลับเข้าไปในลิสต์ของคอลัมน์ที่ยืดขยายได้
+            can_stretch = col_id in ['เลขที่ SO', 'สถานะ']
+            # +++ END +++
+            tree.column(col_id, width=config['width'], anchor=config['anchor'], stretch=can_stretch)
 
         for index, row in df.iterrows():
             tags_tuple = ()
@@ -2787,10 +2887,9 @@ class HRScreen(CTkFrame):
                 else:
                     values.append("")
 
-            iid_value = row['เลขที่ SO'] if 'เลขที่ SO' in df.columns else str(index)
+            iid_value = row.get(iid_column, str(index)) if iid_column else str(index)
             tree.insert("", "end", values=values, tags=tags_tuple, iid=str(iid_value))
         
-        # เพิ่ม Scrollbar ทั้งแนวตั้งและแนวนอน
         v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
@@ -2798,7 +2897,7 @@ class HRScreen(CTkFrame):
         h_scroll.grid(row=1, column=0, sticky='ew')
         
         if on_row_click: 
-            tree.bind("<Double-1>", lambda e: on_row_click(e, tree, self.comparison_df))
+            tree.bind("<Double-1>", lambda e: on_row_click(e, tree))
 
     def _get_archive_date_range(self, year, month=None):
         """สร้างช่วงวันที่เริ่มต้นและสิ้นสุดสำหรับการ Archive"""

@@ -122,14 +122,13 @@ class PurchaseDetailWindow(CTkToplevel):
     def __init__(self, master, app_container, purchase_id, on_save_callback=None, **kwargs):
         super().__init__(master)
         self.title(f"รายละเอียด/แก้ไขใบสั่งซื้อ (PO ID: {purchase_id})")
-        self.geometry("900x800")
+        self.geometry("950x800") # กำหนดขนาดเริ่มต้นที่เหมาะสม
         
         self.app_container = app_container
         self.purchase_id = purchase_id
         self.on_save_callback = on_save_callback
         self._load_supplier_data_for_autocomplete()
         
-        self.title(f"รายละเอียดใบสั่งซื้อ (PO ID: {self.purchase_id})")
         self.user_role = self.app_container.current_user_role
         
         self.po_entries = {}
@@ -138,19 +137,20 @@ class PurchaseDetailWindow(CTkToplevel):
         self.payment_entries = []
         self.deleted_payment_ids = []
         
-        self.supplier_names_list = self._get_supplier_names()
-
-        # <<< START: เพิ่ม print() ตรงนี้ >>>
-        print(f"DEBUG [2]: self.supplier_names_list in __init__ contains -> {self.supplier_names_list}")
-        # <<< END >>>
-
+        # +++ START: แก้ไข Layout หลัก +++
+        # กำหนดให้แถวที่ 0 (ScrollFrame) ขยายตัว แต่แถวที่ 1 (Buttons) ไม่ขยาย
         self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0) 
         self.grid_columnconfigure(0, weight=1)
+
+        # ScrollFrame จะอยู่ในแถวที่ 0
         self.scroll_frame = CTkScrollableFrame(self)
-        self.scroll_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.scroll_frame.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="nsew")
         self.scroll_frame.grid_columnconfigure(0, weight=1)
         
+        # สร้างปุ่ม Action ต่างๆ (จะถูกวางในแถวที่ 1)
         self._create_action_buttons()
+        # +++ END +++
 
         self.after(50, self._load_and_display_data)
         self.transient(master)
@@ -355,6 +355,7 @@ class PurchaseDetailWindow(CTkToplevel):
 
 
     def _create_formatted_view(self):
+        # ฟังก์ชันนี้จะวาดเนื้อหาลงใน self.scroll_frame
         for widget in self.scroll_frame.winfo_children(): widget.destroy()
         
         self.item_entries, self.deleted_item_ids = [], []
@@ -367,13 +368,7 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_payments_section(self.scroll_frame, self.payments_data)
         self._create_approval_info_section(self.scroll_frame, self.po_data)
         
-        # --- START: เพิ่มโค้ด 1 บรรทัดนี้ที่ท้ายสุดของฟังก์ชัน ---
-        # เพิ่ม Frame ที่มองไม่เห็น (fg_color="transparent") เพื่อดันเนื้อหาทั้งหมดขึ้นไปด้านบน
-        CTkFrame(self.scroll_frame, fg_color="transparent").pack(expand=True, fill="both")
-        # --- END ---
-
         self._recalculate_summary_totals()
-        self.after(100, self._adjust_window_height_to_content)
 
     def _create_section(self, parent, title):
         section_frame = CTkFrame(parent, corner_radius=10, border_width=1)
@@ -1037,36 +1032,31 @@ class PurchaseDetailWindow(CTkToplevel):
         self._recalculate_summary_totals()
 
     def _create_action_buttons(self):
-        # เราได้เปลี่ยนตัวแปรตรงนี้ในการแก้ไขครั้งก่อน
-        self.button_frame = CTkFrame(self)
-        self.button_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        # สร้าง Frame ใหม่สำหรับวางปุ่ม และวางไว้ที่แถวที่ 1 ของหน้าต่างหลัก (self)
+        self.button_frame = CTkFrame(self, fg_color=("gray85", "gray18"))
+        self.button_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
         
-        # --- Manager/Director View ---
         if self.user_role in ['Purchasing Manager', 'Director']:
-            # ดังนั้น เราต้องใช้ self.button_frame ในส่วนที่เหลือด้วย
             self.button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
             approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D")
-            approve_button.grid(row=0, column=0, padx=5, sticky="ew")
+            approve_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
             reject_button = CTkButton(self.button_frame, text="ปฏิเสธ (Reject)", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C")
-            reject_button.grid(row=0, column=1, padx=5, sticky="ew")
+            reject_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
             save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB")
-            save_button.grid(row=0, column=2, padx=5, sticky="ew")
+            save_button.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
 
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray")
-            close_button.grid(row=0, column=3, padx=5, sticky="ew")
-
-        # --- HR/PU Staff View ---
+            close_button.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
         else:
-            # และในส่วนนี้ด้วยเช่นกัน
-            self.button_frame.grid_columnconfigure(0, weight=1)
+            self.button_frame.grid_columnconfigure((0, 1), weight=1)
             save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
-            save_button.pack(side="left", padx=10, pady=10)
+            save_button.grid(row=0, column=0, padx=(0,5), pady=5, sticky="ew")
         
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray")
-            close_button.pack(side="right", padx=10, pady=10)
+            close_button.grid(row=0, column=1, padx=(5,0), pady=5, sticky="ew")
     
     def _approve_po(self):
         # Logic การอนุมัติ (ยกมาจาก purchasing_manager_screen.py)
@@ -1161,6 +1151,11 @@ class PurchaseDetailWindow(CTkToplevel):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
+                # --- START: เพิ่มโค้ดสำหรับตรวจสอบการเปลี่ยนแปลง SO ---
+                original_so_number = self.po_data.get('so_number', '').strip()
+                new_so_number = self.po_entries['so_number'].get().strip()
+                # --- END ---
+
                 # --- START: เพิ่ม Logic การอัปเดตข้อมูล Supplier ก่อน ---
                 supplier_name = self.po_entries['supplier_name'].get().strip()
                 supplier_code = self.po_entries['supplier_code'].get().strip()
@@ -1193,7 +1188,8 @@ class PurchaseDetailWindow(CTkToplevel):
                         bill_discount = %s
                     WHERE id = %s
                 """, (
-                    self.po_entries['so_number'].get(), self.po_entries['po_number'].get(),
+                    new_so_number, # <-- ใช้ตัวแปรใหม่
+                    self.po_entries['po_number'].get(),
                     supplier_name,
                     self.po_entries['credit_term'].get(), self.po_entries['po_mode'].get(),
                     self.po_entries['shipping_to_stock_cost'].get_value(),
@@ -1256,17 +1252,26 @@ class PurchaseDetailWindow(CTkToplevel):
                         cursor.execute("UPDATE purchase_order_payments SET payment_type = %s, amount = %s, payment_date = %s, bank_name = %s, bank_account_number = %s WHERE id = %s", (p_type, p_amount, p_date, p_bank, p_account, payment_id))
                     else:
                         cursor.execute("INSERT INTO purchase_order_payments (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number) VALUES (%s, %s, %s, %s, %s, %s)", (self.purchase_id, p_type, p_amount, p_date, p_bank, p_account))
+                
                 log_details = { "message": f"PO ID {self.purchase_id} edited by {self.user_role} ({self.app_container.current_user_key})" }
                 cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", ('PO Edited', 'purchase_orders', self.purchase_id, self.app_container.current_user_key, json.dumps(log_details, default=str), datetime.now()))
             
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข PO เรียบร้อยแล้ว", parent=self)
+
+            # --- START: ปรับปรุงข้อความยืนยัน ---
+            if original_so_number != new_so_number and new_so_number != '':
+                po_number_display = self.po_entries['po_number'].get()
+                success_message = (f"บันทึกสำเร็จ!\n\n"
+                                   f"PO '{po_number_display}' ถูกย้ายจาก SO '{original_so_number}' "
+                                   f"ไปยัง SO '{new_so_number}' เรียบร้อยแล้ว")
+            else:
+                success_message = "บันทึกการแก้ไข PO เรียบร้อยแล้ว"
+            
+            messagebox.showinfo("สำเร็จ", success_message, parent=self)
+            # --- END ---
             
             if self.on_save_callback: 
                 self.on_save_callback()
-            
-            # --- จุดที่แก้ไข: ลบบรรทัด self.destroy() ออก ---
-            # self.destroy() 
             
         except Exception as e:
             if conn: conn.rollback()
@@ -1487,12 +1492,13 @@ class PurchaseHistoryWindow(CTkToplevel):
 
 
 class CommissionHistoryWindow(CTkToplevel):
-    def __init__(self, master, app_container, sale_key_filter=None, on_row_double_click=None):
+    def __init__(self, master, app_container, sale_key_filter=None, on_row_double_click=None, support_user_key_filter=None):
         super().__init__(master)
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
         self.sale_key_filter = sale_key_filter
         self.on_row_double_click_callback = on_row_double_click
+        self.support_user_key_filter = support_user_key_filter # <-- บรรทัดนี้จะทำงานได้ถูกต้องแล้ว
         self.df = None
         
         # --- ตัวแปรสำหรับ Pagination และ Filter ---
@@ -1500,14 +1506,13 @@ class CommissionHistoryWindow(CTkToplevel):
         self.rows_per_page = 50
         self.total_rows = 0
         self.total_pages = 0
-        self.active_tab = "drafts" # 'drafts' or 'submitted'
+        self.active_tab = "drafts"
 
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
         self.month_var = tk.StringVar(value="ทุกเดือน")
         self.year_var = tk.StringVar(value="ทุกปี")
         
-        # --- ตัวแปรสำหรับ UI ---
         self.title(f"ประวัติการบันทึกของ: {self.sale_key_filter}")
         self.geometry("1400x700")
         try: self.theme = master.THEME["sale"]
@@ -1516,7 +1521,6 @@ class CommissionHistoryWindow(CTkToplevel):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        # --- สร้าง UI Layout ใหม่ ---
         self._create_new_layout()
         
         self.after(50, self._populate_history_table)
@@ -1725,44 +1729,61 @@ class CommissionHistoryWindow(CTkToplevel):
         self._show_loading()
 
         try:
-            if self.active_tab == "drafts": status_condition = "status IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR')"
-            else: status_condition = "status NOT IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Cancelled')"
-            
-            # --- START: เพิ่ม Logic การกรองใน Query ---
-            base_query = f"FROM commissions WHERE sale_key = %s AND is_active = 1 AND {status_condition}"
+            # +++ START: แก้ไขเงื่อนไข status ให้ระบุตาราง c.status +++
+            if self.active_tab == "drafts":
+                status_condition = "c.status IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Deferred by HR', 'Deferred by SM')"
+            else:
+                status_condition = "c.status NOT IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM')"
+
+            base_query = f"""
+                FROM commissions c
+                LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
+                WHERE c.sale_key = %s AND c.is_active = 1 AND {status_condition}
+            """
+            # +++ END +++
+
             params = [self.sale_key_filter]
+
+            if self.support_user_key_filter:
+                base_query += " AND c.support_user_key = %s"
+                params.append(self.support_user_key_filter)
 
             selected_month_str = self.month_var.get()
             if selected_month_str != "ทุกเดือน":
                 month_num = self.thai_month_map[selected_month_str]
-                base_query += " AND EXTRACT(MONTH FROM timestamp::timestamp) = %s"
+                base_query += " AND EXTRACT(MONTH FROM c.timestamp::timestamp) = %s"
                 params.append(month_num)
 
             selected_year_str = self.year_var.get()
             if selected_year_str != "ทุกปี":
                 year_num = int(selected_year_str)
-                base_query += " AND EXTRACT(YEAR FROM timestamp::timestamp) = %s"
+                base_query += " AND EXTRACT(YEAR FROM c.timestamp::timestamp) = %s"
                 params.append(year_num)
-            # --- END ---
 
-            count_query = f"SELECT COUNT(*) {base_query}"
+            count_query = f"SELECT COUNT(c.id) {base_query}"
             count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
             self.total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
             self.total_pages = (self.total_rows + self.rows_per_page - 1) // self.rows_per_page
 
             offset = self.current_page * self.rows_per_page
-            data_query = f"SELECT * {base_query} ORDER BY timestamp DESC LIMIT %s OFFSET %s"
+
+            data_query = f"SELECT c.*, ss.sale_name as support_user_name {base_query} ORDER BY c.timestamp DESC LIMIT %s OFFSET %s"
             params.extend([self.rows_per_page, offset])
-            
+
             self.df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(params))
-            
+
+            self.df['customer_display'] = self.df.apply(
+                lambda row: f"{row['customer_name']} (คีย์โดย: {row['support_user_name']})" if pd.notna(row['support_user_name']) else row['customer_name'],
+                axis=1
+            )
+
             self._hide_loading()
-            
+
             if self.df.empty and self.current_page == 0:
                 CTkLabel(target_frame, text="ไม่พบข้อมูล").pack(pady=20)
             else:
                 self._create_styled_treeview(target_frame, self.df)
-            
+
             self._update_pagination_controls()
 
         except Exception as e:
@@ -1771,12 +1792,14 @@ class CommissionHistoryWindow(CTkToplevel):
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติได้: {e}", parent=self)
 
     def _create_styled_treeview(self, parent, df):
-        """สร้าง Treeview และเติมข้อมูล (ปรับปรุงให้มีสีสัน)"""
+        """สร้าง Treeview และเติมข้อมูล (ปรับปรุงให้แสดงชื่อผู้คีย์)"""
         parent.grid_rowconfigure(0, weight=1)
         parent.grid_columnconfigure(0, weight=1)
 
-        columns = ['id', 'timestamp', 'status', 'so_number', 'customer_name', 'sales_service_amount', 'shipping_cost', 'rejection_reason']
-        display_columns = ['ID', 'เวลาบันทึก', 'สถานะ', 'SO Number', 'ชื่อลูกค้า', 'ยอดขาย/บริการ', 'ค่าขนส่ง', 'เหตุผลที่ถูกตีกลับ']
+        # +++ START: แก้ไขคอลัมน์ที่แสดงผล +++
+        columns = ['id', 'timestamp', 'status', 'so_number', 'customer_display', 'sales_service_amount', 'shipping_cost', 'rejection_reason']
+        display_columns = ['ID', 'เวลาบันทึก', 'สถานะ', 'SO Number', 'ชื่อลูกค้า (ผู้คีย์)', 'ยอดขาย/บริการ', 'ค่าขนส่ง', 'เหตุผลที่ถูกตีกลับ']
+        # +++ END +++
         
         style = ttk.Style()
         style.theme_use("clam")
@@ -1786,10 +1809,9 @@ class CommissionHistoryWindow(CTkToplevel):
         
         self.tree = ttk.Treeview(parent, columns=columns, show='headings', style="History.Treeview")
         
-        # กำหนดสีสำหรับแต่ละสถานะ
-        self.tree.tag_configure('Draft', background='#FEFCE8') # เหลืองอ่อน
-        self.tree.tag_configure('Rejected', background='#FEF2F2') # แดงอ่อน
-        self.tree.tag_configure('Submitted', background='#F0FDF4') # เขียวอ่อน
+        self.tree.tag_configure('Draft', background='#FEFCE8')
+        self.tree.tag_configure('Rejected', background='#FEF2F2')
+        self.tree.tag_configure('Submitted', background='#F0FDF4')
         self.tree.tag_configure('Default', background='white')
 
         for i, col_id in enumerate(columns):
@@ -1797,7 +1819,10 @@ class CommissionHistoryWindow(CTkToplevel):
             anchor = 'w'
             if col_id in ['id', 'status']: width = 80
             elif col_id in ['sales_service_amount', 'shipping_cost']: width = 120; anchor = 'e'
-            elif col_id in ['customer_name', 'so_number']: width = 200
+            # +++ START: แก้ไขความกว้างคอลัมน์ +++
+            elif col_id == 'customer_display': width = 300
+            elif col_id == 'so_number': width = 150
+            # +++ END +++
             elif col_id == 'timestamp': width = 160
             elif col_id == 'rejection_reason': width = 250
             
@@ -1807,13 +1832,13 @@ class CommissionHistoryWindow(CTkToplevel):
         for index, row in df.iterrows():
             status = row['status']
             tag = 'Default'
-            if 'Reject' in status: tag = 'Rejected'
+            if 'Reject' in status or 'Defer' in status: tag = 'Rejected'
             elif status in ['Original', 'Edited']: tag = 'Draft'
             else: tag = 'Submitted'
             
             values = []
             for col_name in columns:
-                value = row.get(col_name) # ใช้ .get() เพื่อความปลอดภัย
+                value = row.get(col_name)
                 if pd.notna(value):
                     if isinstance(value, (float, np.floating)):
                         values.append(f"{value:,.2f}")

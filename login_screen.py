@@ -112,6 +112,8 @@ class LoginScreen(CTkFrame):
                             self.app_container.show_director_screen(user_key, user_name, user_role)
                         elif user_role == 'Sales Manager':
                             self.app_container.show_sales_manager_screen(user_key, user_name, user_role)
+                        elif user_role == 'Sale Support':
+                            self.app_container.show_sale_support_screen(user_key=user_key, user_name=user_name, user_role=user_role)
                         elif user_role == 'HR':
                             self.app_container.show_hr_screen(user_key=user_key, user_name=user_name, user_role=user_role)
                         else:

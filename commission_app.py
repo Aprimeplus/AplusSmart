@@ -1080,14 +1080,15 @@ class CommissionApp(CTkFrame):
         frame.grid_rowconfigure((0,1), weight=1)
         frame.grid_columnconfigure((0,1,2), weight=1)
         
-        btn_clear = CTkButton(frame, text="ล้างข้อมูล", fg_color="#F97316", command=self._clear_form)
-        btn_clear.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        # +++ START: เพิ่ม self. เพื่อเก็บ Reference ของปุ่ม +++
+        self.btn_clear = CTkButton(frame, text="ล้างข้อมูล", fg_color="#F97316", command=self._clear_form)
+        self.btn_clear.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
         
-        btn_edit = CTkButton(frame, text="แก้ไขข้อมูลจากประวัติ", fg_color="#EAB308", command=self._show_history)
-        btn_edit.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
+        self.btn_edit = CTkButton(frame, text="แก้ไขข้อมูลจากประวัติ", fg_color="#EAB308", command=self._show_history)
+        self.btn_edit.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
         
-        btn_save = CTkButton(frame, text="บันทึกข้อมูล", command=self._save_data)
-        btn_save.grid(row=0, column=2, padx=5, pady=5, sticky="nsew")
+        self.save_button = CTkButton(frame, text="บันทึกข้อมูล", command=self._save_data)
+        self.save_button.grid(row=0, column=2, padx=5, pady=5, sticky="nsew")
         
         btn_history = CTkButton(frame, text="แสดงประวัติ", command=self._show_history)
         btn_history.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
@@ -1095,9 +1096,9 @@ class CommissionApp(CTkFrame):
         btn_export = CTkButton(frame, text="นำไฟล์ออก EXCEL", fg_color="#1F2937", command=self._export_history_to_excel)
         btn_export.grid(row=1, column=1, padx=5, pady=5, sticky="nsew")
         
-        # แก้ไขปุ่ม "นำส่งข้อมูล" ให้เรียกใช้ฟังก์ชันใหม่
         btn_submit = CTkButton(frame, text="นำส่งข้อมูล...", fg_color="#16A34A", command=self._open_submit_dialog)
         btn_submit.grid(row=1, column=2, padx=5, pady=5, sticky="nsew")
+        # +++ END +++
         
         note_text = "หมายเหตุ **\nนำส่งข้อมูลเข้าระบบคำนวณคอมมิชชั่นแล้วไม่สามารถแก้ไขได้"
         note_label = CTkLabel(frame, text=note_text, font=CTkFont(size=13), text_color="#D32F2F", justify="left")

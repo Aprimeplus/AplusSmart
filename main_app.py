@@ -19,10 +19,11 @@ import pandas as pd
 import traceback
 from hr_windows import EditPOWindowByHR
 
-# --- START: เพิ่ม Import ที่จำเป็น ---
+# +++ START: เพิ่ม Import ที่จำเป็น +++
 from so_selection_dialog import SOSelectionDialog
 import po_document_generator
-# --- END: สิ้นสุดการเพิ่ม Import ---
+from sale_support_screen import SaleSupportApp # <-- 1. import คลาสใหม่เข้ามา
+# +++ END +++
 
 # We keep this part for type hinting, which helps the code editor but doesn't run
 from typing import TYPE_CHECKING
@@ -468,9 +469,10 @@ class AppContainer(CTk):
         from hr_screen import HRScreen
         self.show_screen(HRScreen, app_container=self, user_key=user_key, user_name=user_name, user_role=user_role)
 
-    def show_purchasing_screen(self, user_key, user_name, user_role): 
+    def show_purchasing_screen(self, user_key, user_name, user_role):
         from purchasing_screen import PurchasingScreen
-        self.show_screen(PurchasingScreen, user_key=user_key, user_name=user_name, user_role=user_role)
+        # +++ แก้ไขโดยการเพิ่ม app_container=self เข้าไป +++
+        self.show_screen(PurchasingScreen, app_container=self, user_key=user_key, user_name=user_name, user_role=user_role)
 
     def show_purchasing_manager_screen(self, user_key, user_name, user_role):
         from purchasing_manager_screen import PurchasingManagerScreen
@@ -484,10 +486,16 @@ class AppContainer(CTk):
         from sales_manager_screen import SalesManagerScreen
         self.show_screen(SalesManagerScreen, app_container=self, user_key=user_key, user_name=user_name, user_role=user_role)
 
-    def show_history_window(self, sale_key_filter=None, edit_callback=None):
+    def show_history_window(self, sale_key_filter=None, edit_callback=None, support_user_key_filter=None):
         from history_windows import CommissionHistoryWindow, PurchaseHistoryWindow
         if sale_key_filter: 
-            win = CommissionHistoryWindow(master=self, app_container=self, sale_key_filter=sale_key_filter, on_row_double_click=edit_callback)
+            win = CommissionHistoryWindow(
+                master=self, 
+                app_container=self, 
+                sale_key_filter=sale_key_filter, 
+                on_row_double_click=edit_callback,
+                support_user_key_filter=support_user_key_filter # <-- เพิ่มการส่งต่อ
+            )
             return win
         else: 
             win = PurchaseHistoryWindow(master=self, app_container=self)
@@ -619,6 +627,12 @@ class AppContainer(CTk):
         print("Database connection pool closed.")
         if self.pg_engine: self.pg_engine.dispose()
         self.destroy()
+    
+    def show_sale_support_screen(self, user_key, user_name, user_role):
+        """เปิดหน้าจอสำหรับ Sale Support"""
+        from sale_support_screen import SaleSupportApp # Import ตรงนี้เพื่อเลี่ยง Circular Import
+        self.show_screen(SaleSupportApp, user_key=user_key, user_name=user_name, user_role=user_role, app_container=self)
+    # +++ END +++
 
 if __name__ == "__main__":
     app = AppContainer()

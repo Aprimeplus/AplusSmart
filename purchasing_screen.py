@@ -201,6 +201,12 @@ class MyTasksWindow(CTkToplevel):
         self.app_container = purchasing_screen_instance.app_container
         self.user_key = purchasing_screen_instance.user_key
         self.label_font = purchasing_screen_instance.label_font
+        
+        # --- ตัวแปรสำหรับ Pagination และ Search ---
+        self.new_so_current_page = 0
+        self.new_so_rows_per_page = 15
+        self.new_so_search_term = ""
+
         self.title("งานของฉัน (My Tasks)")
         self.geometry("900x600")
         self.grid_rowconfigure(1, weight=1)
@@ -217,7 +223,8 @@ class MyTasksWindow(CTkToplevel):
         header = CTkFrame(parent, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10,5))
         CTkLabel(header, text="งานของฉัน (My Tasks)", font=CTkFont(size=18, weight="bold")).pack(side="left")
-        CTkButton(header, text="Refresh", command=self.load_tasks, width=80).pack(side="right")
+        # ปุ่ม Refresh หลักจะเรียกฟังก์ชัน load_tasks ซึ่งจะโหลดข้อมูลทุกแท็บ
+        CTkButton(header, text="Refresh All", command=self.load_tasks, width=100).pack(side="right")
         
         self.task_tab_view = CTkTabview(parent, corner_radius=10)
         self.task_tab_view.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
@@ -226,36 +233,46 @@ class MyTasksWindow(CTkToplevel):
         self.in_progress_tab = self.task_tab_view.add("งานที่กำลังดำเนินการ (SO/PO Drafts)")
         self.rejected_tab = self.task_tab_view.add("งานที่ถูกปฏิเสธ (Rejected)")
 
-        # --- Layout ใหม่สำหรับแท็บ "SO ใหม่" ---
-        self.new_so_scroll_frame = CTkScrollableFrame(self.new_so_tab, label_text="คลิกเพื่อเริ่มสร้าง PO")
-        self.new_so_scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        # --- Layout ใหม่สำหรับแท็บ "SO ใหม่" (มี Search และ Pagination) ---
+        self.new_so_tab.grid_columnconfigure(0, weight=1)
+        self.new_so_tab.grid_rowconfigure(2, weight=1) # แถวที่ 2 (Scroll Frame) จะขยาย
 
-        # --- Layout ใหม่สำหรับแท็บ "งานที่กำลังดำเนินการ" ---
+        # 1. Search Frame
+        search_frame = CTkFrame(self.new_so_tab)
+        search_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        search_frame.grid_columnconfigure(0, weight=1)
+        self.new_so_search_entry = CTkEntry(search_frame, placeholder_text="ค้นหา SO หรือ ชื่อลูกค้า...")
+        self.new_so_search_entry.grid(row=0, column=0, sticky="ew", padx=(10,5), pady=10)
+        CTkButton(search_frame, text="ค้นหา", command=self._search_new_so_tasks, width=80).grid(row=0, column=1, padx=5, pady=10)
+        CTkButton(search_frame, text="ล้างค่า", command=self._clear_search_and_refresh, fg_color="gray", width=80).grid(row=0, column=2, padx=5, pady=10)
+
+        # 2. Pagination Frame
+        pagination_frame = CTkFrame(self.new_so_tab, fg_color="transparent")
+        pagination_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=0)
+        self.new_so_prev_button = CTkButton(pagination_frame, text="<< หน้าก่อนหน้า", command=self._new_so_prev_page, state="disabled")
+        self.new_so_prev_button.pack(side="left")
+        self.new_so_page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
+        self.new_so_page_label.pack(side="left", expand=True)
+        self.new_so_next_button = CTkButton(pagination_frame, text="หน้าถัดไป >>", command=self._new_so_next_page, state="disabled")
+        self.new_so_next_button.pack(side="right")
+
+        # 3. Scroll Frame (สำหรับแสดงผลลัพธ์)
+        self.new_so_scroll_frame = CTkScrollableFrame(self.new_so_tab)
+        self.new_so_scroll_frame.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
+        
+        # --- Layout เดิมสำหรับแท็บอื่นๆ ---
         self.in_progress_scroll_frame = CTkScrollableFrame(self.in_progress_tab)
         self.in_progress_scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
         self.in_progress_scroll_frame.grid_columnconfigure(0, weight=1)
-
-        # "โซน" สำหรับ SO
-        so_zone = CTkFrame(self.in_progress_scroll_frame, fg_color="#F0F9FF", corner_radius=10)
-        so_zone.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        so_zone.grid_columnconfigure(0, weight=1)
+        so_zone = CTkFrame(self.in_progress_scroll_frame, fg_color="#F0F9FF", corner_radius=10); so_zone.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5)); so_zone.grid_columnconfigure(0, weight=1)
         CTkLabel(so_zone, text="SO ที่กำลังดำเนินการ", font=CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=(10, 0))
         CTkLabel(so_zone, text="(SO ที่คุณ Claim มาแล้ว แต่ยังไม่ได้สร้าง PO)", font=CTkFont(size=12, slant="italic"), text_color="gray50").pack(anchor="w", padx=15, pady=(0, 10))
-        self.so_in_progress_content_frame = CTkFrame(so_zone, fg_color="transparent") # Frame เปล่าสำหรับใส่ Card
-        self.so_in_progress_content_frame.pack(fill="x", expand=True, padx=5, pady=(0, 5))
-
-        # "โซน" สำหรับ PO
-        po_zone = CTkFrame(self.in_progress_scroll_frame, fg_color="#F1F5F9", corner_radius=10)
-        po_zone.grid(row=1, column=0, sticky="ew", padx=10, pady=(5, 10))
-        po_zone.grid_columnconfigure(0, weight=1)
+        self.so_in_progress_content_frame = CTkFrame(so_zone, fg_color="transparent"); self.so_in_progress_content_frame.pack(fill="x", expand=True, padx=5, pady=(0, 5))
+        po_zone = CTkFrame(self.in_progress_scroll_frame, fg_color="#F1F5F9", corner_radius=10); po_zone.grid(row=1, column=0, sticky="ew", padx=10, pady=(5, 10)); po_zone.grid_columnconfigure(0, weight=1)
         CTkLabel(po_zone, text="PO ฉบับร่าง", font=CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=(10, 0))
         CTkLabel(po_zone, text="(PO ที่คุณสร้างและบันทึกร่างไว้ แต่ยังไม่ได้ส่งอนุมัติ)", font=CTkFont(size=12, slant="italic"), text_color="gray50").pack(anchor="w", padx=15, pady=(0, 10))
-        self.po_draft_content_frame = CTkFrame(po_zone, fg_color="transparent") # Frame เปล่าสำหรับใส่ Card
-        self.po_draft_content_frame.pack(fill="x", expand=True, padx=5, pady=(0, 5))
-
-        # --- Layout ใหม่สำหรับแท็บ "งานที่ถูกปฏิเสธ" ---
-        self.rejected_scroll_frame = CTkScrollableFrame(self.rejected_tab, label_text="รายการที่ต้องแก้ไข")
-        self.rejected_scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.po_draft_content_frame = CTkFrame(po_zone, fg_color="transparent"); self.po_draft_content_frame.pack(fill="x", expand=True, padx=5, pady=(0, 5))
+        self.rejected_scroll_frame = CTkScrollableFrame(self.rejected_tab, label_text="รายการที่ต้องแก้ไข"); self.rejected_scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
     def on_close(self):
         self.purchasing_screen._update_tasks_badge()
@@ -267,44 +284,84 @@ class MyTasksWindow(CTkToplevel):
         self._load_in_progress_tasks()
         self._load_rejected_po_tasks()
 
+    def _search_new_so_tasks(self):
+        self.new_so_search_term = self.new_so_search_entry.get().strip()
+        self.new_so_current_page = 0 # กลับไปหน้าแรกเสมอเมื่อค้นหา
+        self._load_new_so_tasks()
+
+    def _new_so_prev_page(self):
+        if self.new_so_current_page > 0:
+            self.new_so_current_page -= 1
+            self._load_new_so_tasks()
+    
+    def _new_so_next_page(self):
+        self.new_so_current_page += 1
+        self._load_new_so_tasks()
+
+    def _clear_search_and_refresh(self):
+        self.new_so_search_entry.delete(0, 'end')
+        self.new_so_search_term = ""
+        self.new_so_current_page = 0
+        self._load_new_so_tasks()
+
     def _load_new_so_tasks(self):
+        """(เวอร์ชันใหม่) โหลดข้อมูล SO พร้อม Search และ Pagination"""
         frame = self.new_so_scroll_frame
         for widget in frame.winfo_children(): widget.destroy()
+
         try:
-            query = """
-                SELECT c.id, c.so_number, c.timestamp, c.customer_name, u.sale_name 
-                FROM commissions c JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.status = 'Pending PU' AND c.is_active = 1 ORDER BY c.timestamp DESC
-            """
-            df = pd.read_sql_query(query, self.app_container.pg_engine)
-            if df.empty: CTkLabel(frame, text="ไม่มี SO ใหม่").pack(pady=20); return
+            # --- สร้าง Query และ Parameters แบบไดนามิก ---
+            base_query = "FROM commissions c JOIN sales_users u ON c.sale_key = u.sale_key WHERE c.status = 'Pending PU' AND c.is_active = 1"
+            params = []
+            
+            if self.new_so_search_term:
+                base_query += " AND (c.so_number ILIKE %s OR c.customer_name ILIKE %s)"
+                search_like = f"%{self.new_so_search_term}%"
+                params.extend([search_like, search_like])
+
+            # --- 1. Query เพื่อนับจำนวนทั้งหมดตามเงื่อนไข ---
+            count_query = f"SELECT COUNT(c.id) {base_query}"
+            total_rows = pd.read_sql_query(count_query, self.app_container.pg_engine, params=tuple(params)).iloc[0,0]
+            total_pages = (total_rows + self.new_so_rows_per_page - 1) // self.new_so_rows_per_page
+
+            # --- 2. Query เพื่อดึงข้อมูลเฉพาะหน้าปัจจุบัน ---
+            offset = self.new_so_current_page * self.new_so_rows_per_page
+            data_query = f"SELECT c.id, c.so_number, c.timestamp, c.customer_name, u.sale_name {base_query} ORDER BY c.timestamp DESC LIMIT %s OFFSET %s"
+            final_params = params + [self.new_so_rows_per_page, offset]
+            
+            df = pd.read_sql_query(data_query, self.app_container.pg_engine, params=tuple(final_params))
+
+            # --- 3. อัปเดต UI (Pagination controls) ---
+            self.new_so_page_label.configure(text=f"หน้า {self.new_so_current_page + 1} / {max(1, total_pages)}")
+            self.new_so_prev_button.configure(state="normal" if self.new_so_current_page > 0 else "disabled")
+            self.new_so_next_button.configure(state="normal" if self.new_so_current_page < total_pages - 1 else "disabled")
+
+            if df.empty:
+                message = "ไม่พบ SO ใหม่" if not self.new_so_search_term else f"ไม่พบผลลัพธ์สำหรับ '{self.new_so_search_term}'"
+                CTkLabel(frame, text=message).pack(pady=20)
+                return
+            
+            # --- 4. แสดงผลลัพธ์ ---
             for _, row in df.iterrows():
                 card = CTkFrame(frame, border_width=1, fg_color="#F0FDF4")
                 card.pack(fill="x", padx=5, pady=3)
-
-                # กำหนด Grid ภายใน Card: คอลัมน์ 0 (ข้อมูล) จะขยาย, คอลัมน์ 1 (ปุ่ม) จะคงที่
                 card.grid_columnconfigure(0, weight=1)
-                card.grid_columnconfigure(1, weight=0)
 
-                # สร้าง Frame สำหรับรวมข้อมูลตัวอักษรไว้ด้วยกันในคอลัมน์ที่ 0
                 info_frame = CTkFrame(card, fg_color="transparent")
                 info_frame.grid(row=0, column=0, sticky="w", padx=10, pady=5)
 
-                # เตรียมข้อมูล
                 ts = pd.to_datetime(row['timestamp']).strftime("%Y-%m-%d %H:%M") if pd.notna(row['timestamp']) else "N/A"
                 info_text = f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']} (ส่งโดย: {row['sale_name']})"
 
-                # แสดงข้อมูลหลัก (บรรทัดบน)
                 CTkLabel(info_frame, text=info_text, font=self.label_font, justify="left").pack(anchor="w")
-                
-                # แสดงเวลา (บรรทัดล่าง)
                 CTkLabel(info_frame, text=f"เวลาที่ส่ง: {ts}", font=CTkFont(size=11), text_color="gray").pack(anchor="w")
 
-                # สร้างปุ่มและวางในคอลัมน์ที่ 1
                 start_button = CTkButton(card, text="เริ่มสร้าง PO", command=lambda s=row['so_number']: self._select_so_and_close(s))
                 start_button.grid(row=0, column=1, sticky="e", padx=10, pady=5)
+        
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถโหลดรายการ SO ใหม่ได้: {e}", parent=self)
+            traceback.print_exc()
 
     def _load_in_progress_tasks(self):
         # ล้างข้อมูลเก่าออกจาก content frames
@@ -713,8 +770,10 @@ class ProductEditDialog(CTkToplevel):
 # ==============================================================================
 class PurchasingScreen(CTkFrame):
     # ให้นำฟังก์ชัน __init__ นี้ไปวางทับของเดิมทั้งหมด
-    def __init__(self, master, user_key=None, user_name=None, user_role=None, initial_so_number=None):
+    def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None, initial_so_number=None):
         self.master, self.app_container = master, master
+        self.master = master
+        self.app_container = app_container
         self.user_key, self.user_name = user_key, user_name
         self.theme = self.app_container.THEME["purchasing"]
         self.sale_theme = self.app_container.THEME["sale"]
@@ -783,6 +842,93 @@ class PurchasingScreen(CTkFrame):
         self.bind("<Destroy>", self._on_destroy)
         # <<< END: สิ้นสุดการแก้ไข >>>
     
+    def _edit_so_number(self):
+        """เปิด Dialog เพื่อแก้ไข SO Number ของรายการที่กำลังทำงานอยู่"""
+        if not self.current_commission_data:
+            messagebox.showwarning("ยังไม่ได้เลือก SO", "กรุณาเลือก SO ที่ต้องการแก้ไขก่อน", parent=self)
+            return
+
+        old_so_number = self.current_commission_data.get('so_number')
+        record_id = self.current_commission_data.get('id')
+
+        dialog = CTkInputDialog(text=f"กรุณาใส่เลข SO ใหม่สำหรับ '{old_so_number}':", title="แก้ไขเลขที่ Sales Order")
+        new_so_number = dialog.get_input()
+
+        if not new_so_number or not new_so_number.strip():
+            return
+        
+        new_so_number = new_so_number.strip().upper()
+        if new_so_number == old_so_number:
+            return
+
+        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการเปลี่ยนเลข SO จาก '{old_so_number}' เป็น '{new_so_number}' ใช่หรือไม่?\n\n(PO ทั้งหมดที่เกี่ยวข้องกับ SO นี้จะถูกอัปเดตด้วย)", parent=self):
+            return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 1. ตรวจสอบว่า SO Number ใหม่ซ้ำกับที่มีอยู่หรือไม่
+                cursor.execute("SELECT id FROM commissions WHERE so_number = %s AND is_active = 1", (new_so_number,))
+                if cursor.fetchone():
+                    raise ValueError(f"เลขที่ SO '{new_so_number}' นี้มีอยู่แล้วในระบบ ไม่สามารถใช้ซ้ำได้")
+
+                # 2. อัปเดตตาราง commissions
+                cursor.execute("UPDATE commissions SET so_number = %s WHERE id = %s", (new_so_number, record_id))
+                
+                # 3. อัปเดตตาราง purchase_orders
+                cursor.execute("UPDATE purchase_orders SET so_number = %s WHERE so_number = %s", (new_so_number, old_so_number))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "แก้ไขเลขที่ SO เรียบร้อยแล้ว", parent=self)
+            
+            # เคลียร์ฟอร์มและรีเฟรชลิสต์
+            self.handle_clear_button_press(confirm=False)
+            self._refresh_so_list()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("เกิดข้อผิดพลาด", str(e), parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _cancel_so_record(self):
+        """ยกเลิก (Soft Delete) SO Record ที่กำลังทำงานอยู่"""
+        if not self.current_commission_data:
+            messagebox.showwarning("ยังไม่ได้เลือก SO", "กรุณาเลือก SO ที่ต้องการยกเลิกก่อน", parent=self)
+            return
+            
+        so_number = self.current_commission_data.get('so_number')
+        record_id = self.current_commission_data.get('id')
+        
+        msg = (f"คุณต้องการยกเลิก SO: '{so_number}' ใช่หรือไม่?\n\n"
+               "การกระทำนี้จะเปลี่ยนสถานะ SO เป็น 'Cancelled' และซ่อนจากคิวงานปกติ "
+               "รวมถึงยกเลิก PO ที่เกี่ยวข้องทั้งหมดด้วย\n\n**การกระทำนี้ไม่สามารถย้อนกลับได้**")
+
+        if not messagebox.askyesno("ยืนยันการยกเลิก SO", msg, icon="warning", parent=self):
+            return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 1. อัปเดตตาราง commissions (Soft Delete)
+                cursor.execute("UPDATE commissions SET status = 'Cancelled by PU', is_active = 0 WHERE id = %s", (record_id,))
+                
+                # 2. อัปเดตสถานะ PO ที่เกี่ยวข้องทั้งหมด
+                cursor.execute("UPDATE purchase_orders SET status = 'Cancelled' WHERE so_number = %s", (so_number,))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ยกเลิก SO: '{so_number}' เรียบร้อยแล้ว", parent=self)
+            
+            # เคลียร์ฟอร์มและรีเฟรชลิสต์
+            self.handle_clear_button_press(confirm=False)
+            self._refresh_so_list()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการยกเลิก SO: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
     def _lookup_so_details(self):
         """
         (เวอร์ชันแก้ไข) เปิดหน้าต่าง Input Dialog และส่ง SO Number ไปให้ SOFinderDialog
@@ -1471,74 +1617,54 @@ class PurchasingScreen(CTkFrame):
         self.so_entry.set("")
         self.so_entry.grid(row=0, column=0, sticky="ew")
 
-        refresh_button = CTkButton(so_selection_frame, text="🔄", width=35, command=self._refresh_so_list)
-        refresh_button.grid(row=0, column=1, sticky="e", padx=(5, 0))
+        # +++ START: แก้ไขการจัดวางปุ่มใหม่ทั้งหมด +++
+        # 1. สร้าง Frame ใหม่สำหรับวางปุ่มโดยเฉพาะ
+        action_buttons_frame = CTkFrame(so_selection_frame, fg_color="transparent")
+        action_buttons_frame.grid(row=0, column=1, sticky="e", padx=(10, 0))
 
+        # 2. ใช้ .pack() เพื่อเรียงปุ่มจากซ้ายไปขวาภายใน Frame ใหม่
+        edit_so_button = CTkButton(action_buttons_frame, text="แก้ไข SO", width=100, command=self._edit_so_number, fg_color="#EAB308", hover_color="#CA8A04")
+        edit_so_button.pack(side="left", padx=5)
+
+        cancel_so_button = CTkButton(action_buttons_frame, text="ยกเลิก SO", width=100, command=self._cancel_so_record, fg_color="#DC2626", hover_color="#B91C1C")
+        cancel_so_button.pack(side="left", padx=5)
+
+        refresh_button = CTkButton(action_buttons_frame, text="🔄", width=35, command=self._refresh_so_list)
+        refresh_button.pack(side="left", padx=5)
+        # +++ END +++
+
+        # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
         CTkLabel(top_frame, text="เอกสาร PO/ST:").grid(row=1, column=0, sticky="w", padx=10, pady=5)
-        
         po_st_frame = CTkFrame(top_frame, fg_color="transparent")
         po_st_frame.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
         po_st_frame.grid_columnconfigure(1, weight=1)
-
-        self.po_number_type_var = tk.StringVar(value="PO")
-        self.po_number_type_var.trace_add("write", self._on_po_number_type_changed)
+        self.po_number_type_var = tk.StringVar(value="PO"); self.po_number_type_var.trace_add("write", self._on_po_number_type_changed)
         self.po_type_dropdown = CTkOptionMenu(po_st_frame, variable=self.po_number_type_var, values=["PO", "ST"], width=80, **self.dropdown_style)
         self.po_type_dropdown.grid(row=0, column=0, sticky="w", padx=(0,5))
-
-        self.po_number_input_var = tk.StringVar()
-        self.po_number_input_var.trace_add("write", self._validate_po_input)
+        self.po_number_input_var = tk.StringVar(); self.po_number_input_var.trace_add("write", self._validate_po_input)
         self.po_number_entry = CTkEntry(po_st_frame, font=self.entry_font, textvariable=self.po_number_input_var)
         self.po_number_entry.grid(row=0, column=1, sticky="ew")
         self.po_number_entry.bind("<FocusIn>", self._on_po_focus_in)
-        
         CTkLabel(top_frame, text="RR Number:").grid(row=1, column=2, sticky="w", padx=10, pady=5)
         self.rr_number_var.trace_add("write", self._force_uppercase_rr)
         self.rr_number_entry = CTkEntry(top_frame, font=self.entry_font, textvariable=self.rr_number_var)
         self.rr_number_entry.grid(row=1, column=3, sticky="ew", padx=10, pady=5)
-
         CTkLabel(top_frame, text="แผนก:").grid(row=1, column=4, sticky="w", padx=(20, 10), pady=5)
-        self.department_entry = CTkEntry(top_frame, font=self.entry_font)
-        self.department_entry.grid(row=1, column=5, sticky="ew", padx=10, pady=5)
-
+        self.department_entry = CTkEntry(top_frame, font=self.entry_font); self.department_entry.grid(row=1, column=5, sticky="ew", padx=10, pady=5)
         CTkLabel(top_frame, text="PUR Order :").grid(row=1, column=6, sticky="w", padx=(20, 10), pady=5)
-        self.pur_order_entry = CTkEntry(top_frame, font=self.entry_font)
-        self.pur_order_entry.grid(row=1, column=7, sticky="ew", padx=10, pady=5)
-
-        sup_frame = CTkFrame(top_frame, fg_color="transparent")
-        sup_frame.grid(row=2, column=0, columnspan=8, sticky="ew", padx=5, pady=5)
-        sup_frame.grid_columnconfigure(1, weight=4)
-        sup_frame.grid_columnconfigure(3, weight=2)
-        sup_frame.grid_columnconfigure(5, weight=2)
-        sup_frame.grid_columnconfigure(6, weight=1)
-        sup_frame.grid_columnconfigure(7, weight=1)
-
+        self.pur_order_entry = CTkEntry(top_frame, font=self.entry_font); self.pur_order_entry.grid(row=1, column=7, sticky="ew", padx=10, pady=5)
+        sup_frame = CTkFrame(top_frame, fg_color="transparent"); sup_frame.grid(row=2, column=0, columnspan=8, sticky="ew", padx=5, pady=5)
+        sup_frame.grid_columnconfigure(1, weight=4); sup_frame.grid_columnconfigure(3, weight=2); sup_frame.grid_columnconfigure(5, weight=2); sup_frame.grid_columnconfigure(6, weight=1); sup_frame.grid_columnconfigure(7, weight=1)
         CTkLabel(sup_frame, text="Supplier Name:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
-        
-        # --- START: แก้ไขการสร้าง AutoCompleteEntry ---
-        self.supplier_name_combo = AutoCompleteEntry(
-            master=sup_frame, 
-            completion_list=self.supplier_completion_data, # <<< ใช้ list of dictionaries
-            display_key='name',                            # <<< ระบุ key ที่จะใช้แสดงผล
-            command=self._on_supplier_selected,            # <<< ระบุ callback ที่จะทำงานเมื่อเลือก
-            placeholder_text="พิมพ์เพื่อค้นหาซัพพลายเออร์..."
-        )
-        # --- END ---
-
+        self.supplier_name_combo = AutoCompleteEntry(master=sup_frame, completion_list=self.supplier_completion_data, display_key='name', command=self._on_supplier_selected, placeholder_text="พิมพ์เพื่อค้นหาซัพพลายเออร์...")
         self.supplier_name_combo.grid(row=0, column=1, sticky="ew", padx=(0,10), pady=3)
-        
         CTkLabel(sup_frame, text="Supplier Code:").grid(row=0, column=2, sticky="w", padx=5, pady=3)
-        self.supplier_code_entry = CTkEntry(sup_frame, font=self.entry_font)
-        self.supplier_code_entry.grid(row=0, column=3, sticky="ew", padx=(0,10), pady=3)
-
+        self.supplier_code_entry = CTkEntry(sup_frame, font=self.entry_font); self.supplier_code_entry.grid(row=0, column=3, sticky="ew", padx=(0,10), pady=3)
         CTkLabel(sup_frame, text="Credit Term:").grid(row=0, column=4, sticky="w", padx=5, pady=3)
-        self.credit_term_entry = CTkEntry(sup_frame, font=self.entry_font)
-        self.credit_term_entry.grid(row=0, column=5, sticky="ew", padx=(0,10), pady=3)
-
+        self.credit_term_entry = CTkEntry(sup_frame, font=self.entry_font); self.credit_term_entry.grid(row=0, column=5, sticky="ew", padx=(0,10), pady=3)
         self.update_supplier_button = CTkButton(sup_frame, text="บันทึก/อัปเดต", width=120, command=self._save_or_update_supplier)
         self.update_supplier_button.grid(row=0, column=6, sticky="e", padx=(5, 10), pady=3)
-
-        mode_frame = CTkFrame(sup_frame, fg_color="transparent")
-        mode_frame.grid(row=0, column=7, sticky="e", padx=(10, 5), pady=3)
+        mode_frame = CTkFrame(sup_frame, fg_color="transparent"); mode_frame.grid(row=0, column=7, sticky="e", padx=(10, 5), pady=3)
         CTkRadioButton(mode_frame, text="Single PO/ST", variable=self.po_mode_var, value="Single-PO").pack(side="left")
         CTkRadioButton(mode_frame, text="Multiple PO/ST", variable=self.po_mode_var, value="Multiple-PO").pack(side="left", padx=10)
         
@@ -2296,193 +2422,127 @@ class PurchasingScreen(CTkFrame):
         return {"header": header_data, "items": items_data, "payments": payments_data}
 
     def _save_po(self, status):
-        """บันทึก PO แบบไม่ให้ UI ค้าง"""
+        """(เวอร์ชันแก้ไข) บันทึก PO พร้อมเพิ่มการตรวจสอบข้อมูลซ้ำและข้อมูลครบถ้วน"""
         
-        # เก็บข้อมูลจากฟอร์ม
         form_data = self._gather_form_data()
         header, items, payments = form_data.get('header', {}), form_data.get('items', []), form_data.get('payments', [])
 
-        # ตรวจสอบข้อมูลก่อนบันทึก
-        if not header.get("supplier_name") or not items:
-             messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก Supplier, และเพิ่มสินค้าอย่างน้อย 1 รายการก่อนบันทึก", parent=self)
+        if not header.get("so_number"):
+            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณาเลือก SO Number ก่อนทำการบันทึก", parent=self)
+            return
+        if not header.get("supplier_name"):
+             messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก Supplier ก่อนบันทึก", parent=self)
              return
-        if status == 'Pending Approval' and (not header.get("so_number") or not header.get("po_number")):
-            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก SO และ PO/ST Number ก่อนส่งอนุมัติ", parent=self)
+        if not items:
+            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณาเพิ่มสินค้าอย่างน้อย 1 รายการก่อนบันทึก", parent=self)
+            return
+        if status == 'Pending Approval' and not header.get("po_number"):
+            messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณากรอก PO/ST Number ก่อนส่งอนุมัติ", parent=self)
             return
 
-        # แสดง loading message
+        # <<< จุดที่แก้ไข: เรียกใช้ฟังก์ชันที่ถูกต้อง >>>
         loading_label = show_loading_message(self, f"กำลังบันทึก PO สถานะ '{status}'...")
         
-        # ปิดใช้งานปุ่มบันทึกชั่วคราว
-        save_buttons = self._find_save_buttons()
-        self._disable_buttons(save_buttons)
+        save_buttons = self._find_save_buttons(); self._disable_buttons(save_buttons)
     
         def save_work():
-            """ฟังก์ชันที่จะรันใน background"""
             conn = self.app_container.get_connection()
             try:
-                if status == 'Pending Approval':
-                    header['status'] = 'Pending Approval'
-                    header['approval_status'] = 'Pending Mgr 1'
-                else:
-                    header['status'] = 'Draft'
-                    header['approval_status'] = 'Draft'
-
                 with conn.cursor() as cursor:
+                    if not self.editing_po_id:
+                        cursor.execute("""
+                            SELECT id FROM purchase_orders 
+                            WHERE so_number = %s AND supplier_name = %s
+                        """, (header.get("so_number"), header.get("supplier_name")))
+                        
+                        if cursor.fetchone():
+                            raise ValueError(f"มี PO สำหรับ SO '{header.get('so_number')}' และ Supplier '{header.get('supplier_name')}' นี้อยู่แล้ว")
+
+                    if status == 'Pending Approval':
+                        header['status'] = 'Pending Approval'; header['approval_status'] = 'Pending Mgr 1'
+                    else:
+                        header['status'] = 'Draft'; header['approval_status'] = 'Draft'
+
                     cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'purchase_orders'")
                     db_columns = {row[0] for row in cursor.fetchall()}
                     
                     if self.editing_po_id:
-                        # Update existing PO
-                        header.pop('user_key', None)
-                        header.pop('timestamp', None)
+                        header.pop('user_key', None); header.pop('timestamp', None)
                         filtered_header = {k: v for k, v in header.items() if k in db_columns}
                         set_clause_formatted = ", ".join([f'"{k}" = %s' for k in filtered_header.keys()])
                         params = list(filtered_header.values()) + [self.editing_po_id]
                         cursor.execute(f"UPDATE purchase_orders SET {set_clause_formatted} WHERE id = %s", params)
                         new_po_id = self.editing_po_id
                     else:
-                        # Insert new PO
                         filtered_header = {k: v for k, v in header.items() if k in db_columns}
                         cols = ", ".join([f'"{k}"' for k in filtered_header.keys()])
                         placeholders = ", ".join(["%s"] * len(filtered_header))
                         cursor.execute(f"INSERT INTO purchase_orders ({cols}) VALUES ({placeholders}) RETURNING id", list(filtered_header.values()))
                         new_po_id = cursor.fetchone()[0]
                     
-                    # Delete existing items and payments
                     cursor.execute("DELETE FROM purchase_order_items WHERE purchase_order_id = %s", (new_po_id,))
                     cursor.execute("DELETE FROM purchase_order_payments WHERE purchase_order_id = %s", (new_po_id,))
                     
-                    # Insert items
                     if items:
-                        import psycopg2.extras
-                        items_values = [
-                            (new_po_id, item['product_name'], item['status'], item['product_code'], 
-                            item['warehouse'], item['quantity'], item['weight_per_unit'],
-                            item['unit_price'], item['discount_value'], item['discount_type'],
-                            item['total_weight'], item['total_price'])
-                            for item in items
-                        ]
-                        
-                        items_query = """
-                            INSERT INTO purchase_order_items 
-                            (purchase_order_id, product_name, status, product_code, warehouse,
-                            quantity, weight_per_unit, unit_price, discount_value, discount_type,
-                            total_weight, total_price)
-                            VALUES %s
-                        """
-                        psycopg2.extras.execute_values(cursor, items_query, items_values)
+                        items_values = [(new_po_id, item['product_name'], item['status'], item['product_code'], item['warehouse'], item['quantity'], item['weight_per_unit'], item['unit_price'], item['discount_value'], item['discount_type'], item['total_weight'], item['total_price']) for item in items]
+                        psycopg2.extras.execute_values(cursor, "INSERT INTO purchase_order_items (purchase_order_id, product_name, status, product_code, warehouse, quantity, weight_per_unit, unit_price, discount_value, discount_type, total_weight, total_price) VALUES %s", items_values)
 
-                    # Insert payments
                     if payments:
-                        payments_values = [
-                            (new_po_id, payment['payment_type'], payment['amount'],
-                            payment['payment_date'], payment['bank_name'], payment['bank_account_number'])
-                            for payment in payments
-                        ]
-                        
-                        payments_query = """
-                            INSERT INTO purchase_order_payments 
-                            (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number)
-                            VALUES %s
-                        """
-                        psycopg2.extras.execute_values(cursor, payments_query, payments_values)
+                        payments_values = [(new_po_id, payment['payment_type'], payment['amount'], payment['payment_date'], payment['bank_name'], payment['bank_account_number']) for payment in payments]
+                        psycopg2.extras.execute_values(cursor, "INSERT INTO purchase_order_payments (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number) VALUES %s", payments_values)
 
-                    # Create notifications for approval
+                    if status != 'Draft':
+                        so_number_to_update = header.get("so_number")
+                        if so_number_to_update:
+                            cursor.execute("UPDATE commissions SET status = 'PO Sent' WHERE so_number = %s AND is_active = 1", (so_number_to_update,))
+                            print(f"Updated commissions status to 'PO Sent' for SO: {so_number_to_update}")
+                    
                     if status == 'Pending Approval':
                         self._create_initial_approval_notification(cursor, new_po_id)
                 
                 conn.commit()
                 
-                # Update product last prices
                 try:
                     with conn.cursor() as cursor:
-                        price_updates = [
-                            (item['unit_price'], item['weight_per_unit'], item['product_code'])
-                            for item in items 
-                            if item.get('product_code') and item.get('unit_price') is not None
-                        ]
-                        
+                        price_updates = [(item['unit_price'], item['weight_per_unit'], item['product_code']) for item in items if item.get('product_code') and item.get('unit_price') is not None]
                         if price_updates:
-                            import psycopg2.extras
-                            price_query = """
-                                UPDATE products 
-                                SET last_unit_price = data.price, 
-                                    last_weight_per_unit = data.weight,
-                                    last_updated = NOW()
-                                FROM (VALUES %s) AS data (price, weight, code)
-                                WHERE product_code = data.code
-                            """
-                            psycopg2.extras.execute_values(cursor, price_query, price_updates)
+                            psycopg2.extras.execute_values(cursor, "UPDATE products SET last_unit_price = data.price, last_weight_per_unit = data.weight, last_updated = NOW() FROM (VALUES %s) AS data (price, weight, code) WHERE product_code = data.code", price_updates)
                             conn.commit()
-                            
                 except Exception as update_err:
                     print(f"Could not update last price/weight: {update_err}")
-                
+
                 return {"success": True, "po_id": new_po_id, "status": status}
 
             except Exception as e:
-                if conn:
-                    conn.rollback()
+                if conn: conn.rollback()
                 raise e
             finally:
-                if conn:
-                    self.app_container.release_connection(conn)
+                if conn: self.app_container.release_connection(conn)
     
         def on_success(result):
-            """เมื่อบันทึกสำเร็จ"""
+            # <<< จุดที่แก้ไข: เรียกใช้ฟังก์ชันที่ถูกต้อง >>>
             hide_loading_message(loading_label)
+            
             self._enable_buttons(save_buttons)
-            
             messagebox.showinfo("สำเร็จ", f"บันทึก PO เป็น '{result['status']}' สำเร็จ", parent=self)
+            try: self._load_product_master_data()
+            except: pass
             
-            try:
-                self._load_product_master_data()
-            except:
-                pass
-            
-            # <<< START: แก้ไข Logic การล้างฟอร์ม >>>
-            # ลบเงื่อนไข if result['status'] != 'Draft' ออก
-            # เพื่อให้ฟอร์มถูกล้างทุกครั้งที่บันทึกสำเร็จ ไม่ว่าจะสถานะใดก็ตาม
             if header.get('po_mode') == 'Multiple-PO':
-                # ถ้าเป็นโหมด Multiple-PO ให้ล้างฟอร์มแต่คง SO เดิมไว้
                 self._clear_form(keep_so=True, confirm=False)
             else:
-                # ถ้าเป็นโหมด Single-PO ให้ล้างฟอร์มทั้งหมด
                 self._clear_form(keep_so=False, confirm=False)
-            # <<< END: สิ้นสุดการแก้ไข >>>
-    
-        def on_success(result):
-            """เมื่อบันทึกสำเร็จ"""
-            hide_loading_message(loading_label)
-            self._enable_buttons(save_buttons)
-            
-            messagebox.showinfo("สำเร็จ", f"บันทึก PO เป็น '{result['status']}' สำเร็จ", parent=self)
-            
-            try:
-                self._load_product_master_data()
-            except:
-                pass
-            
-            # <<< START: แก้ไข Logic การล้างฟอร์ม >>>
-            # ลบเงื่อนไข if result['status'] != 'Draft' ออก
-            # เพื่อให้ฟอร์มถูกล้างทุกครั้งที่บันทึกสำเร็จ ไม่ว่าจะสถานะใดก็ตาม
-            if header.get('po_mode') == 'Multiple-PO':
-                # ถ้าเป็นโหมด Multiple-PO ให้ล้างฟอร์มแต่คง SO เดิมไว้
-                self._clear_form(keep_so=True, confirm=False)
-            else:
-                # ถ้าเป็นโหมด Single-PO ให้ล้างฟอร์มทั้งหมด
-                self._clear_form(keep_so=False, confirm=False)
-            # <<< END: สิ้นสุดการแก้ไข >>>
     
         def on_error(error):
-            """เมื่อเกิดข้อผิดพลาด"""
+            # <<< จุดที่แก้ไข: เรียกใช้ฟังก์ชันที่ถูกต้อง >>>
             hide_loading_message(loading_label)
+
             self._enable_buttons(save_buttons)
             messagebox.showerror("ข้อผิดพลาด", f"ไม่สามารถบันทึกได้: {str(error)}", parent=self)
+            traceback.print_exc()
         
         self.async_helper.run_in_background(save_work, on_success, on_error)
-
+        
     def _find_save_buttons(self):
         """หาปุ่มบันทึกทั้งหมดในฟอร์ม"""
         save_buttons = []

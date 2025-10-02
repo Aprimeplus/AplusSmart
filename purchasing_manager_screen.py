@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
                            CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkCheckBox, CTkEntry,
-                           CTkOptionMenu)
+                           CTkOptionMenu, CTkTabview) # <-- เพิ่ม CTkTabview
 from tkinter import messagebox
 import pandas as pd
 from datetime import datetime
@@ -23,6 +23,8 @@ from pdf_utils import export_approved_pos_to_pdf
 from po_selection_dialog import POSelectionDialog
 from hr_windows import SOPopupWindow
 from history_windows import PurchaseDetailWindow
+from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
+
 
 class RejectionReasonDialog(CTkToplevel):
     def __init__(self, master):
@@ -264,49 +266,124 @@ class PurchasingManagerScreen(CTkFrame):
         self.theme = self.app_container.THEME["purchasing"]
         self.header_font = CTkFont(size=16, weight="bold")
         self.dropdown_style = {
-            "fg_color": "white",
-            "text_color": "black",
+            "fg_color": "white", "text_color": "black",
             "button_color": self.theme.get("primary", "#3B82F6"),
             "button_hover_color": self.theme.get("header", "#2563EB")
         }
         self.pg_engine = self.app_container.pg_engine
-        self.all_pending_df = pd.DataFrame() # เก็บข้อมูล PO ที่รออนุมัติทั้งหมด
-        self.so_cards = {} # เก็บ SO Card Widgets
-        self.po_cards = {} # เก็บ PO Card Widgets
+        self.all_pending_df = pd.DataFrame()
+        self.so_cards = {}
+        self.po_cards = {}
+        
+        self.current_page = 0
+        self.rows_per_page = 15
+        self._debounce_job = None
+        
         self.rejection_chart_canvas, self.polling_job_id, self.so_detail_window, self.reopen_window = None, None, None, None
         self._so_create_string_vars()
+        
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
-        from po_selection_dialog import SOSelectionPrintDialog 
-        from po_document_generator import generate_multi_po_pdf
+        self.grid_rowconfigure(1, weight=1)
+
         self._create_header()
-        self._create_dashboard_view()
-        self._create_pending_list_view()
+
+        self.tab_view = CTkTabview(self, corner_radius=10, border_width=1)
+        self.tab_view.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+
+        self.manager_view_tab = self.tab_view.add("ภาพรวมและอนุมัติ (Manager View)")
+        self.staff_view_tab = self.tab_view.add("สร้าง/แก้ไข PO (Staff View)")
+        
+        self.manager_view_tab.grid_columnconfigure(0, weight=1)
+        self.manager_view_tab.grid_rowconfigure(1, weight=1)
+
+        self._create_dashboard_view(parent_tab=self.manager_view_tab)
+        self._create_pending_list_view(parent_tab=self.manager_view_tab)
+        
+        # +++ START: แก้ไขการสร้าง PurchasingScreen ตรงนี้ +++
+        self.purchasing_staff_screen = PurchasingScreen(
+            master=self.staff_view_tab,
+            app_container=self.app_container, # <-- ส่ง app_container เข้าไปโดยตรง
+            user_key=self.user_key,
+            user_name=self.user_name,
+            user_role=self.user_role
+        )
+        self.purchasing_staff_screen.pack(fill="both", expand=True)
+        # +++ END +++
+
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
+    
+    def _clear_search(self):
+        """ล้างข้อความในช่องค้นหาและโหลดข้อมูลทั้งหมดใหม่"""
+        self.search_entry.delete(0, 'end')
+        self._filter_pending_list()
+
+    def _next_page(self):
+        """เลื่อนไปหน้าถัดไป"""
+        if self.filtered_df is None: return
+        total_pages = (len(self.filtered_df.groupby('so_number')) + self.rows_per_page - 1) // self.rows_per_page
+        if self.current_page < total_pages - 1:
+            self.current_page += 1
+            self._populate_pending_list(self.filtered_df)
+
+    def _prev_page(self):
+        """ย้อนกลับไปหน้าก่อนหน้า"""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._populate_pending_list(self.filtered_df)
+
+    def _load_data(self):
+        # แก้ไขให้เรียก _load_pending_pos โดยตรงเมื่อ Refresh
+        self._update_manager_dashboard()
+        self._load_pending_pos()
 
     def _so_create_string_vars(self):
-        """สร้าง StringVars ที่จำเป็นสำหรับ SOPopupWindow"""
+        """(เวอร์ชันแก้ไข) สร้าง StringVars ทั้งหมดที่ SOPopupWindow ต้องการ"""
         self.so_shared_vars = {}
-        self.so_shared_vars['delivery_type_var'] = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
+        now = datetime.now()
+        thai_months_list = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        
+        # --- START: เพิ่มโค้ดทั้งหมดนี้เข้าไป ---
+        self.so_shared_vars['thai_months'] = thai_months_list
+        self.so_shared_vars['thai_month_map'] = {name: i + 1 for i, name in enumerate(thai_months_list)}
+        self.so_shared_vars['customer_type_var'] = tk.StringVar(value="ลูกค้าเก่า")
+        self.so_shared_vars['credit_term_var'] = tk.StringVar(value="เงินสด")
+        self.so_shared_vars['commission_month_var'] = tk.StringVar(value=thai_months_list[now.month - 1])
+        self.so_shared_vars['commission_year_var'] = tk.StringVar(value=str(now.year + 543))
+        self.so_shared_vars['payment1_percent_var'] = tk.StringVar(value="ระบุยอดเอง")
+        self.so_shared_vars['payment2_percent_var'] = tk.StringVar(value="ระบุยอดเอง")
+        self.so_shared_vars['payment_total_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['so_subtotal_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['so_vat_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['so_grand_total_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['so_vs_payment_result_var'] = tk.StringVar(value="-")
+        self.so_shared_vars['difference_amount_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['balance_due_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cash_product_input_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cash_service_total_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cash_required_total_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cash_actual_payment_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cash_verification_result_var'] = tk.StringVar(value="-")
+        
+        # ตัวแปรสำหรับคำนวณ VAT ย่อย (ที่เป็นต้นเหตุของปัญหา)
+        self.so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
+
+        # ตัวแปรสำหรับตัวเลือก VAT/CASH
         self.so_shared_vars['sales_service_vat_option'] = tk.StringVar(value="VAT")
-        # ... (เพิ่มตัวแปรอื่นๆ ที่จำเป็นสำหรับ SO form) ...
-        # (คัดลอกเนื้อหาทั้งหมดของฟังก์ชันนี้มาจากไฟล์ hr_screen.py ได้เลย)
         self.so_shared_vars['cutting_drilling_fee_vat_option'] = tk.StringVar(value="VAT")
         self.so_shared_vars['other_service_fee_vat_option'] = tk.StringVar(value="VAT")
         self.so_shared_vars['shipping_vat_option_var'] = tk.StringVar(value="VAT")
         self.so_shared_vars['credit_card_fee_vat_option_var'] = tk.StringVar(value="VAT")
-        self.so_shared_vars['so_grand_total_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['so_vs_payment_result_var'] = tk.StringVar(value="-")
-        self.so_shared_vars['difference_amount_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cash_required_total_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cash_verification_result_var'] = tk.StringVar(value="-")
-        self.so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['other_service_fee_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['relocation_cost_vat_option'] = tk.StringVar(value="VAT")
+
+        # ตัวแปรอื่นๆ
+        self.so_shared_vars['delivery_type_var'] = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
     
     def _open_so_editor_for_mp(self, so_number):
         """เปิดหน้าต่างแก้ไข SO สำหรับ MP"""
@@ -576,98 +653,61 @@ class PurchasingManagerScreen(CTkFrame):
         return card
     
     def _approve_po(self, po_id, confirm=True):
+        """(เวอร์ชันแก้ไข) อนุมัติ PO ในขั้นตอนเดียว"""
+        
+        if confirm and not messagebox.askyesno("ยืนยันการอนุมัติ", f"คุณต้องการอนุมัติ PO ID: {po_id} ใช่หรือไม่?", parent=self):
+            return
+        
         conn = self.app_container.get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                # ดึงข้อมูล PO ล่าสุด
-                cursor.execute("SELECT * FROM purchase_orders WHERE id = %s", (po_id,))
+                # ดึงข้อมูล SO Number และสถานะปัจจุบัน
+                cursor.execute("SELECT so_number, approval_status FROM purchase_orders WHERE id = %s", (po_id,))
                 po = cursor.fetchone()
                 if not po:
                     messagebox.showerror("ผิดพลาด", "ไม่พบ PO ที่ต้องการอนุมัติ", parent=self)
                     return
-
-                grand_total = po.get('grand_total', 0) or 0
-                current_status = po['approval_status']
-                manager1_key = po['approver_manager1_key']
+                
                 so_number = po['so_number']
-                
-                # ตรวจสอบการอนุมัติซ้ำซ้อน
-                if (current_status == 'Pending Mgr 2' and self.user_key == manager1_key):
-                    messagebox.showwarning("เงื่อนไขผิดพลาด", "ผู้อนุมัติต้องเป็นคนละคนกันในแต่ละลำดับขั้น", parent=self)
-                    return
-                
-                if not messagebox.askyesno("ยืนยันการอนุมัติ", f"คุณต้องการอนุมัติ PO ID: {po_id} ใช่หรือไม่?", parent=self):
-                    return
+                current_status = po['approval_status']
 
-                # --- START: Logic การอนุมัติตามเงื่อนไขใหม่ ---
-                set_clauses, params, next_status = "", None, ""
-                is_final_approval = False
-                notification_needed = False
-                
-                if self.user_role == 'Purchasing Manager':
-                    if current_status == 'Pending Mgr 1':
-                        # --- Rule 1: ยอดซื้อ <= 200,000 (อนุมัติโดย Mgr 1 คนเดียว) ---
-                        if grand_total <= 200000:
-                            next_status = "Approved"
-                            set_clauses = "approver_manager1_key = %s, approval_date_manager1 = %s, last_modified_by = %s, approval_status = %s, status = %s"
-                            params = (self.user_key, datetime.now(), self.user_key, next_status, next_status, po_id)
-                            is_final_approval = True
-                        # --- ยอดซื้อ > 200,000 (ส่งต่อให้ Mgr 2) ---
-                        else:
-                            next_status = "Pending Mgr 2"
-                            set_clauses = "approver_manager1_key = %s, approval_date_manager1 = %s, last_modified_by = %s, approval_status = %s"
-                            params = (self.user_key, datetime.now(), self.user_key, next_status, po_id)
-                    
-                    elif current_status == 'Pending Mgr 2':
-                        # --- Rule 2: ยอดซื้อ 200,001 - 500,000 (อนุมัติโดย Mgr 2) ---
-                        if grand_total <= 500000:
-                            next_status = "Approved"
-                            set_clauses = "approver_manager2_key = %s, approval_date_manager2 = %s, last_modified_by = %s, approval_status = %s, status = %s"
-                            params = (self.user_key, datetime.now(), self.user_key, next_status, next_status, po_id)
-                            is_final_approval = True
-                        # --- Rule 3: ยอดซื้อ > 500,000 (ส่งต่อให้ Director) ---
-                        else:
-                            next_status = "Pending Director"
-                            set_clauses = "approver_manager2_key = %s, approval_date_manager2 = %s, last_modified_by = %s, approval_status = %s"
-                            params = (self.user_key, datetime.now(), self.user_key, next_status, po_id)
-                            notification_needed = True
+                # --- START: แก้ไข Logic การอนุมัติให้ง่ายขึ้น ---
+                # ตรวจสอบว่า PO อยู่ในสถานะที่อนุมัติได้หรือไม่
+                allowed_statuses = ['Pending Mgr 1']
+                if self.user_role == 'Director':
+                    allowed_statuses.append('Pending Director')
 
-                elif self.user_role == 'Director':
-                    # --- Rule 3: อนุมัติโดย Director ---
-                    if current_status == 'Pending Director':
-                        next_status = "Approved"
-                        set_clauses = "approver_director_key = %s, approval_date_director = %s, last_modified_by = %s, approval_status = %s, status = %s"
-                        params = (self.user_key, datetime.now(), self.user_key, next_status, next_status, po_id)
-                        is_final_approval = True
-                # --- END: Logic การอนุมัติตามเงื่อนไขใหม่ ---
-
-                if not set_clauses or not params:
+                if current_status not in allowed_statuses:
                     messagebox.showinfo("ข้อมูลล่าสุด", f"PO นี้ไม่อยู่ในสถานะที่รออนุมัติจากคุณ (สถานะปัจจุบัน: {current_status})", parent=self)
                     self._load_data()
                     return
 
-                sql_query = f"UPDATE purchase_orders SET {set_clauses} WHERE id = %s"
-                cursor.execute(sql_query, params)
+                # อัปเดตสถานะเป็น Approved ทันที
+                set_clauses = "status = %s, approval_status = %s, last_modified_by = %s"
+                params = ["Approved", "Approved", self.user_key]
 
-                # สร้าง Notification หากจำเป็น (เช่น ส่งให้ Director)
-                if notification_needed:
-                    cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Director' AND status = 'Active'")
-                    director_keys = [row['sale_key'] for row in cursor.fetchall()]
-                    message = f"PO ({po['po_number']}) ยอดสูง รอการอนุมัติจากท่าน"
-                    for director_key in director_keys:
-                        cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)", (director_key, message, po_id))
+                if self.user_role == 'Director':
+                    set_clauses += ", approver_director_key = %s, approval_date_director = %s"
+                    params.extend([self.user_key, datetime.now()])
+                else: # Purchasing Manager
+                    set_clauses += ", approver_manager1_key = %s, approval_date_manager1 = %s"
+                    params.extend([self.user_key, datetime.now()])
+                
+                params.append(po_id)
+                sql_query = f"UPDATE purchase_orders SET {set_clauses} WHERE id = %s"
+                cursor.execute(sql_query, tuple(params))
+                # --- END ---
 
             conn.commit()
             
-            if confirm: # ถ้าเป็นการกดอนุมัติทีละใบ ให้แสดง popup
+            if confirm:
                 messagebox.showinfo("สำเร็จ", "อนุมัติรายการเรียบร้อยแล้ว", parent=self)
             
-            # <<< แก้ไข: เปลี่ยนมาเรียกใช้ฟังก์ชันอัปเดต UI แทนการโหลดใหม่ทั้งหมด >>>
             self._update_ui_after_action(po_id, so_number)
             
-            # ตรวจสอบว่า SO นี้ควรส่งต่อให้แผนกอื่นหรือยัง
-            if is_final_approval and so_number:
-                self._check_and_forward_so_to_sale_manager(so_number)
+            # ตรวจสอบว่า SO นี้ควรส่งต่อไปให้ HR หรือยัง
+            if so_number:
+                self._check_and_forward_so_to_hr(so_number) # เปลี่ยนชื่อฟังก์ชันให้ถูกต้อง
 
         except Exception as e:
             if conn: conn.rollback()
@@ -675,8 +715,7 @@ class PurchasingManagerScreen(CTkFrame):
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
-        
-        
+              
 
     def _check_and_forward_so_to_sale_manager(self, so_number):
         conn = self.app_container.get_connection()
@@ -870,9 +909,9 @@ class PurchasingManagerScreen(CTkFrame):
         self._load_pending_pos()
         self.polling_job_id = self.after(300000, self._perform_polling) #<-- เปลี่ยนเป็น 300000 (5 นาที)
         
-    def _create_dashboard_view(self):
-        dashboard_frame = CTkFrame(self, corner_radius=10, border_width=1)
-        dashboard_frame.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+    def _create_dashboard_view(self, parent_tab):
+        dashboard_frame = CTkFrame(parent_tab, corner_radius=10, border_width=1) # <-- ใช้ parent_tab
+        dashboard_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         
         # --- Frame สำหรับฟิลเตอร์ ---
         filter_container = CTkFrame(dashboard_frame, fg_color="transparent")
@@ -975,123 +1014,133 @@ class PurchasingManagerScreen(CTkFrame):
             width = bar.get_width(); ax.text(width + 0.1, bar.get_y() + bar.get_height()/2, f'{int(width)}', va='center', fontname=font_name)
         fig.tight_layout(pad=2); canvas = FigureCanvasTkAgg(fig, master=parent_frame); canvas.draw(); canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10); self.rejection_chart_canvas = canvas
         
-    def _create_pending_list_view(self):
-        # <<< แก้ไข: สร้าง Frame ใหญ่ขึ้นมาครอบอีกชั้นเพื่อใส่ช่องค้นหา >>>
-        container = CTkFrame(self)
-        container.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
+    def _create_pending_list_view(self, parent_tab):
+        container = CTkFrame(parent_tab) # <-- ใช้ parent_tab
+        container.grid(row=1, column=0, padx=10, pady=10, sticky="nsew") # <-- แก้ไข row เป็น 1
         container.grid_columnconfigure(0, weight=1)
-        container.grid_rowconfigure(1, weight=1)
+        container.grid_rowconfigure(2, weight=1)
 
         # --- ส่วนของช่องค้นหา ---
         search_frame = CTkFrame(container, fg_color="transparent")
         search_frame.grid(row=0, column=0, padx=10, pady=(5, 5), sticky="ew")
         
         self.search_entry = CTkEntry(search_frame, placeholder_text="🔍 ค้นหาจาก SO, PO, หรือชื่อซัพพลายเออร์...")
-        self.search_entry.pack(fill="x", expand=True)
-        # เมื่อปล่อยปุ่มพิมพ์ ให้เรียกฟังก์ชัน _filter_pending_list
-        self.search_entry.bind("<KeyRelease>", self._filter_pending_list)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         
-        # --- ส่วนของ Scrollable Frame ---
+        # +++ START: แก้ไขส่วนนี้ +++
+        # ลบการ bind event <KeyRelease> ออก
+        # self.search_entry.bind("<KeyRelease>", self._debounce_search)
+        
+        # สร้างปุ่ม "ค้นหา" และ "ล้างค่า"
+        search_button = CTkButton(search_frame, text="ค้นหา", width=100, command=self._filter_pending_list)
+        search_button.pack(side="left", padx=(0, 5))
+        
+        clear_button = CTkButton(search_frame, text="ล้างค่า", width=100, fg_color="gray", command=self._clear_search)
+        clear_button.pack(side="left")
+        # +++ END +++
+
+        # --- ส่วนของ Pagination (เหมือนเดิม) ---
+        pagination_frame = CTkFrame(container, fg_color="transparent")
+        pagination_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+
+        self.prev_button = CTkButton(pagination_frame, text="<< หน้าก่อนหน้า", command=self._prev_page, state="disabled")
+        self.prev_button.pack(side="left")
+
+        self.page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
+        self.page_label.pack(side="left", expand=True)
+
+        self.next_button = CTkButton(pagination_frame, text="หน้าถัดไป >>", command=self._next_page, state="disabled")
+        self.next_button.pack(side="right")
+        
+        # --- ส่วนของ Scrollable Frame (เหมือนเดิม) ---
         self.main_frame = CTkScrollableFrame(container, label_text="รายการที่รอการอนุมัติ (Grouped by SO)")
-        self.main_frame.grid(row=1, column=0, padx=0, pady=0, sticky="nsew")
+        self.main_frame.grid(row=2, column=0, padx=0, pady=0, sticky="nsew")
         self.main_frame.grid_columnconfigure(0, weight=1)
         
     def _load_pending_pos(self):
-        """
-        (เวอร์ชันแก้ไข) โหลดข้อมูล PO ทั้งหมดมาเก็บไว้ใน DataFrame หลัก
-        แล้วค่อยเรียกใช้ฟังก์ชัน Populate เพื่อวาด UI
-        """
+        """(เวอร์ชันแก้ไข) โหลดข้อมูล PO ที่รออนุมัติสำหรับ Manager คนเดียว"""
         try:
-            params = None
             query = ""
+            params = None
             
-            # Logic การดึงข้อมูลเหมือนเดิม
+            # --- แก้ไข Query ให้ดึงเฉพาะงานที่รอ Mgr 1 เท่านั้น ---
             if self.user_role == 'Purchasing Manager':
                 query = """
-                    (SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
-                    FROM purchase_orders 
-                    WHERE status = 'Pending Approval' AND approval_status = 'Pending Mgr 1')
-                    UNION ALL
-                    (SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
-                    FROM purchase_orders
-                    WHERE status = 'Pending Approval' AND approval_status = 'Pending Mgr 2' 
-                    AND approver_manager1_key != %s)
-                    ORDER BY timestamp ASC
-                """
-                params = (self.user_key,)
-                
+                    SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
+                    FROM purchase_orders WHERE status = 'Pending Approval' AND approval_status = 'Pending Mgr 1'
+                    ORDER BY timestamp ASC"""
+            
             elif self.user_role == 'Director':
                 query = """
                     SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
-                    FROM purchase_orders 
-                    WHERE status = 'Pending Approval' AND approval_status = 'Pending Director' 
-                    ORDER BY timestamp ASC
-                """
+                    FROM purchase_orders WHERE status = 'Pending Approval' AND approval_status = 'Pending Director' ORDER BY timestamp ASC"""
             
-            # <<< START: จุดที่แก้ไข >>>
-            # 1. นำข้อมูลที่โหลดมา เก็บไว้ในตัวแปรหลัก self.all_pending_df
             if query:
                 self.all_pending_df = pd.read_sql_query(query, self.app_container.pg_engine, params=params if params else None)
             else:
                 self.all_pending_df = pd.DataFrame()
 
-            # 2. เรียกใช้ฟังก์ชัน _populate_pending_list เพื่อวาด UI จากข้อมูลทั้งหมด
-            self._populate_pending_list(self.all_pending_df)
-            # <<< END: สิ้นสุดการแก้ไข >>>
+            self._filter_pending_list()
 
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูล PO ที่รออนุมัติได้: {e}", parent=self)
-            traceback.print_exc()
-            self.all_pending_df = pd.DataFrame() # กรณีเกิด Error ให้เคลียร์ข้อมูล
+            self.all_pending_df = pd.DataFrame()
             self._populate_pending_list(self.all_pending_df)
             
     def _populate_pending_list(self, df_to_show):
-        """
-        (ฟังก์ชันใหม่) รับ DataFrame เข้ามาแล้ววาด UI ตามข้อมูลในนั้น
-        ใช้ได้ทั้งตอนโหลดครั้งแรกและตอนค้นหา
-        """
-        # ล้าง UI เก่าและ Dictionary ที่เก็บ Widget
-        for widget in self.main_frame.winfo_children():
-            widget.destroy()
-        self.so_cards.clear()
-        self.po_cards.clear()
-
-        # อัปเดตปุ่ม "อนุมัติทั้งหมด"
-        total_pending_count = len(df_to_show)
-        if hasattr(self, 'approve_all_button') and self.approve_all_button.winfo_exists():
-            self.approve_all_button.configure(text=f"อนุมัติทุกรายการที่ค้างอยู่ ({total_pending_count})")
-            self.approve_all_button.configure(state="normal" if total_pending_count > 0 else "disabled")
+        """(เวอร์ชันแก้ไข) วาด UI ตามข้อมูลในหน้าที่กำหนด และอัปเดต Pagination"""
+        for widget in self.main_frame.winfo_children(): widget.destroy()
+        self.so_cards.clear(); self.po_cards.clear()
 
         if df_to_show.empty:
             CTkLabel(self.main_frame, text="ไม่พบรายการที่รอการอนุมัติ").pack(pady=20)
+            self.approve_all_button.configure(text="อนุมัติทุกรายการที่ค้างอยู่ (0)", state="disabled")
+            self.page_label.configure(text="Page 1 / 1")
+            self.prev_button.configure(state="disabled")
+            self.next_button.configure(state="disabled")
             return
         
-        # จัดกลุ่มตาม SO และสร้าง Card
-        grouped = df_to_show.groupby('so_number').size().reset_index(name='po_count')
-        for _, group_row in grouped.iterrows():
+        # --- Logic การแบ่งหน้า ---
+        grouped_so = df_to_show.groupby('so_number', sort=False).size().reset_index(name='po_count')
+        total_groups = len(grouped_so)
+        total_pages = (total_groups + self.rows_per_page - 1) // self.rows_per_page
+        start_index = self.current_page * self.rows_per_page
+        end_index = start_index + self.rows_per_page
+        
+        # --- แสดงผลเฉพาะ SO ในหน้าปัจจุบัน ---
+        for _, group_row in grouped_so.iloc[start_index:end_index].iterrows():
             so_number = group_row['so_number']
-            so_card = self._create_so_group_card(group_row)
+            # ดึงข้อมูลแถวเต็มจาก grouped_so เพื่อส่งไปสร้าง card
+            full_row_data = grouped_so[grouped_so['so_number'] == so_number].iloc[0]
+            so_card = self._create_so_group_card(full_row_data)
             so_card.pack(fill="x", padx=10, pady=(10, 5))
-            # เก็บ SO Card ไว้ใน Dictionary โดยใช้ so_number เป็น key
             self.so_cards[so_number] = so_card
+
+        # --- อัปเดต UI (Pagination และปุ่มอนุมัติทั้งหมด) ---
+        total_pending_count = len(df_to_show)
+        self.approve_all_button.configure(text=f"อนุมัติทุกรายการที่ค้างอยู่ ({total_pending_count})", state="normal" if total_pending_count > 0 else "disabled")
+        self.page_label.configure(text=f"Page {self.current_page + 1} / {max(1, total_pages)}")
+        self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
+        self.next_button.configure(state="normal" if self.current_page < total_pages - 1 else "disabled")
               
     def _filter_pending_list(self, event=None):
-        """
-        (ฟังก์ชันใหม่) กรองข้อมูลใน DataFrame ตามคำค้นหาแล้ววาด UI ใหม่
-        """
+        """(เวอร์ชันแก้ไข) กรองข้อมูล, รีเซ็ตหน้าเป็น 0, และวาด UI ใหม่"""
         search_term = self.search_entry.get().lower().strip()
-        if not search_term:
-            filtered_df = self.all_pending_df
+        
+        if self.all_pending_df is None:
+            self.filtered_df = pd.DataFrame()
+        elif not search_term:
+            self.filtered_df = self.all_pending_df
         else:
-            # กรองจากข้อมูลทั้งหมดที่โหลดมา
-            filtered_df = self.all_pending_df[
+            self.filtered_df = self.all_pending_df[
                 self.all_pending_df['so_number'].str.lower().str.contains(search_term, na=False) |
                 self.all_pending_df['po_number'].str.lower().str.contains(search_term, na=False) |
                 self.all_pending_df['supplier_name'].str.lower().str.contains(search_term, na=False)
             ]
         
-        # วาด UI ใหม่จากข้อมูลที่กรองแล้ว
-        self._populate_pending_list(filtered_df)
+        # เมื่อมีการค้นหา ให้กลับไปที่หน้าแรกเสมอ
+        self.current_page = 0
+        self._populate_pending_list(self.filtered_df)
 
     def _toggle_po_details(self, so_number, detail_frame):
         # (ฟังก์ชันนี้แก้ไขเล็กน้อยเพื่อใช้ DataFrame ที่เก็บไว้)
