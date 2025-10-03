@@ -108,7 +108,7 @@ class ComparisonConfigDialog(CTkToplevel):
     def __init__(self, master, sales_keys):
         super().__init__(master)
         self.title("ตั้งค่าการเปรียบเทียบข้อมูล")
-        self.geometry("500x400")
+        self.geometry("500x550") # ปรับความสูงให้เหมาะสม
         self.grab_set()
         self.transient(master)
 
@@ -117,26 +117,41 @@ class ComparisonConfigDialog(CTkToplevel):
         self.manual_df = pd.DataFrame(columns=['so_number', 'sales_uploaded', 'cost_uploaded'])
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        ### 4. ปรับ grid_rowconfigure ให้ถูกต้อง ###
+        self.grid_rowconfigure(3, weight=1) # ให้ส่วนแสดงผล manual ขยายได้
 
+        ### 1. แก้ไขลำดับการจัดวาง (grid row) และเลขลำดับ Label ให้ถูกต้อง ###
+        
+        # --- Section 1: เลือกรอบค่าคอม ---
+        period_frame = CTkFrame(self)
+        period_frame.grid(row=0, column=0, padx=20, pady=10, sticky="ew")
+        CTkLabel(period_frame, text="1. เลือกรอบค่าคอม:", font=master.label_font).pack(side="left", padx=10)
+
+        current_time = datetime.now()
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.month_var = tk.StringVar(value=self.thai_months[current_time.month - 1])
+        CTkOptionMenu(period_frame, variable=self.month_var, values=self.thai_months, command=self._check_run_button_state).pack(side="left", padx=5)
+
+        year_options = [str(y + 543) for y in range(current_time.year - 2, current_time.year + 2)]
+        self.year_var = tk.StringVar(value=str(current_time.year + 543))
+        CTkOptionMenu(period_frame, variable=self.year_var, values=year_options, command=self._check_run_button_state).pack(side="left", padx=5)
+
+        # --- Section 2: เลือกพนักงานขาย ---
         sales_frame = CTkFrame(self)
-        sales_frame.grid(row=0, column=0, padx=20, pady=10, sticky="ew")
-        CTkLabel(sales_frame, text="1. เลือกพนักงานขาย:", font=master.label_font).pack(side="left", padx=10)
+        sales_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        CTkLabel(sales_frame, text="2. เลือกพนักงานขาย:", font=master.label_font).pack(side="left", padx=10)
 
+        ### 2. ลบโค้ดที่ซ้ำซ้อนและขัดแย้งกันออก เหลือแค่ส่วนนี้ ###
         self.placeholder = "กรุณาเลือกพนักงานขาย..."
         self.selected_sale = tk.StringVar(value=self.placeholder)
-        
-        # เพิ่ม Placeholder เข้าไปเป็นตัวเลือกแรก และเอา "ทั้งหมด" ออก
         self.sale_dropdown = CTkOptionMenu(sales_frame, variable=self.selected_sale, values=[self.placeholder] + sales_keys, command=self._check_run_button_state)
-
-        self.selected_sale = tk.StringVar(value="ทั้งหมด")
-        self.sale_dropdown = CTkOptionMenu(sales_frame, variable=self.selected_sale, values=["ทั้งหมด"] + sales_keys, command=self._check_run_button_state)
         self.sale_dropdown.pack(side="left", padx=10, pady=10)
 
+        # --- Section 3: เลือกแหล่งข้อมูล ---
         source_frame = CTkFrame(self)
-        source_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        source_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
         source_frame.grid_columnconfigure(1, weight=1)
-        CTkLabel(source_frame, text="2. เลือกแหล่งข้อมูล (อย่างน้อย 1 อย่าง):", font=master.label_font).grid(row=0, column=0, columnspan=2, sticky="w", padx=10)
+        CTkLabel(source_frame, text="3. เลือกแหล่งข้อมูล (อย่างน้อย 1 อย่าง):", font=master.label_font).grid(row=0, column=0, columnspan=2, sticky="w", padx=10)
         
         self.import_button = CTkButton(source_frame, text="นำเข้าไฟล์ Excel/CSV", command=self._on_import_file)
         self.import_button.grid(row=1, column=0, padx=10, pady=10)
@@ -146,13 +161,15 @@ class ComparisonConfigDialog(CTkToplevel):
         self.manual_button = CTkButton(source_frame, text="เพิ่มข้อมูลด้วยมือ...", command=self._on_add_manual)
         self.manual_button.grid(row=2, column=0, padx=10, pady=10)
 
+        # --- Section 4: แสดงผล Manual Entry ---
         manual_display_frame = CTkScrollableFrame(self, label_text="รายการที่คีย์ด้วยมือ")
-        manual_display_frame.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
+        manual_display_frame.grid(row=3, column=0, padx=20, pady=10, sticky="nsew")
         self.manual_display_label = CTkLabel(manual_display_frame, text="ไม่มีข้อมูล")
         self.manual_display_label.pack(pady=10)
 
+        # --- Section 5: ปุ่ม Action ---
         button_frame = CTkFrame(self, fg_color="transparent")
-        button_frame.grid(row=3, column=0, pady=20)
+        button_frame.grid(row=4, column=0, pady=20)
         self.run_button = CTkButton(button_frame, text="เริ่มการเปรียบเทียบ", command=self._on_run_comparison, state="disabled")
         self.run_button.pack(side="left", padx=10)
         CTkButton(button_frame, text="ยกเลิก", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
@@ -161,13 +178,13 @@ class ComparisonConfigDialog(CTkToplevel):
 
     def _check_run_button_state(self, *args):
         has_data = (self.imported_df is not None) or (not self.manual_df.empty)
-        
-        ### START: เพิ่มเงื่อนไขการตรวจสอบ ###
-        # ตรวจสอบว่ามีการเลือกเซลส์แล้ว (ไม่ใช่ค่าเริ่มต้น)
         sale_selected = self.selected_sale.get() != self.placeholder
         
-        # ปุ่มจะทำงานได้ก็ต่อเมื่อมีข้อมูล และ เลือกเซลส์แล้ว
-        if has_data and sale_selected:
+        # --- เพิ่มเงื่อนไขตรวจสอบเดือน/ปี ---
+        period_selected = self.month_var.get() and self.year_var.get()
+        
+        # ปุ่มจะทำงานได้ก็ต่อเมื่อมีข้อมูล, เลือกเซลส์แล้ว และเลือกรอบเวลาแล้ว
+        if has_data and sale_selected and period_selected:
             self.run_button.configure(state="normal")
         else:
             self.run_button.configure(state="disabled")
@@ -225,8 +242,14 @@ class ComparisonConfigDialog(CTkToplevel):
             self._check_run_button_state()
 
     def _on_run_comparison(self):
+        thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
+        selected_month_num = thai_month_map.get(self.month_var.get())
+        selected_year_ad = int(self.year_var.get()) - 543
+
         self.result = {
             "salesperson": self.selected_sale.get(),
+            "month": selected_month_num, # <-- เพิ่ม
+            "year": selected_year_ad,      # <-- เพิ่ม
             "imported_df": self.imported_df,
             "manual_df": self.manual_df
         }
@@ -331,15 +354,12 @@ class HRScreen(CTkFrame):
         self.selected_payout_ids = set(); self.select_all_var = tk.IntVar(value=0)
         self.theme = self.app_container.THEME["hr"]
         
-        # --- START: เพิ่มโค้ดส่วนนี้ ---
-        # สร้าง attribute 'dropdown_style' ที่หน้าต่าง Pop-up ต้องการ
         self.dropdown_style = {
             "fg_color": "white",
             "text_color": "black",
             "button_color": self.theme.get("primary", "#3B82F6"),
             "button_hover_color": self.theme.get("header", "#2563EB")
         }
-        # --- END ---
         
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
         self.period_options = ["ปีนี้", "เดือนนี้"] + self.thai_months
@@ -359,14 +379,24 @@ class HRScreen(CTkFrame):
         self.tab_view = CTkTabview(self, corner_radius=10, border_width=1, segmented_button_selected_color=self.theme["primary"], segmented_button_unselected_hover_color="#A7F3D0", fg_color=self.cget("fg_color"), command=self._on_tab_selected)
         self.tab_view.grid(row=1, column=0, pady=10, padx=20, sticky="nsew")
 
+        # --- ส่วนของการสร้าง Tab ที่แก้ไขลำดับแล้ว ---
         self.dashboard_tab = self.tab_view.add("Dashboard สรุปภาพรวม")
         self.sales_target_tab = self.tab_view.add("วิเคราะห์เป้าการขาย")
         self.manage_users_tab = self.tab_view.add("จัดการผู้ใช้งาน")
+
+        # ✅ สร้าง Tab "Sales Mode" ขึ้นมาก่อน
+        self.sales_mode_tab = self.tab_view.add("ลงข้อมูลแทนเซลส์ (Sales Mode)")
+        # ✅ จากนั้นค่อยตั้งค่า (Configure) ให้กับ Tab ที่เพิ่งสร้าง
+        self.sales_mode_tab.grid_rowconfigure(0, weight=1)
+        self.sales_mode_tab.grid_columnconfigure(0, weight=1)
+
         self.edit_data_tab = self.tab_view.add("แก้ไขข้อมูล (SO/PO)")
         self.compare_commission_tab = self.tab_view.add("เปรียบเทียบ / ดูประวัติ")
         self.process_commission_tab = self.tab_view.add("ประมวลผลและจ่ายค่าคอม")
         self.payout_history_tab = self.tab_view.add("ประวัติการจ่ายค่าคอม")
         self.audit_log_tab = self.tab_view.add("บันทึกกิจกรรม")
+        
+        # --- สิ้นสุดส่วนที่แก้ไข ---
         
         self._create_dashboard_tab(self.dashboard_tab)
         self._create_sales_target_tab(self.sales_target_tab)
@@ -379,6 +409,7 @@ class HRScreen(CTkFrame):
 
         self.tab_view.set("จัดการผู้ใช้งาน")
         self.after(100, self._initial_load)
+        self._sales_mode_loaded = False 
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
         
@@ -530,6 +561,25 @@ class HRScreen(CTkFrame):
         
     def _on_tab_selected(self):
         selected_tab_name = self.tab_view.get()
+        
+        if selected_tab_name == "ลงข้อมูลแทนเซลส์ (Sales Mode)" and not self._sales_mode_loaded:
+            try:
+                from sales_proxy_screen import SalesProxyScreen
+                self.sales_proxy_screen_instance = SalesProxyScreen(
+                    master=self.sales_mode_tab,
+                    app_container=self.app_container,
+                    proxy_user_key=self.user_key,
+                    proxy_user_name=self.user_name,
+                    role_to_proxy="Sale"
+                )
+                # --- แก้ไขบรรทัดนี้ ---
+                self.sales_proxy_screen_instance.grid(row=0, column=0, sticky="nsew")
+                self._sales_mode_loaded = True
+            except ImportError:
+                messagebox.showerror("ผิดพลาด", "ไม่พบไฟล์ sales_proxy_screen.py")
+            except Exception as e:
+                messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดหน้าจอ Sales Mode ได้: {e}")
+
         if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
             self._update_dashboard()
             self._dashboard_loaded = True
@@ -1891,6 +1941,8 @@ class HRScreen(CTkFrame):
 
         config = config_dialog.result
         selected_salesperson = config["salesperson"]
+        selected_month = config["month"] # <-- รับค่าเดือน
+        selected_year = config["year"]   # <-- รับค่าปี
         self.uploaded_df = config["imported_df"]
         self.manual_entry_df = config["manual_df"]
 
@@ -1950,6 +2002,9 @@ class HRScreen(CTkFrame):
             base_query += " AND c.sale_key = %s"
             params.append(selected_salesperson)
             ### END ###
+            
+            base_query += " AND c.commission_year = %s AND c.commission_month = %s AND c.sale_key = %s"
+            params.extend([selected_year, selected_month, selected_salesperson])
 
             data_query = base_query + " ORDER BY c.timestamp DESC"
             

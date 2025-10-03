@@ -905,14 +905,27 @@ class HRVerificationWindow(CTkToplevel):
             self.cost_multiplier_menu.grid(row=4, column=0, padx=15, pady=(0, 10), sticky="w")
 
     def _reload_data(self):
-        """ดึงข้อมูล SO และ PO ที่เกี่ยวข้องทั้งหมดจากฐานข้อมูลใหม่"""
+        """(เวอร์ชันแก้ไข) ดึงข้อมูล SO และ PO ที่ Active ล่าสุดจากฐานข้อมูล"""
         try:
-            # ดึงข้อมูล SO (commissions)
-            so_df = pd.read_sql_query("SELECT c.*, u.sale_name FROM commissions c JOIN sales_users u ON c.sale_key = u.sale_key WHERE c.id = %s", self.pg_engine, params=(self.record_id,))
-            if not so_df.empty:
-                self.system_data = so_df.iloc[0].to_dict()
+            # --- START: แก้ไข Query ตรงนี้ ---
+            # เปลี่ยนจากการค้นหาด้วย ID เก่า (self.record_id)
+            # มาเป็นการค้นหาด้วย SO Number และเลือกเฉพาะรายการที่ is_active = 1
+            so_query = """
+                SELECT c.*, u.sale_name 
+                FROM commissions c 
+                JOIN sales_users u ON c.sale_key = u.sale_key 
+                WHERE c.so_number = %s AND c.is_active = 1 
+                ORDER BY c.id DESC LIMIT 1
+            """
+            so_df = pd.read_sql_query(so_query, self.pg_engine, params=(self.so_number,))
+            # --- END ---
 
-            # ดึงข้อมูล POs
+            if not so_df.empty:
+                # อัปเดตข้อมูล system_data และ record_id ให้เป็นของใหม่ล่าสุด
+                self.system_data = so_df.iloc[0].to_dict()
+                self.record_id = self.system_data['id']
+
+            # ดึงข้อมูล POs (เหมือนเดิม)
             self.po_data = pd.read_sql_query("SELECT * FROM purchase_orders WHERE so_number = %s ORDER BY id", self.pg_engine, params=(self.so_number,))
             print(f"Data reloaded for SO {self.so_number}. Found {len(self.po_data)} POs.")
 
@@ -1422,28 +1435,18 @@ class HRVerificationWindow(CTkToplevel):
     def _recalculate_summaries(self):
         valid_po_df = self.po_data[self.po_data['status'] == 'Approved'].copy()
         
-        # --- START: แก้ไข Logic การรวมต้นทุนให้ถูกต้อง ---
-        # 1. รวมยอด `total_cost` (ซึ่งตอนนี้คือราคาสินค้าไม่รวมค่าส่งแล้ว) จาก PO ที่ Approved
         po_cost = pd.to_numeric(valid_po_df['total_cost'], errors='coerce').fillna(0).sum()
-        
-        # 2. ไม่ต้องหักค่าส่งออกอีกต่อไป เพราะข้อมูลต้นทางและ Query ถูกต้องแล้ว
         total_cost_from_system = po_cost
-        # --- END ---
-
-        # ใช้ค่าที่ HR แก้ไขเอง (Overrides) ถ้ามี
+        
         total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
 
-        # --- ส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
-        original_express_sale = float(self.excel_data.get('sales_uploaded', 0) or 0)
-        total_sale_express = original_express_sale 
-
+        total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
-        total_sale_system = (
-            float(self.system_data.get('sales_service_amount', 0) or 0) +
-            float(self.system_data.get('cutting_drilling_fee', 0) or 0) +
-            float(self.system_data.get('other_service_fee', 0) or 0) -
-            float(self.system_data.get('coupons', 0) or 0)
-        )
+
+        ### START: แก้ไขสูตรคำนวณ total_sale_system ให้แสดงเฉพาะยอดขาย ###
+        # ดึงค่าจาก 'sales_service_amount' มาแสดงโดยตรงตามที่คุณต้องการ
+        total_sale_system = float(self.system_data.get('sales_service_amount', 0) or 0)
+        ### END ###
 
         self.calculated_values = {
             'total_sale_system': total_sale_system,
@@ -1452,6 +1455,7 @@ class HRVerificationWindow(CTkToplevel):
             'total_cost_express': total_cost_express
         }
 
+        # --- โค้ดส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
         if self.system_data.get('hr_sale_source') in ['system', 'express']:
             self.final_sale_source.set(self.system_data['hr_sale_source'])
         else:
