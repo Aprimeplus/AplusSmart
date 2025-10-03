@@ -16,13 +16,14 @@ from PIL import Image, ImageTk
 import ctypes
 from sqlalchemy import create_engine
 import pandas as pd
+
 import traceback
 from hr_windows import EditPOWindowByHR
-
+from sales_proxy_screen import SalesProxyScreen
 # +++ START: เพิ่ม Import ที่จำเป็น +++
 from so_selection_dialog import SOSelectionDialog
 import po_document_generator
-from sale_support_screen import SaleSupportApp # <-- 1. import คลาสใหม่เข้ามา
+
 # +++ END +++
 
 # We keep this part for type hinting, which helps the code editor but doesn't run
@@ -170,6 +171,7 @@ class AppContainer(CTk):
             }
         self.pg_engine = None
         self.current_user_key = None
+        
         self._resize_timer = None
         self.bind("<Configure>", self._on_window_resize_or_move)
         self.notification_poll_id = None
@@ -630,10 +632,20 @@ class AppContainer(CTk):
     
     def show_sale_support_screen(self, user_key, user_name, user_role):
         """เปิดหน้าจอสำหรับ Sale Support"""
-        from sale_support_screen import SaleSupportApp # Import ตรงนี้เพื่อเลี่ยง Circular Import
-        self.show_screen(SaleSupportApp, user_key=user_key, user_name=user_name, user_role=user_role, app_container=self)
-    # +++ END +++
-
+        # --- จุดแก้ไขที่ถูกต้อง ---
+        # 1. Import คลาส SalesProxyScreen เข้ามาในฟังก์ชันนี้
+        from sales_proxy_screen import SalesProxyScreen 
+        
+        # 2. เรียกใช้ SalesProxyScreen โดยตรง และส่งพารามิเตอร์ที่จำเป็นทั้งหมดเข้าไป
+        self.show_screen(
+            SalesProxyScreen, 
+            app_container=self, 
+            proxy_user_key=user_key, 
+            proxy_user_name=user_name, 
+            role_to_proxy="Sale",
+            show_logout_button=True # <-- ระบุว่าเป็นหน้าจอของ Sale Support
+        )
+        
 if __name__ == "__main__":
     app = AppContainer()
     app.protocol("WM_DELETE_WINDOW", app.on_closing)

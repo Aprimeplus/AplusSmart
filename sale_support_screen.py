@@ -12,9 +12,9 @@ class SaleSupportApp(SalesProxyScreen):
     หน้าจอสำหรับ Sale Support ที่สืบทอดความสามารถมาจาก SalesProxyScreen
     """
     def __init__(self, master, app_container, user_key, user_name, user_role):
-        # เรียกใช้ __init__ ของ SalesProxyScreen และส่งค่าที่จำเป็นไป
         super().__init__(master=master,
-                         app_container=app_container,
-                         proxy_user_key=user_key,    # รหัสของ Sale Support ที่ Login
-                         proxy_user_name=user_name,  # ชื่อของ Sale Support ที่ Login
-                         role_to_proxy="Sale")       # ทำงานแทน "Sale"
+                        app_container=app_container,
+                        proxy_user_key=user_key,
+                        proxy_user_name=user_name,
+                        role_to_proxy="Sale",
+                        show_logout_button=True) # <--- เพิ่มบรรทัดนี้ครับ

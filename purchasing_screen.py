@@ -2213,7 +2213,8 @@ class PurchasingScreen(CTkFrame):
         btn_config = {"corner_radius": 8, "font": (self.label_font.cget("family"), 12)}
 
         CTkButton(footer, text="📄 พิมพ์ใบสั่งซื้อ (PO)", command=self._open_so_selection_dialog, fg_color="#7C3AED", **btn_config).pack(side="left", padx=5, expand=True, fill="x")
-        CTkButton(footer, text="💾 บันทึกฉบับร่าง (Save Draft)", command=lambda: self._save_po('Draft'), **btn_config).pack(side="left", padx=5, expand=True, fill="x")
+        self.save_draft_button = CTkButton(footer, text="💾 บันทึกฉบับร่าง (Save Draft)", command=lambda: self._save_po('Draft'), **btn_config) # <--- เพิ่ม self.save_draft_button
+        self.save_draft_button.pack(side="left", padx=5, expand=True, fill="x")
         
         # เปลี่ยน command ของปุ่ม "ขออนุมัติ"
         CTkButton(footer, text="📤 ขออนุมัติ...", command=self._open_submit_po_dialog, fg_color="#16A34A", **btn_config).pack(side="left", padx=5, expand=True, fill="x")

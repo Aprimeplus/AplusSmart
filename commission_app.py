@@ -274,7 +274,7 @@ class SubmitSODialog(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
 
 class CommissionApp(CTkFrame):
-    def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None):
+    def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None, create_default_header=True):
         super().__init__(master, corner_radius=0, fg_color=app_container.THEME["sale"]["bg"])
         self.master = master
         self.app_container = app_container
@@ -282,7 +282,8 @@ class CommissionApp(CTkFrame):
         self.sale_name = sale_name or "Unknown Sales User"
         self.theme = app_container.THEME["sale"]
         self.pg_engine = app_container.pg_engine
-        
+        self.show_logout_button = show_logout_button
+
         self.dropdown_style = {
             "fg_color": "white",
             "text_color": "black",
@@ -299,32 +300,42 @@ class CommissionApp(CTkFrame):
         self.header_map = app_container.HEADER_MAP
 
         self._create_string_vars()
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-        
         self.tasks_window = None
         self.tasks_button = None
         self.polling_job_id = None
         
-        self._create_header()
+        # 1. กำหนด Layout หลักของ Frame นี้ก่อน
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        
+        # 2. สร้าง Header และวางในแถวที่ 0 (ถ้าจำเป็น)
+        if create_default_header:
+            self._create_header()
 
+        # 3. สร้าง Scrollable Container และวางในแถวที่ 1
         self.scrollable_main_container = CTkScrollableFrame(self, fg_color="transparent")
         self.scrollable_main_container.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
 
+        # 4. กำหนด Layout ภายใน Scrollable Container
         self.scrollable_main_container.grid_columnconfigure(0, weight=1, uniform="group1")
         self.scrollable_main_container.grid_columnconfigure(1, weight=1, uniform="group1")
         self.scrollable_main_container.grid_rowconfigure(0, weight=1)
 
+        # 5. สร้าง Frame ซ้าย-ขวา และวางใน Scrollable Container
         self.left_frame = CTkFrame(self.scrollable_main_container, fg_color="transparent")
         self.left_frame.grid(row=0, column=0, padx=(0, 10), sticky="nsew")
 
         self.right_frame = CTkFrame(self.scrollable_main_container, fg_color="transparent")
         self.right_frame.grid(row=0, column=1, padx=(10, 0), sticky="nsew")
 
+        # 6. สร้างฟอร์มทั้งหมดลงใน Frame ซ้าย-ขวา
         self._populate_all_forms()
+        
+        # 7. โหลดข้อมูลและผูก Event ต่างๆ
         self._load_customer_data()
         self._bind_events()
         
+        # 8. เริ่มการทำงานเบื้องหลัง
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
 
@@ -367,22 +378,29 @@ class CommissionApp(CTkFrame):
                 self.after_cancel(self.polling_job_id)
 
     def _create_header(self):
-        header_frame = CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
-        CTkLabel(header_frame, text=f"ฝ่ายขาย: {self.sale_name} ({self.sale_key})", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
+        self.header_frame = CTkFrame(self, fg_color="transparent")
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
         
-        # สร้าง Frame สำหรับปุ่มต่างๆ ทางขวา
-        button_container = CTkFrame(header_frame, fg_color="transparent")
-        button_container.pack(side="right")
+        # --- START: แก้ไขส่วนนี้ทั้งหมด ---
+        # กำหนดให้คอลัมน์ซ้าย (ชื่อ) ขยายตัว และคอลัมน์ขวา (ปุ่ม) ไม่ขยาย
+        self.header_frame.grid_columnconfigure(0, weight=1)
         
-        # --- START: แก้ไขลำดับการ pack ปุ่ม ---
-        # 1. ให้ pack ปุ่ม "งานของฉัน" ก่อน
+        CTkLabel(self.header_frame, text=f"ฝ่ายขาย: {self.sale_name} ({self.sale_key})", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).grid(row=0, column=0, sticky="w")
+        
+        # สร้าง Frame สำหรับปุ่มต่างๆ ทางขวา และใช้ grid วาง
+        button_container = CTkFrame(self.header_frame, fg_color="transparent")
+        button_container.grid(row=0, column=1, sticky="e")
+        
+        # ใช้ grid วางปุ่มภายใน button_container
         self.tasks_button = CTkButton(button_container, text="งานของฉัน 🔔 (0)", command=self._open_my_tasks_window)
-        self.tasks_button.pack(side="left", padx=10)
+        self.tasks_button.grid(row=0, column=0, padx=10)
 
-        # 2. ให้ pack ปุ่ม "ออกจากระบบ" ทีหลัง และอยู่ใน container เดียวกัน
-        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="left", padx=(0, 10))
-
+        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").grid(row=0, column=1, padx=(0, 10))
+        
+        if self.show_logout_button:
+            CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").grid(row=0, column=1, padx=(0, 10))
+    
+    
     def _refresh_history_if_open(self):
         if self.history_window and self.history_window.winfo_exists():
             if hasattr(self.history_window, '_populate_history_table'):
@@ -1371,21 +1389,24 @@ class CommissionApp(CTkFrame):
             self.so_number_var.set(new_value)
 
     def _create_header(self):
-        header_frame = CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
-        CTkLabel(header_frame, text=f"ฝ่ายขาย: {self.sale_name} ({self.sale_key})", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
+        self.header_frame = CTkFrame(self, fg_color="transparent")
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
         
-        # สร้าง Frame สำหรับปุ่มต่างๆ ทางขวา
-        button_container = CTkFrame(header_frame, fg_color="transparent")
-        button_container.pack(side="right")
+        # --- START: แก้ไขส่วนนี้ทั้งหมด ---
+        # กำหนดให้คอลัมน์ซ้าย (ชื่อ) ขยายตัว และคอลัมน์ขวา (ปุ่ม) ไม่ขยาย
+        self.header_frame.grid_columnconfigure(0, weight=1)
         
-        # --- START: แก้ไขลำดับการ pack ปุ่ม ---
-        # 1. ให้ pack ปุ่ม "งานของฉัน" ก่อน
+        CTkLabel(self.header_frame, text=f"ฝ่ายขาย: {self.sale_name} ({self.sale_key})", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).grid(row=0, column=0, sticky="w")
+        
+        # สร้าง Frame สำหรับปุ่มต่างๆ ทางขวา และใช้ grid วาง
+        button_container = CTkFrame(self.header_frame, fg_color="transparent")
+        button_container.grid(row=0, column=1, sticky="e")
+        
+        # ใช้ grid วางปุ่มภายใน button_container
         self.tasks_button = CTkButton(button_container, text="งานของฉัน 🔔 (0)", command=self._open_my_tasks_window)
-        self.tasks_button.pack(side="left", padx=10)
+        self.tasks_button.grid(row=0, column=0, padx=10)
 
-        # 2. ให้ pack ปุ่ม "ออกจากระบบ" ทีหลัง และอยู่ใน container เดียวกัน
-        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="left", padx=(0, 10))
+        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").grid(row=0, column=1, padx=(0, 10))
 
     def _on_payment1_select(self, selected_value: str):
         self._calculate_payment_from_percentage(self.payment1_percent_var, self.payment1_amount_entry)

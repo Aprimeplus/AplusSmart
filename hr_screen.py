@@ -390,6 +390,9 @@ class HRScreen(CTkFrame):
         self.sales_mode_tab.grid_rowconfigure(0, weight=1)
         self.sales_mode_tab.grid_columnconfigure(0, weight=1)
 
+        self.pu_mode_tab = self.tab_view.add("ลงข้อมูลแทนจัดซื้อ (PU Mode)")
+        self.pu_mode_tab.grid_rowconfigure(0, weight=1); self.pu_mode_tab.grid_columnconfigure(0, weight=1)
+
         self.edit_data_tab = self.tab_view.add("แก้ไขข้อมูล (SO/PO)")
         self.compare_commission_tab = self.tab_view.add("เปรียบเทียบ / ดูประวัติ")
         self.process_commission_tab = self.tab_view.add("ประมวลผลและจ่ายค่าคอม")
@@ -410,6 +413,7 @@ class HRScreen(CTkFrame):
         self.tab_view.set("จัดการผู้ใช้งาน")
         self.after(100, self._initial_load)
         self._sales_mode_loaded = False 
+        self._pu_mode_loaded = False 
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
         
@@ -561,7 +565,7 @@ class HRScreen(CTkFrame):
         
     def _on_tab_selected(self):
         selected_tab_name = self.tab_view.get()
-        
+
         if selected_tab_name == "ลงข้อมูลแทนเซลส์ (Sales Mode)" and not self._sales_mode_loaded:
             try:
                 from sales_proxy_screen import SalesProxyScreen
@@ -570,15 +574,60 @@ class HRScreen(CTkFrame):
                     app_container=self.app_container,
                     proxy_user_key=self.user_key,
                     proxy_user_name=self.user_name,
+                    user_role=self.user_role, # <--- เพิ่มบรรทัดนี้เข้ามา
                     role_to_proxy="Sale"
                 )
-                # --- แก้ไขบรรทัดนี้ ---
                 self.sales_proxy_screen_instance.grid(row=0, column=0, sticky="nsew")
                 self._sales_mode_loaded = True
             except ImportError:
                 messagebox.showerror("ผิดพลาด", "ไม่พบไฟล์ sales_proxy_screen.py")
             except Exception as e:
                 messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดหน้าจอ Sales Mode ได้: {e}")
+        
+        elif selected_tab_name == "ลงข้อมูลแทนจัดซื้อ (PU Mode)" and not self._pu_mode_loaded:
+            try:
+                from purchasing_proxy_screen import PurchasingProxyScreen
+                self.pu_proxy_screen_instance = PurchasingProxyScreen(
+                    master=self.pu_mode_tab,
+                    app_container=self.app_container,
+                    proxy_user_key=self.user_key,
+                    proxy_user_name=self.user_name,
+                    role_to_proxy="Purchasing Staff"
+                )
+                self.pu_proxy_screen_instance.pack(fill="both", expand=True) # ใช้ .pack() แทน .grid()
+                self._pu_mode_loaded = True
+            except ImportError:
+                messagebox.showerror("ผิดพลาด", "ไม่พบไฟล์ purchasing_proxy_screen.py")
+            except Exception as e:
+                messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดหน้าจอ PU Mode ได้: {e}")
+
+        elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded:
+            self._populate_payout_history_table()
+            self._payout_history_loaded = True
+        
+        elif selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
+            self._initial_load_dashboard()
+            self._dashboard_loaded = True
+            
+        elif selected_tab_name == "วิเคราะห์เป้าการขาย" and not self._sales_target_loaded:
+            self._initial_load_sales_target()
+            self._sales_target_loaded = True
+            
+        elif selected_tab_name == "จัดการผู้ใช้งาน" and not self._users_loaded:
+            self._populate_user_table()
+            self._users_loaded = True
+
+        elif selected_tab_name == "เปรียบเทียบ / ดูประวัติ" and not self._compare_commission_loaded:
+            self._initial_load_compare_commission()
+            self._compare_commission_loaded = True
+
+        elif selected_tab_name == "ประมวลผลและจ่ายค่าคอม" and not self._process_commission_loaded:
+            self._initial_load_process_commission()
+            self._process_commission_loaded = True
+
+        elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded:
+            self._load_audit_log_data()
+            self._audit_log_loaded = True
 
         if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
             self._update_dashboard()
@@ -1045,21 +1094,6 @@ class HRScreen(CTkFrame):
         self._populate_users_table()
         self._users_loaded = True
         
-    def _on_tab_selected(self):
-        selected_tab_name = self.tab_view.get()
-        
-        # --- START: เพิ่มเงื่อนไขสำหรับแท็บ "แก้ไขข้อมูล (SO/PO)" ---
-        if selected_tab_name == "แก้ไขข้อมูล (SO/PO)":
-            self._load_hr_edit_queue() # <-- ให้โหลดคิวงานเป็นค่าเริ่มต้น
-        # --- END ---
-        
-        elif selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded: self._update_dashboard(); self._dashboard_loaded = True
-        elif selected_tab_name == "วิเคราะห์เป้าการขาย" and not self._sales_target_loaded: self._update_sales_target_dashboard(); self._sales_target_loaded = True
-        elif selected_tab_name == "จัดการผู้ใช้งาน" and not self._users_loaded: self._populate_users_table(); self._users_loaded = True
-        elif selected_tab_name == "เปรียบเทียบ / ดูประวัติ" and not self._compare_commission_loaded: self._compare_commission_loaded = True
-        elif selected_tab_name == "ประมวลผลและจ่ายค่าคอม" and not self._process_commission_loaded: self._on_sale_selected_for_process(); self._process_commission_loaded = True
-        elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded: self._load_payout_history(); self._payout_history_loaded = True
-        elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded: self._populate_audit_log_table(); self._audit_log_loaded = True
 
     def _create_edit_data_tab(self, parent_tab):
         """(เวอร์ชันแก้ไข) สร้าง UI สำหรับหน้า Master Edit SO/PO พร้อมฟิลเตอร์และ Pagination"""
