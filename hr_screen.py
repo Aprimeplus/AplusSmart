@@ -562,7 +562,15 @@ class HRScreen(CTkFrame):
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข PO ได้: {e}", parent=self)
             traceback.print_exc()
-        
+
+    def _initial_load_process_commission(self):
+        """
+        ฟังก์ชันสำหรับโหลดข้อมูลเริ่มต้นของแท็บ 'ประมวลผลค่าคอม'
+        เมื่อถูกเรียกครั้งแรก
+        """
+        # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดข้อมูลของเซลส์ที่เลือก
+        self._on_sale_selected_for_process()
+
     def _on_tab_selected(self):
         selected_tab_name = self.tab_view.get()
 
@@ -618,7 +626,7 @@ class HRScreen(CTkFrame):
             self._users_loaded = True
 
         elif selected_tab_name == "เปรียบเทียบ / ดูประวัติ" and not self._compare_commission_loaded:
-            self._initial_load_compare_commission()
+            self._compare_commission_loaded = True
             self._compare_commission_loaded = True
 
         elif selected_tab_name == "ประมวลผลและจ่ายค่าคอม" and not self._process_commission_loaded:

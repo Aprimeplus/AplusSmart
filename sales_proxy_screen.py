@@ -98,10 +98,29 @@ class SalesProxyScreen(CommissionApp):
                 self._toggle_main_form(state="disabled")
     
     def _toggle_main_form(self, state):
-        """เปิด/ปิด การใช้งานฟอร์มหลัก"""
+        """(เวอร์ชันใหม่) เปิด/ปิด การใช้งานฟอร์มหลัก โดยจะเข้าไปจัดการวิดเจ็ตข้างในทั้งหมด"""
         if hasattr(self, 'scrollable_main_container') and self.scrollable_main_container.winfo_exists():
-            for child in self.scrollable_main_container.winfo_children():
-                try:
-                    child.configure(state=state)
-                except (tk.TclError, AttributeError):
-                    pass
+            # เริ่มการทำงานที่ container หลัก
+            self._recursive_toggle_state(self.scrollable_main_container, state)
+
+    def _recursive_toggle_state(self, parent_widget, state):
+        """
+        ฟังก์ชัน Helper ที่จะทำงานซ้ำๆ (Recursive) เพื่อเข้าไปจัดการสถานะของวิดเจ็ตในทุกระดับชั้น
+        """
+        # วนลูปดูวิดเจ็ตลูกทั้งหมดของ parent_widget
+        for child in parent_widget.winfo_children():
+            # 1. ลองสั่งเปลี่ยนสถานะของวิดเจ็ตลูกตัวนี้
+            try:
+                # คำสั่งนี้จะทำงานสำเร็จกับวิดเจ็ต เช่น CTkButton, CTkEntry, CTkOptionMenu
+                # และจะเกิด Error กับวิดเจ็ต เช่น CTkFrame, CTkLabel (ซึ่งเป็นสิ่งที่เราต้องการ)
+                child.configure(state=state)
+            except Exception:
+                # ถ้าเกิด Error (เช่น ValueError, AttributeError) แปลว่าวิดเจ็ตนี้ไม่มี state ให้ปรับ
+                # ก็ไม่ต้องทำอะไร ให้ข้ามไป
+                pass
+
+            # 2. ตรวจสอบว่าวิดเจ็ตลูกตัวนี้ มีลูกๆ ของมันเองอีกหรือไม่ (เป็น container หรือไม่)
+            if child.winfo_children():
+                # ถ้ามี ให้เรียกฟังก์ชันนี้อีกครั้ง โดยส่ง child ตัวนี้เป็น parent ใหม่
+                # เพื่อให้มัน 'ล้วง' เข้าไปจัดการวิดเจ็ตข้างในต่อไป
+                self._recursive_toggle_state(child, state)

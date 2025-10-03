@@ -632,18 +632,16 @@ class AppContainer(CTk):
     
     def show_sale_support_screen(self, user_key, user_name, user_role):
         """เปิดหน้าจอสำหรับ Sale Support"""
-        # --- จุดแก้ไขที่ถูกต้อง ---
-        # 1. Import คลาส SalesProxyScreen เข้ามาในฟังก์ชันนี้
         from sales_proxy_screen import SalesProxyScreen 
         
-        # 2. เรียกใช้ SalesProxyScreen โดยตรง และส่งพารามิเตอร์ที่จำเป็นทั้งหมดเข้าไป
         self.show_screen(
             SalesProxyScreen, 
             app_container=self, 
             proxy_user_key=user_key, 
-            proxy_user_name=user_name, 
+            proxy_user_name=user_name,
+            user_role=user_role, # <--- เพิ่มบรรทัดนี้
             role_to_proxy="Sale",
-            show_logout_button=True # <-- ระบุว่าเป็นหน้าจอของ Sale Support
+            show_logout_button=True
         )
         
 if __name__ == "__main__":
