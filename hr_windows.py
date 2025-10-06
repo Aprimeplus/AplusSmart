@@ -438,6 +438,9 @@ class SOPopupWindow(CTkToplevel):
         p2 = utils.convert_to_float(self.popup_widgets.get('payment2_amount_entry').get())
         updated_data['total_payment_amount'] = p1 + p2
 
+        new_difference = utils.convert_to_float(self.so_shared_vars['difference_amount_var'].get())
+        updated_data['difference_amount'] = new_difference
+
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
@@ -1433,20 +1436,53 @@ class HRVerificationWindow(CTkToplevel):
 # อยู่ในไฟล์ hr_windows.py ภายในคลาส HRVerificationWindow
 
     def _recalculate_summaries(self):
-        valid_po_df = self.po_data[self.po_data['status'] == 'Approved'].copy()
+        """
+        (เวอร์ชันแก้ไขถาวร) คำนวณค่าสรุปทั้งหมดโดยดึงต้นทุนจาก purchase_order_items โดยตรง
+        """
         
-        po_cost = pd.to_numeric(valid_po_df['total_cost'], errors='coerce').fillna(0).sum()
+        # --- START: Logic การคำนวณต้นทุน (ส่วนนี้เหมือนเดิม) ---
+        po_cost = 0.0
+        approved_po_df = self.po_data[self.po_data['status'] == 'Approved']
+        
+        if not approved_po_df.empty:
+            approved_po_ids = tuple(approved_po_df['id'].tolist())
+            
+            if approved_po_ids:
+                try:
+                    query = """
+                        SELECT SUM(COALESCE(total_price, 0))
+                        FROM purchase_order_items
+                        WHERE purchase_order_id IN %s
+                    """
+                    result_df = pd.read_sql(query, self.pg_engine, params=(approved_po_ids,))
+                    if not result_df.empty and pd.notna(result_df.iloc[0, 0]):
+                        po_cost = float(result_df.iloc[0, 0])
+                except Exception as e:
+                    print(f"Error querying PO item costs for recalculation: {e}")
+                    messagebox.showerror("DB Error", "ไม่สามารถคำนวณต้นทุนจากรายการสินค้าได้", parent=self)
+                    po_cost = 0.0
+        
+        print("\n--- DEBUG: Inside _recalculate_summaries (Definitive Fix) ---")
+        print(f"Sum of PO Items 'total_price' (po_cost): {po_cost:,.2f}")
+        
         total_cost_from_system = po_cost
-        
-        total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
+        # --- END: Logic การคำนวณต้นทุน ---
 
+        total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
         total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
 
-        ### START: แก้ไขสูตรคำนวณ total_sale_system ให้แสดงเฉพาะยอดขาย ###
-        # ดึงค่าจาก 'sales_service_amount' มาแสดงโดยตรงตามที่คุณต้องการ
-        total_sale_system = float(self.system_data.get('sales_service_amount', 0) or 0)
-        ### END ###
+        # --- START: แก้ไขการคำนวณยอดขายฝั่งระบบ ---
+        # 1. กำหนดรายการรายได้ที่ต้องนำมารวม
+        sales_revenue_keys = [
+            'sales_service_amount',
+            'cutting_drilling_fee',
+            'other_service_fee'
+        ]
+        
+        # 2. รวมยอดจากทุกรายการที่กำหนดไว้
+        total_sale_system = sum(float(self.system_data.get(key, 0) or 0) for key in sales_revenue_keys)
+        # --- END: สิ้นสุดการแก้ไข ---
 
         self.calculated_values = {
             'total_sale_system': total_sale_system,
@@ -1455,7 +1491,6 @@ class HRVerificationWindow(CTkToplevel):
             'total_cost_express': total_cost_express
         }
 
-        # --- โค้ดส่วนที่เหลือของฟังก์ชันเหมือนเดิม ---
         if self.system_data.get('hr_sale_source') in ['system', 'express']:
             self.final_sale_source.set(self.system_data['hr_sale_source'])
         else:
@@ -1844,6 +1879,14 @@ class HRVerificationWindow(CTkToplevel):
         final_sale = float(total_sale_system if final_sale_source == "system" else total_sale_express)
         final_cost = float(total_cost_system if final_cost_source == "system" else total_cost_express)
         
+        # +++ START: เพิ่มโค้ด Debug ตอนกด Save +++
+        print("\n--- DEBUGGING SAVE ACTION ---")
+        print(f"User selected cost source: '{final_cost_source}'")
+        print(f"Value of total_cost_system WAS: {total_cost_system:,.2f}")
+        print(f"Value of total_cost_express WAS: {total_cost_express:,.2f}")
+        print(f"FINAL cost value to be saved IS: {final_cost:,.2f}")
+        print("-----------------------------\n")
+        
         so_id = self.system_data.get('id')
         final_gp = final_sale - final_cost
         final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
@@ -1869,7 +1912,8 @@ class HRVerificationWindow(CTkToplevel):
                         final_gp = %s,
                         final_margin = %s,
                         hr_sale_source = %s,
-                        hr_cost_source = %s
+                        hr_cost_source = %s,
+                        payout_id = NULL -- <--- เพิ่มบรรทัดนี้
                     WHERE id = %s
                 """
                 params = (final_sale, final_cost, final_gp, final_margin, 

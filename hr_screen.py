@@ -354,6 +354,7 @@ class HRScreen(CTkFrame):
         self.selected_payout_ids = set(); self.select_all_var = tk.IntVar(value=0)
         self.theme = self.app_container.THEME["hr"]
         
+        
         self.dropdown_style = {
             "fg_color": "white",
             "text_color": "black",
@@ -610,7 +611,7 @@ class HRScreen(CTkFrame):
                 messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดหน้าจอ PU Mode ได้: {e}")
 
         elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded:
-            self._populate_payout_history_table()
+            self._load_payout_history()
             self._payout_history_loaded = True
         
         elif selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
@@ -1031,42 +1032,39 @@ class HRScreen(CTkFrame):
     
     def _open_verification_window(self, so_number):
         """
-        เปิดหน้าต่างตรวจสอบข้อมูล โดยดึงข้อมูลล่าสุดจาก DB โดยตรง
-        (เวอร์ชันแก้ไขให้ทำงานได้จากทุกที่)
+        เปิดหน้าต่างตรวจสอบข้อมูล (เวอร์ชันแก้ไขสมบูรณ์)
+        - ดึงข้อมูล SO และ PO จากฐานข้อมูลโดยตรงและแยกจากกัน
+        - ส่งข้อมูลที่ถูกต้องไปยัง HRVerificationWindow
         """
         try:
-            # --- จุดที่แก้ไข: Query ข้อมูล SO ล่าสุดจาก DB โดยตรง ---
-            query = """
-                SELECT c.*, po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, u.sale_name 
+            # --- 1. ดึงข้อมูล SO ล่าสุดจาก DB ---
+            so_query = """
+                SELECT c.*, u.sale_name 
                 FROM commissions c 
-                JOIN sales_users u ON c.sale_key = u.sale_key
-                LEFT JOIN (
-                    SELECT so_number, 
-                           SUM(COALESCE(total_cost, 0) - COALESCE(shipping_to_stock_cost, 0) - COALESCE(shipping_to_site_cost, 0)) as cogs_db,
-                           SUM(shipping_to_stock_cost) as po_shipping_stock,
-                           SUM(shipping_to_site_cost) as po_shipping_site,
-                           SUM(relocation_cost) as po_relocation
-                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
-                ) po ON c.so_number = po.so_number
-                WHERE c.is_active = 1 AND c.so_number = %s
+                JOIN sales_users u ON c.sale_key = u.sale_key 
+                WHERE c.so_number = %s AND c.is_active = 1 
+                ORDER BY c.id DESC LIMIT 1
             """
-            system_data_df = pd.read_sql_query(query, self.app_container.pg_engine, params=(so_number,))
+            system_data_df = pd.read_sql_query(so_query, self.pg_engine, params=(so_number,))
 
             if system_data_df.empty:
                 messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูลที่ Active สำหรับ SO: {so_number} ในระบบ", parent=self)
                 return
-
             system_data = system_data_df.iloc[0].to_dict()
-            
-            # --- โค้ดส่วนที่เหลือเหมือนเดิม แต่จะใช้ข้อมูลที่เพิ่งดึงมา ---
+
+            # --- 2. ดึงข้อมูล PO ที่เกี่ยวข้องทั้งหมด โดยใช้ฟังก์ชันเดิมที่ถูกต้อง ---
+            po_data = self._get_po_data(so_number)
+
+            # --- 3. ดึงข้อมูลจากไฟล์ Excel (ถ้ามี) ---
             excel_data = {}
             if self.uploaded_df is not None and not self.uploaded_df.empty:
-                excel_data_row = self.uploaded_df[self.uploaded_df['so_number'].astype(str).str.strip() == str(so_number).strip()]
+                # ทำให้ so_number เป็น string เพื่อให้เปรียบเทียบได้ถูกต้อง
+                self.uploaded_df['so_number'] = self.uploaded_df['so_number'].astype(str)
+                excel_data_row = self.uploaded_df[self.uploaded_df['so_number'].str.strip() == str(so_number).strip()]
                 if not excel_data_row.empty:
                     excel_data = excel_data_row.iloc[0].to_dict()
-
-            po_data = self._get_po_data(so_number)
             
+            # --- 4. ส่งข้อมูลที่สะอาดและถูกต้องไปยังหน้าต่าง Verify ---
             self.app_container.show_hr_verification_window(
                 system_data=system_data, 
                 excel_data=excel_data,
@@ -1314,6 +1312,14 @@ class HRScreen(CTkFrame):
         try:
             period = self.sales_target_period_var.get(); start_date, end_date = self._get_date_range_from_period(period); start_date_str, end_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S"), end_date.strftime("%Y-%m-%d %H:%M:%S"); sales_vs_target_data = self._get_sales_vs_target_data(start_date_str, end_date_str); loading.destroy(); self._create_sales_vs_target_chart(self.sales_target_chart_frame, sales_vs_target_data)
         except Exception as e: loading.destroy(); messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการอัปเดต Dashboard: {e}", parent=self)
+    
+    def _initial_load_sales_target(self):
+        """
+        ฟังก์ชันสำหรับโหลดข้อมูลเริ่มต้นของแท็บ 'วิเคราะห์เป้าการขาย'
+        เมื่อถูกเรียกครั้งแรก
+        """
+        # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดและวาดกราฟ
+        self._update_sales_target_dashboard()
 
     def _get_sales_vs_target_data(self, start_date, end_date):
         try:
@@ -1442,6 +1448,14 @@ class HRScreen(CTkFrame):
             if 'loading1' in locals() and loading1.winfo_exists(): loading1.destroy()
             if 'loading2' in locals() and loading2.winfo_exists(): loading2.destroy()
             messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการอัปเดต Dashboard: {e}", parent=self)
+
+    def _initial_load_dashboard(self):
+        """
+        ฟังก์ชันสำหรับโหลดข้อมูลเริ่มต้นของแท็บ 'Dashboard'
+        เมื่อถูกเรียกครั้งแรก
+        """
+        # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดและวาดกราฟ
+        self._update_dashboard()
 
     def _get_sales_by_employee_data(self, start_date, end_date):
         try:
@@ -1881,9 +1895,9 @@ class HRScreen(CTkFrame):
         CTkButton(control_frame, text="🚀 เริ่มต้นการเปรียบเทียบใหม่", command=self._start_new_comparison, font=CTkFont(size=16, weight="bold")).pack(side="left", padx=10, pady=10)
         CTkButton(control_frame, text="📖 แสดงประวัติการเปรียบเทียบ", command=self._open_comparison_history_window, fg_color="#64748B").pack(side="left", padx=10, pady=10)
 
-        self.finalize_button = CTkButton(control_frame, text="✅ ยืนยันข้อมูลและส่งต่อเพื่อคำนวณค่าคอม", fg_color="#16A34A", hover_color="#15803D", command=self._finalize_comparison)
-        self.finalize_button.pack(side="right", padx=10, pady=10)
-        self.finalize_button.pack_forget()
+        self.verify_passed_button = CTkButton(control_frame, text="ยืนยัน SO ที่ผ่านเกณฑ์ (Verify Passed SOs)", fg_color="#16A34A", hover_color="#15803D", command=self._verify_passed_sos)
+        self.verify_passed_button.pack(side="right", padx=10, pady=10)
+        self.verify_passed_button.pack_forget()
 
         self.export_button = CTkButton(control_frame, text="📄 Export ผลลัพธ์", command=self._export_comparison)
         self.export_button.pack(side="right", padx=10, pady=10)
@@ -2018,23 +2032,30 @@ class HRScreen(CTkFrame):
             self.current_comparison_salesperson = selected_salesperson
             # --- START: จุดที่แก้ไข Query ---
             base_query = """SELECT c.*, 
-                                   po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
-                                   u.sale_name,
-                                   ss.sale_name as support_user_name 
-                            FROM commissions c 
-                            JOIN sales_users u ON c.sale_key = u.sale_key
-                            LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
-                            LEFT JOIN (
-                                    SELECT so_number, 
-                                           SUM(COALESCE(total_cost, 0)) as cogs_db, -- << บรรทัดนี้ที่แก้ไข
-                                           SUM(shipping_to_stock_cost) as po_shipping_stock,
-                                           SUM(shipping_to_site_cost) as po_shipping_site,
-                                           SUM(relocation_cost) as po_relocation
-                                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
-                                ) po ON c.so_number = po.so_number
-                            WHERE c.is_active = 1 
-                              AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
-            """
+                       po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
+                       u.sale_name,
+                       ss.sale_name as support_user_name 
+                FROM commissions c 
+                JOIN sales_users u ON c.sale_key = u.sale_key
+                LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
+                LEFT JOIN (
+                        /* <<< จุดแก้ไขที่สำคัญที่สุด >>> */
+                        SELECT
+                            p.so_number,
+                            -- 1. ต้นทุนสินค้า (cogs_db): คือผลรวม total_price จาก items ที่อยู่ใน PO ที่ Approved แล้วเท่านั้น
+                            SUM(COALESCE(poi.total_price, 0)) as cogs_db,
+                            -- 2. ค่าขนส่ง: คือผลรวมจากตาราง PO หลักเหมือนเดิม
+                            SUM(p.shipping_to_stock_cost) as po_shipping_stock,
+                            SUM(p.shipping_to_site_cost) as po_shipping_site,
+                            SUM(p.relocation_cost) as po_relocation
+                        FROM purchase_orders p
+                        LEFT JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
+                        WHERE p.status = 'Approved'
+                        GROUP BY p.so_number
+                    ) po ON c.so_number = po.so_number
+                WHERE c.is_active = 1 
+                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
+"""
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
@@ -2077,17 +2098,11 @@ class HRScreen(CTkFrame):
 
         records_to_update = []
         for index, row in df_to_finalize.iterrows():
-            # --- START: จุดที่แก้ไข ---
-            # 1. เปลี่ยน 'SO Number' เป็น 'เลขที่ SO' เพื่อให้ตรงกับชื่อคอลัมน์ที่แสดงผล
             so_number = row['เลขที่ SO']
             
-            # 2. ใช้ 'เลขที่ SO' ในการค้นหาข้อมูลแถวเต็มเช่นกัน
             full_row_data = self.comparison_df.loc[self.comparison_df['เลขที่ SO'] == so_number].iloc[0]
 
-            # 3. ใช้ชื่อคอลัมน์ภาษาไทยที่ถูกต้องในการดึงข้อมูล
             sales_db_pure = full_row_data.get('ยอดขาย/บริการ (ระบบ)', 0)
-            # --- END: สิ้นสุดจุดที่แก้ไข ---
-
             sales_uploaded = full_row_data.get('ยอดขาย (Express)', 0)
             cost_db = full_row_data.get('ต้นทุน (ระบบ)', 0)
             cost_uploaded = full_row_data.get('ต้นทุน (Express)', 0)
@@ -2097,8 +2112,26 @@ class HRScreen(CTkFrame):
             cost_db_cleaned = utils.convert_to_float(cost_db)
             cost_uploaded_cleaned = utils.convert_to_float(cost_uploaded)
 
-            final_sale = max(sales_db_pure_cleaned, sales_uploaded_cleaned)
-            final_cost = min(cost_db_cleaned, cost_uploaded_cleaned) if cost_db_cleaned > 0 and cost_uploaded_cleaned > 0 else max(cost_db_cleaned, cost_uploaded_cleaned)
+            # <<< ส่วนที่แก้ไข >>>
+            so_record_from_db = self.db_df[self.db_df['so_number'] == so_number]
+            sale_source = 'system'
+            cost_source = 'system'
+            
+            if not so_record_from_db.empty:
+                record = so_record_from_db.iloc[0]
+                sale_source = record.get('hr_sale_source') if pd.notna(record.get('hr_sale_source')) else 'system'
+                cost_source = record.get('hr_cost_source') if pd.notna(record.get('hr_cost_source')) else 'system'
+
+            if sale_source == 'express':
+                final_sale = sales_uploaded_cleaned
+            else:
+                final_sale = sales_db_pure_cleaned
+
+            if cost_source == 'express':
+                final_cost = cost_uploaded_cleaned
+            else:
+                final_cost = cost_db_cleaned
+            # <<< สิ้นสุดส่วนที่แก้ไข >>>
 
             final_gp = final_sale - final_cost
             final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
@@ -2150,15 +2183,113 @@ class HRScreen(CTkFrame):
             conn.commit()
             
             messagebox.showinfo("สำเร็จ", f"อัปเดตข้อมูล {updated_rows} รายการเป็น 'HR Verified' เรียบร้อยแล้ว", parent=self)
-            
-            for widget in self.results_frame.winfo_children(): widget.destroy()
-            self.results_frame_label.configure(text="กรุณากด 'เริ่มต้นการเปรียบเทียบใหม่' เพื่อเริ่มใช้งาน")
-            self.finalize_button.pack_forget()
-            self.export_button.pack_forget()
+
+            self._refresh_comparison_view()
 
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการยืนยันข้อมูล: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    # hr_screen.py (เพิ่มฟังก์ชันนี้เข้าไปในคลาส HRScreen)
+
+    def _verify_passed_sos(self):
+        """
+        ฟังก์ชันใหม่สำหรับปุ่ม "ยืนยัน SO ที่ผ่านเกณฑ์"
+        จะทำงานกับ SO ที่มีสถานะ 'ผ่านเกณฑ์' เท่านั้น และใช้ลอจิกที่ถูกต้องในการคำนวณ
+        """
+        if self.comparison_df is None or self.comparison_df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลการเปรียบเทียบที่จะยืนยัน", parent=self)
+            return
+
+        # 1. กรองเอาเฉพาะ SO ที่ 'ผ่านเกณฑ์'
+        df_to_verify = self.comparison_df[self.comparison_df['สถานะ'] == 'ผ่านเกณฑ์'].copy()
+
+        if df_to_verify.empty:
+            messagebox.showinfo("ไม่พบรายการ", "ไม่พบรายการที่ 'ผ่านเกณฑ์' ที่จะยืนยันได้ในขณะนี้", parent=self)
+            return
+
+        # 2. ถามเพื่อยืนยันการทำงาน
+        msg = (f"คุณต้องการยืนยันข้อมูลสำหรับ {len(df_to_verify)} รายการที่ผ่านเกณฑ์ใช่หรือไม่?\n\n"
+               f"การกระทำนี้จะอัปเดตสถานะเป็น 'HR Verified' และบันทึกยอดสุดท้ายเข้าระบบ")
+        if not messagebox.askyesno("ยืนยันข้อมูล", msg, parent=self):
+            return
+
+        records_to_update = []
+        # 3. วนลูปสร้างข้อมูลสำหรับอัปเดต โดยดึงจากข้อมูลดิบที่เชื่อถือได้
+        for index, row in df_to_verify.iterrows():
+            so_number = row['เลขที่ SO']
+            
+            # ดึงข้อมูลดิบจาก self.db_df และ self.uploaded_df เพื่อความแม่นยำสูงสุด
+            system_record = self.db_df[self.db_df['so_number'] == so_number]
+            excel_record = self.uploaded_df[self.uploaded_df['so_number'] == so_number]
+
+            if system_record.empty:
+                continue # ข้ามไปถ้าไม่พบข้อมูลดิบ
+
+            system_data = system_record.iloc[0]
+            excel_data = excel_record.iloc[0] if not excel_record.empty else {}
+
+            # --- ใช้ตรรกะการคำนวณที่ถูกต้องและตรงไปตรงมา ---
+            total_sale_system = float(system_data.get('sales_service_amount', 0) or 0)
+            total_cost_system = float(system_data.get('cogs_db', 0) or 0) # cogs_db คือผลรวม total_cost จาก PO
+            
+            total_sale_express = float(excel_data.get('sales_uploaded', 0) or 0)
+            total_cost_express = float(excel_data.get('cost_uploaded', 0) or 0)
+            
+            sale_source = system_data.get('hr_sale_source', 'system')
+            cost_source = system_data.get('hr_cost_source', 'system')
+
+            final_sale = total_sale_system if sale_source == 'system' else total_sale_express
+            final_cost = total_cost_system if cost_source == 'system' else total_cost_express
+
+            final_gp = final_sale - final_cost
+            final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
+            
+            records_to_update.append((
+                int(system_data['id']),
+                final_sale, final_cost, final_gp, final_margin,
+                sale_source, cost_source
+            ))
+
+        if not records_to_update:
+            messagebox.showerror("ผิดพลาด", "ไม่สามารถเตรียมข้อมูลสำหรับอัปเดตได้", parent=self)
+            return
+
+        # 4. อัปเดตฐานข้อมูล (Bulk Update)
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                update_query = """
+                    UPDATE commissions SET 
+                        status = 'HR Verified', 
+                        final_sales_amount = data.final_sale,
+                        final_cost_amount = data.final_cost,
+                        final_gp = data.final_gp,
+                        final_margin = data.final_margin,
+                        hr_sale_source = data.sale_source,
+                        hr_cost_source = data.cost_source,
+                        payout_id = NULL
+                    FROM (VALUES %s) AS data(record_id, final_sale, final_cost, final_gp, final_margin, sale_source, cost_source)
+                    WHERE commissions.id = data.record_id;
+                """
+                psycopg2.extras.execute_values(
+                    cursor, update_query, records_to_update,
+                    template="(%s::int, %s::float, %s::float, %s::float, %s::float, %s, %s)",
+                    page_size=100
+                )
+                updated_rows = cursor.rowcount
+            conn.commit()
+            
+            messagebox.showinfo("สำเร็จ", f"ยืนยันข้อมูล {updated_rows} รายการเรียบร้อยแล้ว", parent=self)
+            self._refresh_comparison_view() # รีเฟรชหน้าจอ
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
@@ -2187,6 +2318,8 @@ class HRScreen(CTkFrame):
         return final_cost
 
 
+    # hr_screen.py (ฟังก์ชัน _compare_data ที่แก้ไขแล้ว)
+
     def _compare_data(self):
         try:
             comparison_sources = []
@@ -2194,6 +2327,7 @@ class HRScreen(CTkFrame):
                 comparison_sources.append(self.uploaded_df)
             if self.manual_entry_df is not None and not self.manual_entry_df.empty:
                 comparison_sources.append(self.manual_entry_df)
+            
             if not comparison_sources:
                 messagebox.showwarning("ไม่มีข้อมูลเปรียบเทียบ", "กรุณา Import ไฟล์ หรือ คีย์ข้อมูลด้วยมือ", parent=self)
                 self._create_styled_dataframe_table(self.results_frame, self.db_df)
@@ -2201,62 +2335,38 @@ class HRScreen(CTkFrame):
                 
             uploaded_compare_df = pd.concat(comparison_sources, ignore_index=True).drop_duplicates(subset=['so_number'], keep='last')
 
-            ### START: เพิ่มโค้ดส่วนนี้ ###
-            # ดึงรายชื่อ SO ทั้งหมดที่เคยถูก Defer จากฐานข้อมูล
-            deferred_so_query = "SELECT so_number FROM commissions WHERE status = 'Deferred by HR'"
-            deferred_so_df = pd.read_sql(deferred_so_query, self.pg_engine)
+            processed_so_query = "SELECT so_number FROM commissions WHERE status IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')"
+            processed_so_df = pd.read_sql_query(processed_so_query, self.pg_engine)
             
-            if not deferred_so_df.empty:
-                deferred_so_list = deferred_so_df['so_number'].tolist()
-                
-                # กรองข้อมูลใน DataFrame ฝั่ง Express เพื่อเอา SO ที่ถูก Defer ออกไป
+            if not processed_so_df.empty:
+                processed_so_list = processed_so_df['so_number'].tolist()
                 initial_count = len(uploaded_compare_df)
                 uploaded_compare_df['so_number'] = uploaded_compare_df['so_number'].astype(str).str.strip()
-                uploaded_compare_df = uploaded_compare_df[~uploaded_compare_df['so_number'].isin(deferred_so_list)]
-                filtered_count = len(uploaded_compare_df)
-                
-                if initial_count > filtered_count:
-                    print(f"Filtered out {initial_count - filtered_count} deferred SO(s) from the uploaded data.")
-            ### END: สิ้นสุดโค้ดที่เพิ่ม ###
-            
-            required_cols = [
-                'id', 'so_number', 'sales_service_amount', 'shipping_cost', 'relocation_cost', 
-                'brokerage_fee', 'transfer_fee', 'status', 'final_margin', 
-                'hr_cost_overrides', 'cogs_db', 'po_shipping_stock', 'po_shipping_site', 'po_relocation',
-                'cutting_drilling_fee', 'other_service_fee', 'credit_card_fee',
-                'hr_sale_source', 'hr_cost_source' # <-- เพิ่ม 2 field นี้เพื่อให้แน่ใจว่ามีอยู่
-            ]
-            for col in required_cols:
-                if col not in self.db_df.columns: self.db_df[col] = np.nan
+                uploaded_compare_df = uploaded_compare_df[~uploaded_compare_df['so_number'].isin(processed_so_list)]
+                if initial_count > len(uploaded_compare_df):
+                    print(f"Filtered out {initial_count - len(uploaded_compare_df)} already processed SO(s) from the uploaded data.")
+
             db_compare_df = self.db_df.copy()
-            
             db_compare_df['so_number'] = db_compare_df['so_number'].astype(str).str.strip()
             
-            revenue_cols_system = [
-                'sales_service_amount', 'shipping_cost', 'relocation_cost',
-                'cutting_drilling_fee', 'other_service_fee', 'credit_card_fee'
-            ]
-            
-            for col in revenue_cols_system:
-                if col in db_compare_df.columns:
-                    db_compare_df[col] = pd.to_numeric(db_compare_df[col], errors='coerce').fillna(0)
-                else:
-                    db_compare_df[col] = 0
+            sales_revenue_keys = ['sales_service_amount', 'cutting_drilling_fee', 'other_service_fee']
+            db_compare_df['sales_for_comparison'] = 0
+            for key in sales_revenue_keys:
+                if key in db_compare_df.columns:
+                    db_compare_df['sales_for_comparison'] += pd.to_numeric(db_compare_df[key], errors='coerce').fillna(0)
 
-            db_compare_df['sales_for_comparison'] = db_compare_df[revenue_cols_system].sum(axis=1)
+            brokerage = pd.to_numeric(db_compare_df['brokerage_fee'], errors='coerce').fillna(0)
+            transfer = pd.to_numeric(db_compare_df['transfer_fee'], errors='coerce').fillna(0)
+            giveaways = pd.to_numeric(db_compare_df['giveaways'], errors='coerce').fillna(0)
+            cogs = pd.to_numeric(db_compare_df['cogs_db'], errors='coerce').fillna(0)
+            db_compare_df['cost_db'] = cogs + brokerage + transfer + giveaways
 
-            stock_cost = pd.to_numeric(db_compare_df['po_shipping_stock'], errors='coerce').fillna(0)
-            site_cost = pd.to_numeric(db_compare_df['po_shipping_site'], errors='coerce').fillna(0)
-            db_compare_df['payment_before_vat_po'] = stock_cost + site_cost
-            
-            db_compare_df['cost_db'] = db_compare_df.apply(self._calculate_final_pu_cost, axis=1)
             db_compare_df['gp_db'] = db_compare_df['sales_service_amount'] - db_compare_df['cost_db']
             db_compare_df['margin_db'] = (db_compare_df['gp_db'] / db_compare_df['sales_service_amount'].replace(0, np.nan)) * 100
 
             uploaded_compare_df['so_number'] = uploaded_compare_df['so_number'].astype(str).str.strip()
             uploaded_compare_df['sales_uploaded'] = pd.to_numeric(uploaded_compare_df.get('sales_uploaded'), errors='coerce').fillna(0)
             uploaded_compare_df['cost_uploaded'] = pd.to_numeric(uploaded_compare_df.get('cost_uploaded'), errors='coerce').fillna(0)
-            
             uploaded_compare_df['gp_uploaded'] = uploaded_compare_df['sales_uploaded'] - uploaded_compare_df['cost_uploaded']
             uploaded_compare_df['margin_uploaded'] = (uploaded_compare_df['gp_uploaded'] / uploaded_compare_df['sales_uploaded'].replace(0, np.nan)) * 100
 
@@ -2264,15 +2374,12 @@ class HRScreen(CTkFrame):
             
             merged_df['sales_uploaded'] = merged_df['sales_uploaded'].fillna(0) - merged_df['shipping_cost'].fillna(0)
 
-            # +++ START: เพิ่มโค้ดส่วนนี้เพื่อสร้างคอลัมน์แสดงผล +++
-            # แปลงข้อมูล 'system'/'express' ให้เป็น 'ระบบ'/'Express' หรือ 'ยังไม่เลือก'
             merged_df['แหล่งยอดขาย'] = merged_df['hr_sale_source'].apply(
                 lambda x: 'ระบบ' if x == 'system' else ('Express' if x == 'express' else 'ยังไม่เลือก')
             )
             merged_df['แหล่งต้นทุน'] = merged_df['hr_cost_source'].apply(
                 lambda x: 'ระบบ' if x == 'system' else ('Express' if x == 'express' else 'ยังไม่เลือก')
             )
-            # +++ END +++
 
             def determine_status_and_color(row):
                 if row['status'] == 'HR Verified':
@@ -2290,8 +2397,18 @@ class HRScreen(CTkFrame):
                     return "‼️ ขายขาดทุน (ตรวจสอบด่วน)"
                 if pd.notna(final_system_cost) and final_system_cost > 0 and pd.notna(cost_uploaded) and cost_uploaded < (final_system_cost * 0.5):
                     return "‼️ ต้นทุน Express ผิดปกติ (<50%)"
-                sale_ok = final_system_sale >= row['sales_uploaded']
-                cost_ok = final_system_cost >= row['cost_uploaded']
+                
+                # --- START: แก้ไขการปัดเศษทศนิยมตรงนี้ ---
+                # เปลี่ยนจากการใช้ pd.to_numeric(...).fillna(0) มาเป็น float(...) if pd.notna(...) else 0.0
+                sale_system_rounded = round(float(final_system_sale) if pd.notna(final_system_sale) else 0.0, 2)
+                sale_express_rounded = round(float(row['sales_uploaded']) if pd.notna(row['sales_uploaded']) else 0.0, 2)
+                cost_system_rounded = round(float(final_system_cost) if pd.notna(final_system_cost) else 0.0, 2)
+                cost_express_rounded = round(float(row['cost_uploaded']) if pd.notna(row['cost_uploaded']) else 0.0, 2)
+                # --- END: สิ้นสุดการแก้ไข ---
+
+                sale_ok = sale_system_rounded >= sale_express_rounded
+                cost_ok = cost_system_rounded >= cost_express_rounded
+                
                 if sale_ok and cost_ok: return "ผ่านเกณฑ์"
                 elif not sale_ok: return "ยอดขายต่ำกว่า Express"
                 elif not cost_ok: return "ต้นทุนต่ำกว่า Express"
@@ -2299,10 +2416,9 @@ class HRScreen(CTkFrame):
 
             merged_df['สถานะ'] = merged_df.apply(determine_status_and_color, axis=1)
             
-            merged_df['ผลต่างยอดขาย'] = merged_df['sales_service_amount'].fillna(0) - merged_df['sales_uploaded'].fillna(0)
+            merged_df['ผลต่างยอดขาย'] = merged_df['sales_for_comparison'].fillna(0) - merged_df['sales_uploaded'].fillna(0)
             merged_df['ผลต่างต้นทุน'] = merged_df['cost_db'].fillna(0) - merged_df['cost_uploaded'].fillna(0)
             
-            # +++ START: เพิ่ม 2 คอลัมน์ใหม่เข้ามาใน Dictionary นี้ +++
             display_order_map = {
                 'so_number': 'เลขที่ SO',
                 'sales_service_amount': 'ยอดขาย/บริการ (ระบบ)',
@@ -2318,7 +2434,6 @@ class HRScreen(CTkFrame):
                 'แหล่งต้นทุน': 'แหล่งต้นทุน',
                 'สถานะ': 'สถานะ'
             }
-            # +++ END +++
 
             for key in display_order_map.keys():
                 if key not in merged_df.columns:
@@ -2348,9 +2463,8 @@ class HRScreen(CTkFrame):
             self.results_frame_label.configure(text="ผลลัพธ์การเปรียบเทียบ (ดับเบิลคลิกเพื่อตรวจสอบ)")
             self._create_styled_dataframe_table(self.results_frame, self.comparison_df, "", status_column="สถานะ", status_colors=status_colors, on_row_click=self._on_tree_double_click)
             self.export_button.pack(side="right", padx=10, pady=10)
-            self.finalize_button.pack(side="right", padx=10, pady=10)
+            self.verify_passed_button.pack(side="right", padx=10, pady=10)
             self._update_summary_pane()
-            
 
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเปรียบเทียบข้อมูล: {e}\n\n{traceback.format_exc()}", parent=self)
@@ -2412,23 +2526,30 @@ class HRScreen(CTkFrame):
         try:
             # --- START: จุดที่แก้ไข Query ---
             base_query = """SELECT c.*, 
-                                   po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
-                                   u.sale_name,
-                                   ss.sale_name as support_user_name 
-                            FROM commissions c 
-                            JOIN sales_users u ON c.sale_key = u.sale_key
-                            LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
-                            LEFT JOIN (
-                                    SELECT so_number, 
-                                           SUM(COALESCE(total_cost, 0)) as cogs_db, -- << บรรทัดนี้ที่แก้ไข
-                                           SUM(shipping_to_stock_cost) as po_shipping_stock,
-                                           SUM(shipping_to_site_cost) as po_shipping_site,
-                                           SUM(relocation_cost) as po_relocation
-                                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
-                                ) po ON c.so_number = po.so_number
-                            WHERE c.is_active = 1
-                              AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
-            """
+                       po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
+                       u.sale_name,
+                       ss.sale_name as support_user_name 
+                FROM commissions c 
+                JOIN sales_users u ON c.sale_key = u.sale_key
+                LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
+                LEFT JOIN (
+                        /* <<< จุดแก้ไขที่สำคัญที่สุด >>> */
+                        SELECT
+                            p.so_number,
+                            -- 1. ต้นทุนสินค้า (cogs_db): คือผลรวม total_price จาก items ที่อยู่ใน PO ที่ Approved แล้วเท่านั้น
+                            SUM(COALESCE(poi.total_price, 0)) as cogs_db,
+                            -- 2. ค่าขนส่ง: คือผลรวมจากตาราง PO หลักเหมือนเดิม
+                            SUM(p.shipping_to_stock_cost) as po_shipping_stock,
+                            SUM(p.shipping_to_site_cost) as po_shipping_site,
+                            SUM(p.relocation_cost) as po_relocation
+                        FROM purchase_orders p
+                        LEFT JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
+                        WHERE p.status = 'Approved'
+                        GROUP BY p.so_number
+                    ) po ON c.so_number = po.so_number
+                WHERE c.is_active = 1 
+                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
+"""
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
 
@@ -2569,11 +2690,9 @@ class HRScreen(CTkFrame):
         month_num = self.thai_month_map[month_name]
         year_ad = int(year_be_str) - 543
 
-        # <<< START: เพิ่มโค้ดดึงข้อมูล Sales Target และ Plan ตรงนี้ >>>
         plan_info = self.sales_user_info.get(sale_key, {})
         plan = plan_info.get('plan', 'Plan A')
         sales_target = float(plan_info.get('target', 0.0))
-        # <<< END >>>
 
         for widget in self.process_result_frame.winfo_children(): widget.destroy()
         loading = self._show_loading(self.process_result_frame)
@@ -2586,8 +2705,12 @@ class HRScreen(CTkFrame):
                     SELECT so_number, SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0)) as total_po_shipping_cost
                     FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
-                WHERE c.sale_key = %s AND c.status = 'HR Verified' AND c.payout_id IS NULL
-                AND c.commission_month = %s AND c.commission_year = %s
+                WHERE c.sale_key = %s 
+                  AND c.status = 'HR Verified' 
+                  AND c.payout_id IS NULL
+                  AND c.commission_month = %s 
+                  AND c.commission_year = %s
+                  AND c.is_active = 1
             """
             params = (sale_key, month_num, year_ad)
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
@@ -2602,13 +2725,23 @@ class HRScreen(CTkFrame):
             
             total_giveaways = self.current_comm_df['giveaways'].sum() if 'giveaways' in self.current_comm_df.columns else 0.0
 
-            # <<< START: แก้ไขการเรียกใช้ฟังก์ชัน ให้ส่ง sales_target ไปด้วย >>>
+            # --- START: จุดที่แก้ไข ---
+            # เตรียม DataFrame ที่จะส่งไปให้ business_logic.py
+            df_for_calc = self.current_comm_df.copy()
+
+            # 1. สร้างคอลัมน์ 'total_revenue' สำหรับใช้คำนวณ Margin
+            # โดย 'total_revenue' คือ 'final_sales_amount' ที่รวมทุกอย่างแล้ว
+            df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
+            
+            # 2. คอลัมน์ 'sales_service_amount' เดิมจะยังคงเป็น "ยอดขายดิบ"
+            # เพื่อให้ business_logic.py นำไปใช้เป็นฐานคิดค่าคอมได้ถูกต้อง
+            # --- END: สิ้นสุดการแก้ไข ---
+            
             self.initial_commission_result = business_logic.calculate_monthly_commission(
                 plan_name=plan,
-                comm_df=self.current_comm_df,
-                sales_target=sales_target # <--- เพิ่ม parameter นี้
+                comm_df=df_for_calc,
+                sales_target=sales_target
             )
-            # <<< END >>>
             
             result_type = self.initial_commission_result.get('type')
             loading.destroy()
@@ -2719,9 +2852,12 @@ class HRScreen(CTkFrame):
         sale_key = self.selected_sale_for_process.get()
         plan = self.sales_user_info.get(sale_key, {}).get('plan', 'Plan A')
 
+        df_for_final_calc = self.current_comm_df.copy()
+        df_for_final_calc['total_revenue'] = df_for_final_calc['final_sales_amount']
+
         final_result = business_logic.calculate_monthly_commission(
             plan_name=plan,
-            comm_df=self.current_comm_df,
+            comm_df=df_for_final_calc,
             incentives=incentives_dict,
             additional_deductions=deductions_dict
         )

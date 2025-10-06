@@ -490,13 +490,15 @@ class AppContainer(CTk):
 
     def show_history_window(self, sale_key_filter=None, edit_callback=None, support_user_key_filter=None):
         from history_windows import CommissionHistoryWindow, PurchaseHistoryWindow
-        if sale_key_filter: 
+
+        # --- เงื่อนไขที่ถูกต้องคือบรรทัดนี้ ---
+        if sale_key_filter or support_user_key_filter:
             win = CommissionHistoryWindow(
                 master=self, 
                 app_container=self, 
                 sale_key_filter=sale_key_filter, 
                 on_row_double_click=edit_callback,
-                support_user_key_filter=support_user_key_filter # <-- เพิ่มการส่งต่อ
+                support_user_key_filter=support_user_key_filter
             )
             return win
         else: 

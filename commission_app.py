@@ -280,6 +280,7 @@ class CommissionApp(CTkFrame):
         self.app_container = app_container
         self.sale_key = sale_key or "UNKNOWN_SALE_KEY"
         self.sale_name = sale_name or "Unknown Sales User"
+        self.user_role = user_role # <--- เพิ่มบรรทัดนี้
         self.theme = app_container.THEME["sale"]
         self.pg_engine = app_container.pg_engine
         self.show_logout_button = show_logout_button
@@ -624,10 +625,22 @@ class CommissionApp(CTkFrame):
 
     def _show_history(self):
         try:
-            self.history_window = self.app_container.show_history_window(
-                sale_key_filter=self.sale_key,
-                edit_callback=self._on_history_so_select # <--- แก้ไขให้เรียกใช้ฟังก์ชันใหม่ที่ถูกต้อง
-            )
+            # --- START: แก้ไข Logic ทั้งหมดตรงนี้ ---
+            
+            # ตรวจสอบ Role ของผู้ใช้ปัจจุบัน
+            if self.user_role == 'Sale Support':
+                # ถ้าเป็น Sale Support ให้ค้นหาจาก 'ผู้คีย์ข้อมูล' (support_user_key)
+                # โดยใช้รหัสของตัวเอง (self.app_container.current_user_key)
+                self.history_window = self.app_container.show_history_window(
+                    support_user_key_filter=self.app_container.current_user_key,
+                    edit_callback=self._on_history_so_select
+                )
+            else:
+                # ถ้าเป็น Role อื่น (เช่น Sale) ให้ค้นหาจาก 'เจ้าของ SO' (sale_key) เหมือนเดิม
+                self.history_window = self.app_container.show_history_window(
+                    sale_key_filter=self.sale_key,
+                    edit_callback=self._on_history_so_select
+                )
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างประวัติได้: {e}", parent=self)
 
@@ -1292,6 +1305,10 @@ class CommissionApp(CTkFrame):
             "status": "Original",
             "is_active": 1,
         }
+
+        if hasattr(self, 'proxy_user_key') and self.proxy_user_key:
+            data['support_user_key'] = self.proxy_user_key
+
         return data
 
     def _validate_form(self, data):

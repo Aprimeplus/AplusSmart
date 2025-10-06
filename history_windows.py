@@ -745,9 +745,7 @@ class PurchaseDetailWindow(CTkToplevel):
         for item_row in self.item_entries:
             try:
                 widgets = item_row['widgets']
-                if not widgets['quantity'].winfo_exists():
-                    continue
-
+                if not widgets['quantity'].winfo_exists(): continue
                 qty = widgets['quantity'].get_value()
                 price = widgets['unit_price'].get_value()
                 discount = widgets['discount_value'].get_value()
@@ -755,12 +753,7 @@ class PurchaseDetailWindow(CTkToplevel):
                 discount_type = widgets['discount_type_var'].get()
                 
                 line_total = qty * price
-                discount_amount = 0.0
-                if discount_type == '%':
-                    discount_amount = line_total * (discount / 100.0)
-                else:
-                    discount_amount = discount
-                
+                discount_amount = (line_total * (discount / 100.0)) if discount_type == '%' else discount
                 item_total = line_total - discount_amount
 
                 if widgets['total_price_label'].winfo_exists():
@@ -779,8 +772,7 @@ class PurchaseDetailWindow(CTkToplevel):
             self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
         
         try:
-            if not self.po_entries['shipping_to_stock_cost'].winfo_exists():
-                return
+            if not self.po_entries['shipping_to_stock_cost'].winfo_exists(): return
             
             shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value()
             shipping_stock_vat_type = self.po_entries['shipping_to_stock_vat_type'].get()
@@ -794,48 +786,31 @@ class PurchaseDetailWindow(CTkToplevel):
             bill_discount = self.po_entries['bill_discount'].get_value()
             wht_entry = self.po_entries.get('wht_3_percent')
             vat_entry = self.po_entries.get('vat_7_percent')
+        
         except (KeyError, ValueError, TypeError):
-            shipping_stock, shipping_site, relocation_cost, bill_discount = 0.0, 0.0, 0.0, 0.0
-            shipping_stock_vat_type, shipping_site_vat_type = "CASH", "CASH"
-            shipping_stock_wht_type, shipping_site_wht_type = "ไม่มีหัก", "ไม่มีหัก"
-            wht_entry, vat_entry = None, None
+            return
 
         stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
         site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
 
-        stock_vat_display = self.po_entries.get("shipping_to_stock_vat_display")
-        if stock_vat_display and stock_vat_display.winfo_exists():
-            utils.set_entry_text(stock_vat_display, f"{stock_vat_amount:,.2f}")
+        if self.po_entries.get("shipping_to_stock_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_vat_display"], f"{stock_vat_amount:,.2f}")
+        if self.po_entries.get("shipping_to_site_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_site_vat_display"], f"{site_vat_amount:,.2f}")
 
-        site_vat_display = self.po_entries.get("shipping_to_site_vat_display")
-        if site_vat_display and site_vat_display.winfo_exists():
-            utils.set_entry_text(site_vat_display, f"{site_vat_amount:,.2f}")
-
-        # --- START: เพิ่มการคำนวณและแสดงผล WHT ---
         shipping_stock_wht_amount = shipping_stock * (0.01 if shipping_stock_wht_type == '1%' else 0.03 if shipping_stock_wht_type == '3%' else 0)
         shipping_site_wht_amount = shipping_site * (0.01 if shipping_site_wht_type == '1%' else 0.03 if shipping_site_wht_type == '3%' else 0)
 
-        stock_wht_display = self.po_entries.get("shipping_to_stock_wht_display")
-        if stock_wht_display and stock_wht_display.winfo_exists():
-            utils.set_entry_text(stock_wht_display, f"{shipping_stock_wht_amount:,.2f}")
-
-        site_wht_display = self.po_entries.get("shipping_to_site_wht_display")
-        if site_wht_display and site_wht_display.winfo_exists():
-            utils.set_entry_text(site_wht_display, f"{shipping_site_wht_amount:,.2f}")
-        # --- END ---
+        if self.po_entries.get("shipping_to_stock_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_wht_display"], f"{shipping_stock_wht_amount:,.2f}")
+        if self.po_entries.get("shipping_to_site_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_site_wht_display"], f"{shipping_site_wht_amount:,.2f}")
 
         base_for_tax = total_cost - bill_discount
         if shipping_stock_vat_type == 'VAT': base_for_tax += shipping_stock
         if shipping_site_vat_type == 'VAT': base_for_tax += shipping_site
 
-        vat_checkbox_exists = hasattr(self, 'vat_checkbox') and self.vat_checkbox.winfo_exists()
-        wht_checkbox_exists = hasattr(self, 'wht_checkbox') and self.wht_checkbox.winfo_exists()
+        vat_amount_total = base_for_tax * 0.07 if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() == 1 else 0.0
+        wht_amount_products = base_for_tax * 0.03 if hasattr(self, 'wht_checkbox') and self.wht_checkbox.get() == 1 else 0.0
 
-        vat_amount_total = base_for_tax * 0.07 if vat_checkbox_exists and self.vat_checkbox.get() == 1 else 0.0
-        wht_amount_products = base_for_tax * 0.03 if wht_checkbox_exists and self.wht_checkbox.get() == 1 else 0.0
-
-        if vat_entry and vat_entry.winfo_exists(): vat_entry.set(vat_amount_total)
         if wht_entry and wht_entry.winfo_exists(): wht_entry.set(wht_amount_products)
+        if vat_entry and vat_entry.winfo_exists(): vat_entry.set(vat_amount_total)
 
         non_vat_costs = 0.0
         if shipping_stock_vat_type == 'CASH': non_vat_costs += shipping_stock
