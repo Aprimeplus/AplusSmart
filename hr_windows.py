@@ -2000,17 +2000,15 @@ class PayoutDetailWindow(CTkToplevel):
                     CTkLabel(self.tree_frame, text="ไม่พบรายการ SO ในรอบการจ่ายเงินนี้").pack(pady=20)
                     return
                     
-                # --- START: แก้ไข Query ตรงนี้ ---
-                # เพิ่มเงื่อนไข AND is_active = 1 เพื่อกรองเอาเฉพาะข้อมูลล่าสุด
                 placeholders = ', '.join(['%s'] * len(so_numbers))
                 query = f"""
                     SELECT so_number, final_sales_amount, final_margin
                     FROM commissions 
                     WHERE so_number IN ({placeholders}) AND is_active = 1
                 """
-                # --- END: สิ้นสุดการแก้ไข ---
                 df = pd.read_sql_query(query, self.app_container.pg_engine, params=so_numbers)
 
+                # --- [แก้ไข] เพิ่ม Logic การคำนวณ 'status' ที่ถูกต้อง ---
                 df['status'] = df['final_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
                 
                 self._create_detail_table(df)
@@ -2044,15 +2042,25 @@ class PayoutDetailWindow(CTkToplevel):
         tree.tag_configure('normal_row', background='#F0FDF4')
         tree.tag_configure('below_row', background='#FEFCE8')
 
+        # --- START: แก้ไขการวนลูปเพื่อแสดงข้อมูล ---
         for _, row in df.iterrows():
             tag = 'normal_row' if row['status'] == 'Normal' else 'below_row'
+            
+            # ตรวจสอบค่า None/NaN ก่อนจัดรูปแบบ
+            sales_amount = row['final_sales_amount']
+            margin = row['final_margin']
+
+            sales_text = f"{sales_amount:,.2f}" if pd.notna(sales_amount) else "0.00"
+            margin_text = f"{margin:,.2f}%" if pd.notna(margin) else "N/A"
+
             values = (
                 row['so_number'],
                 row['status'],
-                f"{row['final_sales_amount']:,.2f}",
-                f"{row['final_margin']:,.2f}%"
+                sales_text,
+                margin_text
             )
             tree.insert("", "end", values=values, tags=(tag,))
+        # --- END: สิ้นสุดการแก้ไข ---
 
         vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)

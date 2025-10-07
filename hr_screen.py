@@ -5,7 +5,7 @@ from tkinter import ttk
 from customtkinter import (CTkFrame, CTkLabel, CTkEntry, CTkFont, CTkButton,
                            CTkScrollableFrame, CTkTabview, filedialog,
                            CTkInputDialog, CTkOptionMenu, CTkCheckBox, CTkTextbox, CTkComboBox, CTkRadioButton, CTkToplevel)
-from tkinter import messagebox
+from tkinter import messagebox, TclError
 import pandas as pd
 import psycopg2
 import psycopg2.errors
@@ -341,6 +341,9 @@ class HRScreen(CTkFrame):
         self.label_font = CTkFont(size=16, weight="bold", family="Roboto")
         self.entry_font = CTkFont(size=14, family="Roboto")
         self.header_font_table = CTkFont(size=14, weight="bold", family="Roboto")
+        self.label_font_bold = CTkFont(size=12, weight="bold", family="Roboto")
+        self.small_font = CTkFont(size=12, family="Roboto")
+
 
         self.header_map = app_container.HEADER_MAP
 
@@ -806,144 +809,46 @@ class HRScreen(CTkFrame):
         self.payout_history_frame.grid_rowconfigure(0, weight=1)
 
     def _load_payout_history(self):
-        """โหลดข้อมูลจากตาราง commission_payout_logs และแสดงผลตามฟิลเตอร์ (ฉบับคำนวณ Margin)"""
-        loading = self._show_loading(self.payout_history_frame)
+        """Loads and displays the commission payout history."""
         try:
-            # ดึงคอลัมน์ที่จำเป็นทั้งหมดจากฐานข้อมูล
-            base_query = "SELECT id, timestamp, hr_user_key, sale_key, plan_name, summary_json, notes, total_sales_for_margin, total_cost_for_margin, sales_target_at_payout FROM commission_payout_logs"
-            where_clauses = []
-            params = []
+            query = """
+                SELECT id, sale_key, plan_name, timestamp as "วันที่จ่าย", 
+                       final_commission as "ยอดคอมสุทธิ", 
+                       incentives_total as "Incentive", 
+                       deductions_total as "ยอดหักเพิ่ม",
+                       net_commission as "ยอดโอนสุทธิ"
+                FROM commission_payout_logs
+                ORDER BY timestamp DESC
+            """
+            df = pd.read_sql_query(query, self.app_container.pg_engine)
 
-            # สร้างเงื่อนไขจากฟิลเตอร์
-            selected_month = self.payout_month_var.get()
-            if selected_month != "ทุกเดือน":
-                month_num = self.thai_month_map[selected_month]
-                where_clauses.append("EXTRACT(MONTH FROM timestamp) = %s")
-                params.append(month_num)
-            selected_year = self.payout_year_var.get()
-            if selected_year != "ทุกปี":
-                year_num = int(selected_year)
-                where_clauses.append("EXTRACT(YEAR FROM timestamp) = %s")
-                params.append(year_num)
-            search_term = self.payout_search_entry.get().strip()
-            if search_term:
-                where_clauses.append("sale_key ILIKE %s")
-                params.append(f"%{search_term}%")
-            if where_clauses:
-                base_query += " WHERE " + " AND ".join(where_clauses)
-            base_query += " ORDER BY timestamp DESC"
-            
-            df = pd.read_sql_query(base_query, self.pg_engine, params=tuple(params))
-
-            if df.empty:
-                loading.destroy()
-                CTkLabel(self.payout_history_frame, text="ไม่พบข้อมูลตามเงื่อนไขที่เลือก").pack(pady=20)
-                return
-            
-            # เตรียม List ว่างสำหรับเก็บค่าที่จะคำนวณ
-            avg_margin_list = []
-            hit_target_percent_list = [] 
-
-            # วนลูปเพื่อคำนวณค่า Margin และ %Hit Target
-            for index, row in df.iterrows():
-                sales = row['total_sales_for_margin']
-                cost = row['total_cost_for_margin']
-                target = row['sales_target_at_payout']
-
-                # คำนวณ Margin
-                if pd.notna(sales) and pd.notna(cost) and sales > 0:
-                    margin = ((sales - cost) / sales) * 100
-                    avg_margin_list.append(margin)
-                else:
-                    avg_margin_list.append("N/A")
-
-                # คำนวณ % Hit Target
-                if pd.notna(sales) and pd.notna(target) and target > 0:
-                    percent_achieved = (sales / target) * 100
-                    hit_target_percent_list.append(percent_achieved)
-                else:
-                    hit_target_percent_list.append(0.0)
-
-            # เพิ่มคอลัมน์ที่คำนวณใหม่เข้าไปใน DataFrame
-            df['avg_margin'] = avg_margin_list
-            df['hit_target_percent'] = hit_target_percent_list
-            
-            # เตรียม List ว่างสำหรับค่าที่ดึงจาก JSON
-            pre_tax_comm_list = []
-            incentive_list = []
-            gross_comm_list = []
-            net_commission_list = []
-
-            # วนลูปเพื่อดึงข้อมูลจาก summary_json
-            for summary_data in df['summary_json']:
-                try:
-                    def get_value(desc_keyword, default=0.0):
-                        item = next((i for i in summary_data if desc_keyword in i['description']), None)
-                        return item.get('value') if item else default
-                    pre_tax_comm_list.append(get_value("ยอดคอมมิชชั่นก่อนหักภาษี"))
-                    total_incentive = sum(item.get('value', 0.0) for item in summary_data if '(+) Incentive' in item.get('description', ''))
-                    incentive_list.append(total_incentive)
-                    gross_comm_list.append(get_value("ยอดคอมมิชชั่นขั้นต้น"))
-                    net_commission_list.append(get_value("หลังหัก ณ ที่จ่าย"))
-                except (TypeError, KeyError):
-                    [lst.append(0.0) for lst in [pre_tax_comm_list, incentive_list, gross_comm_list, net_commission_list]]
-
-            # เพิ่มคอลัมน์ที่ดึงจาก JSON เข้าไปใน DataFrame
-            df['pre_tax_comm'] = pre_tax_comm_list
-            df['incentives'] = incentive_list
-            df['gross_comm'] = gross_comm_list
-            df['net_commission'] = net_commission_list
-
-            # สร้าง DataFrame สุดท้ายสำหรับแสดงผล
-            df_display = df[[
-                'id', 'timestamp', 'sale_key', 'total_sales_for_margin', 'sales_target_at_payout', 
-                'hit_target_percent', 'avg_margin', 'incentives', 'gross_comm', 
-                'pre_tax_comm', 'net_commission', 'notes'
-            ]].copy()
-
-            # เปลี่ยนชื่อคอลัมน์เป็นภาษาไทย
-            df_display.rename(columns={
-                'id': 'ID', 'timestamp': 'วันที่จ่าย', 'sale_key': 'พนักงานขาย', 
-                'total_sales_for_margin': 'ยอดขายรวม', 'sales_target_at_payout': 'ยอดเป้าหมาย',
-                'hit_target_percent': 'Hit Target (%)', 'avg_margin': 'Margin เฉลี่ย (%)',
-                'incentives': 'Incentive', 'gross_comm': 'คอม+Incentive',
-                'pre_tax_comm': 'ยอดก่อนหักภาษี', 'net_commission': 'ยอดสุทธิ', 'notes': 'หมายเหตุ'
-            }, inplace=True)
-
-            loading.destroy()
-            # สร้างตารางจากข้อมูลที่เตรียมไว้
             self._create_styled_dataframe_table(
                 self.payout_history_frame, 
-                df_display, 
-                label_text="",
-                on_row_click=self._on_payout_history_double_click
+                df, 
+                title="ประวัติการจ่ายเงิน", 
+                on_row_click=self._on_payout_history_double_click, 
+                iid_column='id'
             )
 
         except Exception as e:
-            if loading.winfo_exists(): loading.destroy()
-            messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติการจ่ายเงินได้: {e}", parent=self)
+            CTkLabel(self.payout_history_frame, text=f"ไม่สามารถโหลดประวัติได้: {e}").pack(pady=20)
             traceback.print_exc()
 
     def _on_payout_history_double_click(self, event, tree, df):
-        """เมื่อดับเบิลคลิกที่ประวัติ จะเปิดหน้าต่างแสดงรายละเอียดการคำนวณ"""
+        selected_item = tree.focus()
+        if not selected_item:
+            return
+        
+        # selected_item ใน treeview นี้คือ payout_id โดยตรง
+        payout_id_str = selected_item 
+        
         try:
-            record_id_str = tree.focus()
-            if not record_id_str: return
-
-            payout_id = int(tree.item(record_id_str, "values")[0])
-            
-            # เรียกเปิดหน้าต่างใหม่ที่เราสร้าง
-            PayoutCalculationViewer(
-                master=self, 
-                app_container=self.app_container, 
-                payout_id=payout_id
-            )
-
-        except (ValueError, IndexError) as e:
-            messagebox.showwarning("ผิดพลาด", "ไม่สามารถอ่าน Payout ID จากแถวที่เลือกได้", parent=self)
-        except Exception as e:
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างรายละเอียดได้: {e}", parent=self)
-            traceback.print_exc()
+            payout_id = int(payout_id_str)
+            # --- [แก้ไข] เรียกชื่อคลาสของหน้าต่างให้ถูกต้อง ---
+            PayoutDetailWindow(master=self, app_container=self.app_container, payout_id=payout_id)
+        except (ValueError, TclError) as e:
+            # จัดการกรณีที่ selected_item ไม่ใช่ ID ที่เป็นตัวเลข
+            print(f"Invalid item selected: {payout_id_str}, error: {e}")
 
     ### --- จุดที่แก้ไข --- ###
     # ผมได้รวมฟังก์ชัน _create_plan_a_summary_table และ _create_plan_b_summary_table
@@ -1075,9 +980,10 @@ class HRScreen(CTkFrame):
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างตรวจสอบได้: {e}", parent=self)
             traceback.print_exc()
 
-    def _on_tree_double_click(self, event, tree):
+    def _on_tree_double_click(self, event, tree, df):
         """
-        Callback เมื่อดับเบิลคลิกบน Treeview (เวอร์ชันกลับมาใช้ Treeview)
+        Callback เมื่อดับเบิลคลิกบน Treeview
+        (เวอร์ชันแก้ไข: เพิ่ม df เป็น argument)
         """
         try:
             selected_item_iid = tree.focus()
@@ -1673,7 +1579,7 @@ class HRScreen(CTkFrame):
             self._create_styled_dataframe_table(
                 parent=table_frame, 
                 df=self.user_df, 
-                label_text="ข้อมูลผู้ใช้งาน", 
+                title="ข้อมูลผู้ใช้งาน", 
                 on_row_click=self._on_user_row_click_treeview,
                 status_column="ประเภท",
                 status_colors=role_colors,
@@ -2197,71 +2103,77 @@ class HRScreen(CTkFrame):
 
     def _verify_passed_sos(self):
         """
-        ฟังก์ชันใหม่สำหรับปุ่ม "ยืนยัน SO ที่ผ่านเกณฑ์"
-        จะทำงานกับ SO ที่มีสถานะ 'ผ่านเกณฑ์' เท่านั้น และใช้ลอจิกที่ถูกต้องในการคำนวณ
+        (เวอร์ชันปรับปรุง) ยืนยัน SO ที่ 'ผ่านเกณฑ์' ทั้งหมด โดยการดึงข้อมูลล่าสุดจาก DB
+        มาคำนวณใหม่ทั้งหมดก่อนทำการอัปเดต เพื่อความถูกต้อง 100%
         """
         if self.comparison_df is None or self.comparison_df.empty:
             messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลการเปรียบเทียบที่จะยืนยัน", parent=self)
             return
 
-        # 1. กรองเอาเฉพาะ SO ที่ 'ผ่านเกณฑ์'
-        df_to_verify = self.comparison_df[self.comparison_df['สถานะ'] == 'ผ่านเกณฑ์'].copy()
+        # 1. รวบรวม SO ที่ 'ผ่านเกณฑ์'
+        df_to_verify = self.comparison_df[self.comparison_df['สถานะ'] == 'ผ่านเกณฑ์']
+        so_numbers_to_verify = tuple(df_to_verify['เลขที่ SO'].tolist())
 
-        if df_to_verify.empty:
+        if not so_numbers_to_verify:
             messagebox.showinfo("ไม่พบรายการ", "ไม่พบรายการที่ 'ผ่านเกณฑ์' ที่จะยืนยันได้ในขณะนี้", parent=self)
             return
 
         # 2. ถามเพื่อยืนยันการทำงาน
-        msg = (f"คุณต้องการยืนยันข้อมูลสำหรับ {len(df_to_verify)} รายการที่ผ่านเกณฑ์ใช่หรือไม่?\n\n"
-               f"การกระทำนี้จะอัปเดตสถานะเป็น 'HR Verified' และบันทึกยอดสุดท้ายเข้าระบบ")
+        msg = (f"คุณต้องการยืนยันข้อมูลสำหรับ {len(so_numbers_to_verify)} รายการที่ผ่านเกณฑ์ใช่หรือไม่?\n\n"
+               f"โปรแกรมจะดึงข้อมูลล่าสุดมาคำนวณใหม่ทั้งหมดก่อนบันทึก")
         if not messagebox.askyesno("ยืนยันข้อมูล", msg, parent=self):
             return
 
         records_to_update = []
-        # 3. วนลูปสร้างข้อมูลสำหรับอัปเดต โดยดึงจากข้อมูลดิบที่เชื่อถือได้
-        for index, row in df_to_verify.iterrows():
-            so_number = row['เลขที่ SO']
-            
-            # ดึงข้อมูลดิบจาก self.db_df และ self.uploaded_df เพื่อความแม่นยำสูงสุด
-            system_record = self.db_df[self.db_df['so_number'] == so_number]
-            excel_record = self.uploaded_df[self.uploaded_df['so_number'] == so_number]
-
-            if system_record.empty:
-                continue # ข้ามไปถ้าไม่พบข้อมูลดิบ
-
-            system_data = system_record.iloc[0]
-            excel_data = excel_record.iloc[0] if not excel_record.empty else {}
-
-            # --- ใช้ตรรกะการคำนวณที่ถูกต้องและตรงไปตรงมา ---
-            total_sale_system = float(system_data.get('sales_service_amount', 0) or 0)
-            total_cost_system = float(system_data.get('cogs_db', 0) or 0) # cogs_db คือผลรวม total_cost จาก PO
-            
-            total_sale_express = float(excel_data.get('sales_uploaded', 0) or 0)
-            total_cost_express = float(excel_data.get('cost_uploaded', 0) or 0)
-            
-            sale_source = system_data.get('hr_sale_source', 'system')
-            cost_source = system_data.get('hr_cost_source', 'system')
-
-            final_sale = total_sale_system if sale_source == 'system' else total_sale_express
-            final_cost = total_cost_system if cost_source == 'system' else total_cost_express
-
-            final_gp = final_sale - final_cost
-            final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
-            
-            records_to_update.append((
-                int(system_data['id']),
-                final_sale, final_cost, final_gp, final_margin,
-                sale_source, cost_source
-            ))
-
-        if not records_to_update:
-            messagebox.showerror("ผิดพลาด", "ไม่สามารถเตรียมข้อมูลสำหรับอัปเดตได้", parent=self)
-            return
-
-        # 4. อัปเดตฐานข้อมูล (Bulk Update)
         conn = None
         try:
+            # 3. Query ข้อมูลล่าสุดของ SO ที่เลือกจาก DB
             conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                placeholders = ', '.join(['%s'] * len(so_numbers_to_verify))
+                
+                # Query ที่สมบูรณ์เพื่อดึงทั้งข้อมูล SO และต้นทุนล่าสุดจาก PO Items
+                query = f"""
+                    SELECT c.*, po.cogs_db
+                    FROM commissions c
+                    LEFT JOIN (
+                        SELECT p.so_number, SUM(COALESCE(poi.total_price, 0)) as cogs_db
+                        FROM purchase_orders p
+                        LEFT JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
+                        WHERE p.status = 'Approved'
+                        GROUP BY p.so_number
+                    ) po ON c.so_number = po.so_number
+                    WHERE c.so_number IN ({placeholders}) AND c.is_active = 1
+                """
+                cursor.execute(query, so_numbers_to_verify)
+                latest_so_data = cursor.fetchall()
+
+                # 4. วนลูปคำนวณค่าสุดท้ายใหม่ทั้งหมดด้วย Logic ล่าสุด
+                for row_data in latest_so_data:
+                    # คำนวณ Final Sales (รายรับรวม)
+                    final_sale = (float(row_data.get('sales_service_amount', 0) or 0) +
+                                  float(row_data.get('cutting_drilling_fee', 0) or 0) +
+                                  float(row_data.get('other_service_fee', 0) or 0))
+                    
+                    # Final Cost คือ cogs_db ที่เราดึงมาใหม่ล่าสุด
+                    final_cost = float(row_data.get('cogs_db', 0) or 0)
+
+                    final_gp = final_sale - final_cost
+                    final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
+                    
+                    records_to_update.append((
+                        int(row_data['id']),
+                        final_sale,
+                        final_cost,
+                        final_gp,
+                        final_margin
+                    ))
+
+            if not records_to_update:
+                messagebox.showerror("ผิดพลาด", "ไม่สามารถเตรียมข้อมูลสำหรับอัปเดตได้ (อาจไม่พบข้อมูลล่าสุดใน DB)", parent=self)
+                return
+
+            # 5. อัปเดตฐานข้อมูล (Bulk Update)
             with conn.cursor() as cursor:
                 update_query = """
                     UPDATE commissions SET 
@@ -2270,22 +2182,20 @@ class HRScreen(CTkFrame):
                         final_cost_amount = data.final_cost,
                         final_gp = data.final_gp,
                         final_margin = data.final_margin,
-                        hr_sale_source = data.sale_source,
-                        hr_cost_source = data.cost_source,
                         payout_id = NULL
-                    FROM (VALUES %s) AS data(record_id, final_sale, final_cost, final_gp, final_margin, sale_source, cost_source)
+                    FROM (VALUES %s) AS data(record_id, final_sale, final_cost, final_gp, final_margin)
                     WHERE commissions.id = data.record_id;
                 """
                 psycopg2.extras.execute_values(
                     cursor, update_query, records_to_update,
-                    template="(%s::int, %s::float, %s::float, %s::float, %s::float, %s, %s)",
+                    template="(%s::int, %s::float, %s::float, %s::float, %s::float)",
                     page_size=100
                 )
                 updated_rows = cursor.rowcount
             conn.commit()
             
             messagebox.showinfo("สำเร็จ", f"ยืนยันข้อมูล {updated_rows} รายการเรียบร้อยแล้ว", parent=self)
-            self._refresh_comparison_view() # รีเฟรชหน้าจอ
+            self._refresh_comparison_view()
 
         except Exception as e:
             if conn: conn.rollback()
@@ -2902,18 +2812,38 @@ class HRScreen(CTkFrame):
         if self.final_summary_data is None or self.current_comm_df is None:
             messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูลสรุปที่จะบันทึก", parent=self)
             return
-            
+
         sale_key = self.selected_sale_for_process.get()
         user_info = self.sales_user_info.get(sale_key, {})
         plan_name = user_info.get('plan', 'N/A')
         sales_target = user_info.get('target', 0.0)
-        
+
+        try:
+            incentive_val = float(self.incentive_entry.get().replace(",", "") or 0.0)
+            deduction_val = float(self.deduction_entry.get().replace(",", "") or 0.0)
+        except (ValueError, AttributeError):
+            messagebox.showerror("ผิดพลาด", "ไม่สามารถอ่านค่า Incentive/Deduction ได้", parent=self)
+            return
+
+        incentives_dict = {"Incentive พิเศษ": incentive_val} if incentive_val > 0 else {}
+        deductions_dict = {"ค่าใช้จ่าย/ดำเนินการ": deduction_val} if deduction_val > 0 else {}
+        incentives_total = sum(incentives_dict.values())
+        deductions_total = sum(deductions_dict.values())
+
+        # --- [แก้ไข] แปลงข้อมูลเป็น float ก่อนใช้งาน ---
+        final_commission_row = self.final_summary_data[self.final_summary_data['description'].str.contains("ยอดรวมค่าคอมมิชชั่นที่คำนวณได้")]
+        final_commission = float(final_commission_row['value'].iloc[0]) if not final_commission_row.empty else 0.0
+
         net_commission_row = self.final_summary_data[self.final_summary_data['description'].str.contains("หลังหัก ณ ที่จ่าย")]
-        net_commission_value = net_commission_row['value'].iloc[0] if not net_commission_row.empty else 0.0
+        net_commission_value = float(net_commission_row['value'].iloc[0]) if not net_commission_row.empty else 0.0
+
+        # ดึงค่า final_commission ที่แท้จริงจาก initial_commission_result
+        actual_final_commission = float(self.initial_commission_result.get('final_commission', 0.0))
+        # --- สิ้นสุดการแก้ไข ---
 
         msg = (f"คุณต้องการยืนยันการจ่ายค่าคอมมิชชั่นสำหรับ '{sale_key}' ใช่หรือไม่?\n\n"
-            f"ยอดสุทธิ: {net_commission_value:,.2f} บาท\n\n"
-            f"การกระทำนี้จะบันทึก Log และอัปเดตสถานะรายการทั้งหมดเป็น 'Paid'")
+               f"ยอดสุทธิ: {net_commission_value:,.2f} บาท\n\n"
+               f"การกระทำนี้จะบันทึก Log และอัปเดตสถานะรายการทั้งหมดเป็น 'Paid'")
 
         if not messagebox.askyesno("ยืนยันการจ่ายเงิน", msg, parent=self):
             return
@@ -2922,30 +2852,28 @@ class HRScreen(CTkFrame):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 1. เตรียมข้อมูลสำหรับ Log
                 so_numbers_list = self.current_comm_df['so_number'].tolist()
                 so_numbers_json = json.dumps(so_numbers_list)
                 summary_json = self.final_summary_data.to_json(orient='records')
                 payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
-
-                total_sales = float(self.current_comm_df['final_sales_amount'].sum())
+                total_sales = float(self.current_comm_df.get('total_revenue', self.current_comm_df.get('final_sales_amount', 0)).sum())
                 total_cost = float(self.current_comm_df['final_cost_amount'].sum())
 
-                # 2. บันทึก Log ลงตารางใหม่
                 cursor.execute("""
                     INSERT INTO commission_payout_logs 
-                    (hr_user_key, sale_key, plan_name, so_numbers_json, summary_json, notes, total_sales_for_margin, total_cost_for_margin, sales_target_at_payout) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (hr_user_key, sale_key, plan_name, so_numbers_json, summary_json, notes, 
+                     total_sales_for_margin, total_cost_for_margin, sales_target_at_payout,
+                     final_commission, incentives_total, deductions_total, net_commission) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
-                """, (self.user_key, sale_key, plan_name, so_numbers_json, summary_json, payout_notes, total_sales, total_cost, sales_target))
-            
-                # --- START: แก้ไขการจัดย่อหน้าตรงนี้ ---
-                # ย้ายโค้ดส่วนนี้ทั้งหมดเข้ามาอยู่ในบล็อก with conn.cursor()
-                
-                # รับ ID ของประวัติการจ่ายเงิน (payout_id) ที่เพิ่งสร้าง
+                """, (
+                    self.user_key, sale_key, plan_name, so_numbers_json, summary_json, payout_notes, 
+                    total_sales, total_cost, sales_target,
+                    actual_final_commission, incentives_total, deductions_total, net_commission_value
+                ))
+
                 new_payout_id = cursor.fetchone()[0]
 
-                # 3. อัปเดตสถานะ และ "ประทับตรา" payout_id ลงบน SO ที่เกี่ยวข้อง
                 record_ids_to_update = tuple(self.current_comm_df['id'].tolist())
                 if record_ids_to_update:
                     cursor.execute("""
@@ -2953,13 +2881,9 @@ class HRScreen(CTkFrame):
                         SET status = 'Paid', payout_id = %s
                         WHERE id IN %s
                     """, (new_payout_id, record_ids_to_update))
-                
-                # --- END: สิ้นสุดการแก้ไข ---
-            
+
             conn.commit()
             messagebox.showinfo("สำเร็จ", "บันทึกการจ่ายค่าคอมมิชชั่นเรียบร้อยแล้ว", parent=self)
-            
-            # 4. รีเฟรชหน้าจอ
             self._on_sale_selected_for_process()
 
         except Exception as e:
@@ -3064,90 +2988,79 @@ class HRScreen(CTkFrame):
 
     # hr_screen.py (ภายในคลาส HRScreen)
 
-    def _create_styled_dataframe_table(self, parent, df, label_text="", on_row_click=None, status_colors=None, status_column=None, iid_column=None):
+    def _create_styled_dataframe_table(self, parent, df, title="", on_row_click=None, status_column=None, status_colors=None, iid_column=None):
+        """Creates a styled ttk.Treeview table from a pandas DataFrame."""
         for widget in parent.winfo_children():
             widget.destroy()
 
-        if df is None or df.empty:
-            CTkLabel(parent, text=f"ไม่พบข้อมูลสำหรับ '{label_text}'").pack(pady=20)
-            return
-        
-        container = CTkFrame(parent, fg_color="transparent")
-        container.pack(fill="both", expand=True)
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
+        if title:
+            label = CTkLabel(parent, text=title, font=CTkFont(size=14, weight="bold"))
+            label.pack(pady=(5, 10))
 
-        tree_frame = CTkFrame(container, fg_color="transparent")
-        tree_frame.grid(row=0, column=0, sticky="nsew")
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
+        if df is None or df.empty:
+            CTkLabel(parent, text="ไม่พบข้อมูล").pack(pady=20)
+            return
 
         columns = df.columns.tolist()
         
-        style = ttk.Style(self)
-        style.theme_use("default") 
+        style = ttk.Style(parent)
+        style.theme_use("clam")
         
-        style.configure("Treeview.Heading", 
-                        font=self.header_font_table, 
+        style.configure("Custom.Treeview.Heading", 
+                        font=self.label_font_bold, 
                         background="#022c22",
                         foreground="white", 
                         relief="flat", 
                         padding=(10, 8))
-        style.map("Treeview.Heading", background=[('active', "#065f46")])
+        style.map("Custom.Treeview.Heading", background=[('active', "#065f46")])
         
-        style.configure("Treeview", 
+        style.configure("Custom.Treeview", 
                         rowheight=32, 
-                        font=self.entry_font,
+                        font=self.small_font,
                         fieldbackground="#FFFFFF", 
-                        foreground="#111827",
-                        relief="solid", 
-                        borderwidth=0)
-        style.map("Treeview", background=[('selected', self.theme.get("primary", "#3B82F6"))])
+                        foreground="#111827")
+        style.map("Custom.Treeview", background=[('selected', "#3B82F6")])
 
-        tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+        frame = CTkFrame(parent, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=10, pady=5)
+        frame.grid_rowconfigure(0, weight=1) # <--- แก้ไขเป็นชื่อนี้
+        frame.grid_columnconfigure(0, weight=1) # <--- แก้ไขเป็นชื่อนี้
+        
+        tree = ttk.Treeview(frame, columns=columns, show='headings', style="Custom.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
         
-        tree.tag_configure('summary_row', background='#E5E7EB', font=CTkFont(size=14, weight="bold"))
+        tree.tag_configure('summary_row', background='#E5E7EB', font=CTkFont(size=12, weight="bold"))
         
         if status_colors:
             for tag_name, color in status_colors.items():
                 tree.tag_configure(tag_name, background=color)
 
         column_configs = {
-            'เลขที่ SO': {'width': 100, 'anchor': 'w'},
-            'ยอดขาย/บริการ (ระบบ)': {'width': 165, 'anchor': 'e'},
-            'ค่าขนส่ง (ระบบ)': {'width': 130, 'anchor': 'e'},
-            'ค่าย้าย (ระบบ)': {'width': 130, 'anchor': 'e'},
-            'ยอดขายรวม (ระบบ)': {'width': 140, 'anchor': 'e'},
-            'ยอดขาย (Express)': {'width': 145, 'anchor': 'e'},
-            'ต้นทุน (ระบบ)': {'width': 130, 'anchor': 'e'},
-            'ต้นทุน (Express)': {'width': 140, 'anchor': 'e'},
-            'ผลต่างยอดขาย': {'width': 120, 'anchor': 'e'},
-            'ผลต่างต้นทุน': {'width': 110, 'anchor': 'e'},
-            'แหล่งยอดขาย': {'width': 100, 'anchor': 'center'},
-            'แหล่งต้นทุน': {'width': 100, 'anchor': 'center'},
+            'เลขที่ SO': {'width': 100, 'anchor': 'w'}, 'ยอดขาย/บริการ (ระบบ)': {'width': 165, 'anchor': 'e'},
+            'ค่าขนส่ง (ระบบ)': {'width': 130, 'anchor': 'e'}, 'ค่าย้าย (ระบบ)': {'width': 130, 'anchor': 'e'},
+            'ยอดขายรวม (ระบบ)': {'width': 140, 'anchor': 'e'}, 'ยอดขาย (Express)': {'width': 145, 'anchor': 'e'},
+            'ต้นทุน (ระบบ)': {'width': 130, 'anchor': 'e'}, 'ต้นทุน (Express)': {'width': 140, 'anchor': 'e'},
+            'ผลต่างยอดขาย': {'width': 120, 'anchor': 'e'}, 'ผลต่างต้นทุน': {'width': 110, 'anchor': 'e'},
+            'แหล่งยอดขาย': {'width': 100, 'anchor': 'center'}, 'แหล่งต้นทุน': {'width': 100, 'anchor': 'center'},
             'สถานะ': {'width': 240, 'anchor': 'w'}
         }
 
         for col_id in columns:
             config = column_configs.get(col_id, {'width': 120, 'anchor': 'w'})
             tree.heading(col_id, text=col_id, anchor='center')
-            
-            # +++ START: แก้ไขบรรทัดนี้ +++
-            # เพิ่ม 'เลขที่ SO' กลับเข้าไปในลิสต์ของคอลัมน์ที่ยืดขยายได้
             can_stretch = col_id in ['เลขที่ SO', 'สถานะ']
-            # +++ END +++
             tree.column(col_id, width=config['width'], anchor=config['anchor'], stretch=can_stretch)
 
         for index, row in df.iterrows():
             tags_tuple = ()
-            if row.get('เลขที่ SO') == 'ยอดรวม (Total)':
+            status_val_str = str(row.get(status_column, ''))
+
+            if 'ยอดรวม (Total)' in str(row.iloc[0]):
                 tags_tuple += ('summary_row',)
             elif status_colors and status_column and status_column in df.columns:
-                status_val = str(row.get(status_column, ''))
-                if status_val in status_colors:
-                    tags_tuple = (status_val,)
-            
+                if status_val_str in status_colors:
+                    tags_tuple = (status_val_str,)
+
             values = []
             for col_name in columns:
                 value = row[col_name]
@@ -3164,14 +3077,14 @@ class HRScreen(CTkFrame):
             iid_value = row.get(iid_column, str(index)) if iid_column else str(index)
             tree.insert("", "end", values=values, tags=tags_tuple, iid=str(iid_value))
         
-        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        v_scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        h_scroll = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
         v_scroll.grid(row=0, column=1, sticky='ns')
         h_scroll.grid(row=1, column=0, sticky='ew')
         
         if on_row_click: 
-            tree.bind("<Double-1>", lambda e: on_row_click(e, tree))
+            tree.bind("<Double-1>", lambda e: on_row_click(e, tree, df))
 
     def _get_archive_date_range(self, year, month=None):
         """สร้างช่วงวันที่เริ่มต้นและสิ้นสุดสำหรับการ Archive"""
