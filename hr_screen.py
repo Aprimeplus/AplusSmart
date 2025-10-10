@@ -2647,10 +2647,14 @@ class HRScreen(CTkFrame):
             # เพื่อให้ business_logic.py นำไปใช้เป็นฐานคิดค่าคอมได้ถูกต้อง
             # --- END: สิ้นสุดการแก้ไข ---
             
+            default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
+            default_operating_fee = default_fees.get(plan, 0.0)
+
             self.initial_commission_result = business_logic.calculate_monthly_commission(
                 plan_name=plan,
                 comm_df=df_for_calc,
-                sales_target=sales_target
+                sales_target=sales_target,
+                operating_fee=default_operating_fee # <-- **ส่งค่า Default เข้าไปตรงนี้**
             )
             
             result_type = self.initial_commission_result.get('type')
@@ -2686,7 +2690,7 @@ class HRScreen(CTkFrame):
 
         input_frame = CTkFrame(self.process_result_frame)
         input_frame.grid(row=0, column=0, pady=(10, 0), padx=10, sticky="ew")
-        input_frame.grid_columnconfigure(1, weight=1)
+        # input_frame.grid_columnconfigure(1, weight=1) # <--- ลบบรรทัดนี้ออกไปแล้ว ถูกต้องครับ
 
         plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
         self.plan_display_label = CTkLabel(input_frame, text=f"แผนค่าคอมมิชชั่น: {plan_name}", font=self.header_font_table, text_color=self.theme["primary"])
@@ -2704,37 +2708,41 @@ class HRScreen(CTkFrame):
         CTkLabel(stats_frame, text="ต้นทุนรวม (ที่ใช้คำนวณ):", font=self.label_font, text_color="#D97706").grid(row=0, column=2, padx=(20, 10), pady=5, sticky="w")
         CTkLabel(stats_frame, text=f"{getattr(self, 'current_total_cost', 0.0):,.2f} บาท", font=self.entry_font).grid(row=0, column=3, padx=10, pady=5, sticky="w")
 
-        CTkLabel(input_frame, text="(+) Incentive:", font=self.label_font).grid(row=3, column=0, padx=10, pady=10, sticky="w")
-        self.incentive_entry = NumericEntry(input_frame, placeholder_text="0.00")
-        self.incentive_entry.grid(row=3, column=1, padx=10, pady=10, sticky="ew")
+        CTkLabel(input_frame, text="(-) ค่าดำเนินการ:", font=self.label_font).grid(row=3, column=0, padx=10, pady=10, sticky="w")
+        self.operating_fee_entry = NumericEntry(input_frame, placeholder_text="0.00")
+        self.operating_fee_entry.grid(row=3, column=1, padx=10, pady=10, sticky="ew")
+        
+        default_fees = {'Plan A': 25000, 'Plan B': 100000, 'Plan C': 100000, 'Plan D': 750000}
+        default_fee = default_fees.get(plan_name, 0.0)
+        self.operating_fee_entry.insert(0, f"{default_fee:,.2f}")
 
-        CTkLabel(input_frame, text="(-) หัก ค่าใช้จ่าย/ดำเนินการ:", font=self.label_font).grid(row=4, column=0, padx=10, pady=10, sticky="w")
+        CTkLabel(input_frame, text="(+) Incentive:", font=self.label_font).grid(row=4, column=0, padx=10, pady=10, sticky="w")
+        self.incentive_entry = NumericEntry(input_frame, placeholder_text="0.00")
+        self.incentive_entry.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
+
+        CTkLabel(input_frame, text="(-) หัก ค่าใช้จ่ายอื่นๆ:", font=self.label_font).grid(row=5, column=0, padx=10, pady=10, sticky="w")
         self.deduction_entry = NumericEntry(input_frame, placeholder_text="0.00")
-        self.deduction_entry.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
+        self.deduction_entry.grid(row=5, column=1, padx=10, pady=10, sticky="ew")
         if auto_deduction_value > 0:
             self.deduction_entry.insert(0, f"{auto_deduction_value:,.2f}")
 
-        CTkLabel(input_frame, text="หมายเหตุ/Incentive อื่นๆ:", font=self.label_font).grid(row=5, column=0, padx=10, pady=10, sticky="w")
+        CTkLabel(input_frame, text="หมายเหตุ/Incentive อื่นๆ:", font=self.label_font).grid(row=6, column=0, padx=10, pady=10, sticky="w")
         self.payout_notes_entry = CTkTextbox(input_frame, height=80)
-        self.payout_notes_entry.grid(row=5, column=1, padx=10, pady=10, sticky="ew")
+        self.payout_notes_entry.grid(row=6, column=1, padx=10, pady=10, sticky="ew")
         
-        # --- Frame สำหรับปุ่มคำนวณและปุ่มแสดงรายละเอียด ---
         calc_button_frame = CTkFrame(input_frame, fg_color="transparent")
-        calc_button_frame.grid(row=6, column=0, columnspan=2, pady=10, padx=10, sticky="ew")
-        calc_button_frame.grid_columnconfigure((0, 1), weight=1) # ทำให้ปุ่มขยายเท่าๆ กัน
+        calc_button_frame.grid(row=7, column=0, columnspan=2, pady=10, padx=10, sticky="ew")
+        calc_button_frame.grid_columnconfigure((0, 1), weight=1)
         
         CTkButton(calc_button_frame, text="คำนวณขั้นสุดท้ายและแสดงสรุป", command=self._perform_final_calculation, fg_color=self.theme["primary"]).grid(row=0, column=0, padx=(0, 5), pady=10, sticky="ew")
         
-        # <<< START: เพิ่มปุ่มใหม่ตรงนี้ >>>
         self.detail_button = CTkButton(calc_button_frame, text="แสดงการคิดแบบละเอียด", command=self._show_calculation_details)
         self.detail_button.grid(row=0, column=1, padx=(5, 0), pady=10, sticky="ew")
 
-        # ตรวจสอบว่ามีข้อมูล debug หรือไม่ ถ้าไม่มีให้ปิดปุ่ม
         if not self.initial_commission_result.get('debug_df', pd.DataFrame()).empty:
             self.detail_button.configure(state="normal")
         else:
             self.detail_button.configure(state="disabled")
-        # <<< END >>>
 
         self.final_summary_frame = CTkScrollableFrame(self.process_result_frame, fg_color="transparent")
         self.final_summary_frame.grid(row=1, column=0, pady=10, padx=10, sticky="nsew")
@@ -2750,6 +2758,7 @@ class HRScreen(CTkFrame):
 
     def _perform_final_calculation(self):
         try:
+            operating_fee_val = float(self.operating_fee_entry.get().replace(",", "") or 0.0)
             incentive_val = float(self.incentive_entry.get().replace(",", "") or 0.0)
             deduction_val = float(self.deduction_entry.get().replace(",", "") or 0.0)
         except ValueError:
@@ -2768,6 +2777,7 @@ class HRScreen(CTkFrame):
         final_result = business_logic.calculate_monthly_commission(
             plan_name=plan,
             comm_df=df_for_final_calc,
+            operating_fee=operating_fee_val, # <-- ส่งค่าจากช่องกรอก
             incentives=incentives_dict,
             additional_deductions=deductions_dict
         )

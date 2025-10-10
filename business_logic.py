@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def calculate_monthly_commission(plan_name, comm_df, sales_target=0, additional_deductions=None, incentives=None):
+def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_fee=None, additional_deductions=None, incentives=None):
     """
     Calculates the monthly commission based on the specified plan.
     (ฉบับแก้ไขสมบูรณ์ตาม Logic ล่าสุด)
@@ -48,7 +48,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, additional_
         # --- 3. คำนวณค่าคอมมิชชั่น (ใช้ Logic ใหม่ตามที่คุณอธิบาย) ---
         total_sales = total_revenue.sum()
         initial_commission, calculated_commission, commission_normal, commission_below = 0.0, 0.0, 0.0, 0.0
-        OPERATING_FEE = 25000.00
+        OPERATING_FEE = 25000.00 if operating_fee is None else operating_fee
         
         if total_sales >= 500000:
             NORMAL_RATE = 0.35
@@ -233,8 +233,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, additional_
         below_tier_commission = commission_below_t1 + commission_below_t2 # รวมเป็นคอมฯ Below Tier ทั้งหมด
 
         # คำนวณคอมมิชชั่นของกลุ่ม Standard Tier
-        operating_fee = 100000.00
-        commission_base = total_standard_sales - operating_fee
+        OPERATING_FEE = 100000.00 if operating_fee is None else operating_fee
+        commission_base = total_standard_sales - OPERATING_FEE
         
         t1, t2, t3 = 0, 0, 0
         amount_in_t1, amount_in_t2, amount_in_t3 = 0,0,0
@@ -358,8 +358,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, additional_
         so_breakdown_df = po_grouped_df[['po_number', 'so_number', 'sales_service_amount', 'final_cost_amount', 'profit', 'margin']].copy()
         def assign_b_tier_status(margin):
             if margin >= 10: return 'Normal (>=10%)'
-            if margin >= 7.99: return 'Below Tier 1 (7.99-10%)'
-            return 'Below Tier 2 (<7.99%)'
+            if margin >= 7.99: return 'Below Tier (7.99-10%)' # <--- ลบเลข 1 ออก
+            return 'Below Tier (<7.99%)'                 # <--- ลบเลข 2 ออก
         so_breakdown_df['Status'] = so_breakdown_df['margin'].apply(assign_b_tier_status)
         so_breakdown_df.rename(columns={
             'po_number': 'PO Number', 'so_number': 'SO Number (Grouped)',
@@ -436,7 +436,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, additional_
         # (โค้ดส่วนที่เหลือทั้งหมดในการคำนวณ Commission, สร้าง Debug, และ Return)
         commission_t1, commission_t2, commission_t3 = 0.0, 0.0, 0.0
         calculated_commission = 0.0
-        operating_fee = 100000.00
+        OPERATING_FEE = 100000.00 if operating_fee is None else operating_fee
         base_t1, base_t2, base_t3 = 0.0, 0.0, 0.0
         debug_details = []
         num_so = len(comm_df['so_number'].unique())
@@ -575,12 +575,15 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, additional_
         
         # --- 4. คำนวณค่าคอมมิชชั่น ---
         normal_commission, below_tier_commission, calculated_commission = 0.0, 0.0, 0.0
-        operating_fee = 750000.00
+        OPERATING_FEE = 750000.00 if operating_fee is None else operating_fee
         commission_base_normal = 0.0
 
         if total_sales >= 750000:
             below_tier_commission = total_below_sales * 0.003
-            commission_base_normal = max(0, total_normal_sales - operating_fee)
+            # +++ START: แก้ไขจุดนี้ +++
+            # เปลี่ยน operating_fee (ตัวเล็ก) เป็น OPERATING_FEE (ตัวใหญ่)
+            commission_base_normal = max(0, total_normal_sales - OPERATING_FEE)
+            # +++ END +++
             normal_commission = commission_base_normal * 0.007
             calculated_commission = normal_commission + below_tier_commission
         
