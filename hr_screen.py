@@ -2269,7 +2269,7 @@ class HRScreen(CTkFrame):
             transfer = pd.to_numeric(db_compare_df['transfer_fee'], errors='coerce').fillna(0)
             giveaways = pd.to_numeric(db_compare_df['giveaways'], errors='coerce').fillna(0)
             cogs = pd.to_numeric(db_compare_df['cogs_db'], errors='coerce').fillna(0)
-            db_compare_df['cost_db'] = cogs + brokerage + transfer + giveaways
+            db_compare_df['cost_db'] = cogs
 
             db_compare_df['gp_db'] = db_compare_df['sales_service_amount'] - db_compare_df['cost_db']
             db_compare_df['margin_db'] = (db_compare_df['gp_db'] / db_compare_df['sales_service_amount'].replace(0, np.nan)) * 100

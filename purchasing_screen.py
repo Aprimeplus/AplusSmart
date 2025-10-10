@@ -371,8 +371,7 @@ class MyTasksWindow(CTkToplevel):
         conn = self.app_container.get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                # --- START: แก้ไข Query ตรงนี้ ---
-                # เพิ่มเงื่อนไข NOT EXISTS เพื่อตรวจสอบว่ายังไม่มี PO ของ SO นี้ถูกสร้างขึ้น
+                # --- Query สำหรับ SO ที่ Claim มา (ส่วนนี้ทำงานถูกต้องแล้ว) ---
                 so_query = """
                     SELECT c.id, c.so_number, c.timestamp, c.customer_name 
                     FROM commissions c
@@ -382,15 +381,27 @@ class MyTasksWindow(CTkToplevel):
                     )
                     ORDER BY c.timestamp DESC
                 """
-                # --- END: สิ้นสุดการแก้ไข ---
                 cursor.execute(so_query, (self.user_key,))
                 claimed_sos = cursor.fetchall()
 
-                # Query สำหรับ PO Drafts เหมือนเดิม
-                po_query = "SELECT id, timestamp, so_number, po_number, supplier_name FROM purchase_orders WHERE user_key = %s AND status = 'Draft' ORDER BY timestamp DESC"
+                # --- START: แก้ไข Query สำหรับ PO Drafts ตรงนี้ ---
+                # เพิ่มการ JOIN เพื่อดึงชื่อ Owner และ Proxy
+                po_query = """
+                    SELECT 
+                        po.id, po.timestamp, po.so_number, po.po_number, po.supplier_name,
+                        owner.sale_name as owner_name,
+                        proxy.sale_name as proxy_name
+                    FROM purchase_orders po
+                    LEFT JOIN sales_users owner ON po.user_key = owner.sale_key
+                    LEFT JOIN sales_users proxy ON po.proxy_user_key = proxy.sale_key
+                    WHERE po.user_key = %s AND po.status = 'Draft' 
+                    ORDER BY po.timestamp DESC
+                """
+                # --- END ---
                 cursor.execute(po_query, (self.user_key,))
                 draft_pos = cursor.fetchall()
 
+            # --- ส่วนแสดงผล SO ที่ Claim (ไม่ต้องแก้ไข) ---
             if not claimed_sos:
                 CTkLabel(self.so_in_progress_content_frame, text="ไม่มี SO ที่รอสร้าง PO ใบแรก").pack(pady=10)
             else:
@@ -402,6 +413,7 @@ class MyTasksWindow(CTkToplevel):
                     continue_button = CTkButton(card, text="ทำต่อ", command=lambda s=so_data['so_number']: self._continue_so_task(s))
                     continue_button.pack(side="right", padx=10, pady=5)
 
+            # --- ส่วนแสดงผล PO Drafts (แก้ไขการแสดงผลตรงนี้) ---
             if not draft_pos:
                 CTkLabel(self.po_draft_content_frame, text="ไม่มี PO ฉบับร่าง").pack(pady=10)
             else:
@@ -411,11 +423,30 @@ class MyTasksWindow(CTkToplevel):
                     card.grid_columnconfigure(0, weight=1); card.grid_columnconfigure(1, weight=0)
                     info_frame = CTkFrame(card, fg_color="transparent"); info_frame.grid(row=0, column=0, sticky="w", padx=10, pady=5)
                     action_frame = CTkFrame(card, fg_color="transparent"); action_frame.grid(row=0, column=1, sticky="e", padx=10, pady=5)
-                    info = f"SO: {po_data['so_number']} | PO: {po_data['po_number']} | Supplier: {po_data['supplier_name']}"; CTkLabel(info_frame, text=info).pack(anchor="w")
-                    CTkLabel(info_frame, text="สถานะ: ฉบับร่าง (ค้างส่ง)", font=CTkFont(size=12, weight="bold")).pack(anchor="w")
+                    
+                    info = f"SO: {po_data['so_number']} | PO: {po_data['po_number']} | Supplier: {po_data['supplier_name']}"
+                    CTkLabel(info_frame, text=info).pack(anchor="w")
+                    
+                    # --- START: เพิ่ม Logic การแสดงชื่อ Owner และ Proxy ---
+                    owner_name = po_data.get('owner_name', 'N/A')
+                    proxy_name = po_data.get('proxy_name')
+
+                    if pd.notna(proxy_name) and proxy_name != owner_name:
+                        # กรณีมีคนสร้างแทน ให้แสดงทั้งสองชื่อ
+                        owner_text = f"Owner: {owner_name} (สร้างโดย: {proxy_name})"
+                        text_color = "#6D28D9" # สีม่วง
+                    else:
+                        # กรณีเจ้าของสร้างเอง
+                        owner_text = f"Owner: {owner_name}"
+                        text_color = "gray30"
+                    
+                    CTkLabel(info_frame, text=owner_text, font=CTkFont(size=12, slant="italic"), text_color=text_color).pack(anchor="w")
+                    # --- END ---
+                    
                     CTkButton(action_frame, text="แก้ไข", width=60, command=lambda p=po_id: self._edit_and_close(p)).pack(side="left", padx=2)
                     CTkButton(action_frame, text="ส่งอนุมัติ", width=80, fg_color="#16A34A", command=lambda p=po_id: self._submit_draft(p)).pack(side="left", padx=2)
                     CTkButton(action_frame, text="ลบ", width=40, fg_color="#D32F2F", hover_color="#B71C1C", command=lambda p=po_id: self._delete_draft(p)).pack(side="left", padx=2)
+                    
                     callback = lambda e, p=po_id: self._edit_and_close(p); card.bind("<Double-1>", callback)
                     for child in card.winfo_children(): child.bind("<Double-1>", callback)
         except Exception as e:
@@ -841,6 +872,63 @@ class PurchasingScreen(CTkFrame):
         self._poll_and_update_tasks_badge()
         self.bind("<Destroy>", self._on_destroy)
         # <<< END: สิ้นสุดการแก้ไข >>>
+    
+    # purchasing_screen.py (ภายในคลาส PurchasingScreen)
+
+    def _save_po_data(self):
+        """รวบรวมข้อมูลจากฟอร์ม, ตรวจสอบ, และบันทึกลงฐานข้อมูล"""
+        data_to_save = self._gather_data_from_form()
+        is_valid, message = self._validate_po_data(data_to_save)
+        if not is_valid:
+            messagebox.showerror("ข้อมูลไม่ถูกต้อง", message, parent=self)
+            return
+
+        # --- START: แก้ไข Logic การบันทึก User Key และ Proxy Key ---
+        # ตรวจสอบว่าคลาสนี้มี attribute 'owner_user_key' หรือไม่ (ซึ่งจะถูกสร้างโดย Proxy screen)
+        if hasattr(self, 'owner_user_key') and self.owner_user_key:
+            # กรณีทำงานผ่านหน้าจอ Proxy (เช่น Purchasing Support ทำงานแทน)
+            data_to_save['user_key'] = self.owner_user_key      # รหัสเจ้าของ PO
+            data_to_save['proxy_user_key'] = self.proxy_user_key # รหัสคนที่สร้างแทน
+        else:
+            # กรณีทำงานปกติ (เจ้าตัวทำเอง)
+            data_to_save['user_key'] = self.user_key            # รหัสเจ้าของ PO
+            data_to_save['proxy_user_key'] = None               # ไม่มีคนสร้างแทน
+        # --- END ---
+
+        data_to_save['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # (ส่วนนี้คือ Logic การ INSERT ข้อมูลลงฐานข้อมูล ซึ่งควรจะถูกต้องอยู่แล้ว)
+                columns = ', '.join(data_to_save.keys())
+                placeholders = ', '.join(['%s'] * len(data_to_save))
+                insert_query = f"INSERT INTO purchase_orders ({columns}) VALUES ({placeholders}) RETURNING id"
+                
+                cursor.execute(insert_query, tuple(data_to_save.values()))
+                new_po_id = cursor.fetchone()[0]
+
+                # อัปเดตสถานะของ SO ในตาราง commissions
+                cursor.execute(
+                    "UPDATE commissions SET status = 'PO In Progress', claim_timestamp = %s WHERE so_number = %s AND is_active = 1",
+                    (datetime.now(), data_to_save['so_number'])
+                )
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"บันทึกใบสั่งซื้อ (PO) ใหม่สำเร็จ\nPO ID: {new_po_id}", parent=self)
+            
+            # รีเฟรชหน้าจอเพื่อเคลียร์ฟอร์มและโหลดข้อมูลใหม่
+            self._clear_form_and_reload_data()
+
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึก PO:\n{e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
     
     def _edit_so_number(self):
         """เปิด Dialog เพื่อแก้ไข SO Number ของรายการที่กำลังทำงานอยู่"""
@@ -2346,10 +2434,8 @@ class PurchasingScreen(CTkFrame):
             'supplier_code': self.supplier_code_entry.get(),
             'credit_term': self.credit_term_entry.get(),
             'po_mode': self.po_mode_var.get(), 
-            'user_key': self.user_key,
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             
-            # *** แก้ไข: ลบ shipping_to_stock_cost ที่ซ้ำออกไป 1 บรรทัด ***
             'shipping_to_stock_cost': utils.convert_to_float(self.shipping_to_stock_cost_entry.get()),
             'shipping_to_stock_vat_type': self.shipping_to_stock_vat_var.get(),
             'shipping_to_stock_wht_type': self.shipping_to_stock_wht_var.get(),
@@ -2375,6 +2461,18 @@ class PurchasingScreen(CTkFrame):
             'vat_7_percent_amount': utils.convert_to_float(self.vat7_entry.get()),
             'grand_total': utils.convert_to_float(self.grand_total_payable_entry.get())
         }
+
+        # --- START: เพิ่ม Logic การบันทึก User Key และ Proxy Key ---
+        # ตรวจสอบว่าคลาสนี้มี attribute 'proxy_user_key' ที่ถูกส่งมาจากหน้าจอ Proxy หรือไม่
+        if hasattr(self, 'proxy_user_key') and self.proxy_user_key:
+            # กรณีทำงานผ่านหน้าจอ Proxy (HR ทำงานแทน)
+            header_data['user_key'] = self.user_key            # รหัสเจ้าของ PO (คนที่ถูกทำงานแทน)
+            header_data['proxy_user_key'] = self.proxy_user_key # รหัสคนที่สร้างแทน (HR)
+        else:
+            # กรณีทำงานปกติ (เจ้าตัวทำเอง)
+            header_data['user_key'] = self.user_key            # รหัสเจ้าของ PO
+            header_data['proxy_user_key'] = None               # ไม่มีคนสร้างแทน
+        # --- END ---
         
         items_data = []
         for row in self.product_rows:
@@ -2407,6 +2505,7 @@ class PurchasingScreen(CTkFrame):
                 })
 
         return {"header": header_data, "items": items_data, "payments": payments_data}
+
 
     def _save_po(self, status):
         """(เวอร์ชันแก้ไข) บันทึก PO พร้อมเพิ่มการตรวจสอบข้อมูลซ้ำและข้อมูลครบถ้วน"""

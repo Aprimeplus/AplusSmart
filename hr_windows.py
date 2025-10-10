@@ -1964,7 +1964,7 @@ class PayoutDetailWindow(CTkToplevel):
         self.grab_set()
 
     def _load_and_display_details(self):
-        """โหลดข้อมูลจาก DB และสร้าง UI"""
+        """โหลดข้อมูลจาก DB และสร้าง UI (เวอร์ชันแก้ไขพร้อม Fallback 2 ชั้น)"""
         conn = None
         try:
             conn = self.app_container.get_connection()
@@ -1994,21 +1994,39 @@ class PayoutDetailWindow(CTkToplevel):
                     notes_label = CTkLabel(notes_frame, text=f"หมายเหตุ: {payout_notes}", wraplength=800, justify="left", text_color="#ca8a04")
                     notes_label.pack(pady=5, padx=5)
 
-                so_numbers = tuple(log_data['so_numbers_json'])
-                
-                if not so_numbers:
+                # --- START: Enhanced Fallback Logic ---
+                # 1. ลองค้นหาด้วยวิธีที่ดีที่สุดก่อน (payout_id)
+                query_primary = """
+                    SELECT so_number, final_sales_amount, final_margin
+                    FROM commissions
+                    WHERE payout_id = %s
+                    ORDER BY so_number
+                """
+                df = pd.read_sql_query(query_primary, self.app_container.pg_engine, params=(self.payout_id,))
+
+                # 2. ถ้าวิธีแรกไม่เจอ ให้ลองวิธีสำรองที่ 1 (ค้นหาจาก status 'Paid')
+                if df.empty:
+                    print(f"INFO: No records for payout_id {self.payout_id}. Trying fallback 1 (status='Paid')...")
+                    so_numbers_in_log = tuple(log_data.get('so_numbers_json', []))
+                    if so_numbers_in_log:
+                        placeholders = ', '.join(['%s'] * len(so_numbers_in_log))
+                        query_fallback1 = f"SELECT so_number, final_sales_amount, final_margin FROM commissions WHERE so_number IN ({placeholders}) AND status = 'Paid'"
+                        df = pd.read_sql_query(query_fallback1, self.app_container.pg_engine, params=so_numbers_in_log)
+
+                # 3. ถ้ายังไม่เจออีก ให้ลองวิธีสำรองสุดท้าย (ค้นหาจาก status 'HR Verified')
+                if df.empty:
+                    print(f"INFO: Fallback 1 failed. Trying fallback 2 (status='HR Verified')...")
+                    so_numbers_in_log = tuple(log_data.get('so_numbers_json', []))
+                    if so_numbers_in_log:
+                        placeholders = ', '.join(['%s'] * len(so_numbers_in_log))
+                        query_fallback2 = f"SELECT so_number, final_sales_amount, final_margin FROM commissions WHERE so_number IN ({placeholders}) AND status = 'HR Verified'"
+                        df = pd.read_sql_query(query_fallback2, self.app_container.pg_engine, params=so_numbers_in_log)
+                # --- END: Enhanced Fallback Logic ---
+
+                if df.empty:
                     CTkLabel(self.tree_frame, text="ไม่พบรายการ SO ในรอบการจ่ายเงินนี้").pack(pady=20)
                     return
-                    
-                placeholders = ', '.join(['%s'] * len(so_numbers))
-                query = f"""
-                    SELECT so_number, final_sales_amount, final_margin
-                    FROM commissions 
-                    WHERE so_number IN ({placeholders}) AND is_active = 1
-                """
-                df = pd.read_sql_query(query, self.app_container.pg_engine, params=so_numbers)
 
-                # --- [แก้ไข] เพิ่ม Logic การคำนวณ 'status' ที่ถูกต้อง ---
                 df['status'] = df['final_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
                 
                 self._create_detail_table(df)
@@ -2018,7 +2036,7 @@ class PayoutDetailWindow(CTkToplevel):
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
-            
+
     def _create_detail_table(self, df):
         """สร้าง Treeview สำหรับแสดงรายละเอียด SO"""
         style = ttk.Style(self)

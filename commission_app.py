@@ -112,6 +112,9 @@ class SalesTasksWindow(CTkToplevel):
     def _load_draft_tasks(self):
         for widget in self.draft_frame.winfo_children(): widget.destroy()
         try:
+            # VVVV เพิ่มบรรทัดนี้เข้าไปเพื่อ Debug VVVV
+            print(f"--- DEBUG: กำลังโหลดฉบับร่างสำหรับ sale_key: {self.sale_key} ---")
+            
             query = """
                 SELECT *
                 FROM commissions 
@@ -625,16 +628,17 @@ class CommissionApp(CTkFrame):
 
     def _show_history(self):
         try:
-            if self.user_role == 'Sale Support':
-                # --- เปลี่ยนกลับไปใช้ชื่อฟังก์ชันเดิม ---
+            # vvvv แก้ไขบรรทัดนี้ vvvv
+            if self.user_role and self.user_role.lower() == 'sale support':
                 self.history_window = self.app_container.show_history_window(
                     support_user_key_filter=self.app_container.current_user_key,
+                    sale_key_filter=None,
                     edit_callback=self._on_history_so_select
                 )
             else:
-                # --- เปลี่ยนกลับไปใช้ชื่อฟังก์ชันเดิม ---
                 self.history_window = self.app_container.show_history_window(
                     sale_key_filter=self.sale_key,
+                    support_user_key_filter=None,
                     edit_callback=self._on_history_so_select
                 )
         except Exception as e:

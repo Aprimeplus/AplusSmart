@@ -1418,14 +1418,29 @@ class PurchaseHistoryWindow(CTkToplevel):
         for widget in self.history_frame.winfo_children(): widget.destroy()
         self._show_loading()
         try:
-            query = "SELECT id, timestamp, user_key, so_number, po_number, supplier_name, approved_by FROM purchase_orders WHERE status = 'Approved' ORDER BY timestamp DESC"
+            # แก้ไข Query ให้ JOIN ตาราง user และแสดงชื่อเจ้าของ/ผู้สร้างแทน
+            query = """
+                SELECT 
+                    po.id, 
+                    po.timestamp, 
+                    po.so_number, 
+                    po.po_number, 
+                    po.supplier_name,
+                    owner.sale_name as owner_name,
+                    proxy.sale_name as proxy_name
+                FROM purchase_orders po
+                LEFT JOIN sales_users owner ON po.user_key = owner.sale_key
+                LEFT JOIN sales_users proxy ON po.proxy_user_key = proxy.sale_key
+                ORDER BY po.timestamp DESC
+            """
             self.all_po_df = pd.read_sql_query(query, self.pg_engine)
             self.all_po_df['timestamp'] = pd.to_datetime(self.all_po_df['timestamp'])
             self._hide_loading()
             self._apply_filters()
         except Exception as e:
             self._hide_loading()
-            messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติได้: {e}", parent=self)
+            messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติ PO ได้: {e}", parent=self)
+            traceback.print_exc()
 
     def _apply_filters(self):
         if self.all_po_df is None:
@@ -1495,25 +1510,55 @@ class PurchaseHistoryWindow(CTkToplevel):
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดดูรายละเอียดได้: {e}", parent=self)
 
     def _create_styled_dataframe_table(self, parent, df):
-        columns = df.columns.tolist()
-        tree = ttk.Treeview(parent, columns=columns, show='headings')
+        # สร้างคอลัมน์ใหม่สำหรับแสดงผล
+        df['display_owner'] = df.apply(
+            lambda row: f"{row['owner_name']}" if pd.isna(row['proxy_name']) else f"{row['owner_name']} (โดย {row['proxy_name']})",
+            axis=1
+        )
+        
+        # กำหนดคอลัมน์ที่จะแสดงในตาราง
+        display_columns = {
+            'timestamp': 'เวลาบันทึก',
+            'so_number': 'SO Number',
+            'po_number': 'PO Number',
+            'supplier_name': 'Supplier',
+            'display_owner': 'เจ้าของ PO (ผู้สร้าง)'
+        }
+        
+        columns_to_show = list(display_columns.keys())
+        df_display = df[columns_to_show]
+
+        tree = ttk.Treeview(parent, columns=columns_to_show, show='headings')
         style = ttk.Style()
         style.theme_use("default")
         style.configure("Treeview.Heading", font=('Roboto', 14, 'bold'))
         style.configure("Treeview", rowheight=25, font=('Roboto', 12))
-        for col in columns:
-            tree.heading(col, text=col)
-            tree.column(col, width=150, anchor='w')
-        for index, row in df.iterrows():
-            row['timestamp'] = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-            tree.insert("", "end", values=list(row))
+        
+        # ตั้งค่าหัวตารางและขนาด
+        for col_id, col_text in display_columns.items():
+            tree.heading(col_id, text=col_text)
+            width = 200 # default
+            if col_id == 'timestamp': width = 180
+            if col_id == 'display_owner': width = 250
+            tree.column(col_id, width=width, anchor='w')
+
+        # ใส่ข้อมูลลงในตาราง (ใช้ df_display)
+        for index, row in df_display.iterrows():
+            # เก็บ id เดิมไว้ในตัวแปร iid เพื่อใช้ตอนดับเบิลคลิก
+            original_id = df.loc[index, 'id']
+            values = list(row)
+            values[0] = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S') # Format วันที่
+            tree.insert("", "end", values=values, iid=original_id)
+
         v_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
         h_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
         tree.grid(row=0, column=0, sticky='nsew')
         v_scroll.grid(row=0, column=1, sticky='ns')
         h_scroll.grid(row=1, column=0, sticky='ew')
-        tree.bind("<Double-1>", lambda e: self._on_row_double_click(e, tree))
+        
+        # แก้ไข _on_row_double_click ให้ใช้ iid ที่เราเก็บไว้
+        tree.bind("<Double-1>", lambda e: self._on_row_double_click(e, tree, use_iid=True))
 
 
 class CommissionHistoryWindow(CTkToplevel):
@@ -1540,7 +1585,7 @@ class CommissionHistoryWindow(CTkToplevel):
         
         self.title(f"ประวัติการบันทึกของ: {self.sale_key_filter}")
         self.geometry("1400x700")
-        try: self.theme = master.THEME["sale"]
+        try: self.theme = self.app_container.THEME["sale"]
         except (AttributeError, KeyError): self.theme = {"header": "#1D4ED8", "primary": "#3B82F6"}
         
         self.grid_rowconfigure(1, weight=1)
@@ -1748,57 +1793,79 @@ class CommissionHistoryWindow(CTkToplevel):
         self._populate_history_table()
 
     def _populate_history_table(self):
-        """โหลดและแสดงข้อมูลตาม Tab และฟิลเตอร์ที่เลือก"""
+        """โหลดและแสดงข้อมูลตาม Tab และฟิลเตอร์ที่เลือก (เวอร์ชันแก้ไขไวยากรณ์ SQL)"""
         target_frame = self.draft_frame if self.active_tab == "drafts" else self.submitted_frame
         for widget in target_frame.winfo_children(): widget.destroy()
         self._show_loading()
 
         try:
-            # +++ START: แก้ไขเงื่อนไข status ให้ระบุตาราง c.status +++
+            # --- START: แก้ไข Logic การสร้าง Query ทั้งหมด ---
             if self.active_tab == "drafts":
                 status_condition = "c.status IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Deferred by HR', 'Deferred by SM')"
             else:
                 status_condition = "c.status NOT IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM')"
 
-            base_query = f"""
-                FROM commissions c
-                LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
-                WHERE c.sale_key = %s AND c.is_active = 1 AND {status_condition}
-            """
-            # +++ END +++
-
-            params = [self.sale_key_filter]
+            where_clauses = ["c.is_active = 1", status_condition]
+            params = []
 
             if self.support_user_key_filter:
-                base_query += " AND c.support_user_key = %s"
+                where_clauses.append("c.support_user_key = %s")
                 params.append(self.support_user_key_filter)
+            elif self.sale_key_filter:
+                where_clauses.append("c.sale_key = %s")
+                params.append(self.sale_key_filter)
 
             selected_month_str = self.month_var.get()
             if selected_month_str != "ทุกเดือน":
                 month_num = self.thai_month_map[selected_month_str]
-                base_query += " AND EXTRACT(MONTH FROM c.timestamp::timestamp) = %s"
+                where_clauses.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
                 params.append(month_num)
 
             selected_year_str = self.year_var.get()
             if selected_year_str != "ทุกปี":
                 year_num = int(selected_year_str)
-                base_query += " AND EXTRACT(YEAR FROM c.timestamp::timestamp) = %s"
+                where_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(year_num)
+            
+            # 1. สร้างส่วน FROM และ JOIN ทั้งหมดก่อน
+            query_body = """
+                FROM commissions c
+                LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
+                LEFT JOIN sales_users su_owner ON c.sale_key = su_owner.sale_key
+            """
+            
+            # 2. สร้างส่วน WHERE แยกต่างหาก
+            where_string = f"WHERE {' AND '.join(where_clauses)}"
 
-            count_query = f"SELECT COUNT(c.id) {base_query}"
+            # 3. ประกอบร่าง Query สำหรับนับจำนวนแถว
+            count_query = f"SELECT COUNT(c.id) {query_body} {where_string}"
+            
+            # --- END: สิ้นสุดการแก้ไข Logic ---
+
             count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
             self.total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
             self.total_pages = (self.total_rows + self.rows_per_page - 1) // self.rows_per_page
 
             offset = self.current_page * self.rows_per_page
+            
+            # สร้าง params สำหรับ data_query โดยเพิ่ม limit และ offset
+            data_params = params + [self.rows_per_page, offset]
 
-            data_query = f"SELECT c.*, ss.sale_name as support_user_name {base_query} ORDER BY c.timestamp DESC LIMIT %s OFFSET %s"
-            params.extend([self.rows_per_page, offset])
-
-            self.df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(params))
+            # 4. ประกอบร่าง Query สำหรับดึงข้อมูลมาแสดงผล
+            data_query = f"""
+                SELECT c.*,
+                    ss.sale_name as support_user_name,
+                    su_owner.sale_name as owner_name
+                {query_body}
+                {where_string}
+                ORDER BY c.timestamp DESC
+                LIMIT %s OFFSET %s
+            """
+            
+            self.df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(data_params))
 
             self.df['customer_display'] = self.df.apply(
-                lambda row: f"{row['customer_name']} (คีย์โดย: {row['support_user_name']})" if pd.notna(row['support_user_name']) else row['customer_name'],
+                lambda row: f"{row['customer_name']} (คีย์โดย: {row['support_user_name']})" if pd.notna(row['support_user_name']) else f"{row['customer_name']} (คีย์โดย: {row.get('owner_name', 'N/A')})",
                 axis=1
             )
 

@@ -349,16 +349,15 @@ class AppContainer(CTk):
                         print(f"Inbound deadline passed. Submitting records for {current_year}-{current_month} to 'Pending PU'...")
                         
                         # <<< START: แก้ไข Query ตรงนี้ >>>
-                        # เพิ่มเงื่อนไข AND c.commission_month = %s AND c.commission_year = %s
-                        # เพื่อให้ส่งเฉพาะ SO ของ "เดือนปัจจุบัน" เท่านั้น
                         sql_inbound = """
                             UPDATE commissions c SET status = 'Pending PU' 
                             FROM sales_users su 
                             WHERE c.sale_key = su.sale_key 
-                              AND c.status = 'Original' 
-                              AND (su.sale_type IS NULL OR su.sale_type != 'Outbound')
-                              AND c.commission_month = %s
-                              AND c.commission_year = %s;
+                            AND c.status = 'Original' 
+                            AND (su.sale_type IS NULL OR su.sale_type != 'Outbound')
+                            AND c.commission_month = %s
+                            AND c.commission_year = %s
+                            AND c.support_user_key IS NULL; -- เพิ่มเงื่อนไขนี้
                         """
                         cursor.execute(sql_inbound, (current_month, current_year))
                         # <<< END >>>
@@ -367,31 +366,33 @@ class AppContainer(CTk):
                             conn.commit()
                             print(f"Auto-submitted {cursor.rowcount} Inbound/Other records to Pending PU.")
                         else:
-                            conn.rollback() # ใช้ rollback แทน commit ถ้าไม่มีอะไรเปลี่ยนแปลง
+                            conn.rollback() 
                 except ValueError:
-                    # กรณีที่เป็นเดือน ก.พ. ที่ไม่มีวันที่ 27
                     print("Could not create inbound deadline for this month.")
                     conn.rollback()
 
-                # --- Logic สำหรับ Outbound Sales (เหมือนเดิม) ---
+                # --- Logic สำหรับ Outbound Sales ---
                 outbound_deadline = now.replace(day=3, hour=17, minute=30, second=0, microsecond=0)
                 if now > outbound_deadline:
-                    last_month_date = now - timedelta(days=5) # ใช้วันที่ปัจจุบันลบ 5 วัน เพื่อให้แน่ใจว่าเป็นเดือนก่อนหน้าเสมอ
+                    last_month_date = now - timedelta(days=5) 
                     target_month = last_month_date.month
                     target_year = last_month_date.year
                     
                     print(f"Outbound deadline passed. Submitting records for {target_year}-{target_month} to 'Pending PU'...")
                     
+                    # <<< START: แก้ไข Query ตรงนี้ >>>
                     sql_outbound = """
                         UPDATE commissions c SET status = 'Pending PU' 
                         FROM sales_users su 
                         WHERE c.sale_key = su.sale_key 
-                          AND c.status = 'Original' 
-                          AND su.sale_type = 'Outbound' 
-                          AND c.commission_month = %s 
-                          AND c.commission_year = %s;
+                        AND c.status = 'Original' 
+                        AND su.sale_type = 'Outbound' 
+                        AND c.commission_month = %s 
+                        AND c.commission_year = %s
+                        AND c.support_user_key IS NULL; -- เพิ่มเงื่อนไขนี้
                     """
                     cursor.execute(sql_outbound, (target_month, target_year))
+                    # <<< END >>>
                     
                     if cursor.rowcount > 0:
                         conn.commit()
@@ -490,21 +491,19 @@ class AppContainer(CTk):
         self.show_screen(SalesManagerScreen, app_container=self, user_key=user_key, user_name=user_name, user_role=user_role)
 
     def show_history_window(self, sale_key_filter=None, edit_callback=None, support_user_key_filter=None):
-        from history_windows import CommissionHistoryWindow, PurchaseHistoryWindow
+        from history_windows import CommissionHistoryWindow
 
-        # --- เงื่อนไขที่ถูกต้องคือบรรทัดนี้ ---
-        if sale_key_filter or support_user_key_filter:
-            win = CommissionHistoryWindow(
-                master=self, 
-                app_container=self, 
-                sale_key_filter=sale_key_filter, 
-                on_row_double_click=edit_callback,
-                support_user_key_filter=support_user_key_filter
-            )
-            return win
-        else: 
-            win = PurchaseHistoryWindow(master=self, app_container=self)
-            return win
+        # สร้างและเปิดหน้าต่างประวัติ SO (CommissionHistoryWindow) เสมอ
+        # โดยส่งค่า filter ทั้งหมดที่มีเข้าไป
+        win = CommissionHistoryWindow(
+            master=self,   # แก้ไข master ให้เป็น self.root เพื่อความเสถียร
+            app_container=self,
+            sale_key_filter=sale_key_filter,
+            on_row_double_click=edit_callback,
+            support_user_key_filter=support_user_key_filter
+        )
+        return win
+
 
     def show_purchase_detail_window(self, purchase_id, approve_callback=None, reject_callback=None, on_save_callback=None):
         """
