@@ -422,7 +422,7 @@ class HRScreen(CTkFrame):
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
     
     def _create_payout_history_table(self, df):
-        """(ฟังก์ชันใหม่) สร้างตารางประวัติการจ่ายเงินที่สวยงามและปรับแต่งมาโดยเฉพาะ"""
+        """(เวอร์ชันปรับปรุง) สร้างตารางประวัติการจ่ายเงินที่สวยงามและปรับแต่งมาโดยเฉพาะ"""
         for widget in self.payout_history_frame.winfo_children():
             widget.destroy()
 
@@ -430,12 +430,31 @@ class HRScreen(CTkFrame):
             CTkLabel(self.payout_history_frame, text="ไม่พบข้อมูลตามเงื่อนไขที่เลือก").pack(pady=20)
             return
 
+        ### --- START: 1. ปรับปรุง Style ของตาราง --- ###
         style = ttk.Style(self.payout_history_frame)
         style.theme_use("clam")
-        style.configure("Payout.Treeview.Heading", font=self.label_font_bold, background=self.theme["primary"], foreground="white", relief="flat", padding=(10, 8))
-        style.map("Payout.Treeview.Heading", background=[('active', self.theme["header"])])
-        style.configure("Payout.Treeview", rowheight=32, font=self.small_font)
-        style.map("Payout.Treeview", background=[('selected', "#DBEAFE")], foreground=[('selected', 'black')])
+        
+        # Style สำหรับหัวตาราง (Header) - เปลี่ยนเป็นสีเข้มขึ้นและดู Professional
+        style.configure("Payout.Treeview.Heading", 
+                        font=self.label_font_bold, 
+                        background="#065F46",  # สีเขียวเข้ม
+                        foreground="white", 
+                        relief="flat", 
+                        padding=(10, 8))
+        style.map("Payout.Treeview.Heading", background=[('active', "#047857")])
+
+        # Style สำหรับแถวข้อมูล
+        style.configure("Payout.Treeview", 
+                        rowheight=32, 
+                        font=self.small_font,
+                        fieldbackground="#F9FAFB", # สีพื้นหลังของช่องข้อมูล
+                        foreground="#1F2937")      # สีตัวอักษร
+
+        # Style สำหรับแถวที่ถูกเลือก (Selection) - ทำให้ตัวอักษรเป็นสีขาวเพื่อความคมชัด
+        style.map("Payout.Treeview", 
+                  background=[('selected', self.theme["primary"])], 
+                  foreground=[('selected', 'white')])
+        ### --- END: 1. สิ้นสุดการปรับปรุง Style --- ###
 
         tree_frame = CTkFrame(self.payout_history_frame, fg_color="transparent")
         tree_frame.pack(fill="both", expand=True)
@@ -451,6 +470,11 @@ class HRScreen(CTkFrame):
         tree = ttk.Treeview(tree_frame, columns=list(columns.keys()), show='headings', style="Payout.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
 
+        ### --- START: 2. กำหนด Tag สำหรับสลับสีแถว --- ###
+        tree.tag_configure('oddrow', background='#FFFFFF')  # แถวคี่ (สีขาว)
+        tree.tag_configure('evenrow', background='#F0F9FF') # แถวคู่ (สีฟ้าอ่อน)
+        ### --- END: 2. สิ้นสุดการกำหนด Tag --- ###
+
         for col_id, col_text in columns.items():
             anchor = 'e' if col_id not in ['sale_key', 'sale_name', 'plan_name', 'timestamp'] else 'w'
             width = 120
@@ -459,7 +483,11 @@ class HRScreen(CTkFrame):
             tree.heading(col_id, text=col_text, anchor='center')
             tree.column(col_id, anchor=anchor, width=width)
 
-        for _, row in df.iterrows():
+        ### --- START: 3. เพิ่ม Logic การสลับสีแถว (Zebra Striping) --- ###
+        for i, row in df.iterrows():
+            # กำหนด Tag สลับกันระหว่าง 'oddrow' และ 'evenrow'
+            tag = 'evenrow' if i % 2 == 0 else 'oddrow'
+
             values = []
             for col_id in columns.keys():
                 value = row[col_id]
@@ -469,7 +497,10 @@ class HRScreen(CTkFrame):
                     else: values.append(str(value))
                 else:
                     values.append("")
-            tree.insert("", "end", values=values, iid=str(row['id']))
+            
+            # เพิ่ม `tags=(tag,)` เข้าไปตอน insert ข้อมูล
+            tree.insert("", "end", values=values, iid=str(row['id']), tags=(tag,))
+        ### --- END: 3. สิ้นสุด Logic การสลับสี --- ###
         
         tree.bind("<Double-1>", lambda e: self._on_payout_history_double_click(e, tree))
 
@@ -705,7 +736,7 @@ class HRScreen(CTkFrame):
             self._process_commission_loaded = True
 
         elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded:
-            self._load_audit_log_data()
+            self._populate_audit_log_table()
             self._audit_log_loaded = True
 
         if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
@@ -2424,13 +2455,10 @@ class HRScreen(CTkFrame):
                 if pd.notna(final_system_cost) and final_system_cost > 0 and pd.notna(cost_uploaded) and cost_uploaded < (final_system_cost * 0.5):
                     return "‼️ ต้นทุน Express ผิดปกติ (<50%)"
                 
-                # --- START: แก้ไขการปัดเศษทศนิยมตรงนี้ ---
-                # เปลี่ยนจากการใช้ pd.to_numeric(...).fillna(0) มาเป็น float(...) if pd.notna(...) else 0.0
                 sale_system_rounded = round(float(final_system_sale) if pd.notna(final_system_sale) else 0.0, 2)
                 sale_express_rounded = round(float(row['sales_uploaded']) if pd.notna(row['sales_uploaded']) else 0.0, 2)
                 cost_system_rounded = round(float(final_system_cost) if pd.notna(final_system_cost) else 0.0, 2)
                 cost_express_rounded = round(float(row['cost_uploaded']) if pd.notna(row['cost_uploaded']) else 0.0, 2)
-                # --- END: สิ้นสุดการแก้ไข ---
 
                 sale_ok = sale_system_rounded >= sale_express_rounded
                 cost_ok = cost_system_rounded >= cost_express_rounded
@@ -2468,12 +2496,20 @@ class HRScreen(CTkFrame):
             self.comparison_df = merged_df[list(display_order_map.keys())].copy()
             self.comparison_df.rename(columns=display_order_map, inplace=True)
 
+            # --- START: แก้ไขส่วนสรุปยอดตรงนี้ ---
+            # 1. นับจำนวน SO ก่อนที่จะเพิ่มแถวสรุป
+            so_count = len(self.comparison_df)
+
+            # 2. คำนวณผลรวม (เหมือนเดิม)
             numeric_cols = ['ยอดขายรวม (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน']
             summary_data = self.comparison_df[numeric_cols].sum().to_dict()
             
             summary_row = pd.Series(summary_data)
             summary_row['เลขที่ SO'] = 'ยอดรวม (Total)'
-            summary_row['สถานะ'] = ''
+            
+            # 3. นำจำนวน SO ที่นับได้มาใส่ในคอลัมน์ 'สถานะ' ของแถวสรุป
+            summary_row['สถานะ'] = f"รวม {so_count} รายการ"
+            # --- END ---
             
             self.comparison_df = pd.concat([self.comparison_df, summary_row.to_frame().T], ignore_index=True)
                 
