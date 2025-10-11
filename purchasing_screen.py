@@ -23,6 +23,8 @@ from hr_windows import SODetailViewer
 from export_utils import export_approved_pos_to_excel
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 from simple_async import SimpleAsyncHelper, show_loading_message, hide_loading_message
+from purchasing_windows import SOFinderDialog
+
 
 
 
@@ -362,7 +364,34 @@ class MyTasksWindow(CTkToplevel):
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถโหลดรายการ SO ใหม่ได้: {e}", parent=self)
             traceback.print_exc()
+ 
+    def _return_so_from_task(self, so_number):
+        """ส่ง SO กลับไปที่คิว 'Pending PU' จากหน้า My Tasks"""
+        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการส่ง SO: {so_number} กลับไปที่คิวงานใช่หรือไม่?", parent=self):
+            return
 
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # อัปเดตสถานะ, ลบ user ที่ claim และลบเวลาที่ claim ออก
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET status = 'Pending PU', user_key = NULL, claim_timestamp = NULL 
+                    WHERE so_number = %s AND user_key = %s AND status = 'PO In Progress'
+                """, (so_number, self.user_key))
+            
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"SO: {so_number} ถูกส่งกลับไปที่คิวงานเรียบร้อยแล้ว", parent=self)
+            
+            # โหลดข้อมูลในหน้า Tasks ใหม่ทั้งหมด
+            self.load_tasks()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+    
     def _load_in_progress_tasks(self):
         # ล้างข้อมูลเก่าออกจาก content frames
         for widget in self.so_in_progress_content_frame.winfo_children(): widget.destroy()
@@ -408,10 +437,33 @@ class MyTasksWindow(CTkToplevel):
                 for so_data in claimed_sos:
                     card = CTkFrame(self.so_in_progress_content_frame, border_width=1)
                     card.pack(fill="x", padx=5, pady=3)
+                    card.grid_columnconfigure(0, weight=1) # ทำให้ Label ขยายเต็ม
+
                     info = f"SO: {so_data['so_number']} - ลูกค้า: {so_data['customer_name']} (ดำเนินการโดย: คุณ)"
-                    CTkLabel(card, text=info, font=self.label_font).pack(side="left", padx=10, pady=5)
-                    continue_button = CTkButton(card, text="ทำต่อ", command=lambda s=so_data['so_number']: self._continue_so_task(s))
-                    continue_button.pack(side="right", padx=10, pady=5)
+                    CTkLabel(card, text=info, font=self.label_font).grid(row=0, column=0, sticky="w", padx=10, pady=5)
+
+                    # --- START: สร้าง Frame สำหรับวางปุ่ม ---
+                    action_frame = CTkFrame(card, fg_color="transparent")
+                    action_frame.grid(row=0, column=1, sticky="e", padx=10, pady=5)
+
+                    # ปุ่มคืน SO (ปุ่มใหม่)
+                    return_button = CTkButton(
+                        action_frame, 
+                        text="คืน SO", 
+                        command=lambda s=so_data['so_number']: self._return_so_from_task(s),
+                        fg_color="#F97316", # สีเหลือง/ส้ม
+                        hover_color="#EA580C",
+                        width=80
+                    )
+                    return_button.pack(side="left", padx=(0, 5))
+
+                    # ปุ่มทำต่อ (ปุ่มเดิม)
+                    continue_button = CTkButton(
+                        action_frame, 
+                        text="ทำต่อ", 
+                        command=lambda s=so_data['so_number']: self._continue_so_task(s)
+                    )
+                    continue_button.pack(side="left")
 
             # --- ส่วนแสดงผล PO Drafts (แก้ไขการแสดงผลตรงนี้) ---
             if not draft_pos:
@@ -2857,94 +2909,3 @@ class PurchasingScreen(CTkFrame):
             except:
                 pass
 
-class SOFinderDialog(CTkToplevel):
-    """
-    หน้าต่างสำหรับค้นหา SO และแสดงผลลัพธ์พร้อมปุ่ม Action ตามสถานะของ SO
-    """
-    def __init__(self, master, so_number):
-        super().__init__(master)
-        self.master = master # master ในที่นี้คือ PurchasingScreen instance
-        self.app_container = master.app_container
-        self.so_number_to_find = so_number
-        self.so_data = None
-
-        self.title(f"ผลการค้นหาสำหรับ SO: {self.so_number_to_find}")
-        self.geometry("600x300")
-        self.grid_columnconfigure(1, weight=1)
-
-        self.after(50, self._fetch_and_display_so)
-        
-        self.transient(master)
-        self.grab_set()
-
-    def _fetch_and_display_so(self):
-        try:
-            # Query ข้อมูล SO พร้อมทั้ง JOIN เพื่อเอาชื่อ Sale และชื่อคนที่ Claim งาน
-            query = """
-                SELECT 
-                    c.*, 
-                    u_sale.sale_name,
-                    u_pu.sale_name as pu_claimer_name
-                FROM commissions c
-                LEFT JOIN sales_users u_sale ON c.sale_key = u_sale.sale_key
-                LEFT JOIN sales_users u_pu ON c.user_key = u_pu.sale_key
-                WHERE c.so_number = %s AND c.is_active = 1 LIMIT 1
-            """
-            df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.so_number_to_find,))
-
-            if df.empty:
-                CTkLabel(self, text=f"ไม่พบข้อมูล SO Number: {self.so_number_to_find}", font=CTkFont(size=16, weight="bold"), text_color="orange").pack(pady=50)
-                return
-
-            self.so_data = df.iloc[0].to_dict()
-            self._populate_ui()
-
-        except Exception as e:
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการค้นหา SO: {e}", parent=self)
-            self.destroy()
-
-    def _populate_ui(self):
-        # --- แสดงรายละเอียดของ SO ที่เจอ ---
-        details_frame = CTkFrame(self, fg_color="transparent")
-        details_frame.pack(fill="x", padx=20, pady=20)
-        details_frame.grid_columnconfigure(1, weight=1)
-
-        def create_detail_row(row, label, value):
-            CTkLabel(details_frame, text=label, font=CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-            CTkLabel(details_frame, text=f":  {value}", wraplength=400, justify="left").grid(row=row, column=1, sticky="w", padx=5, pady=3)
-
-        create_detail_row(0, "SO Number", self.so_data.get('so_number', 'N/A'))
-        create_detail_row(1, "ลูกค้า", self.so_data.get('customer_name', 'N/A'))
-        create_detail_row(2, "พนักงานขาย", self.so_data.get('sale_name', 'N/A'))
-        
-        status = self.so_data.get('status')
-        status_label = CTkLabel(details_frame, text=":  " + status, font=CTkFont(weight="bold"))
-        status_label.grid(row=3, column=1, sticky="w", padx=5, pady=3)
-        CTkLabel(details_frame, text="สถานะปัจจุบัน", font=CTkFont(weight="bold")).grid(row=3, column=0, sticky="w", padx=5, pady=3)
-        
-        # --- สร้างปุ่ม Action ตามเงื่อนไขของสถานะ ---
-        action_frame = CTkFrame(self, fg_color="transparent")
-        action_frame.pack(fill="x", padx=20, pady=10)
-
-        if status == 'Pending PU':
-            status_label.configure(text_color="#22C55E") # สีเขียว
-            CTkButton(action_frame, text="รับงานและเริ่มสร้าง PO", command=self._claim_and_load, height=40).pack(fill="x")
-        elif status == 'PO In Progress' and self.so_data.get('user_key') == self.master.user_key:
-            status_label.configure(text_color="#F59E0B") # สีเหลือง
-            claimer = self.so_data.get('pu_claimer_name', self.so_data.get('user_key'))
-            create_detail_row(4, "ดำเนินการโดย", f"คุณ ({claimer})")
-            CTkButton(action_frame, text="ทำต่อ (Continue)", command=self._claim_and_load, height=40).pack(fill="x")
-        else:
-            status_label.configure(text_color="#EF4444") # สีแดง
-            claimer = self.so_data.get('pu_claimer_name', self.so_data.get('user_key', 'Unknown'))
-            create_detail_row(4, "ดำเนินการโดย", claimer)
-
-    def _claim_and_load(self):
-        """
-        เรียกใช้ฟังก์ชันบนหน้าจอหลักเพื่อโหลด SO นี้ และปิดหน้าต่างนี้
-        """
-        if self.so_data:
-            so_num = self.so_data['so_number']
-            # เราใช้ฟังก์ชัน select_so_from_task เพราะมันทำงานแบบเดียวกัน
-            self.master.select_so_from_task(so_num)
-            self.destroy()

@@ -39,7 +39,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         net_shipping_adjustment = (payment_before_vat - payment_no_vat) - so_shipping_cost
 
         # --- 2. คำนวณ Profit/Margin ---
-        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) - other_deductions 
+        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount
         comm_df['margin'] = (comm_df['profit'] / total_revenue.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
 
@@ -70,9 +70,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
             # --- รวมเป็นคอมมิชชั่นก่อนหัก (C) ---
             initial_commission = commission_normal + commission_below
+            total_brokerage_fee = brokerage.sum()
+            print(f">>> DEBUG: Total Brokerage Fee to Deduct (Plan A): {total_brokerage_fee:,.2f}")
+
 
             # --- หักค่าดำเนินการ ได้เป็นค่าคอมสุดท้าย ---
-            calculated_commission = max(0, initial_commission - OPERATING_FEE)
+            calculated_commission = max(0, initial_commission - total_brokerage_fee - OPERATING_FEE)
 
             # --- [Optional] คำนวณค่าคอมราย SO (สำหรับแสดงผลใน Breakdown) ---
             conditions = [comm_df['margin'] >= 10, comm_df['margin'] < 10]
@@ -221,6 +224,9 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         
         # รวมยอดขายของแต่ละกลุ่ม
         total_standard_sales = standard_margin_df['sales_service_amount'].sum()
+
+        print(f"\n>>> DEBUG: Total Standard Sales (Plan B): {total_standard_sales:,.2f}\n")
+
         total_below_tier1_sales = below_tier1_df['sales_service_amount'].sum()
         total_below_tier2_sales = below_tier2_df['sales_service_amount'].sum()
 
@@ -232,9 +238,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         commission_below_t2 = total_below_tier2_sales * 0.0050  # 0.50%
         below_tier_commission = commission_below_t1 + commission_below_t2 # รวมเป็นคอมฯ Below Tier ทั้งหมด
 
+        total_brokerage_fee = po_grouped_df['brokerage_fee'].sum()
+        print(f">>> DEBUG: Total Brokerage Fee to Deduct (Plan B): {total_brokerage_fee:,.2f}")
+
         # คำนวณคอมมิชชั่นของกลุ่ม Standard Tier
         OPERATING_FEE = 100000.00 if operating_fee is None else operating_fee
-        commission_base = total_standard_sales - OPERATING_FEE
+        commission_base = total_standard_sales - total_brokerage_fee - OPERATING_FEE
         
         t1, t2, t3 = 0, 0, 0
         amount_in_t1, amount_in_t2, amount_in_t3 = 0,0,0
@@ -408,7 +417,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         other_deductions = giveaways + brokerage + coupon_fee - difference_amount
 
         # --- 2. คำนวณกำไรและ Margin ---
-        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) - other_deductions
+        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount
         comm_df['margin'] = (comm_df['profit'] / total_revenue.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
 
@@ -462,33 +471,41 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         debug_details.append({'รายการ': 'ต้นทุนรวม', 'ค่า': total_cost})
         debug_details.append({'รายการ': '---', 'ค่า': ''})
         if total_sales >= 500000:
-            base_t1 = max(0, total_sales_t1 - operating_fee)
-            remaining_fee_after_t1 = max(0, operating_fee - total_sales_t1)
-            commission_t1 = round(base_t1 * 0.01, 2) # <--- แก้ไข
+            # 1. รวมค่านายหน้าทั้งหมดของเดือน
+            total_brokerage_fee = brokerage.sum()
+            print(f">>> DEBUG: Total Brokerage Fee to Deduct (Plan C): {total_brokerage_fee:,.2f}")
+
+            # 2. รวมยอดหักทั้งหมด (ค่าดำเนินการ + ค่านายหน้า)
+            total_deduction_to_cascade = OPERATING_FEE + total_brokerage_fee
+
+            # 3. ใช้วิธีหักลดหลั่นเหมือนเดิม แต่ใช้ยอดรวมใหม่
+            base_t1 = max(0, total_sales_t1 - total_deduction_to_cascade)
+            remaining_deduction_after_t1 = max(0, total_deduction_to_cascade - total_sales_t1)
+            commission_t1 = round(base_t1 * 0.01, 2)
             
-            base_t2 = max(0, total_sales_t2 - remaining_fee_after_t1)
-            remaining_fee_after_t2 = max(0, remaining_fee_after_t1 - total_sales_t2)
-            commission_t2 = round(base_t2 * 0.0063, 2) # <--- แก้ไข
+            base_t2 = max(0, total_sales_t2 - remaining_deduction_after_t1)
+            remaining_deduction_after_t2 = max(0, remaining_deduction_after_t1 - total_sales_t2)
+            commission_t2 = round(base_t2 * 0.0063, 2)
             
-            base_t3 = max(0, total_sales_t3 - remaining_fee_after_t2)
-            commission_t3 = round(base_t3 * 0.005, 2) # <--- แก้ไข
+            base_t3 = max(0, total_sales_t3 - remaining_deduction_after_t2)
+            commission_t3 = round(base_t3 * 0.005, 2)
             
             calculated_commission = commission_t1 + commission_t2 + commission_t3
             debug_details.append({'รายการ': '## การคำนวณคอมมิชชั่น (Commission Calculation) ##', 'ค่า': ''})
             debug_details.append({'รายการ': 'เงื่อนไขยอดขายขั้นต่ำ (500,000)', 'ค่า': 'ผ่าน ✅'})
             debug_details.append({'รายการ': '---', 'ค่า': ''})
             debug_details.append({'รายการ': 'ยอดขาย Tier 1 (>=10%)', 'ค่า': total_sales_t1})
-            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ', 'ค่า': min(total_sales_t1, operating_fee)})
+            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ', 'ค่า': min(total_sales_t1, total_deduction_to_cascade)})
             debug_details.append({'รายการ': '  = ฐานคำนวณ', 'ค่า': base_t1})
             debug_details.append({'รายการ': '  * คอมมิชชั่น (1.00%)', 'ค่า': commission_t1})
             debug_details.append({'รายการ': '---', 'ค่า': ''})
             debug_details.append({'รายการ': 'ยอดขาย Tier 2 (7.99-10%)', 'ค่า': total_sales_t2})
-            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ (ส่วนที่เหลือ)', 'ค่า': min(total_sales_t2, remaining_fee_after_t1)})
+            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ (ส่วนที่เหลือ)', 'ค่า': min(total_sales_t2, remaining_deduction_after_t1)})
             debug_details.append({'รายการ': '  = ฐานคำนวณ', 'ค่า': base_t2})
             debug_details.append({'รายการ': '  * คอมมิชชั่น (0.63%)', 'ค่า': commission_t2})
             debug_details.append({'รายการ': '---', 'ค่า': ''})
             debug_details.append({'รายการ': 'ยอดขาย Tier 3 (<7.99%)', 'ค่า': total_sales_t3})
-            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ (ส่วนที่เหลือ)', 'ค่า': min(total_sales_t3, remaining_fee_after_t2)})
+            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ (ส่วนที่เหลือ)', 'ค่า': min(total_sales_t3, remaining_deduction_after_t2)})
             debug_details.append({'รายการ': '  = ฐานคำนวณ', 'ค่า': base_t3})
             debug_details.append({'รายการ': '  * คอมมิชชั่น (0.50%)', 'ค่า': commission_t3})
             debug_details.append({'รายการ': '---', 'ค่า': ''})
@@ -499,6 +516,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             debug_details.append({'รายการ': 'ยอดรวมคอมมิชชั่นที่คำนวณได้', 'ค่า': calculated_commission})
         else:
             debug_details.append({'รายการ': 'เงื่อนไขยอดขายขั้นต่ำ (500,000)', 'ค่า': 'ไม่ผ่าน ❌'})
+
         if incentives is None: incentives = {}
         total_incentives = sum(incentives.values()); gross_commission = calculated_commission + total_incentives
         if additional_deductions is None: additional_deductions = {}
@@ -545,6 +563,15 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             summary_data = {'description': ["ยอดรวมค่าคอมมิชชั่นที่คำนวณได้"], 'value': [0.0]}
             return {'type': 'summary_other', 'data': pd.DataFrame(summary_data)}
         
+        required_cols = [
+            'total_revenue', 'sales_service_amount', 'final_cost_amount', 'giveaways', 
+            'brokerage_fee', 'coupon_fee', 'difference_amount', 'payment_before_vat', 
+            'payment_no_vat', 'shipping_cost', 'total_po_shipping_cost'
+        ]
+        for col in required_cols:
+            if col not in comm_df.columns:
+                comm_df[col] = 0
+        
         # --- 1. ดึงข้อมูล (เวอร์ชันแก้ไข) ---
         total_revenue = pd.to_numeric(comm_df['total_revenue'], errors='coerce').fillna(0)
         sales_service_amount = pd.to_numeric(comm_df['sales_service_amount'], errors='coerce').fillna(0)
@@ -556,13 +583,14 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         payment_before_vat = pd.to_numeric(comm_df['payment_before_vat'], errors='coerce').fillna(0)
         payment_no_vat = pd.to_numeric(comm_df['payment_no_vat'], errors='coerce').fillna(0)
         so_shipping_cost = pd.to_numeric(comm_df['shipping_cost'], errors='coerce').fillna(0)
-        multiplier = pd.to_numeric(comm_df['cost_multiplier'], errors='coerce').fillna(1.03)
+        po_shipping_cost = pd.to_numeric(comm_df.get('total_po_shipping_cost', 0), errors='coerce').fillna(0)
+        multiplier = pd.to_numeric(comm_df.get('cost_multiplier'), errors='coerce').fillna(1.03)
 
-        other_deductions = giveaways + brokerage + coupon_fee - difference_amount
-        net_shipping_adjustment = (payment_before_vat - payment_no_vat) - so_shipping_cost
+        other_deductions = giveaways + brokerage + coupon_fee
+        net_shipping_deduction = (po_shipping_cost - so_shipping_cost).clip(lower=0)
         
         # --- 2. คำนวณ Profit/Margin (เวอร์ชันแก้ไข) ---
-        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) - other_deductions 
+        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount - net_shipping_deduction
         comm_df['margin'] = (comm_df['profit'] / total_revenue.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
         
@@ -576,17 +604,34 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         # --- 4. คำนวณค่าคอมมิชชั่น ---
         normal_commission, below_tier_commission, calculated_commission = 0.0, 0.0, 0.0
         OPERATING_FEE = 750000.00 if operating_fee is None else operating_fee
+        
+        # +++ START: แก้ไข Logic การคำนวณทั้งหมด +++
         commission_base_normal = 0.0
+        commission_base_below = 0.0
 
         if total_sales >= 750000:
-            below_tier_commission = total_below_sales * 0.003
-            # +++ START: แก้ไขจุดนี้ +++
-            # เปลี่ยน operating_fee (ตัวเล็ก) เป็น OPERATING_FEE (ตัวใหญ่)
-            commission_base_normal = max(0, total_normal_sales - OPERATING_FEE)
-            # +++ END +++
+            # 1. รวมค่านายหน้าทั้งหมดของเดือน
+            total_brokerage_fee = brokerage.sum()
+            print(f">>> DEBUG: Total Brokerage Fee to Deduct (Plan D): {total_brokerage_fee:,.2f}")
+
+            # 2. รวมยอดหักทั้งหมดที่ต้องนำไปลดหลั่น
+            total_deduction_to_cascade = OPERATING_FEE + total_brokerage_fee
+
+            # 3. หักจาก Normal Tier ก่อน
+            commission_base_normal = max(0, total_normal_sales - total_deduction_to_cascade)
             normal_commission = commission_base_normal * 0.007
+
+            # 4. คำนวณยอดหักที่เหลือเพื่อนำไปหัก Below Tier ต่อ
+            remaining_deduction = max(0, total_deduction_to_cascade - total_normal_sales)
+            
+            # 5. หักออกจาก Below Tier
+            commission_base_below = max(0, total_below_sales - remaining_deduction)
+            below_tier_commission = commission_base_below * 0.003
+            
+            # 6. รวมค่าคอมสุดท้าย
             calculated_commission = normal_commission + below_tier_commission
-        
+        # +++ END +++
+
         # --- 5. สร้าง debug_df (ขั้นตอนการคำนวณ) ---
         debug_details = []
         num_so = len(comm_df['so_number'].unique())
@@ -597,7 +642,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         cost_c3 = (giveaways + coupon_fee + brokerage).sum()
         cost_c4_diff = (payment_before_vat - payment_no_vat).sum()
         cost_c4_deduct = so_shipping_cost.sum()
-        total_cost = cost_c2 + cost_c3 - difference_amount.sum() + net_shipping_adjustment.sum()
+        total_cost = cost_c2 + cost_c3 - difference_amount.sum()
 
         debug_details.append({'รายการ': '## Report I: Sale Summary ##', 'ค่า': ''})
         debug_details.append({'รายการ': 'Commission Plan', 'ค่า': plan_name})
@@ -610,7 +655,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้า', 'ค่า': cost_c1})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้าบวกค่าใช้จ่ายบริหารจัดการ', 'ค่า': cost_c2})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าใช้จ่ายการตลาด', 'ค่า': cost_c3})
-        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ส่วนต่าง - ติดลบ)', 'ค่า': f"{cost_c4_diff:,.2f} - {cost_c4_deduct:,.2f}"})
+        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ขาดทุน)', 'ค่า': net_shipping_deduction.sum()})
         debug_details.append({'รายการ': 'ต้นทุนรวม', 'ค่า': total_cost})
         debug_details.append({'รายการ': '---', 'ค่า': ''})
         
@@ -618,15 +663,20 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         if total_sales >= 750000:
             debug_details.append({'รายการ': 'เงื่อนไขยอดขายขั้นต่ำ (750,000)', 'ค่า': 'ผ่าน ✅'})
             debug_details.append({'รายการ': '---', 'ค่า': ''})
+            
+            # +++ START: อัปเดต Debug Report ให้สอดคล้องกับ Logic ใหม่ +++
             debug_details.append({'รายการ': 'คอมมิชชั่นนอกเงื่อนไข (Below Tier)', 'ค่า': ''})
             debug_details.append({'รายการ': '  ยอดขายดิบ', 'ค่า': total_below_sales})
+            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ/นายหน้า (ส่วนที่เหลือ)', 'ค่า': min(total_below_sales, remaining_deduction)})
+            debug_details.append({'รายการ': '  = ฐานคำนวณ', 'ค่า': commission_base_below})
             debug_details.append({'รายการ': '  * คอมมิชชั่น (0.30%)', 'ค่า': below_tier_commission})
             debug_details.append({'รายการ': '---', 'ค่า': ''})
             debug_details.append({'รายการ': 'คอมมิชชั่นปกติ (Normal)', 'ค่า': ''})
             debug_details.append({'รายการ': '  ยอดขายดิบ', 'ค่า': total_normal_sales})
-            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ', 'ค่า': operating_fee})
+            debug_details.append({'รายการ': '  (-) หักค่าดำเนินการ/นายหน้า', 'ค่า': min(total_normal_sales, total_deduction_to_cascade)})
             debug_details.append({'รายการ': '  = ฐานคำนวณ', 'ค่า': commission_base_normal})
             debug_details.append({'รายการ': '  * คอมมิชชั่น (0.70%)', 'ค่า': normal_commission})
+            # +++ END +++
         else:
             debug_details.append({'รายการ': 'เงื่อนไขยอดขายขั้นต่ำ (750,000)', 'ค่า': 'ไม่ผ่าน ❌'})
         
@@ -656,8 +706,16 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         withholding_tax = pre_tax_commission * 0.03
         net_commission = pre_tax_commission - withholding_tax
         
-        summary_desc = ["ยอดขาย Normal (>=10%)", "ยอดขาย Below T (<10%)", "(-) ค่าดำเนินการ", "ฐานคอม Normal", "คอมมิชชั่น Normal (0.70%)", "คอมมิชชั่น Below Tier (0.30%)", "ยอดรวมค่าคอมมิชชั่นที่คำนวณได้"]
-        summary_val = [total_normal_sales, total_below_sales, operating_fee, commission_base_normal, normal_commission, below_tier_commission, calculated_commission]
+        summary_desc = [
+            "ยอดขาย Normal (>=10%)", "ยอดขาย Below T (<10%)", "(-) ค่าดำเนินการ/นายหน้า", 
+            "ฐานคอม Normal", "ฐานคอม Below Tier", "คอมมิชชั่น Normal (0.70%)", 
+            "คอมมิชชั่น Below Tier (0.30%)", "ยอดรวมค่าคอมมิชชั่นที่คำนวณได้"
+        ]
+        summary_val = [
+            total_normal_sales, total_below_sales, OPERATING_FEE + total_brokerage_fee,
+            commission_base_normal, commission_base_below,
+            normal_commission, below_tier_commission, calculated_commission
+        ]
         
         for key, value in incentives.items(): summary_desc.append(f"(+) Incentive: {key}"); summary_val.append(value)
         summary_desc.append("ยอดคอมมิชชั่นขั้นต้น (Gross Commission)"); summary_val.append(gross_commission)

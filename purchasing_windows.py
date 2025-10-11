@@ -315,3 +315,95 @@ class PurchaseOrderWindow(ctk.CTkToplevel):
         if self.on_close_callback:
             self.on_close_callback()
         self.destroy()
+    
+class SOFinderDialog(ctk.CTkToplevel):
+    """
+    หน้าต่างสำหรับค้นหา SO และแสดงผลลัพธ์พร้อมปุ่ม Action ตามสถานะของ SO
+    """
+    def __init__(self, master, so_number):
+        super().__init__(master)
+        self.master = master # master ในที่นี้คือ PurchasingScreen instance
+        self.app_container = master.app_container
+        self.so_number_to_find = so_number
+        self.so_data = None
+
+        self.title(f"ผลการค้นหาสำหรับ SO: {self.so_number_to_find}")
+        self.geometry("600x300")
+        self.grid_columnconfigure(1, weight=1)
+
+        self.after(50, self._fetch_and_display_so)
+        
+        self.transient(master)
+        self.grab_set()
+
+    def _fetch_and_display_so(self):
+        try:
+            # Query ข้อมูล SO พร้อมทั้ง JOIN เพื่อเอาชื่อ Sale และชื่อคนที่ Claim งาน
+            query = """
+                SELECT 
+                    c.*, 
+                    u_sale.sale_name,
+                    u_pu.sale_name as pu_claimer_name
+                FROM commissions c
+                LEFT JOIN sales_users u_sale ON c.sale_key = u_sale.sale_key
+                LEFT JOIN sales_users u_pu ON c.user_key = u_pu.sale_key
+                WHERE c.so_number = %s AND c.is_active = 1 LIMIT 1
+            """
+            df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.so_number_to_find,))
+
+            if df.empty:
+                ctk.CTkLabel(self, text=f"ไม่พบข้อมูล SO Number: {self.so_number_to_find}", font=ctk.CTkFont(size=16, weight="bold"), text_color="orange").pack(pady=50)
+                return
+
+            self.so_data = df.iloc[0].to_dict()
+            self._populate_ui()
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการค้นหา SO: {e}", parent=self)
+            self.destroy()
+
+    def _populate_ui(self):
+        # --- แสดงรายละเอียดของ SO ที่เจอ ---
+        details_frame = ctk.CTkFrame(self, fg_color="transparent")
+        details_frame.pack(fill="x", padx=20, pady=20)
+        details_frame.grid_columnconfigure(1, weight=1)
+
+        def create_detail_row(row, label, value):
+            ctk.CTkLabel(details_frame, text=label, font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            ctk.CTkLabel(details_frame, text=f":  {value}", wraplength=400, justify="left").grid(row=row, column=1, sticky="w", padx=5, pady=3)
+
+        create_detail_row(0, "SO Number", self.so_data.get('so_number', 'N/A'))
+        create_detail_row(1, "ลูกค้า", self.so_data.get('customer_name', 'N/A'))
+        create_detail_row(2, "พนักงานขาย", self.so_data.get('sale_name', 'N/A'))
+        
+        status = self.so_data.get('status')
+        status_label = ctk.CTkLabel(details_frame, text=":  " + status, font=ctk.CTkFont(weight="bold"))
+        status_label.grid(row=3, column=1, sticky="w", padx=5, pady=3)
+        ctk.CTkLabel(details_frame, text="สถานะปัจจุบัน", font=ctk.CTkFont(weight="bold")).grid(row=3, column=0, sticky="w", padx=5, pady=3)
+        
+        # --- สร้างปุ่ม Action ตามเงื่อนไขของสถานะ ---
+        action_frame = ctk.CTkFrame(self, fg_color="transparent")
+        action_frame.pack(fill="x", padx=20, pady=10)
+
+        if status == 'Pending PU':
+            status_label.configure(text_color="#22C55E") # สีเขียว
+            ctk.CTkButton(action_frame, text="รับงานและเริ่มสร้าง PO", command=self._claim_and_load, height=40).pack(fill="x")
+        elif status == 'PO In Progress' and self.so_data.get('user_key') == self.master.user_key:
+            status_label.configure(text_color="#F59E0B") # สีเหลือง
+            claimer = self.so_data.get('pu_claimer_name', self.so_data.get('user_key'))
+            create_detail_row(4, "ดำเนินการโดย", f"คุณ ({claimer})")
+            ctk.CTkButton(action_frame, text="ทำต่อ (Continue)", command=self._claim_and_load, height=40).pack(fill="x")
+        else:
+            status_label.configure(text_color="#EF4444") # สีแดง
+            claimer = self.so_data.get('pu_claimer_name', self.so_data.get('user_key', 'Unknown'))
+            create_detail_row(4, "ดำเนินการโดย", claimer)
+
+    def _claim_and_load(self):
+        """
+        เรียกใช้ฟังก์ชันบนหน้าจอหลักเพื่อโหลด SO นี้ และปิดหน้าต่างนี้
+        """
+        if self.so_data:
+            so_num = self.so_data['so_number']
+            # เราใช้ฟังก์ชัน select_so_from_task เพราะมันทำงานแบบเดียวกัน
+            self.master.select_so_from_task(so_num)
+            self.destroy()

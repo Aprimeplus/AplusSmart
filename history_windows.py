@@ -158,6 +158,7 @@ class PurchaseDetailWindow(CTkToplevel):
         self.transient(master)
         self.grab_set()
     
+
     def _position_window(self):
         """จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลางแนวนอน และยึดตำแหน่งบนสุดไว้"""
         self.update_idletasks()
@@ -1031,8 +1032,9 @@ class PurchaseDetailWindow(CTkToplevel):
         self.button_frame = CTkFrame(self, fg_color=("gray85", "gray18"))
         self.button_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
         
-        # --- โค้ดเวอร์ชันเดิมที่ไม่มีปุ่มลบ ---
-        if self.user_role in ['Purchasing Manager', 'Director', 'HR']:
+        # --- โค้ดเวอร์ชันใหม่ที่ไม่มีปุ่ม "คืน SO" ---
+        if self.user_role in ['Purchasing Staff', 'Purchasing Manager', 'Director', 'HR']:
+            # จัดเรียงปุ่มใหม่ให้มี 4 ปุ่ม
             self.button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
             approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D")
@@ -1047,6 +1049,7 @@ class PurchaseDetailWindow(CTkToplevel):
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray")
             close_button.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
         else:
+            # Layout เดิมสำหรับ Role อื่นๆ
             self.button_frame.grid_columnconfigure((0, 1), weight=1)
             save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
             save_button.grid(row=0, column=0, padx=(0,5), pady=5, sticky="ew")
@@ -1169,6 +1172,60 @@ class PurchaseDetailWindow(CTkToplevel):
         
         # ตั้งค่าตำแหน่ง
         self.geometry(f"+{x}+{y}")
+
+    def _return_so_to_queue(self):
+        """
+        ยกเลิกการเชื่อมโยง PO ปัจจุบัน และคืนสถานะ SO กลับไปที่คิวงานของฝ่ายจัดซื้อ
+        """
+        # ดึงข้อมูล SO ที่เชื่อมโยงอยู่
+        so_number_to_return = self.po_data.get('so_number')
+
+        if not so_number_to_return:
+            messagebox.showwarning("ไม่พบข้อมูล", "PO ใบนี้ไม่ได้เชื่อมโยงกับ SO ใดๆ", parent=self)
+            return
+
+        # ถามเพื่อยืนยันการทำงาน
+        msg = (f"คุณต้องการยกเลิกการเชื่อมโยง PO นี้\n"
+               f"และส่ง SO: {so_number_to_return} กลับไปที่คิวงานใช่หรือไม่?")
+        
+        if not messagebox.askyesno("ยืนยันการคืน SO", msg, icon="warning", parent=self):
+            return
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # 1. อัปเดต PO ใบปัจจุบันให้ไม่ผูกกับ SO ใดๆ
+                cursor.execute(
+                    "UPDATE purchase_orders SET so_number = NULL WHERE id = %s",
+                    (self.purchase_id,)
+                )
+
+                # 2. คืนสถานะของ SO กลับไปที่ 'Approved by SM' (หรือสถานะอื่นที่ถูกต้องสำหรับคิวงาน PU)
+                cursor.execute(
+                    "UPDATE commissions SET status = 'Approved by SM' WHERE so_number = %s",
+                    (so_number_to_return,)
+                )
+            
+            # ยืนยันการเปลี่ยนแปลงทั้งหมดในฐานข้อมูล
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "คืน SO กลับสู่คิวงานเรียบร้อยแล้ว", parent=self)
+            
+            # เรียก Callback เพื่อ Refresh หน้าจอหลัก (ถ้ามี)
+            if self.on_save_callback:
+                self.on_save_callback()
+            
+            # ปิดหน้าต่างปัจจุบัน
+            self.destroy()
+
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
 
     def _save_changes(self):
         self._recalculate_summary_totals()

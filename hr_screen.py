@@ -1905,6 +1905,9 @@ class HRScreen(CTkFrame):
         selected_salesperson = config["salesperson"]
         selected_month = config["month"] # <-- รับค่าเดือน
         selected_year = config["year"]   # <-- รับค่าปี
+        self.current_comparison_month = selected_month
+        self.current_comparison_year = selected_year
+        self.current_comparison_salesperson = selected_salesperson
         self.uploaded_df = config["imported_df"]
         self.manual_entry_df = config["manual_df"]
 
@@ -2434,7 +2437,13 @@ class HRScreen(CTkFrame):
         self.results_frame_label.configure(text=f"กำลังรีเฟรชข้อมูลสำหรับ: {self.current_comparison_salesperson}...")
 
         try:
-            # --- START: จุดที่แก้ไข Query ---
+            # --- START: โค้ดส่วนที่เพิ่มเข้ามา ---
+            # ดึงค่าเดือนและปีที่เคยเลือกไว้จาก Dialog (ถ้ามี)
+            # เราจะใช้ค่าที่เก็บไว้ในตัวแปรจากฟังก์ชัน _start_new_comparison
+            selected_month = getattr(self, 'current_comparison_month', None)
+            selected_year = getattr(self, 'current_comparison_year', None)
+            # --- END ---
+            
             base_query = """SELECT c.*, 
                        po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
                        u.sale_name,
@@ -2443,12 +2452,9 @@ class HRScreen(CTkFrame):
                 JOIN sales_users u ON c.sale_key = u.sale_key
                 LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
                 LEFT JOIN (
-                        /* <<< จุดแก้ไขที่สำคัญที่สุด >>> */
                         SELECT
                             p.so_number,
-                            -- 1. ต้นทุนสินค้า (cogs_db): คือผลรวม total_price จาก items ที่อยู่ใน PO ที่ Approved แล้วเท่านั้น
                             SUM(COALESCE(poi.total_price, 0)) as cogs_db,
-                            -- 2. ค่าขนส่ง: คือผลรวมจากตาราง PO หลักเหมือนเดิม
                             SUM(p.shipping_to_stock_cost) as po_shipping_stock,
                             SUM(p.shipping_to_site_cost) as po_shipping_site,
                             SUM(p.relocation_cost) as po_relocation
@@ -2459,8 +2465,7 @@ class HRScreen(CTkFrame):
                     ) po ON c.so_number = po.so_number
                 WHERE c.is_active = 1 
                   AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
-"""
-            # --- END: สิ้นสุดการแก้ไข Query ---
+            """
             params = []
 
             if self.current_comparison_salesperson != "ทั้งหมด":
@@ -2468,6 +2473,12 @@ class HRScreen(CTkFrame):
                 params.append(self.current_comparison_salesperson)
             else:
                 base_query += " AND c.sale_key IN (SELECT sale_key FROM sales_users WHERE status = 'Active' AND role = 'Sale')"
+
+            # --- START: เพิ่มเงื่อนไขการกรองเดือนและปี ---
+            if selected_month and selected_year:
+                base_query += " AND c.commission_month = %s AND c.commission_year = %s"
+                params.extend([selected_month, selected_year])
+            # --- END ---
 
             data_query = base_query + " ORDER BY c.timestamp DESC"
 
@@ -2578,15 +2589,7 @@ class HRScreen(CTkFrame):
         except Exception as e:
             messagebox.showerror("DB Error", f"เกิดข้อผิดพลาดในการค้นหางวดข้อมูล: {e}", parent=self)
     
-    # hr_screen.py
-
-# ... (โค้ดส่วนอื่น ๆ) ...
-
-    # hr_screen.py (ฟังก์ชันฉบับเต็มที่แก้ไขแล้ว)
-
-    # hr_screen.py (ฟังก์ชันฉบับเต็มที่แก้ไขแล้ว)
-
-    # hr_screen.py (ฉบับแก้ไขสมบูรณ์)
+    
 
     def _calculate_commission_for_period(self, selected_period=None):
         if selected_period is None:
@@ -2633,19 +2636,75 @@ class HRScreen(CTkFrame):
                 CTkLabel(self.process_result_frame, text="ไม่พบข้อมูลในงวดที่เลือก").pack(pady=20)
                 return
             
-            total_giveaways = self.current_comm_df['giveaways'].sum() if 'giveaways' in self.current_comm_df.columns else 0.0
-
-            # --- START: จุดที่แก้ไข ---
-            # เตรียม DataFrame ที่จะส่งไปให้ business_logic.py
-            df_for_calc = self.current_comm_df.copy()
-
-            # 1. สร้างคอลัมน์ 'total_revenue' สำหรับใช้คำนวณ Margin
-            # โดย 'total_revenue' คือ 'final_sales_amount' ที่รวมทุกอย่างแล้ว
-            df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
+            # --- ส่วนที่ 1: คำนวณค่าหักจาก "ส่วนต่างค่ารถ" ---
+            total_so_shipping = self.current_comm_df['shipping_cost'].sum()
+            total_po_shipping = self.current_comm_df['total_po_shipping_cost'].sum()
+            shipping_deduction = 0.0
             
-            # 2. คอลัมน์ 'sales_service_amount' เดิมจะยังคงเป็น "ยอดขายดิบ"
-            # เพื่อให้ business_logic.py นำไปใช้เป็นฐานคิดค่าคอมได้ถูกต้อง
-            # --- END: สิ้นสุดการแก้ไข ---
+            print("\n" + "="*25)
+            print("### DEBUG: Auto-Deduction Calculation ###")
+            print("-" * 15)
+            print("Part 1: Shipping Cost Difference")
+            print(f"  - Total PO Shipping: {total_po_shipping:,.2f}")
+            print(f"  - Total SO Shipping: {total_so_shipping:,.2f}")
+
+            if total_po_shipping > total_so_shipping:
+                shipping_diff = total_po_shipping - total_so_shipping
+                shipping_deduction = (shipping_diff / 0.2) * 0.0175
+                
+                print(f"  - Difference (PO > SO): {shipping_diff:,.2f}")
+                print(f"  - Formula: ({shipping_diff:,.2f} / 0.2) * 0.0175")
+                print(f"  - Shipping Deduction = {shipping_deduction:,.2f}")
+            else:
+                print("  - Condition not met (PO Shipping <= SO Shipping)")
+                print(f"  - Shipping Deduction = 0.00")
+
+            # --- ส่วนที่ 2: คำนวณค่าหักจาก "ส่วนต่างนายหน้า" ---
+            print("-" * 15)
+            print("Part 2: Brokerage Difference")
+            
+            # +++ START: เพิ่ม Debug แสดงรายละเอียดของ Difference Amount +++
+            print("  --- Breakdown of Difference Amount ---")
+            df_with_diff = self.current_comm_df[self.current_comm_df['difference_amount'] != 0]
+            if not df_with_diff.empty:
+                for index, row in df_with_diff.iterrows():
+                    print(f"    -> SO: {row['so_number']}, Difference: {row['difference_amount']:,.2f}")
+            else:
+                print("    -> No SOs with a non-zero difference amount.")
+            print("  ------------------------------------")
+            # +++ END +++
+
+            total_brokerage = self.current_comm_df['brokerage_fee'].sum()
+            total_difference = self.current_comm_df['difference_amount'].sum()
+            difference_deduction = 0.0
+            diff_base = total_brokerage - total_difference
+            
+            print(f"  - Total Brokerage Fee: {total_brokerage:,.2f}")
+            print(f"  - Total Difference Amount: {total_difference:,.2f}")
+            print(f"  - Base Calculation (Brokerage - Difference): {diff_base:,.2f}")
+            
+            if diff_base < 0:
+                positive_diff = abs(diff_base)
+                difference_deduction = (positive_diff / 0.2) * 0.0175
+                
+                print(f"  - Condition met (Base < 0)")
+                print(f"  - Formula: ({positive_diff:,.2f} / 0.2) * 0.0175")
+                print(f"  - Difference Deduction = {difference_deduction:,.2f}")
+            else:
+                print("  - Condition not met (Base >= 0)")
+                print(f"  - Difference Deduction = 0.00")
+
+            # --- 3. รวมยอดหักอัตโนมัติทั้งหมด ---
+            final_auto_deduction = shipping_deduction + difference_deduction
+
+            print("-" * 15)
+            print("Part 3: Final Summary")
+            print(f"  - Total Auto Deduction = (Shipping) {shipping_deduction:,.2f} + (Difference) {difference_deduction:,.2f}")
+            print(f"  - FINAL AUTO DEDUCTION: {final_auto_deduction:,.2f}")
+            print("="*25 + "\n")
+
+            df_for_calc = self.current_comm_df.copy()
+            df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
             
             default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
             default_operating_fee = default_fees.get(plan, 0.0)
@@ -2654,7 +2713,7 @@ class HRScreen(CTkFrame):
                 plan_name=plan,
                 comm_df=df_for_calc,
                 sales_target=sales_target,
-                operating_fee=default_operating_fee # <-- **ส่งค่า Default เข้าไปตรงนี้**
+                operating_fee=default_operating_fee
             )
             
             result_type = self.initial_commission_result.get('type')
@@ -2668,7 +2727,8 @@ class HRScreen(CTkFrame):
                     self.commission_details_df = self.initial_commission_result.get('details')
                 else:
                     self.commission_details_df = None
-                self._create_hr_input_interface(auto_deduction_value=total_giveaways)
+                
+                self._create_hr_input_interface(auto_deduction_value=final_auto_deduction)
 
         except Exception as e:
             if loading.winfo_exists(): loading.destroy()
