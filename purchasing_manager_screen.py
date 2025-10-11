@@ -22,7 +22,7 @@ from export_utils import export_approved_pos_to_excel
 from pdf_utils import export_approved_pos_to_pdf
 from po_selection_dialog import POSelectionDialog
 from hr_windows import SOPopupWindow
-from history_windows import PurchaseDetailWindow
+from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow
 from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
 
 
@@ -583,8 +583,13 @@ class PurchasingManagerScreen(CTkFrame):
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูลเพื่อพิมพ์: {e}", parent=self)
             traceback.print_exc()
-
-       
+   
+    def _open_approved_po_history(self):
+        """เปิดหน้าต่างประวัติ PO ที่อนุมัติแล้วโดยตรง"""
+        try:
+            PurchaseHistoryWindow(master=self, app_container=self.app_container)
+        except Exception as e:
+            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างประวัติได้: {e}", parent=self)    
 
     def _create_header(self):
         header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
@@ -599,7 +604,7 @@ class PurchasingManagerScreen(CTkFrame):
         self.approve_all_button.pack(side="left", padx=10)
         CTkButton(button_container, text="📄 พิมพ์ใบสั่งซื้อ PO", command=self._open_po_print_dialog, fg_color="#7C3AED", hover_color="#6D28D9").pack(side="left", padx=10)
         CTkButton(button_container, text="ดึงงาน PO กลับมาแก้ไข", command=self._open_reopen_po_window, fg_color="#F97316", hover_color="#EA580C").pack(side="left", padx=10)
-        CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=lambda: self.app_container.show_history_window()).pack(side="left", padx=(0, 10))
+        CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=self._open_approved_po_history).pack(side="left", padx=(0, 10))
         CTkButton(button_container, text="Refresh All", command=self._load_data).pack(side="left", padx=10)
         CTkButton(button_container, text="Export PDF (PO อนุมัติ)", command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
         CTkButton(button_container, text="Export Excel (PO อนุมัติ)", command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B").pack(side="left", padx=5)   

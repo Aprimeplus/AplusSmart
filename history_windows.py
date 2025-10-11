@@ -131,28 +131,31 @@ class PurchaseDetailWindow(CTkToplevel):
         
         self.user_role = self.app_container.current_user_role
         
+        # --- START: แก้ไขจุดนี้ ---
+        # Initialize self.po_data ให้เป็น dict ว่างไว้ก่อน
+        self.po_data = {}
+        # --- END ---
+        
         self.po_entries = {}
         self.item_entries = []
         self.deleted_item_ids = []
         self.payment_entries = []
         self.deleted_payment_ids = []
         
-        # +++ START: แก้ไข Layout หลัก +++
-        # กำหนดให้แถวที่ 0 (ScrollFrame) ขยายตัว แต่แถวที่ 1 (Buttons) ไม่ขยาย
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0) 
         self.grid_columnconfigure(0, weight=1)
 
-        # ScrollFrame จะอยู่ในแถวที่ 0
         self.scroll_frame = CTkScrollableFrame(self)
         self.scroll_frame.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="nsew")
         self.scroll_frame.grid_columnconfigure(0, weight=1)
         
-        # สร้างปุ่ม Action ต่างๆ (จะถูกวางในแถวที่ 1)
-        self._create_action_buttons()
-        # +++ END +++
-        
-        
+        # --- START: แก้ไขจุดนี้ ---
+        # ย้ายการสร้างปุ่มไปไว้หลังจากโหลดข้อมูลเสร็จแล้ว
+        # เราจะสร้างแค่ Frame เปล่าๆ ไว้รอก่อน
+        self.button_frame = CTkFrame(self, fg_color=("gray85", "gray18"))
+        self.button_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        # --- END ---
 
         self.after(50, self._load_and_display_data)
         self.transient(master)
@@ -342,7 +345,6 @@ class PurchaseDetailWindow(CTkToplevel):
 
                 self.po_data = dict(po_data)
                 
-                # ดึง supplier_code และ credit_term จากชื่อซัพพลายเออร์
                 supplier_name = self.po_data.get('supplier_name')
                 if supplier_name:
                     cursor.execute("SELECT supplier_code, credit_term FROM suppliers WHERE supplier_name = %s LIMIT 1", (supplier_name,))
@@ -362,6 +364,11 @@ class PurchaseDetailWindow(CTkToplevel):
             self.items_data = [dict(item) for item in items_data]
             self.payments_data = [dict(payment) for payment in payments_data]
 
+            # --- START: แก้ไขจุดนี้ ---
+            # สั่งให้สร้างปุ่มต่างๆ หลังจากมี self.po_data แล้ว
+            self._create_action_buttons()
+            # --- END ---
+            
             self._create_formatted_view()
 
         except Exception as e:
@@ -1028,34 +1035,57 @@ class PurchaseDetailWindow(CTkToplevel):
         self._recalculate_summary_totals()
 
     def _create_action_buttons(self):
-        # สร้าง Frame ใหม่สำหรับวางปุ่ม และวางไว้ที่แถวที่ 1 ของหน้าต่างหลัก (self)
-        self.button_frame = CTkFrame(self, fg_color=("gray85", "gray18"))
-        self.button_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        # ล้าง Frame เดิมก่อนสร้างใหม่
+        for widget in self.button_frame.winfo_children():
+            widget.destroy()
+
+        po_status = self.po_data.get('status')
+        is_manager_or_director = self.user_role in ['Purchasing Manager', 'Director']
         
-        # --- โค้ดเวอร์ชันใหม่ที่ไม่มีปุ่ม "คืน SO" ---
-        if self.user_role in ['Purchasing Staff', 'Purchasing Manager', 'Director', 'HR']:
-            # จัดเรียงปุ่มใหม่ให้มี 4 ปุ่ม
+        # --- กำหนดค่าความสูงและระยะห่างของปุ่ม ---
+        button_height = 40  # ความสูงของปุ่ม
+        vertical_padding = 10 # ระยะห่างแนวตั้ง
+
+        # --- Logic การแสดงผลปุ่ม (เหมือนเดิม) แต่เพิ่ม height และ pady ---
+        
+        # กรณีที่ 1: Manager/Director เปิด PO ที่ "อนุมัติแล้ว"
+        if po_status == 'Approved' and is_manager_or_director:
+            self.button_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+            revert_button = CTkButton(self.button_frame, text="ตีกลับเป็นฉบับร่าง (Revert)", command=self._revert_to_draft, fg_color="#F97316", hover_color="#EA580C", height=button_height)
+            revert_button.grid(row=0, column=0, padx=5, pady=vertical_padding, sticky="ew")
+
+            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB", height=button_height)
+            save_button.grid(row=0, column=1, padx=5, pady=vertical_padding, sticky="ew")
+
+            close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
+            close_button.grid(row=0, column=2, padx=5, pady=vertical_padding, sticky="ew")
+
+        # กรณีที่ 2: ผู้ใช้ที่มีสิทธิ์อนุมัติเปิด PO ที่ยังไม่ Approved
+        elif self.user_role in ['Purchasing Staff', 'Purchasing Manager', 'Director', 'HR']:
             self.button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
-            approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D")
-            approve_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+            approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D", height=button_height)
+            approve_button.grid(row=0, column=0, padx=5, pady=vertical_padding, sticky="ew")
 
-            reject_button = CTkButton(self.button_frame, text="ปฏิเสธ (Reject)", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C")
-            reject_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+            reject_button = CTkButton(self.button_frame, text="ปฏิเสธ (Reject)", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C", height=button_height)
+            reject_button.grid(row=0, column=1, padx=5, pady=vertical_padding, sticky="ew")
 
-            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB")
-            save_button.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB", height=button_height)
+            save_button.grid(row=0, column=2, padx=5, pady=vertical_padding, sticky="ew")
 
-            close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray")
-            close_button.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
-        else:
-            # Layout เดิมสำหรับ Role อื่นๆ
-            self.button_frame.grid_columnconfigure((0, 1), weight=1)
-            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes)
-            save_button.grid(row=0, column=0, padx=(0,5), pady=5, sticky="ew")
+            close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
+            close_button.grid(row=0, column=3, padx=5, pady=vertical_padding, sticky="ew")
         
-            close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray")
-            close_button.grid(row=0, column=1, padx=(5,0), pady=5, sticky="ew")
+        # กรณีอื่นๆ (Fallback)
+        else:
+            self.button_frame.grid_columnconfigure((0, 1), weight=1)
+            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, height=button_height)
+            save_button.grid(row=0, column=0, padx=(0,5), pady=vertical_padding, sticky="ew")
+        
+            close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
+            close_button.grid(row=0, column=1, padx=(5,0), pady=vertical_padding, sticky="ew")
+        # --- END ---
     
     def _approve_po(self):
         # Logic การอนุมัติ (ยกมาจาก purchasing_manager_screen.py)
@@ -1226,6 +1256,61 @@ class PurchaseDetailWindow(CTkToplevel):
         finally:
             if conn:
                 self.app_container.release_connection(conn)
+
+    def _revert_to_draft(self):
+        """สำหรับ Manager: ตีกลับ PO ที่ 'Approved' แล้วกลับไปเป็น 'Draft'"""
+        dialog = RejectionReasonDialog(self)
+        self.wait_window(dialog)
+        reason = getattr(dialog, '_reason_string', None)
+        if reason is None:
+            return
+
+        po_number = self.po_data.get('po_number', 'N/A')
+        po_creator_key = self.po_data.get('user_key')
+
+        msg = (f"คุณต้องการตีกลับ PO: {po_number} กลับไปเป็นฉบับร่างใช่หรือไม่?\n\n"
+               f"PO จะถูกส่งกลับไปให้ {po_creator_key} เพื่อแก้ไข")
+        if not messagebox.askyesno("ยืนยันการตีกลับ", msg, icon="warning", parent=self):
+            return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE purchase_orders 
+                    SET 
+                        status = 'Draft', 
+                        approval_status = 'Draft',
+                        approver_manager1_key = NULL, approval_date_manager1 = NULL,
+                        approver_manager2_key = NULL, approval_date_manager2 = NULL,
+                        approver_director_key = NULL, approval_date_director = NULL,
+                        rejection_reason = %s,
+                        last_modified_by = %s
+                    WHERE id = %s
+                """, (f"Reverted by {self.user_role}: {reason}", self.app_container.current_user_key, self.purchase_id))
+
+                so_number = self.po_data.get('so_number')
+                if so_number:
+                    # คืนสถานะ SO กลับไปเป็น 'PO In Progress' เพื่อให้ PU รู้ว่าต้องจัดการต่อ
+                    cursor.execute("UPDATE commissions SET status = 'PO In Progress' WHERE so_number = %s AND is_active = 1", (so_number,))
+                
+                if po_creator_key:
+                    # สร้าง Notification แจ้งเตือนคนสร้าง PO
+                    notif_msg = f"PO: {po_number} ที่อนุมัติแล้ว ถูกตีกลับโดย Manager เพื่อให้แก้ไข\nเหตุผล: {reason}"
+                    cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)",
+                                   (po_creator_key, notif_msg, self.purchase_id))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "ตีกลับ PO เป็นฉบับร่างเรียบร้อยแล้ว", parent=self)
+            if self.on_save_callback:
+                self.on_save_callback() # Refresh หน้าหลัก
+            self.destroy()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
 
     def _save_changes(self):
         self._recalculate_summary_totals()
@@ -1475,7 +1560,8 @@ class PurchaseHistoryWindow(CTkToplevel):
         for widget in self.history_frame.winfo_children(): widget.destroy()
         self._show_loading()
         try:
-            # แก้ไข Query ให้ JOIN ตาราง user และแสดงชื่อเจ้าของ/ผู้สร้างแทน
+            # --- START: แก้ไข Query ตรงนี้ ---
+            # เพิ่ม WHERE po.status = 'Approved' เพื่อกรองเฉพาะ PO ที่อนุมัติแล้ว
             query = """
                 SELECT 
                     po.id, 
@@ -1484,12 +1570,16 @@ class PurchaseHistoryWindow(CTkToplevel):
                     po.po_number, 
                     po.supplier_name,
                     owner.sale_name as owner_name,
-                    proxy.sale_name as proxy_name
+                    proxy.sale_name as proxy_name,
+                    po.status -- เพิ่มคอลัมน์ status มาด้วยเพื่อความชัดเจน
                 FROM purchase_orders po
                 LEFT JOIN sales_users owner ON po.user_key = owner.sale_key
                 LEFT JOIN sales_users proxy ON po.proxy_user_key = proxy.sale_key
+                WHERE po.status = 'Approved'
                 ORDER BY po.timestamp DESC
             """
+            # --- END: สิ้นสุดการแก้ไข ---
+
             self.all_po_df = pd.read_sql_query(query, self.pg_engine)
             self.all_po_df['timestamp'] = pd.to_datetime(self.all_po_df['timestamp'])
             self._hide_loading()
@@ -1551,36 +1641,44 @@ class PurchaseHistoryWindow(CTkToplevel):
         self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
         self.next_button.configure(state="normal" if self.current_page < total_pages - 1 else "disabled")
 
-    def _on_row_double_click(self, event, tree):
+    def _on_row_double_click(self, event, tree, use_iid=False):
         try:
-            item_id = tree.focus()
-            if not item_id: return
-            item_values = tree.item(item_id)['values']
+            # ใช้ iid ที่เราเก็บไว้ ซึ่งก็คือ ID ที่แท้จริงของ PO
+            purchase_id_to_view = tree.focus()
+            if not purchase_id_to_view: 
+                return
             
-            # <<< START: แก้ไขจุดนี้ >>>
-            # แปลงค่าที่ดึงมาให้เป็น int ปกติของ Python ก่อน
-            purchase_id = int(item_values[0])
-            # <<< END: สิ้นสุดการแก้ไข >>>
+            # แปลงค่า ID ที่ได้มาเป็นตัวเลขที่ถูกต้อง
+            purchase_id = int(purchase_id_to_view)
             
-            self.app_container.show_purchase_detail_window(purchase_id)
+            # เรียกหน้าต่างรายละเอียดด้วย ID ที่ถูกต้อง
+            self.app_container.show_purchase_detail_window(
+                purchase_id=purchase_id,
+                on_save_callback=self._load_initial_data # เพิ่ม Callback เพื่อให้ Refresh หลังแก้ไข
+            )
+        except (ValueError, TypeError) as e:
+            messagebox.showerror("เกิดข้อผิดพลาด", f"ID ของรายการไม่ถูกต้อง: {e}", parent=self)
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดดูรายละเอียดได้: {e}", parent=self)
 
     def _create_styled_dataframe_table(self, parent, df):
+        df = df.copy()
         # สร้างคอลัมน์ใหม่สำหรับแสดงผล
         df['display_owner'] = df.apply(
             lambda row: f"{row['owner_name']}" if pd.isna(row['proxy_name']) else f"{row['owner_name']} (โดย {row['proxy_name']})",
             axis=1
         )
         
-        # กำหนดคอลัมน์ที่จะแสดงในตาราง
+        # <<< START: เพิ่ม 'status' เข้าไปในคอลัมน์ที่จะแสดง >>>
         display_columns = {
             'timestamp': 'เวลาบันทึก',
             'so_number': 'SO Number',
             'po_number': 'PO Number',
             'supplier_name': 'Supplier',
-            'display_owner': 'เจ้าของ PO (ผู้สร้าง)'
+            'display_owner': 'เจ้าของ PO (ผู้สร้าง)',
+            'status': 'สถานะ'  # <-- เพิ่มบรรทัดนี้
         }
+        # <<< END >>>
         
         columns_to_show = list(display_columns.keys())
         df_display = df[columns_to_show]
@@ -1597,14 +1695,14 @@ class PurchaseHistoryWindow(CTkToplevel):
             width = 200 # default
             if col_id == 'timestamp': width = 180
             if col_id == 'display_owner': width = 250
+            if col_id == 'status': width = 120 # <-- เพิ่มขนาดสำหรับคอลัมน์ใหม่
             tree.column(col_id, width=width, anchor='w')
 
         # ใส่ข้อมูลลงในตาราง (ใช้ df_display)
         for index, row in df_display.iterrows():
-            # เก็บ id เดิมไว้ในตัวแปร iid เพื่อใช้ตอนดับเบิลคลิก
             original_id = df.loc[index, 'id']
             values = list(row)
-            values[0] = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S') # Format วันที่
+            values[0] = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
             tree.insert("", "end", values=values, iid=original_id)
 
         v_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
@@ -1614,7 +1712,6 @@ class PurchaseHistoryWindow(CTkToplevel):
         v_scroll.grid(row=0, column=1, sticky='ns')
         h_scroll.grid(row=1, column=0, sticky='ew')
         
-        # แก้ไข _on_row_double_click ให้ใช้ iid ที่เราเก็บไว้
         tree.bind("<Double-1>", lambda e: self._on_row_double_click(e, tree, use_iid=True))
 
 
