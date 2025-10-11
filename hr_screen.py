@@ -420,7 +420,74 @@ class HRScreen(CTkFrame):
         self._pu_mode_loaded = False 
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
+    
+    def _create_payout_history_table(self, df):
+        """(ฟังก์ชันใหม่) สร้างตารางประวัติการจ่ายเงินที่สวยงามและปรับแต่งมาโดยเฉพาะ"""
+        for widget in self.payout_history_frame.winfo_children():
+            widget.destroy()
+
+        if df is None or df.empty:
+            CTkLabel(self.payout_history_frame, text="ไม่พบข้อมูลตามเงื่อนไขที่เลือก").pack(pady=20)
+            return
+
+        style = ttk.Style(self.payout_history_frame)
+        style.theme_use("clam")
+        style.configure("Payout.Treeview.Heading", font=self.label_font_bold, background=self.theme["primary"], foreground="white", relief="flat", padding=(10, 8))
+        style.map("Payout.Treeview.Heading", background=[('active', self.theme["header"])])
+        style.configure("Payout.Treeview", rowheight=32, font=self.small_font)
+        style.map("Payout.Treeview", background=[('selected', "#DBEAFE")], foreground=[('selected', 'black')])
+
+        tree_frame = CTkFrame(self.payout_history_frame, fg_color="transparent")
+        tree_frame.pack(fill="both", expand=True)
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        columns = {
+            'sale_key': 'รหัสพนักงาน', 'sale_name': 'ชื่อพนักงาน', 'plan_name': 'แผน',
+            'timestamp': 'วันที่จ่าย', 'final_commission': 'ยอดคอม', 'incentives_total': 'Incentive',
+            'deductions_total': 'ยอดหัก', 'net_commission': 'ยอดโอนสุทธิ'
+        }
         
+        tree = ttk.Treeview(tree_frame, columns=list(columns.keys()), show='headings', style="Payout.Treeview")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        for col_id, col_text in columns.items():
+            anchor = 'e' if col_id not in ['sale_key', 'sale_name', 'plan_name', 'timestamp'] else 'w'
+            width = 120
+            if col_id == 'sale_name': width = 200
+            elif col_id == 'timestamp': width = 160
+            tree.heading(col_id, text=col_text, anchor='center')
+            tree.column(col_id, anchor=anchor, width=width)
+
+        for _, row in df.iterrows():
+            values = []
+            for col_id in columns.keys():
+                value = row[col_id]
+                if pd.notna(value):
+                    if isinstance(value, datetime): values.append(value.strftime('%Y-%m-%d %H:%M'))
+                    elif isinstance(value, (float, np.floating)): values.append(f"{value:,.2f}")
+                    else: values.append(str(value))
+                else:
+                    values.append("")
+            tree.insert("", "end", values=values, iid=str(row['id']))
+        
+        tree.bind("<Double-1>", lambda e: self._on_payout_history_double_click(e, tree))
+
+        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        v_scroll.grid(row=0, column=1, sticky='ns')
+        tree.configure(yscrollcommand=v_scroll.set)
+
+    def _payout_prev_page(self):
+        if self.history_current_page > 0:
+            self.history_current_page -= 1
+            self._load_payout_history()
+
+    def _payout_next_page(self):
+        total_pages = (self.history_total_rows + self.history_rows_per_page - 1) // self.history_rows_per_page
+        if self.history_current_page < total_pages - 1:
+            self.history_current_page += 1
+            self._load_payout_history()
+
     def _create_edit_data_tab(self, parent_tab):
         """สร้าง UI สำหรับหน้า Master Edit SO/PO"""
         parent_tab.grid_columnconfigure(0, weight=1)
@@ -766,6 +833,7 @@ class HRScreen(CTkFrame):
         self.payout_month_var.set("ทุกเดือน")
         self.payout_year_var.set(str(datetime.now().year))
         self.payout_search_entry.delete(0, 'end')
+        self.history_current_page = 0 # <-- สั่งให้กลับไปที่หน้าแรกเสมอ
         self._load_payout_history()
 
     def _open_comparison_history_window(self):
@@ -773,13 +841,14 @@ class HRScreen(CTkFrame):
         ComparisonHistoryWindow(master=self, app_container=self.app_container)
 
     def _create_payout_history_tab(self, parent_tab):
-        """สร้าง Layout สำหรับหน้าประวัติการจ่ายเงิน (ฉบับปรับปรุงมีฟิลเตอร์)"""
+        """(เวอร์ชันปรับปรุง) สร้าง Layout สำหรับหน้าประวัติการจ่ายเงิน"""
         parent_tab.grid_columnconfigure(0, weight=1)
-        parent_tab.grid_rowconfigure(1, weight=1)
+        parent_tab.grid_rowconfigure(2, weight=1) # แถวที่ 2 (ตาราง) จะขยายได้
 
         # --- Frame หลักสำหรับตัวกรองทั้งหมด ---
         filter_container = CTkFrame(parent_tab, fg_color="transparent")
         filter_container.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        filter_container.grid_columnconfigure(3, weight=1)
 
         # --- ตัวกรอง เดือน/ปี ---
         CTkLabel(filter_container, text="เลือกช่วงเวลา:").pack(side="left", padx=(5,2))
@@ -794,61 +863,105 @@ class HRScreen(CTkFrame):
         CTkOptionMenu(filter_container, variable=self.payout_year_var, values=year_options).pack(side="left", padx=5)
 
         # --- ช่องค้นหา ---
-        CTkLabel(filter_container, text="ค้นหาพนักงานขาย:").pack(side="left", padx=(20, 2))
-        self.payout_search_entry = CTkEntry(filter_container, placeholder_text="พิมพ์รหัสพนักงานขาย...")
-        self.payout_search_entry.pack(side="left", padx=5, fill="x", expand=True)
+        self.payout_search_entry = CTkEntry(filter_container, placeholder_text="ค้นหาจากรหัส หรือชื่อพนักงานขาย...")
+        self.payout_search_entry.pack(side="left", padx=(20, 5), fill="x", expand=True)
+        self.payout_search_entry.bind("<Return>", lambda e: self._load_payout_history())
         
         # --- ปุ่ม ---
-        CTkButton(filter_container, text="ค้นหา", command=self._load_payout_history).pack(side="left", padx=10)
-        CTkButton(filter_container, text="ล้างค่า", command=self._reset_payout_filters).pack(side="left")
+        CTkButton(filter_container, text="ค้นหา", command=self._load_payout_history).pack(side="left", padx=(0, 5))
+        CTkButton(filter_container, text="ล้างค่า", command=self._reset_payout_filters, fg_color="gray").pack(side="left")
 
+        # --- Frame สำหรับ Pagination ---
+        pagination_frame = CTkFrame(parent_tab, fg_color="transparent")
+        pagination_frame.grid(row=1, column=0, padx=10, pady=0, sticky="ew")
+
+        self.payout_prev_button = CTkButton(pagination_frame, text="<<", command=self._payout_prev_page, width=50, state="disabled")
+        self.payout_prev_button.pack(side="left")
+        self.payout_page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
+        self.payout_page_label.pack(side="left", expand=True)
+        self.payout_next_button = CTkButton(pagination_frame, text=">>", command=self._payout_next_page, width=50, state="disabled")
+        self.payout_next_button.pack(side="right")
+        
         # --- Frame สำหรับแสดงตาราง ---
         self.payout_history_frame = CTkFrame(parent_tab)
-        self.payout_history_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.payout_history_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
         self.payout_history_frame.grid_columnconfigure(0, weight=1)
         self.payout_history_frame.grid_rowconfigure(0, weight=1)
 
     def _load_payout_history(self):
-        """Loads and displays the commission payout history."""
+        """(เวอร์ชันปรับปรุง) โหลดประวัติการจ่ายเงินตามฟิลเตอร์และหน้าปัจจุบัน"""
+        loading = self._show_loading(self.payout_history_frame)
         try:
-            query = """
-                SELECT id, sale_key, plan_name, timestamp as "วันที่จ่าย", 
-                       final_commission as "ยอดคอมสุทธิ", 
-                       incentives_total as "Incentive", 
-                       deductions_total as "ยอดหักเพิ่ม",
-                       net_commission as "ยอดโอนสุทธิ"
-                FROM commission_payout_logs
-                ORDER BY timestamp DESC
+            # --- สร้าง Query แบบไดนามิกตามฟิลเตอร์ ---
+            base_query = """
+                FROM commission_payout_logs pl
+                JOIN sales_users su ON pl.sale_key = su.sale_key
             """
-            df = pd.read_sql_query(query, self.app_container.pg_engine)
+            where_clauses = []
+            params = []
 
-            self._create_styled_dataframe_table(
-                self.payout_history_frame, 
-                df, 
-                title="ประวัติการจ่ายเงิน", 
-                on_row_click=self._on_payout_history_double_click, 
-                iid_column='id'
-            )
+            selected_month_str = self.payout_month_var.get()
+            if selected_month_str != "ทุกเดือน":
+                month_num = self.thai_month_map[selected_month_str]
+                where_clauses.append("EXTRACT(MONTH FROM pl.timestamp) = %s")
+                params.append(month_num)
+
+            selected_year_str = self.payout_year_var.get()
+            if selected_year_str != "ทุกปี":
+                year_num = int(selected_year_str)
+                where_clauses.append("EXTRACT(YEAR FROM pl.timestamp) = %s")
+                params.append(year_num)
+
+            search_term = self.payout_search_entry.get().strip()
+            if search_term:
+                where_clauses.append("(pl.sale_key ILIKE %s OR su.sale_name ILIKE %s)")
+                params.extend([f"%{search_term}%", f"%{search_term}%"])
+
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+            # --- นับจำนวนแถวทั้งหมดสำหรับ Pagination ---
+            count_query = f"SELECT COUNT(pl.id) {base_query} {where_sql}"
+            count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
+            self.history_total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
+            total_pages = (self.history_total_rows + self.history_rows_per_page - 1) // self.history_rows_per_page
+            
+            # --- ดึงข้อมูลสำหรับหน้าที่เลือก ---
+            offset = self.history_current_page * self.history_rows_per_page
+            data_query = f"""
+                SELECT pl.id, pl.sale_key, su.sale_name, pl.plan_name, pl.timestamp, 
+                       pl.final_commission, pl.incentives_total, 
+                       pl.deductions_total, pl.net_commission
+                {base_query} {where_sql}
+                ORDER BY pl.timestamp DESC
+                LIMIT %s OFFSET %s
+            """
+            final_params = params + [self.history_rows_per_page, offset]
+            df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(final_params))
+
+            loading.destroy()
+            self._create_payout_history_table(df) # เรียกใช้ฟังก์ชันสร้างตารางใหม่
+
+            # --- อัปเดต UI ของ Pagination ---
+            self.payout_page_label.configure(text=f"Page {self.history_current_page + 1} / {max(1, total_pages)}")
+            self.payout_prev_button.configure(state="normal" if self.history_current_page > 0 else "disabled")
+            self.payout_next_button.configure(state="normal" if self.history_current_page < total_pages - 1 else "disabled")
 
         except Exception as e:
+            if 'loading' in locals() and loading.winfo_exists(): loading.destroy()
             CTkLabel(self.payout_history_frame, text=f"ไม่สามารถโหลดประวัติได้: {e}").pack(pady=20)
             traceback.print_exc()
 
-    def _on_payout_history_double_click(self, event, tree, df):
-        selected_item = tree.focus()
-        if not selected_item:
+    def _on_payout_history_double_click(self, event, tree):
+        """(เวอร์ชันปรับปรุง) Callback เมื่อดับเบิลคลิกบนตารางประวัติการจ่ายเงิน"""
+        selected_item_iid = tree.focus()
+        if not selected_item_iid:
             return
         
-        # selected_item ใน treeview นี้คือ payout_id โดยตรง
-        payout_id_str = selected_item 
-        
         try:
-            payout_id = int(payout_id_str)
-            # --- [แก้ไข] เรียกชื่อคลาสของหน้าต่างให้ถูกต้อง ---
+            payout_id = int(selected_item_iid)
             PayoutDetailWindow(master=self, app_container=self.app_container, payout_id=payout_id)
         except (ValueError, TclError) as e:
-            # จัดการกรณีที่ selected_item ไม่ใช่ ID ที่เป็นตัวเลข
-            print(f"Invalid item selected: {payout_id_str}, error: {e}")
+            print(f"Invalid item selected: {selected_item_iid}, error: {e}")
 
     ### --- จุดที่แก้ไข --- ###
     # ผมได้รวมฟังก์ชัน _create_plan_a_summary_table และ _create_plan_b_summary_table
