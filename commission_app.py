@@ -15,6 +15,100 @@ from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 import utils
 from export_utils import DateRangeDialog
 
+class PaymentUpdateWindow(CTkToplevel):
+    """หน้าต่าง Pop-up สำหรับอัปเดตข้อมูลการชำระเงินโดยเฉพาะ"""
+    def __init__(self, master, app_container, so_data, on_save_callback):
+        super().__init__(master)
+        self.app_container = app_container
+        self.so_data = so_data
+        self.on_save_callback = on_save_callback
+        self.so_id = self.so_data['id']
+
+        self.title(f"อัปเดตยอดชำระ SO: {self.so_data['so_number']}")
+        self.geometry("500x400")
+        self.grid_columnconfigure(0, weight=1)
+
+        # --- Display Info ---
+        info_frame = CTkFrame(self, fg_color="transparent")
+        info_frame.grid(row=0, column=0, padx=20, pady=15, sticky="ew")
+        info_frame.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(info_frame, text="SO Number:", font=CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
+        CTkLabel(info_frame, text=self.so_data['so_number']).grid(row=0, column=1, sticky="w", padx=5)
+        CTkLabel(info_frame, text="ยอดที่ต้องชำระ:", font=CTkFont(weight="bold")).grid(row=1, column=0, sticky="w")
+        CTkLabel(info_frame, text=f"{self.so_data.get('so_grand_total', 0.0):,.2f} บาท").grid(row=1, column=1, sticky="w", padx=5)
+        CTkLabel(info_frame, text="ยอดโอนขาดปัจจุบัน:", font=CTkFont(weight="bold"), text_color="#D97706").grid(row=2, column=0, sticky="w")
+        CTkLabel(info_frame, text=f"{self.so_data.get('difference_amount', 0.0):,.2f} บาท", text_color="#D97706").grid(row=2, column=1, sticky="w", padx=5)
+
+        # --- Payment Entries ---
+        payment_frame = CTkFrame(self)
+        payment_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        payment_frame.grid_columnconfigure(1, weight=1)
+        
+        CTkLabel(payment_frame, text="ยอดโอนชำระ 1:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.payment1_entry = NumericEntry(payment_frame)
+        self.payment1_entry.insert(0, f"{self.so_data.get('total_payment_amount', 0.0):,.2f}")
+        self.payment1_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+
+        CTkLabel(payment_frame, text="ยอดโอนชำระ 2 (เพิ่มเติม):").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.payment2_entry = NumericEntry(payment_frame, placeholder_text="กรอกยอดที่โอนเพิ่ม...")
+        self.payment2_entry.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+
+        # --- Buttons ---
+        button_frame = CTkFrame(self, fg_color="transparent")
+        button_frame.grid(row=2, column=0, padx=20, pady=15, sticky="ew")
+        button_frame.grid_columnconfigure((0,1), weight=1)
+        
+        CTkButton(button_frame, text="ยกเลิก", fg_color="gray", command=self.destroy).grid(row=0, column=0, padx=(0,5), sticky="ew")
+        CTkButton(button_frame, text="บันทึกยอดชำระ", command=self._save_payment_update).grid(row=0, column=1, padx=(5,0), sticky="ew")
+
+        self.transient(master)
+        self.grab_set()
+
+    def _save_payment_update(self):
+        try:
+            # 1. รวบรวมยอดชำระใหม่จากฟอร์ม
+            p1 = utils.convert_to_float(self.payment1_entry.get())
+            p2 = utils.convert_to_float(self.payment2_entry.get())
+            new_total_payment = p1 + p2
+            
+            # --- START: แก้ไข Logic การคำนวณ ---
+            # 2. คำนวณหา "ยอดที่ต้องชำระที่แท้จริง" จากข้อมูลเก่า
+            #    (ยอดที่ต้องชำระ = ยอดโอนเดิม + ยอดที่ขาดไป)
+            original_payment = self.so_data.get('total_payment_amount', 0.0)
+            original_difference = self.so_data.get('difference_amount', 0.0)
+            actual_grand_total = original_payment + original_difference
+            
+            # 3. คำนวณส่วนต่างใหม่จาก "ยอดที่ต้องชำระที่แท้จริง"
+            new_difference = actual_grand_total - new_total_payment
+            # --- END ---
+            
+            if not messagebox.askyesno("ยืนยัน", "คุณต้องการอัปเดตยอดชำระเงินใช่หรือไม่?", parent=self):
+                return
+            
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # 4. อัปเดตข้อมูลด้วยค่าที่คำนวณใหม่
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET 
+                        total_payment_amount = %s,
+                        difference_amount = %s
+                    WHERE id = %s
+                """, (new_total_payment, new_difference, self.so_id))
+            conn.commit()
+
+            messagebox.showinfo("สำเร็จ", "อัปเดตยอดชำระเรียบร้อยแล้ว", parent=self)
+            
+            if self.on_save_callback:
+                self.on_save_callback()
+            self.destroy()
+
+        except Exception as e:
+            if 'conn' in locals() and conn: conn.rollback()
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถบันทึกได้: {e}", parent=self)
+        finally:
+            if 'conn' in locals() and conn: self.app_container.release_connection(conn)
 
 class SalesTasksWindow(CTkToplevel):
     def __init__(self, master, app_container, sale_key):
@@ -38,9 +132,18 @@ class SalesTasksWindow(CTkToplevel):
         self.task_tab_view = CTkTabview(self, corner_radius=10)
         self.task_tab_view.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         
+        # --- START: เพิ่มแท็บใหม่สำหรับยอดค้างชำระ ---
+        self.payment_due_tab = self.task_tab_view.add("⚠️ SO ค้างชำระ (แก้ไขยอดโอน)")
+        # --- END ---
+        
         self.rejected_tab = self.task_tab_view.add("งานที่ถูกตีกลับ (Rejected)")
         self.draft_tab = self.task_tab_view.add("ฉบับร่าง (ยังไม่นำส่ง)")
         
+        # --- START: เพิ่ม Frame สำหรับแท็บใหม่ ---
+        self.payment_due_frame = CTkScrollableFrame(self.payment_due_tab, label_text="รายการที่ยอดโอนชำระไม่ครบ (แก้ไขยอดโอนแล้วกดบันทึก)")
+        self.payment_due_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        # --- END ---
+
         self.rejected_frame = CTkScrollableFrame(self.rejected_tab, label_text="รายการที่ต้องแก้ไข")
         self.rejected_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
@@ -50,12 +153,64 @@ class SalesTasksWindow(CTkToplevel):
         self.after(50, self.load_tasks)
         self.transient(master)
         self.grab_set()
+    
+    def _load_payment_due_tasks(self):
+        """(เวอร์ชันปรับปรุง) โหลด SO ที่ยอดชำระยังไม่ครบ"""
+        for widget in self.payment_due_frame.winfo_children(): widget.destroy()
+        try:
+            query = """
+                SELECT * FROM commissions 
+                WHERE sale_key = %s 
+                  AND difference_amount > 0
+                  AND is_active = 1
+                  AND status NOT IN ('Cancelled', 'Paid', 'HR Verified')
+                ORDER BY timestamp DESC
+            """
+            df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.sale_key,))
+
+            if df.empty:
+                CTkLabel(self.payment_due_frame, text="ไม่พบรายการที่ค้างชำระ").pack(pady=20)
+                return
+            
+            for _, row_data in df.iterrows():
+                card = CTkFrame(self.payment_due_frame, border_width=1, fg_color="#FFFBEB")
+                card.pack(fill="x", padx=5, pady=4)
+                card.grid_columnconfigure(0, weight=1)
+
+                top_frame = CTkFrame(card, fg_color="transparent")
+                top_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(5,0))
+                
+                info = f"SO: {row_data['so_number']} | ลูกค้า: {row_data['customer_name']} | สถานะปัจจุบัน: {row_data['status']}"
+                CTkLabel(top_frame, text=info, font=CTkFont(size=14, weight="bold")).pack(side="left")
+
+                # --- START: แก้ไข command ของปุ่ม ---
+                edit_button = CTkButton(top_frame, text="แก้ไขยอดชำระ", width=120, 
+                                        command=lambda r=row_data.to_dict(): self._open_payment_updater(r))
+                edit_button.pack(side="right")
+                # --- END ---
+                
+                balance_due = row_data['difference_amount'] or 0.0
+                reason_label = CTkLabel(card, text=f"ยอดโอนขาด: {abs(balance_due):,.2f} บาท", text_color="#B45309", wraplength=700, justify="left", anchor="w")
+                reason_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 5))
+
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถโหลดรายการค้างชำระได้: {e}", parent=self)
+    
+    def _open_payment_updater(self, so_data_dict):
+        """(ฟังก์ชันใหม่) เปิดหน้าต่างสำหรับอัปเดตยอดชำระโดยเฉพาะ"""
+        PaymentUpdateWindow(
+            master=self, 
+            app_container=self.app_container, 
+            so_data=so_data_dict, 
+            on_save_callback=self.load_tasks
+        )
 
     def on_close(self):
         self.commission_app.tasks_window = None
         self.destroy()
 
     def load_tasks(self):
+        self._load_payment_due_tasks() # <-- เพิ่มบรรทัดนี้
         self._load_rejected_tasks()
         self._load_draft_tasks()
 
@@ -412,9 +567,18 @@ class CommissionApp(CTkFrame):
 
     def _edit_history_item(self, row_data):
         record_status = row_data.get('status')
-        if record_status in ('Submitted', 'Pending PU', 'PO In Progress', 'PO Complete', 'Paid', 'Pending Sale Manager Approval', 'Pending HR Review', 'HR Verified'):
-            messagebox.showwarning("ไม่สามารถแก้ไขได้", f"รายการนี้มีสถานะ '{record_status}' ซึ่งถูกส่งต่อไปในระบบแล้ว จึงไม่สามารถแก้ไขได้", parent=self)
+
+        # --- START: แก้ไขเงื่อนไขการตรวจสอบสถานะตรงนี้ ---
+        # สถานะที่ "ห้ามแก้ไขเด็ดขาด" คือเมื่อ HR ตรวจสอบแล้ว หรือจ่ายเงินไปแล้ว
+        uneditable_statuses = ('Paid', 'HR Verified', 'Cancelled')
+
+        if record_status in uneditable_statuses:
+            messagebox.showwarning("ไม่สามารถแก้ไขได้", 
+                                 f"รายการนี้มีสถานะ '{record_status}' ซึ่งเป็นขั้นตอนสุดท้ายแล้ว จึงไม่สามารถแก้ไขได้", 
+                                 parent=self)
             return
+        # --- END ---
+
         self._clear_form(confirm=False)
         self.editing_record_id = int(row_data.get('id'))
         if self.history_window and self.history_window.winfo_exists():
