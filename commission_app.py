@@ -1304,83 +1304,85 @@ class CommissionApp(CTkFrame):
         SubmitSODialog(self, self.app_container, self.sale_key, self.sale_name)
 
     def _update_final_calculations(self, *args):
-        # --- 1. รวบรวมข้อมูล ---
+        # --- 1. รวบรวมข้อมูล (ส่วนนี้ทำงานถูกต้องอยู่แล้ว) ---
         sales = utils.convert_to_float(self.sales_amount_entry.get())
         shipping = utils.convert_to_float(self.shipping_cost_entry.get())
         card_fee = utils.convert_to_float(self.credit_card_fee_entry.get())
         cutting_drilling = utils.convert_to_float(self.cutting_drilling_fee_entry.get())
         other_service = utils.convert_to_float(self.other_service_fee_entry.get())
-        # <<< เพิ่มเติม: ดึงค่า "ค่าย้าย" >>>
         relocation = utils.convert_to_float(self.relocation_cost_entry.get())
-        
-        # --- 2. แยกรายการ VAT / CASH ---
+        wht = utils.convert_to_float(self.wht_fee_entry.get())
+
         total_vatable_revenue = 0.0
         total_cashable_services_and_fees = 0.0
-
         items_to_process = [
             (sales, self.sales_service_vat_option.get(), self.sales_vat_calc_var),
             (cutting_drilling, self.cutting_drilling_fee_vat_option.get(), self.cutting_drilling_vat_calc_var),
             (other_service, self.other_service_fee_vat_option.get(), self.other_service_vat_calc_var),
             (shipping, self.shipping_vat_option_var.get(), self.shipping_vat_calc_var),
             (card_fee, self.credit_card_fee_vat_option_var.get(), self.card_fee_vat_calc_var),
-            # <<< เพิ่มเติม: นำ "ค่าย้าย" เข้ามาใน list การคำนวณ >>>
             (relocation, self.relocation_vat_option_var.get(), self.relocation_vat_calc_var)
         ]
-
         for amount, option, var_display in items_to_process:
             item_vat = 0.0
             if option == "VAT":
                 total_vatable_revenue += amount
                 item_vat = amount * 0.07
-            else: # NO VAT / CASH
+            else:
                 total_cashable_services_and_fees += amount
-            
-            if var_display: # ตรวจสอบเผื่อกรณีไม่มี display var
+            if var_display:
                 var_display.set(f"{item_vat:,.2f}")
 
-        # --- START: แก้ไข Logic การคำนวณ ---
-        # 3. [แก้ไข] ไม่นำค่านายหน้าและคูปองมาคำนวณเป็นส่วนลดอีกต่อไป
-        total_deductions = 0.0
-
-        # 4. คำนวณยอดสุทธิ (ตอนนี้จะเท่ากับยอดรวม VATable revenue)
-        net_subtotal_for_vat = total_vatable_revenue - total_deductions
-
-        # 5. คำนวณ VAT 7% จากยอดสุทธิ
-        total_vat_amount = net_subtotal_for_vat * 0.07
-
-        # 6. คำนวณ "ยอดที่ต้องชำระ" สุดท้าย
-        final_amount_due = net_subtotal_for_vat + total_vat_amount
-        
-        # 7. อัปเดตค่าบนหน้าจอ
-        self.so_subtotal_var.set(f"{total_vatable_revenue:,.2f}")
-        self.so_vat_var.set(f"{total_vat_amount:,.2f}")
+        final_amount_due = (total_vatable_revenue * 1.07) - wht
         self.so_grand_total_var.set(f"{final_amount_due:,.2f}")
-        # --- END: สิ้นสุดการแก้ไข Logic ---
-
-        # --- ส่วนที่เหลือของฟังก์ชันทำงานเหมือนเดิม ---
-        self.cash_service_total_var.set(f"{total_cashable_services_and_fees:,.2f}")
 
         payment1 = utils.convert_to_float(self.payment1_amount_entry.get())
         payment2 = utils.convert_to_float(self.payment2_amount_entry.get())
         total_payment = payment1 + payment2
         self.payment_total_var.set(f"{total_payment:,.2f}")
 
-        balance_due = final_amount_due - total_payment
-        self.difference_amount_var.set(f"{balance_due:,.2f}")
-        self.balance_due_var.set(f"{balance_due:,.2f}")
+        # --- 2. คำนวณส่วนต่าง (Difference) ---
+        # แก้ไขสูตรเป็น: ยอดโอน - ยอดที่ต้องชำระ
+        # - ถ้าเป็นบวก (+) แปลว่า "โอนเกิน"
+        # - ถ้าเป็นลบ (-) แปลว่า "โอนขาด"
+        difference = total_payment - final_amount_due
+        self.difference_amount_var.set(f"{difference:,.2f}")
+        
+        # ยอดค้างชำระ (Balance Due) จะเป็นค่าบวกเสมอ
+        self.balance_due_var.set(f"{abs(difference):,.2f}")
 
         def set_check_result(entry, var, diff_val, plus_text, minus_text):
             if not entry or not entry.winfo_exists(): return
-            color_map = {"-": ("gray85", "black"), "ok": ("#BBF7D0", "#15803D"), "bad": ("#FECACA", "#B91C1C")}
-            if abs(diff_val) < 0.01: state, text = "ok", "ถูกต้อง"
-            elif diff_val > 0: state, text = "bad", f"{plus_text} ({diff_val:,.2f})"
-            else: state, text = "ok", f"{minus_text} (+{abs(diff_val):,.2f})"
+            color_map = {"ok": ("#BBF7D0", "#15803D"), "bad": ("#FECACA", "#B91C1C")}
+            if abs(diff_val) < 0.01:
+                state, text = "ok", "ถูกต้อง"
+                entry.configure(fg_color=color_map["ok"][0], text_color=color_map["ok"][1])
+            elif diff_val > 0: # โอนเกิน (ค่าเป็นบวก)
+                state, text = "ok", f"{plus_text} (+{abs(diff_val):,.2f})"
+                entry.configure(fg_color=color_map["ok"][0], text_color=color_map["ok"][1])
+            else: # โอนขาด (ค่าเป็นลบ)
+                state, text = "bad", f"{minus_text} ({abs(diff_val):,.2f})"
+                entry.configure(fg_color=color_map["bad"][0], text_color=color_map["bad"][1])
             var.set(text)
-            entry.configure(fg_color=color_map[state][0], text_color=color_map[state][1])
 
-        set_check_result(self.so_vs_payment_result_entry, self.so_vs_payment_result_var, balance_due, 
-                        plus_text="ยอดโอนขาด", 
-                        minus_text="ยอดโอนเกิน")
+        # --- 3. เรียกใช้ฟังก์ชันแสดงผลด้วย Logic ที่ถูกต้อง ---
+        # เมื่อ difference > 0 (บวก) ให้แสดง plus_text ("ยอดโอนเกิน")
+        # เมื่อ difference < 0 (ลบ) ให้แสดง minus_text ("ยอดโอนขาด")
+        set_check_result(self.so_vs_payment_result_entry, self.so_vs_payment_result_var, difference,
+                         plus_text="ยอดโอนเกิน",
+                         minus_text="ยอดโอนขาด")
+
+        # --- 4. คำนวณส่วนของเงินสด (Cash) ---
+        cash_product_val = utils.convert_to_float(self.cash_product_input_entry.get())
+        cash_required_total = cash_product_val + total_cashable_services_and_fees
+        self.cash_required_total_var.set(f"{cash_required_total:,.2f}")
+
+        actual_cash_payment = utils.convert_to_float(self.cash_actual_payment_entry.get())
+        cash_difference = actual_cash_payment - cash_required_total
+        
+        set_check_result(self.cash_verification_result_entry, self.cash_verification_result_var, cash_difference,
+                         plus_text="เงินสดเกิน",
+                         minus_text="เงินสดขาด")
 
         cash_product_val = utils.convert_to_float(self.cash_product_input_entry.get())
         cash_required_total = cash_product_val + total_cashable_services_and_fees

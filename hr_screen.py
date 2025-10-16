@@ -1296,11 +1296,20 @@ class HRScreen(CTkFrame):
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการค้นหา: {e}", parent=self)
 
     def _create_so_card_for_editing(self, parent, so_data):
-        """(ฟังก์ชันใหม่) Helper สำหรับสร้าง SO Card ที่มีปุ่มแสดง PO ย่อย"""
+        """(เวอร์ชันปรับปรุง) Helper สำหรับสร้าง SO Card พร้อมใส่สีหากมียอดค้างชำระ"""
         so_id = int(so_data['id'])
         so_number = so_data['so_number']
-
-        so_card = CTkFrame(parent, border_width=1, fg_color="#F0F9FF")
+        
+        # --- START: เพิ่ม Logic การตรวจสอบยอดค้างชำระเพื่อเปลี่ยนสี ---
+        difference_amount = so_data.get('difference_amount', 0.0) or 0.0
+        
+        # ถ้า difference_amount > 0 (โอนขาด) ให้ใช้สีส้มอ่อน, ถ้าไม่ ให้ใช้สีฟ้าอ่อนปกติ
+        card_color = "#FEF3C7" if difference_amount > 0 else "#F0F9FF"
+        info_text_color = "#92400E" if difference_amount > 0 else "gray"
+        
+        so_card = CTkFrame(parent, border_width=1, fg_color=card_color)
+        # --- END ---
+        
         so_card.pack(fill="x", padx=10, pady=8)
         so_card.grid_columnconfigure(0, weight=1)
         
@@ -1308,13 +1317,20 @@ class HRScreen(CTkFrame):
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         header_frame.grid_columnconfigure(0, weight=1)
         
-        info_text = f"SO: {so_number}  |  ลูกค้า: {so_data.get('customer_name','N/A')}  |  เซลส์: {so_data.get('sale_key','N/A')}"
-        CTkLabel(header_frame, text=info_text, font=self.entry_font).grid(row=0, column=0, sticky="w")
+        # --- START: ปรับปรุงการแสดงข้อความให้มีข้อมูลยอดค้างชำระด้วย ---
+        main_info_text = f"SO: {so_number}  |  ลูกค้า: {so_data.get('customer_name','N/A')}  |  เซลส์: {so_data.get('sale_key','N/A')}"
+        CTkLabel(header_frame, text=main_info_text, font=self.entry_font).grid(row=0, column=0, sticky="w")
 
+        # แสดงข้อความยอดค้างชำระ ถ้ามี
+        if difference_amount > 0:
+            due_text = f"⚠️ ยอดโอนขาด: {difference_amount:,.2f} บาท"
+            CTkLabel(so_card, text=due_text, text_color=info_text_color, font=CTkFont(size=12, weight="bold")).grid(row=1, column=0, sticky="w", padx=10, pady=(0,5))
+        # --- END ---
+        
         action_frame = CTkFrame(header_frame, fg_color="transparent")
         action_frame.grid(row=0, column=1, sticky="e")
         
-        po_container = CTkFrame(so_card, fg_color="#FFFFFF") # Frame นี้จะถูกซ่อนไว้ในตอนแรก
+        po_container = CTkFrame(so_card, fg_color="#FFFFFF")
         
         CTkButton(action_frame, text="แก้ไข SO", width=100, command=lambda sid=so_id: self._open_so_editor_for_hr(sid)).pack(side="left", padx=5)
         CTkButton(action_frame, text="แสดง/ซ่อน POs", width=120, fg_color="gray", command=lambda s_num=so_number, container=po_container: self._toggle_po_list(s_num, container)).pack(side="left", padx=5)
@@ -2439,22 +2455,36 @@ class HRScreen(CTkFrame):
             )
 
             def determine_status_and_color(row):
+                difference_amount = row.get('difference_amount', 0.0) or 0.0
+                
+                # --- START: แก้ไข Logic การตรวจสอบสถานะทั้งหมด ---
+                
+                # 1. ตรวจสอบยอดโอนขาดก่อน (เป็นปัญหาสำคัญสุด)
+                if difference_amount < -0.01:
+                    return f"⚠️ ยอดโอนขาด ({abs(difference_amount):,.2f})"
+
+                # 2. ตรวจสอบสถานะอื่นๆ ที่ควรแสดงผลทันที
                 if row['status'] == 'HR Verified':
                     final_margin = row['final_margin']
                     if pd.isna(final_margin): return 'ยืนยันแล้ว (รอผล)'
                     if final_margin < 0: return 'ขาดทุน'
                     elif final_margin < 10: return 'กำไรน้อย'
                     else: return 'กำไรดี'
+
                 if row['_merge'] == 'right_only': return 'มีใน Express, ไม่มีในระบบ'
                 if row['_merge'] == 'left_only': return 'มีในระบบ, ไม่มีใน Express'
+
+                # 3. ตรวจสอบปัญหาข้อมูลอื่นๆ
                 final_system_sale = row['sales_for_comparison']
                 final_system_cost = row['cost_db']
                 cost_uploaded = row['cost_uploaded']
+
                 if pd.notna(final_system_sale) and pd.notna(final_system_cost) and final_system_cost > final_system_sale:
                     return "‼️ ขายขาดทุน (ตรวจสอบด่วน)"
                 if pd.notna(final_system_cost) and final_system_cost > 0 and pd.notna(cost_uploaded) and cost_uploaded < (final_system_cost * 0.5):
                     return "‼️ ต้นทุน Express ผิดปกติ (<50%)"
                 
+                # 4. ตรวจสอบข้อมูล Sales/Cost ระหว่างระบบกับ Express
                 sale_system_rounded = round(float(final_system_sale) if pd.notna(final_system_sale) else 0.0, 2)
                 sale_express_rounded = round(float(row['sales_uploaded']) if pd.notna(row['sales_uploaded']) else 0.0, 2)
                 cost_system_rounded = round(float(final_system_cost) if pd.notna(final_system_cost) else 0.0, 2)
@@ -2463,7 +2493,15 @@ class HRScreen(CTkFrame):
                 sale_ok = sale_system_rounded >= sale_express_rounded
                 cost_ok = cost_system_rounded >= cost_express_rounded
                 
-                if sale_ok and cost_ok: return "ผ่านเกณฑ์"
+                # 5. ถ้าทุกอย่างถูกต้อง (รวมถึงยอดโอนไม่ขาด) ให้ถือว่า "ผ่านเกณฑ์"
+                if sale_ok and cost_ok:
+                    # ถ้ามียอดโอนเกิน ให้แสดงข้อความบอก แต่ยังคงสถานะให้ผ่านได้
+                    if difference_amount > 0.01:
+                        return f"ผ่านเกณฑ์ (โอนเกิน {difference_amount:,.2f})"
+                    else:
+                        return "ผ่านเกณฑ์"
+                
+                # 6. ถ้าข้อมูลไม่ตรงกัน ให้แสดงตามปกติ
                 elif not sale_ok: return "ยอดขายต่ำกว่า Express"
                 elif not cost_ok: return "ต้นทุนต่ำกว่า Express"
                 else: return "ข้อมูลไม่ตรงกัน"
@@ -2514,11 +2552,21 @@ class HRScreen(CTkFrame):
             self.comparison_df = pd.concat([self.comparison_df, summary_row.to_frame().T], ignore_index=True)
                 
             status_colors = {
-                "ผ่านเกณฑ์": "#BBF7D0", "ยอดขายต่ำกว่า Express": "#FECACA", 
-                "ต้นทุนต่ำกว่า Express": "#FEF08A", "มีใน Express, ไม่มีในระบบ": "#FECACA", 
-                "มีในระบบ, ไม่มีใน Express": "#FEF08A", "ข้อมูลไม่ตรงกัน": "#FED7AA",
-                "กำไรดี": "#BBF7D0", "กำไรน้อย": "#FEF08A", "ขาดทุน": "#FECACA", 
-                "ยืนยันแล้ว (รอผล)": "#E5E7EB", "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171",
+                "ผ่านเกณฑ์": "#D1FAE5",                 # สีเขียวอ่อน
+                "ยอดขายต่ำกว่า Express": "#FEF2F2",      # สีแดงอ่อน
+                "ต้นทุนต่ำกว่า Express": "#FEFCE8",       # สีเหลืองอ่อน
+                "ข้อมูลไม่ตรงกัน": "#FFF7ED",          # สีส้มอ่อน
+                
+                # ใช้ Key แบบง่ายๆ และกำหนดสีที่ต้องการ
+                "ยอดโอนเกิน": "#D1FAE5",              # สีเขียวอ่อน
+                "ยอดโอนขาด": "#FEF3C7",              # สีเหลืองเข้ม
+
+                # สถานะอื่นๆ
+                "มีใน Express, ไม่มีในระบบ": "#FEF2F2", 
+                "มีในระบบ, ไม่มีใน Express": "#FEFCE8",
+                "กำไรดี": "#D1FAE5", "กำไรน้อย": "#FEFCE8", "ขาดทุน": "#FEF2F2", 
+                "ยืนยันแล้ว (รอผล)": "#E5E7EB", 
+                "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171",
                 "‼️ ต้นทุน Express ผิดปกติ (<50%)": "#F97316",
             }
             
@@ -3242,8 +3290,8 @@ class HRScreen(CTkFrame):
 
         frame = CTkFrame(parent, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
-        frame.grid_rowconfigure(0, weight=1) # <--- แก้ไขเป็นชื่อนี้
-        frame.grid_columnconfigure(0, weight=1) # <--- แก้ไขเป็นชื่อนี้
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
         
         tree = ttk.Treeview(frame, columns=columns, show='headings', style="Custom.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
@@ -3274,11 +3322,25 @@ class HRScreen(CTkFrame):
             tags_tuple = ()
             status_val_str = str(row.get(status_column, ''))
 
+            # --- START: แก้ไข Logic การกำหนด Tag สี ---
             if 'ยอดรวม (Total)' in str(row.iloc[0]):
                 tags_tuple += ('summary_row',)
-            elif status_colors and status_column and status_column in df.columns:
-                if status_val_str in status_colors:
-                    tags_tuple = (status_val_str,)
+            elif status_colors and status_column:
+                tag_to_apply = None
+                # ตรวจสอบสถานะแบบพิเศษก่อน
+                if status_val_str.startswith("ผ่านเกณฑ์ (โอนเกิน"):
+                    tag_to_apply = "ผ่านเกณฑ์" # ใช้ Tag สีเขียวของ "ผ่านเกณฑ์"
+                elif status_val_str.startswith("⚠️ ยอดโอนขาด"):
+                    tag_to_apply = "ยอดโอนขาด"
+                elif status_val_str.startswith("✅ ยอดโอนเกิน"):
+                    tag_to_apply = "ยอดโอนเกิน"
+                # ถ้าไม่เข้าเงื่อนไขพิเศษ ให้ตรวจสอบแบบปกติ
+                elif status_val_str in status_colors:
+                    tag_to_apply = status_val_str
+                
+                if tag_to_apply:
+                    tags_tuple = (tag_to_apply,)
+            # --- END ---
 
             values = []
             for col_name in columns:
