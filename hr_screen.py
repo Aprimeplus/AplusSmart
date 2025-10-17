@@ -20,7 +20,7 @@ import traceback
 import os
 import shutil
 from tkinter import font as tkfont
-
+from outstanding_dashboard_tab import OutstandingDashboardTab
 # --- START: แก้ไขการ Import และลงทะเบียนฟอนต์ ---
 import matplotlib
 matplotlib.use('TkAgg')
@@ -382,7 +382,10 @@ class HRScreen(CTkFrame):
 
         self.tab_view = CTkTabview(self, corner_radius=10, border_width=1, segmented_button_selected_color=self.theme["primary"], segmented_button_unselected_hover_color="#A7F3D0", fg_color=self.cget("fg_color"), command=self._on_tab_selected)
         self.tab_view.grid(row=1, column=0, pady=10, padx=20, sticky="nsew")
-
+        
+        self.outstanding_tab = self.tab_view.add("ติดตามยอดค้างชำระ") 
+        # สร้าง instance ของ Dashboard แล้วใส่เข้าไปใน Tab
+        self.outstanding_dashboard = OutstandingDashboardTab(self.outstanding_tab, self.app_container)
         # --- ส่วนของการสร้าง Tab ที่แก้ไขลำดับแล้ว ---
         self.dashboard_tab = self.tab_view.add("Dashboard สรุปภาพรวม")
         self.sales_target_tab = self.tab_view.add("วิเคราะห์เป้าการขาย")

@@ -35,10 +35,19 @@ class PaymentUpdateWindow(CTkToplevel):
 
         CTkLabel(info_frame, text="SO Number:", font=CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
         CTkLabel(info_frame, text=self.so_data['so_number']).grid(row=0, column=1, sticky="w", padx=5)
+        
+        # <<< START: แก้ไขการดึงยอดที่ต้องชำระ >>>
+        # ใช้สูตรคำนวณยอดที่ต้องชำระที่แท้จริง เพื่อความแม่นยำ
+        original_payment = self.so_data.get('total_payment_amount', 0.0) or 0.0
+        original_difference = self.so_data.get('difference_amount', 0.0) or 0.0
+        actual_grand_total = original_payment - original_difference
+
         CTkLabel(info_frame, text="ยอดที่ต้องชำระ:", font=CTkFont(weight="bold")).grid(row=1, column=0, sticky="w")
-        CTkLabel(info_frame, text=f"{self.so_data.get('so_grand_total', 0.0):,.2f} บาท").grid(row=1, column=1, sticky="w", padx=5)
+        CTkLabel(info_frame, text=f"{actual_grand_total:,.2f} บาท").grid(row=1, column=1, sticky="w", padx=5)
+        # <<< END >>>
+
         CTkLabel(info_frame, text="ยอดโอนขาดปัจจุบัน:", font=CTkFont(weight="bold"), text_color="#D97706").grid(row=2, column=0, sticky="w")
-        CTkLabel(info_frame, text=f"{self.so_data.get('difference_amount', 0.0):,.2f} บาท", text_color="#D97706").grid(row=2, column=1, sticky="w", padx=5)
+        CTkLabel(info_frame, text=f"{abs(original_difference):,.2f} บาท", text_color="#D97706").grid(row=2, column=1, sticky="w", padx=5)
 
         # --- Payment Entries ---
         payment_frame = CTkFrame(self)
@@ -47,7 +56,8 @@ class PaymentUpdateWindow(CTkToplevel):
         
         CTkLabel(payment_frame, text="ยอดโอนชำระ 1:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
         self.payment1_entry = NumericEntry(payment_frame)
-        self.payment1_entry.insert(0, f"{self.so_data.get('total_payment_amount', 0.0):,.2f}")
+        # แสดงยอดโอนเดิมในช่องแรก
+        self.payment1_entry.insert(0, f"{original_payment:,.2f}")
         self.payment1_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
 
         CTkLabel(payment_frame, text="ยอดโอนชำระ 2 (เพิ่มเติม):").grid(row=1, column=0, padx=10, pady=5, sticky="w")
@@ -67,33 +77,27 @@ class PaymentUpdateWindow(CTkToplevel):
 
     def _save_payment_update(self):
         try:
-            # 1. รวบรวมยอดชำระใหม่จากฟอร์ม
             p1 = utils.convert_to_float(self.payment1_entry.get())
             p2 = utils.convert_to_float(self.payment2_entry.get())
             new_total_payment = p1 + p2
             
-            # --- START: แก้ไข Logic การคำนวณ ---
-            # 2. คำนวณหา "ยอดที่ต้องชำระที่แท้จริง" จากข้อมูลเก่า
-            #    (ยอดที่ต้องชำระ = ยอดโอนเดิม + ยอดที่ขาดไป)
-            original_payment = self.so_data.get('total_payment_amount', 0.0)
-            original_difference = self.so_data.get('difference_amount', 0.0)
-            actual_grand_total = original_payment + original_difference
+            # <<< START: แก้ไข Logic การคำนวณให้แม่นยำ >>>
+            # 1. คำนวณยอดที่ต้องชำระที่แท้จริง
+            original_payment = self.so_data.get('total_payment_amount', 0.0) or 0.0
+            original_difference = self.so_data.get('difference_amount', 0.0) or 0.0
+            actual_grand_total = original_payment - original_difference
             
-            # 3. คำนวณส่วนต่างใหม่จาก "ยอดที่ต้องชำระที่แท้จริง"
-            new_difference = actual_grand_total - new_total_payment
-            # --- END ---
+            # 2. คำนวณส่วนต่างใหม่ (ยอดโอนใหม่ - ยอดที่ต้องชำระ)
+            new_difference = new_total_payment - actual_grand_total
+            # <<< END >>>
             
             if not messagebox.askyesno("ยืนยัน", "คุณต้องการอัปเดตยอดชำระเงินใช่หรือไม่?", parent=self):
                 return
             
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 4. อัปเดตข้อมูลด้วยค่าที่คำนวณใหม่
                 cursor.execute("""
-                    UPDATE commissions 
-                    SET 
-                        total_payment_amount = %s,
-                        difference_amount = %s
+                    UPDATE commissions SET total_payment_amount = %s, difference_amount = %s
                     WHERE id = %s
                 """, (new_total_payment, new_difference, self.so_id))
             conn.commit()
@@ -155,17 +159,21 @@ class SalesTasksWindow(CTkToplevel):
         self.grab_set()
     
     def _load_payment_due_tasks(self):
-        """(เวอร์ชันปรับปรุง) โหลด SO ที่ยอดชำระยังไม่ครบ"""
+        """(ฉบับแก้ไข) โหลด SO ที่มียอดโอนขาด (difference_amount < 0)"""
         for widget in self.payment_due_frame.winfo_children(): widget.destroy()
         try:
+            # <<< START: แก้ไข Query ตรงนี้ >>>
+            # เปลี่ยนจาก > 0 เป็น < 0 เพื่อให้ตรงกับ Logic การบันทึก
             query = """
                 SELECT * FROM commissions 
                 WHERE sale_key = %s 
-                  AND difference_amount > 0
+                  AND difference_amount < 0
                   AND is_active = 1
                   AND status NOT IN ('Cancelled', 'Paid', 'HR Verified')
                 ORDER BY timestamp DESC
             """
+            # <<< END >>>
+            
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.sale_key,))
 
             if df.empty:
@@ -183,11 +191,9 @@ class SalesTasksWindow(CTkToplevel):
                 info = f"SO: {row_data['so_number']} | ลูกค้า: {row_data['customer_name']} | สถานะปัจจุบัน: {row_data['status']}"
                 CTkLabel(top_frame, text=info, font=CTkFont(size=14, weight="bold")).pack(side="left")
 
-                # --- START: แก้ไข command ของปุ่ม ---
                 edit_button = CTkButton(top_frame, text="แก้ไขยอดชำระ", width=120, 
                                         command=lambda r=row_data.to_dict(): self._open_payment_updater(r))
                 edit_button.pack(side="right")
-                # --- END ---
                 
                 balance_due = row_data['difference_amount'] or 0.0
                 reason_label = CTkLabel(card, text=f"ยอดโอนขาด: {abs(balance_due):,.2f} บาท", text_color="#B45309", wraplength=700, justify="left", anchor="w")
