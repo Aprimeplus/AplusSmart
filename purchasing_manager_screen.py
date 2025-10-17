@@ -710,9 +710,11 @@ class PurchasingManagerScreen(CTkFrame):
             
             self._update_ui_after_action(po_id, so_number)
             
-            # ตรวจสอบว่า SO นี้ควรส่งต่อไปให้ HR หรือยัง
+            # <<< START: แก้ไขชื่อฟังก์ชันที่เรียกผิดตรงนี้ >>>
+            # ตรวจสอบว่า SO นี้ควรส่งต่อไปให้ Sale Manager หรือยัง
             if so_number:
-                self._check_and_forward_so_to_hr(so_number) # เปลี่ยนชื่อฟังก์ชันให้ถูกต้อง
+                self._check_and_forward_so_to_sale_manager(so_number) 
+            # <<< END >>>
 
         except Exception as e:
             if conn: conn.rollback()
