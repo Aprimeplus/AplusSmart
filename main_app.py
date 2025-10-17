@@ -1,5 +1,3 @@
-# main_app.py (Final Corrected Version)
-
 import matplotlib
 import tkinter as tk
 from customtkinter import set_appearance_mode, CTk, CTkToplevel, CTkLabel, CTkFont, CTkFrame, CTkImage, CTkProgressBar
@@ -17,6 +15,8 @@ import ctypes
 from sqlalchemy import create_engine
 import pandas as pd
 from history_windows import CommissionHistoryWindow 
+import matplotlib.font_manager
+
 
 import traceback
 from hr_windows import EditPOWindowByHR
@@ -41,12 +41,40 @@ if TYPE_CHECKING:
     from director_screen import DirectorScreen
 
 
+# <<< START: โค้ดที่เพิ่มเข้ามาเพื่อแก้ไขปัญหาฟอนต์ >>>
+# ==============================================================================
+#  ส่วนสำหรับแก้ไขปัญหาฟอนต์ไทยใน Matplotlib (.exe)
+# ==============================================================================
+# หมายเหตุ: เราจะเรียกใช้ฟังก์ชัน resource_path() ด้านล่างหลังจากที่มันถูกสร้างแล้ว
+def setup_matplotlib_font():
+    try:
+        # ใช้ฟังก์ชัน resource_path ที่มีอยู่แล้วเพื่อหาตำแหน่งฟอนต์
+        # ตรวจสอบให้แน่ใจว่าในโฟลเดอร์ resources ของคุณมีไฟล์ THSarabunNew.ttf อยู่
+        font_path = resource_path(os.path.join('resources', 'THSarabunNew.ttf'))
+        
+        # สั่งให้ Matplotlib เพิ่มฟอนต์นี้เข้าไปในระบบ
+        matplotlib.font_manager.fontManager.addfont(font_path)
+        
+        # ตั้งค่าให้กราฟทุกชิ้นใช้ฟอนต์ 'TH Sarabun New' เป็นหลัก
+        matplotlib.rc('font', family='TH Sarabun New') 
+        print("ตั้งค่าฟอนต์ภาษาไทยสำหรับ Matplotlib เรียบร้อยแล้ว")
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในการตั้งค่าฟอนต์ Matplotlib: {e}")
+# ==============================================================================
+# <<< END: สิ้นสุดโค้ดที่เพิ่มเข้ามา >>>
+
+
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
     except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+# <<< START: เรียกใช้ฟังก์ชันตั้งค่าฟอนต์ที่เราสร้างไว้ >>>
+# เราจะเรียกใช้ฟังก์ชันนี้หลังจากที่ resource_path ถูกสร้างแล้ว
+setup_matplotlib_font()
+# <<< END >>>
 
 class NotificationPopup(CTkToplevel):
     def __init__(self, master, title, message, details=""):

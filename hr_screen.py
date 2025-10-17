@@ -1439,8 +1439,48 @@ class HRScreen(CTkFrame):
         if hasattr(self, 'po_chart_canvas') and self.po_chart_canvas: self.po_chart_canvas.get_tk_widget().destroy()
         for widget in parent_frame.winfo_children(): widget.destroy()
         if data_df.empty: CTkLabel(parent_frame, text="ไม่พบข้อมูลใบสั่งซื้อในช่วงเวลานี้", font=self.header_font_table).pack(expand=True); return
-        fig = Figure(figsize=(5, 4), dpi=100, facecolor=self.theme["bg"]); ax = fig.add_subplot(111); status_colors_map = { "Approved": "#BBF7D0", "Pending Approval": "#FEF08A", "Rejected": "#FECACA", "Draft": "#E5E7EB" }; pie_colors = [status_colors_map.get(status, "#B0B0B0") for status in data_df['status']]; ax.pie(data_df['count'], labels=data_df['status'], autopct='%1.1f%%', startangle=90, colors=pie_colors, textprops={'fontname': 'Tahoma', 'fontsize': 12}); ax.axis('equal'); ax.set_title('สัดส่วนสถานะใบสั่งซื้อ (PO)', fontname='Tahoma', fontsize=16, weight="bold"); fig.tight_layout(); canvas = FigureCanvasTkAgg(fig, master=parent_frame); canvas.draw(); canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5); self.po_chart_canvas = canvas
-    
+
+        # <<< START: 1. เพิ่มโค้ดสำหรับเตรียมการ "ระเบิด" ชิ้นส่วนเล็กๆ >>>
+        total = data_df['count'].sum()
+        # สร้าง list ของ explode โดยให้ชิ้นที่น้อยกว่า 5% แยกตัวออกมา 0.2 หน่วย
+        explode_values = [0.2 if (count / total) < 0.05 else 0 for count in data_df['count']]
+        # <<< END >>>
+
+        fig = Figure(figsize=(5, 4), dpi=100, facecolor=self.theme["bg"])
+        ax = fig.add_subplot(111)
+        
+        status_colors_map = { 
+            "Approved": "#BBF7D0", 
+            "Pending Approval": "#FEF08A", 
+            "Rejected": "#FECACA", 
+            "Cancelled": "#FBCFE8", # เพิ่มสีสำหรับ Cancelled
+            "Draft": "#E5E7EB" 
+        }
+        pie_colors = [status_colors_map.get(status, "#B0B0B0") for status in data_df['status']]
+
+        # <<< START: 2. แก้ไขการเรียกใช้ ax.pie() ให้รองรับการปรับแต่งใหม่ >>>
+        ax.pie(
+            data_df['count'], 
+            labels=data_df['status'], 
+            # ฟังก์ชัน lambda นี้จะแสดง % ก็ต่อเมื่อชิ้นส่วนใหญ่กว่า 3%
+            autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
+            startangle=140,         # ปรับมุมเริ่มต้นเพื่อให้กลุ่มเล็กๆ อยู่ด้านบน
+            colors=pie_colors, 
+            textprops={'fontsize': 12},
+            pctdistance=0.85,       # ปรับระยะห่างของ % ให้อยู่ด้านในมากขึ้น
+            explode=explode_values  # สั่งให้ "ระเบิด" ชิ้นส่วนตามที่เราคำนวณไว้
+        )
+        # <<< END >>>
+
+        ax.axis('equal')
+        ax.set_title('สัดส่วนสถานะใบสั่งซื้อ (PO)', fontsize=16, weight="bold")
+        
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=parent_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.po_chart_canvas = canvas
+
     def _create_dashboard_tab(self, parent_tab):
         parent_tab.grid_columnconfigure(0, weight=1)
         parent_tab.grid_rowconfigure(1, weight=1)
