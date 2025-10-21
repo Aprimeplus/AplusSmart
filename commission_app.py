@@ -159,44 +159,62 @@ class SalesTasksWindow(CTkToplevel):
         self.grab_set()
     
     def _load_payment_due_tasks(self):
-        """(ฉบับแก้ไข) โหลด SO ที่มียอดโอนขาด (difference_amount < 0)"""
-        for widget in self.payment_due_frame.winfo_children(): widget.destroy()
+        """(ฉบับแก้ไข) โหลด SO ที่มียอดโอนขาดเท่านั้น"""
+        for widget in self.payment_due_frame.winfo_children():
+            widget.destroy()
+
         try:
-            # <<< START: แก้ไข Query ตรงนี้ >>>
-            # เปลี่ยนจาก > 0 เป็น < 0 เพื่อให้ตรงกับ Logic การบันทึก
+            # ✅ Query เฉพาะรายการที่ difference_amount > 0 (โอนขาด)
             query = """
                 SELECT * FROM commissions 
                 WHERE sale_key = %s 
-                  AND difference_amount < 0
-                  AND is_active = 1
-                  AND status NOT IN ('Cancelled', 'Paid', 'HR Verified')
+                AND difference_amount > 0
+                AND is_active = 1
+                AND status != 'Paid'
                 ORDER BY timestamp DESC
             """
-            # <<< END >>>
-            
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.sale_key,))
 
             if df.empty:
-                CTkLabel(self.payment_due_frame, text="ไม่พบรายการที่ค้างชำระ").pack(pady=20)
+                CTkLabel(self.payment_due_frame, text="ไม่พบรายการโอนขาด").pack(pady=20)
                 return
-            
+
             for _, row_data in df.iterrows():
-                card = CTkFrame(self.payment_due_frame, border_width=1, fg_color="#FFFBEB")
+                total_payment = row_data.get('total_payment_amount', 0.0) or 0.0
+                difference = row_data.get('difference_amount', 0.0) or 0.0
+
+                # ✅ แสดงเฉพาะยอดโอนขาด
+                card_color = "#FFFBEB"  # สีเหลือง
+                balance_text = f"ยอดโอนขาด: {difference:,.2f} บาท"
+                text_color = "#B45309"
+                button_text = "แก้ไขยอดชำระ"
+
+                card = CTkFrame(self.payment_due_frame, border_width=1, fg_color=card_color)
                 card.pack(fill="x", padx=5, pady=4)
                 card.grid_columnconfigure(0, weight=1)
 
                 top_frame = CTkFrame(card, fg_color="transparent")
-                top_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(5,0))
-                
+                top_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(5, 0))
+
                 info = f"SO: {row_data['so_number']} | ลูกค้า: {row_data['customer_name']} | สถานะปัจจุบัน: {row_data['status']}"
                 CTkLabel(top_frame, text=info, font=CTkFont(size=14, weight="bold")).pack(side="left")
 
-                edit_button = CTkButton(top_frame, text="แก้ไขยอดชำระ", width=120, 
-                                        command=lambda r=row_data.to_dict(): self._open_payment_updater(r))
+                edit_button = CTkButton(
+                    top_frame,
+                    text=button_text,
+                    width=120,
+                    command=lambda r=row_data.to_dict(): self._open_payment_updater(r)
+                )
                 edit_button.pack(side="right")
-                
-                balance_due = row_data['difference_amount'] or 0.0
-                reason_label = CTkLabel(card, text=f"ยอดโอนขาด: {abs(balance_due):,.2f} บาท", text_color="#B45309", wraplength=700, justify="left", anchor="w")
+
+                reason_label = CTkLabel(
+                    card,
+                    text=balance_text,
+                    text_color=text_color,
+                    wraplength=700,
+                    justify="left",
+                    anchor="w"
+                )
                 reason_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 5))
 
         except Exception as e:
