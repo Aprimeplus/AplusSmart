@@ -6,7 +6,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
     Calculates the monthly commission based on the specified plan.
     (ฉบับแก้ไขสมบูรณ์ตาม Logic ล่าสุด)
     """
-    
+    total_brokerage_fee = 0.0
+
     if plan_name == 'Plan A':
 
         # --- 1. เตรียมข้อมูล ---
@@ -40,7 +41,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         # --- 2. คำนวณ Profit/Margin ---
         comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount
-        comm_df['margin'] = (comm_df['profit'] / total_revenue.replace(0, np.nan)) * 100
+        comm_df['margin'] = (comm_df['profit'] / sales_raw.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
 
         comm_df['commission_amount'] = 0.0
@@ -212,7 +213,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         main_profit = po_grouped_df['total_revenue'] - (po_grouped_df['final_cost_amount'] * po_grouped_df['cost_multiplier'])
         difference_adjustment = po_grouped_df['difference_amount']
         po_grouped_df['profit'] = main_profit + difference_adjustment
-        po_grouped_df['margin'] = (po_grouped_df['profit'] / po_grouped_df['total_revenue'].replace(0, np.nan)) * 100
+        po_grouped_df['margin'] = (po_grouped_df['profit'] / po_grouped_df['sales_service_amount'].replace(0, np.nan)) * 100    
         po_grouped_df['margin'] = po_grouped_df['margin'].fillna(0)
 
         # --- ขั้นตอนที่ 4: คำนวณค่าคอมมิชชั่น (ใช้ Logic Tier ใหม่) ---
@@ -418,7 +419,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         # --- 2. คำนวณกำไรและ Margin ---
         comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount
-        comm_df['margin'] = (comm_df['profit'] / total_revenue.replace(0, np.nan)) * 100
+        comm_df['margin'] = (comm_df['profit'] / sales_service_amount.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
 
         print("\n" + "---" * 20)
@@ -591,7 +592,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         
         # --- 2. คำนวณ Profit/Margin (เวอร์ชันแก้ไข) ---
         comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount - net_shipping_deduction
-        comm_df['margin'] = (comm_df['profit'] / total_revenue.replace(0, np.nan)) * 100
+        comm_df['margin'] = (comm_df['profit'] / sales_service_amount.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
         
         # --- 3. แบ่งกลุ่มและรวมยอดขาย (Logic เดิมของ Plan D) ---

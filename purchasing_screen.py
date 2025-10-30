@@ -2374,6 +2374,10 @@ class PurchasingScreen(CTkFrame):
     def _print_selected_po(self, po_id):
         conn = self.app_container.get_connection()
         try:
+            # --- START: แก้ไข Query ---
+            # เพิ่ม po.shipping_to_stock_cost, po.shipping_to_site_cost
+            # po.shipping_to_stock_shipper, po.shipping_to_site_shipper
+            # po.shipping_to_stock_wht_type, po.shipping_to_site_wht_type
             query = """
                 SELECT
                     -- Fields from purchase_orders (po)
@@ -2386,6 +2390,13 @@ class PurchasingScreen(CTkFrame):
                     po.wht_3_percent_amount AS wht_3_percent_po,
                     po.vat_7_percent_amount AS vat_7_percent_po,
                     po.grand_total AS grand_total_vat_po,
+                    po.total_cost,
+                    po.shipping_to_stock_cost,
+                    po.shipping_to_site_cost,
+                    po.shipping_to_stock_shipper,
+                    po.shipping_to_site_shipper,
+                    po.shipping_to_stock_wht_type,
+                    po.shipping_to_site_wht_type,
                     
                     -- Fields from commissions (c)
                     c.so_number,
@@ -2440,6 +2451,8 @@ class PurchasingScreen(CTkFrame):
                 WHERE po.id = %s
                 LIMIT 1;
             """
+            # --- END: แก้ไข Query ---
+
             po_df = pd.read_sql_query(query, self.pg_engine, params=(po_id,))
 
             if po_df.empty:
