@@ -425,7 +425,7 @@ class HRScreen(CTkFrame):
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
     
     def _create_payout_history_table(self, df):
-        """(เวอร์ชันปรับปรุง) สร้างตารางประวัติการจ่ายเงินที่สวยงามและปรับแต่งมาโดยเฉพาะ"""
+        """(เวอร์ชันปรับปรุง) เพิ่มคอลัมน์ ยอดขาย, Normal, BelowT"""
         for widget in self.payout_history_frame.winfo_children():
             widget.destroy()
 
@@ -433,77 +433,89 @@ class HRScreen(CTkFrame):
             CTkLabel(self.payout_history_frame, text="ไม่พบข้อมูลตามเงื่อนไขที่เลือก").pack(pady=20)
             return
 
-        ### --- START: 1. ปรับปรุง Style ของตาราง --- ###
         style = ttk.Style(self.payout_history_frame)
         style.theme_use("clam")
         
-        # Style สำหรับหัวตาราง (Header) - เปลี่ยนเป็นสีเข้มขึ้นและดู Professional
         style.configure("Payout.Treeview.Heading", 
-                        font=self.label_font_bold, 
-                        background="#065F46",  # สีเขียวเข้ม
-                        foreground="white", 
-                        relief="flat", 
-                        padding=(10, 8))
+                            font=self.label_font_bold, 
+                            background="#065F46",
+                            foreground="white", 
+                            relief="flat", 
+                            padding=(10, 8))
         style.map("Payout.Treeview.Heading", background=[('active', "#047857")])
-
-        # Style สำหรับแถวข้อมูล
         style.configure("Payout.Treeview", 
-                        rowheight=32, 
-                        font=self.small_font,
-                        fieldbackground="#F9FAFB", # สีพื้นหลังของช่องข้อมูล
-                        foreground="#1F2937")      # สีตัวอักษร
-
-        # Style สำหรับแถวที่ถูกเลือก (Selection) - ทำให้ตัวอักษรเป็นสีขาวเพื่อความคมชัด
+                            rowheight=32, 
+                            font=self.small_font,
+                            fieldbackground="#F9FAFB",
+                            foreground="#1F2937")
         style.map("Payout.Treeview", 
-                  background=[('selected', self.theme["primary"])], 
-                  foreground=[('selected', 'white')])
-        ### --- END: 1. สิ้นสุดการปรับปรุง Style --- ###
+                    background=[('selected', self.theme["primary"])], 
+                    foreground=[('selected', 'white')])
 
         tree_frame = CTkFrame(self.payout_history_frame, fg_color="transparent")
         tree_frame.pack(fill="both", expand=True)
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
+        # <<< START: 1. เพิ่มคอลัมน์ใหม่ 3 คอลัมน์ >>>
         columns = {
             'sale_key': 'รหัสพนักงาน', 'sale_name': 'ชื่อพนักงาน', 'plan_name': 'แผน',
-            'timestamp': 'วันที่จ่าย', 'final_commission': 'ยอดคอม', 'incentives_total': 'Incentive',
-            'deductions_total': 'ยอดหัก', 'net_commission': 'ยอดโอนสุทธิ'
+            'sales_target': 'เป้าหมาย', 
+            'total_sales': 'ยอดขาย',
+            'total_normal_sales': 'Normal',
+            'total_below_sales': 'BelowT',
+            'timestamp': 'วันที่จ่าย', 'final_commission': 'ยอดคอม', 
+            'incentives_total': 'Incentive', 'deductions_total': 'ยอดหัก', 'net_commission': 'ยอดโอนสุทธิ'
         }
+        # <<< END >>>
         
         tree = ttk.Treeview(tree_frame, columns=list(columns.keys()), show='headings', style="Payout.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
 
-        ### --- START: 2. กำหนด Tag สำหรับสลับสีแถว --- ###
-        tree.tag_configure('oddrow', background='#FFFFFF')  # แถวคี่ (สีขาว)
-        tree.tag_configure('evenrow', background='#F0F9FF') # แถวคู่ (สีฟ้าอ่อน)
-        ### --- END: 2. สิ้นสุดการกำหนด Tag --- ###
+        tree.tag_configure('oddrow', background='#FFFFFF')
+        tree.tag_configure('evenrow', background='#F0F9FF')
 
         for col_id, col_text in columns.items():
-            anchor = 'e' if col_id not in ['sale_key', 'sale_name', 'plan_name', 'timestamp'] else 'w'
-            width = 120
-            if col_id == 'sale_name': width = 200
-            elif col_id == 'timestamp': width = 160
-            tree.heading(col_id, text=col_text, anchor='center')
-            tree.column(col_id, anchor=anchor, width=width)
+            anchor = 'w'
+            width = 120 # Default
 
-        ### --- START: 3. เพิ่ม Logic การสลับสีแถว (Zebra Striping) --- ###
+            if col_id == 'sale_name': 
+                width = 200
+            elif col_id == 'timestamp': 
+                width = 110
+            elif col_id == 'plan_name': 
+                width = 80
+            
+            # <<< START: 2. ตั้งค่าให้คอลัมน์ใหม่เป็นชิดขวา และกำหนดขนาด >>>
+            if col_id in ['sales_target', 'total_sales', 'final_commission', 
+                           'incentives_total', 'deductions_total', 'net_commission']:
+                anchor = 'e'
+                width = 130 
+            elif col_id in ['total_normal_sales', 'total_below_sales']:
+                anchor = 'e'
+                width = 100 
+            # <<< END >>>
+            
+            tree.heading(col_id, text=col_text, anchor='center')
+            tree.column(col_id, anchor=anchor, width=width, minwidth=60)
+
         for i, row in df.iterrows():
-            # กำหนด Tag สลับกันระหว่าง 'oddrow' และ 'evenrow'
             tag = 'evenrow' if i % 2 == 0 else 'oddrow'
 
             values = []
             for col_id in columns.keys():
                 value = row[col_id]
                 if pd.notna(value):
-                    if isinstance(value, datetime): values.append(value.strftime('%Y-%m-%d %H:%M'))
-                    elif isinstance(value, (float, np.floating)): values.append(f"{value:,.2f}")
-                    else: values.append(str(value))
+                    if isinstance(value, datetime): 
+                        values.append(value.strftime('%d/%m/%Y')) # Format วันที่
+                    elif isinstance(value, (float, np.floating, int)): # <<< 3. เพิ่ม int เข้าไปเผื่อ
+                        values.append(f"{value:,.2f}")
+                    else: 
+                        values.append(str(value))
                 else:
                     values.append("")
             
-            # เพิ่ม `tags=(tag,)` เข้าไปตอน insert ข้อมูล
             tree.insert("", "end", values=values, iid=str(row['id']), tags=(tag,))
-        ### --- END: 3. สิ้นสุด Logic การสลับสี --- ###
         
         tree.bind("<Double-1>", lambda e: self._on_payout_history_double_click(e, tree))
 
@@ -764,11 +776,14 @@ class HRScreen(CTkFrame):
             self._audit_log_loaded = True
 
     def _show_calculation_details(self):
-        if self.initial_commission_result:
-            debug_df = self.initial_commission_result.get('debug_df')
-            so_breakdown_df = self.initial_commission_result.get('so_breakdown_df') # <-- ดึงข้อมูลใหม่
+        # --- แก้ไข 3 บรรทัดนี้ครับ ---
+        if self.latest_commission_result: # <-- ✅ แก้ไขจาก initial_commission_result
+            debug_df = self.latest_commission_result.get('debug_df') # <-- ✅ แก้ไข
+            so_breakdown_df = self.latest_commission_result.get('so_breakdown_df') # <-- ✅ แก้ไข
             
             sale_key = self.selected_sale_for_process.get()
+        # --- สิ้นสุดจุดแก้ไข ---
+        
             plan_name = self.sales_user_info.get(sale_key, {}).get('plan', 'Unknown Plan')
             
             # ส่ง DataFrame ทั้งสองตัวไปที่หน้าต่าง Viewer
@@ -923,67 +938,60 @@ class HRScreen(CTkFrame):
         self.payout_history_frame.grid_rowconfigure(0, weight=1)
 
     def _load_payout_history(self):
-        """(เวอร์ชันปรับปรุง) โหลดประวัติการจ่ายเงินตามฟิลเตอร์และหน้าปัจจุบัน"""
-        loading = self._show_loading(self.payout_history_frame)
+        """(เวอร์ชันแก้ไข) โหลดประวัติการจ่ายเงิน พร้อมดึงยอดขาย Normal/BelowT"""
         try:
-            # --- สร้าง Query แบบไดนามิกตามฟิลเตอร์ ---
-            base_query = """
-                FROM commission_payout_logs pl
-                JOIN sales_users su ON pl.sale_key = su.sale_key
-            """
-            where_clauses = []
-            params = []
-
-            selected_month_str = self.payout_month_var.get()
-            if selected_month_str != "ทุกเดือน":
-                month_num = self.thai_month_map[selected_month_str]
-                where_clauses.append("EXTRACT(MONTH FROM pl.timestamp) = %s")
-                params.append(month_num)
-
-            selected_year_str = self.payout_year_var.get()
-            if selected_year_str != "ทุกปี":
-                year_num = int(selected_year_str)
-                where_clauses.append("EXTRACT(YEAR FROM pl.timestamp) = %s")
-                params.append(year_num)
-
             search_term = self.payout_search_entry.get().strip()
+            selected_year = self.payout_year_var.get()
+            selected_month = self.payout_month_var.get()
+
+            params = []
+            where_clauses = ["1=1"] 
+
+            # <<< START: แก้ไข Query ตรงนี้ >>>
+            base_query = """
+                SELECT 
+                    log.id, 
+                    log.sale_key, 
+                    u.sale_name, 
+                    log.plan_name, 
+                    u.sales_target,
+                    log.total_sales,          -- เพิ่มคอลัมน์นี้
+                    log.total_normal_sales,   -- เพิ่มคอลัมน์นี้
+                    log.total_below_sales,    -- เพิ่มคอลัมน์นี้
+                    log.timestamp, 
+                    log.final_commission, 
+                    log.incentives_total,
+                    log.deductions_total, 
+                    log.net_commission
+                FROM commission_payout_logs log
+                JOIN sales_users u ON log.sale_key = u.sale_key
+            """
+            # <<< END >>>
+
             if search_term:
-                where_clauses.append("(pl.sale_key ILIKE %s OR su.sale_name ILIKE %s)")
+                where_clauses.append("(u.sale_name ILIKE %s OR log.sale_key ILIKE %s)")
                 params.extend([f"%{search_term}%", f"%{search_term}%"])
 
-            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            if selected_year != "ทุกปี":
+                where_clauses.append("EXTRACT(YEAR FROM log.timestamp) = %s")
+                params.append(int(selected_year))
 
-            # --- นับจำนวนแถวทั้งหมดสำหรับ Pagination ---
-            count_query = f"SELECT COUNT(pl.id) {base_query} {where_sql}"
-            count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
-            self.history_total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
-            total_pages = (self.history_total_rows + self.history_rows_per_page - 1) // self.history_rows_per_page
+            if selected_month != "ทุกเดือน":
+                month_num = self.thai_month_map[selected_month]
+                where_clauses.append("EXTRACT(MONTH FROM log.timestamp) = %s")
+                params.append(month_num)
             
-            # --- ดึงข้อมูลสำหรับหน้าที่เลือก ---
-            offset = self.history_current_page * self.history_rows_per_page
-            data_query = f"""
-                SELECT pl.id, pl.sale_key, su.sale_name, pl.plan_name, pl.timestamp, 
-                       pl.final_commission, pl.incentives_total, 
-                       pl.deductions_total, pl.net_commission
-                {base_query} {where_sql}
-                ORDER BY pl.timestamp DESC
-                LIMIT %s OFFSET %s
-            """
-            final_params = params + [self.history_rows_per_page, offset]
-            df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(final_params))
-
-            loading.destroy()
-            self._create_payout_history_table(df) # เรียกใช้ฟังก์ชันสร้างตารางใหม่
-
-            # --- อัปเดต UI ของ Pagination ---
-            self.payout_page_label.configure(text=f"Page {self.history_current_page + 1} / {max(1, total_pages)}")
-            self.payout_prev_button.configure(state="normal" if self.history_current_page > 0 else "disabled")
-            self.payout_next_button.configure(state="normal" if self.history_current_page < total_pages - 1 else "disabled")
+            where_clause = " AND ".join(where_clauses)
+            query = f"{base_query} WHERE {where_clause} ORDER BY log.timestamp DESC"
+            
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+            
+            self._create_payout_history_table(df)
 
         except Exception as e:
-            if 'loading' in locals() and loading.winfo_exists(): loading.destroy()
-            CTkLabel(self.payout_history_frame, text=f"ไม่สามารถโหลดประวัติได้: {e}").pack(pady=20)
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการโหลดประวัติ: {e}", parent=self)
             traceback.print_exc()
+            self._create_payout_history_table(pd.DataFrame())
 
     def _on_payout_history_double_click(self, event, tree):
         """(เวอร์ชันปรับปรุง) Callback เมื่อดับเบิลคลิกบนตารางประวัติการจ่ายเงิน"""
@@ -2956,6 +2964,8 @@ class HRScreen(CTkFrame):
                 operating_fee=default_operating_fee
             )
             
+            self.latest_commission_result = self.initial_commission_result
+
             result_type = self.initial_commission_result.get('type')
             loading.destroy()
 
@@ -3081,7 +3091,8 @@ class HRScreen(CTkFrame):
             incentives=incentives_dict,
             additional_deductions=deductions_dict
         )
-        
+        self.latest_commission_result = final_result
+
         self.final_summary_data = None 
         self.confirm_payout_button.pack_forget()
 
@@ -3119,89 +3130,117 @@ class HRScreen(CTkFrame):
             CTkLabel(self.final_summary_frame, text=message).pack(pady=20)
     
     def _confirm_payout_and_save(self):
-        if self.final_summary_data is None or self.current_comm_df is None:
-            messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูลสรุปที่จะบันทึก", parent=self)
-            return
-
-        sale_key = self.selected_sale_for_process.get()
-        user_info = self.sales_user_info.get(sale_key, {})
-        plan_name = user_info.get('plan', 'N/A')
-        sales_target = user_info.get('target', 0.0)
-
+        """
+        (เวอร์ชันแก้ไข) ยืนยันการจ่ายเงิน, อัปเดตสถานะ SO, และบันทึก Log การจ่ายเงิน
+        พร้อมบันทึก total_sales, total_normal_sales, total_below_sales
+        """
         try:
-            incentive_val = float(self.incentive_entry.get().replace(",", "") or 0.0)
-            deduction_val = float(self.deduction_entry.get().replace(",", "") or 0.0)
-        except (ValueError, AttributeError):
-            messagebox.showerror("ผิดพลาด", "ไม่สามารถอ่านค่า Incentive/Deduction ได้", parent=self)
-            return
+            if not hasattr(self, 'final_commission_result') or not self.final_commission_result:
+                messagebox.showwarning("ยังไม่พร้อม", "กรุณากด 'คำนณขั้นสุดท้าย' ก่อนยืนยันการจ่ายเงิน", parent=self)
+                return
 
-        incentives_dict = {"Incentive พิเศษ": incentive_val} if incentive_val > 0 else {}
-        deductions_dict = {"ค่าใช้จ่าย/ดำเนินการ": deduction_val} if deduction_val > 0 else {}
-        incentives_total = sum(incentives_dict.values())
-        deductions_total = sum(deductions_dict.values())
+            if not messagebox.askyesno("ยืนยันการจ่ายเงิน", "คุณยืนยันที่จะบันทึกการจ่ายเงินนี้ใช่หรือไม่?\nการดำเนินการนี้จะอัปเดตสถานะ SO ทั้งหมดเป็น 'Paid' และไม่สามารถย้อนกลับได้จากหน้านี้", parent=self):
+                return
+            
+            # --- 1. ดึงข้อมูลสรุปทั้งหมด ---
+            payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
+            summary_df = self.final_commission_result['summary']
+            
+            # ฟังก์ชันช่วยดึงค่าจาก summary_df
+            def get_summary_value(key_name):
+                try:
+                    return summary_df.loc[summary_df['description'] == key_name, 'value'].values[0]
+                except (IndexError, KeyError):
+                    return 0.0
 
-        # --- [แก้ไข] แปลงข้อมูลเป็น float ก่อนใช้งาน ---
-        final_commission_row = self.final_summary_data[self.final_summary_data['description'].str.contains("ยอดรวมค่าคอมมิชชั่นที่คำนวณได้")]
-        final_commission = float(final_commission_row['value'].iloc[0]) if not final_commission_row.empty else 0.0
+            # <<< START: 1. ดึงข้อมูลสรุปยอดขายสำหรับบันทึก >>>
+            plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
+            total_sales = 0.0
+            total_normal_sales = 0.0
+            total_below_sales = 0.0
 
-        net_commission_row = self.final_summary_data[self.final_summary_data['description'].str.contains("หลังหัก ณ ที่จ่าย")]
-        net_commission_value = float(net_commission_row['value'].iloc[0]) if not net_commission_row.empty else 0.0
+            if plan_name == 'Plan A':
+                total_sales = get_summary_value("ยอดขายดิบรวม (Total Revenue)")
+                # Plan A ไม่มียอด Normal/BelowT ให้เป็น 0
+            else: # Plan B, C, D
+                total_sales = get_summary_value("ยอดขายรวม (Total Sales)")
+                total_normal_sales = get_summary_value("ยอดขาย Normal (>=10%)")
+                total_below_sales = get_summary_value("ยอดขาย Below T (<10%)")
+            # <<< END >>>
 
-        # ดึงค่า final_commission ที่แท้จริงจาก initial_commission_result
-        actual_final_commission = float(self.initial_commission_result.get('final_commission', 0.0))
-        # --- สิ้นสุดการแก้ไข ---
+            # --- 2. เตรียมข้อมูลสำหรับบันทึกลง log ---
+            log_data = {
+                "sale_key": self.selected_sale_for_process.get(),
+                "plan_name": plan_name,
+                "payout_period_text": self.current_period_text,
+                "commission_month": self.selected_month,
+                "commission_year": self.selected_year,
+                "calculated_commission": self.initial_commission_result.get('final_commission_pre_deductions', 0.0),
+                "incentives_total": get_summary_value("ยอดรวม Incentives"), # สมมติว่ามี key นี้
+                "deductions_total": get_summary_value("ยอดรวมหัก"), # สมมติว่ามี key นี้
+                "final_commission": get_summary_value("ยอดคอมมิชชั่นก่อนหักภาษี"),
+                "withholding_tax": get_summary_value("(-) หัก ณ ที่จ่าย 3%"),
+                "net_commission": get_summary_value("ยอดสรุปคอมหลังหัก ณ ที่จ่าย"),
+                "notes": payout_notes,
+                "summary_data_json": self.final_commission_result['summary'].to_json(orient='records'),
+                "so_ids_json": json.dumps(self.current_so_ids), # บันทึก SO IDs ที่เกี่ยวข้อง
+                
+                # <<< START: 2. เพิ่มข้อมูลใหม่ 3 คอลัมน์เข้าไป >>>
+                "total_sales": total_sales,
+                "total_normal_sales": total_normal_sales,
+                "total_below_sales": total_below_sales
+                # <<< END >>>
+            }
+            
+            # กรองข้อมูลที่มีค่า None ออกก่อน (ถ้ามี)
+            log_data = {k: v for k, v in log_data.items() if v is not None}
 
-        msg = (f"คุณต้องการยืนยันการจ่ายค่าคอมมิชชั่นสำหรับ '{sale_key}' ใช่หรือไม่?\n\n"
-               f"ยอดสุทธิ: {net_commission_value:,.2f} บาท\n\n"
-               f"การกระทำนี้จะบันทึก Log และอัปเดตสถานะรายการทั้งหมดเป็น 'Paid'")
-
-        if not messagebox.askyesno("ยืนยันการจ่ายเงิน", msg, parent=self):
-            return
-
-        conn = None
-        try:
             conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                so_numbers_list = self.current_comm_df['so_number'].tolist()
-                so_numbers_json = json.dumps(so_numbers_list)
-                summary_json = self.final_summary_data.to_json(orient='records')
-                payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
-                total_sales = float(self.current_comm_df.get('total_revenue', self.current_comm_df.get('final_sales_amount', 0)).sum())
-                total_cost = float(self.current_comm_df['final_cost_amount'].sum())
+            try:
+                with conn.cursor() as cursor:
+                    # --- 3. บันทึก Log การจ่ายเงิน และดึง ID กลับมา ---
+                    
+                    # <<< START: 3. อัปเดตคำสั่ง INSERT ให้มีคอลัมน์ใหม่ >>>
+                    columns = ", ".join(log_data.keys())
+                    placeholders = ", ".join(["%s"] * len(log_data))
+                    
+                    sql_insert_log = f"""
+                        INSERT INTO commission_payout_logs ({columns}, timestamp)
+                        VALUES ({placeholders}, %s)
+                        RETURNING id;
+                    """
+                    params = list(log_data.values()) + [datetime.now()]
+                    # <<< END >>>
+                    
+                    cursor.execute(sql_insert_log, tuple(params))
+                    payout_id = cursor.fetchone()[0]
 
-                cursor.execute("""
-                    INSERT INTO commission_payout_logs 
-                    (hr_user_key, sale_key, plan_name, so_numbers_json, summary_json, notes, 
-                     total_sales_for_margin, total_cost_for_margin, sales_target_at_payout,
-                     final_commission, incentives_total, deductions_total, net_commission) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                """, (
-                    self.user_key, sale_key, plan_name, so_numbers_json, summary_json, payout_notes, 
-                    total_sales, total_cost, sales_target,
-                    actual_final_commission, incentives_total, deductions_total, net_commission_value
-                ))
-
-                new_payout_id = cursor.fetchone()[0]
-
-                record_ids_to_update = tuple(self.current_comm_df['id'].tolist())
-                if record_ids_to_update:
-                    cursor.execute("""
-                        UPDATE commissions 
-                        SET status = 'Paid', payout_id = %s
-                        WHERE id IN %s
-                    """, (new_payout_id, record_ids_to_update))
-
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกการจ่ายค่าคอมมิชชั่นเรียบร้อยแล้ว", parent=self)
-            self._on_sale_selected_for_process()
+                    # --- 4. อัปเดตสถานะ SO ทั้งหมดเป็น 'Paid' ---
+                    so_ids_tuple = tuple(self.current_so_ids)
+                    if so_ids_tuple:
+                        cursor.execute("""
+                            UPDATE commissions 
+                            SET status = 'Paid', payout_id = %s
+                            WHERE id IN %s
+                        """, (payout_id, so_ids_tuple))
+                    
+                conn.commit()
+                messagebox.showinfo("สำเร็จ", f"บันทึกการจ่ายเงิน (Payout ID: {payout_id}) เรียบร้อยแล้ว!\nอัปเดตสถานะ SO จำนวน {len(self.current_so_ids)} รายการเป็น 'Paid'", parent=self)
+                
+                # ล้างหน้าจอและโหลดประวัติใหม่
+                self._reset_process_ui()
+                self._load_payout_history()
+                
+            except Exception as e:
+                if conn: conn.rollback()
+                messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดระหว่างบันทึกข้อมูล: {e}", parent=self)
+                traceback.print_exc()
+            finally:
+                if conn: self.app_container.release_connection(conn)
 
         except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึก: {e}", parent=self)
+            messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูล: {e}", parent=self)
             traceback.print_exc()
-        finally:
-            if conn: self.app_container.release_connection(conn)
     
     def _toggle_select_all_payouts(self):
         if not hasattr(self, 'payout_tree') or not self.payout_tree.winfo_exists():
