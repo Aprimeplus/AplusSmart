@@ -1943,21 +1943,27 @@ class PayoutDetailWindow(CTkToplevel):
     
     def _prepare_so_dataframe(self):
         """(ฟังก์ชันใหม่) เตรียม DataFrame ของ SOs สำหรับแสดงใน Treeview"""
-        if not self.payout_log_data or not self.payout_log_data.get('so_numbers_json'):
+        if not self.payout_log_data or not self.payout_log_data.get('so_ids_json'):
             return pd.DataFrame()
         
-        so_numbers_in_log = tuple(self.payout_log_data['so_numbers_json'])
-        if not so_numbers_in_log:
+        # --- START: ✅ แก้ไขจุดนี้ ---
+        # 1. โหลด JSON string ให้กลับมาเป็น Python List
+        so_id_list = json.loads(self.payout_log_data['so_ids_json'])
+        # 2. แปลง List ของ ID (ตัวเลข) ให้เป็น Tuple
+        so_ids_in_log = tuple(so_id_list)
+        # --- END ---
+
+        if not so_ids_in_log:
             return pd.DataFrame()
             
         try:
-            placeholders = ', '.join(['%s'] * len(so_numbers_in_log))
+            placeholders = ', '.join(['%s'] * len(so_ids_in_log))
             query = f"""
                 SELECT so_number, final_sales_amount, final_margin
                 FROM commissions
-                WHERE so_number IN ({placeholders}) AND is_active = 1
+                WHERE id IN ({placeholders}) AND is_active = 1 -- <--- 2. ✅ แก้ไขจุดนี้
             """
-            df = pd.read_sql_query(query, self.app_container.pg_engine, params=so_numbers_in_log)
+            df = pd.read_sql_query(query, self.app_container.pg_engine, params=so_ids_in_log)
             
             # สร้างคอลัมน์ใหม่สำหรับบอกสถานะ
             df['status'] = df['final_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
@@ -2018,13 +2024,13 @@ class PayoutDetailWindow(CTkToplevel):
     
     def _show_calculation_summary(self):
         """เปิดหน้าต่างใหม่เพื่อแสดงตารางสรุปการคำนวณค่าคอม"""
-        if not self.payout_log_data or not self.payout_log_data.get('summary_json'):
+        if not self.payout_log_data or not self.payout_log_data.get('summary_data_json'): # <--- แก้ไข
             messagebox.showinfo("ไม่มีข้อมูล", "ไม่พบข้อมูลสรุปการคำนวณสำหรับรอบนี้", parent=self)
             return
 
         try:
             # --- START: แก้ไข Logic การจัดการ JSON ตรงนี้ ---
-            summary_json_data = self.payout_log_data['summary_json']
+            summary_json_data = self.payout_log_data['summary_data_json'] # <--- แก้ไข
             summary_data = None
 
             if isinstance(summary_json_data, str):
@@ -2174,7 +2180,7 @@ class PayoutDetailWindow(CTkToplevel):
                     self.destroy()
                     return
 
-                summary_list = log_data['summary_json'] 
+                summary_list = log_data['summary_data_json']
                 net_commission = next((item['value'] for item in summary_list if 'หลังหัก ณ ที่จ่าย' in item['description']), 0.0)
                 
                 info_text = (
@@ -2204,20 +2210,27 @@ class PayoutDetailWindow(CTkToplevel):
                 # 2. ถ้าวิธีแรกไม่เจอ ให้ลองวิธีสำรองที่ 1 (ค้นหาจาก status 'Paid')
                 if df.empty:
                     print(f"INFO: No records for payout_id {self.payout_id}. Trying fallback 1 (status='Paid')...")
-                    so_numbers_in_log = tuple(log_data.get('so_numbers_json', []))
-                    if so_numbers_in_log:
-                        placeholders = ', '.join(['%s'] * len(so_numbers_in_log))
-                        query_fallback1 = f"SELECT so_number, final_sales_amount, final_margin FROM commissions WHERE so_number IN ({placeholders}) AND status = 'Paid'"
-                        df = pd.read_sql_query(query_fallback1, self.app_container.pg_engine, params=so_numbers_in_log)
+                    # --- START: ✅ แก้ไขจุดนี้ ---
+                    json_data = log_data.get('so_ids_json')
+                    so_id_list = json.loads(json_data) if json_data else []
+                    so_ids_in_log = tuple(so_id_list)
+                    # --- END ---
+                    if so_ids_in_log:
+                        placeholders = ', '.join(['%s'] * len(so_ids_in_log))
+                        query_fallback1 = f"SELECT so_number, final_sales_amount, final_margin FROM commissions WHERE id IN ({placeholders}) AND status = 'Paid'" # <--- 2. ✅ แก้ไขจุดนี้
+                        df = pd.read_sql_query(query_fallback1, self.app_container.pg_engine, params=so_ids_in_log) # <--- 3. ใช้ตัวแปรใหม่
 
                 # 3. ถ้ายังไม่เจออีก ให้ลองวิธีสำรองสุดท้าย (ค้นหาจาก status 'HR Verified')
                 if df.empty:
                     print(f"INFO: Fallback 1 failed. Trying fallback 2 (status='HR Verified')...")
-                    so_numbers_in_log = tuple(log_data.get('so_numbers_json', []))
-                    if so_numbers_in_log:
-                        placeholders = ', '.join(['%s'] * len(so_numbers_in_log))
-                        query_fallback2 = f"SELECT so_number, final_sales_amount, final_margin FROM commissions WHERE so_number IN ({placeholders}) AND status = 'HR Verified'"
-                        df = pd.read_sql_query(query_fallback2, self.app_container.pg_engine, params=so_numbers_in_log)
+                    # --- START: ✅ แก้ไขจุดนี้ ---
+                    json_data = log_data.get('so_ids_json')
+                    so_id_list = json.loads(json_data) if json_data else []
+                    so_ids_in_log = tuple(so_id_list)
+                    if so_ids_in_log:
+                        placeholders = ', '.join(['%s'] * len(so_ids_in_log))
+                        query_fallback2 = f"SELECT so_number, final_sales_amount, final_margin FROM commissions WHERE id IN ({placeholders}) AND status = 'HR Verified'" # <--- 2. ✅ แก้ไขจุดนี้
+                        df = pd.read_sql_query(query_fallback2, self.app_container.pg_engine, params=so_ids_in_log)
                 # --- END: Enhanced Fallback Logic ---
 
                 if df.empty:

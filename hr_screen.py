@@ -459,13 +459,15 @@ class HRScreen(CTkFrame):
 
         # <<< START: 1. เพิ่มคอลัมน์ใหม่ 3 คอลัมน์ >>>
         columns = {
+            'payout_period_text': 'รอบค่าคอม',  # <--- ✅ เพิ่ม
             'sale_key': 'รหัสพนักงาน', 'sale_name': 'ชื่อพนักงาน', 'plan_name': 'แผน',
             'sales_target': 'เป้าหมาย', 
             'total_sales': 'ยอดขาย',
             'total_normal_sales': 'Normal',
             'total_below_sales': 'BelowT',
-            'timestamp': 'วันที่จ่าย', 'final_commission': 'ยอดคอม', 
-            'incentives_total': 'Incentive', 'deductions_total': 'ยอดหัก', 'net_commission': 'ยอดโอนสุทธิ'
+            'timestamp': 'วันที่ทำรายการจ่าย', # <--- ✅ แก้ไขชื่อ
+            'final_commission': 'ยอดคอม Gross',
+            'incentives_total': 'Incentive', 'deductions_total': 'ยอดหัก', 'withholding_tax': 'หัก 3%', 'net_commission': 'ยอดโอนสุทธิ'
         }
         # <<< END >>>
         
@@ -485,12 +487,15 @@ class HRScreen(CTkFrame):
                 width = 110
             elif col_id == 'plan_name': 
                 width = 80
+            elif col_id == 'payout_period_text': # <--- ✅ เพิ่ม
+                width = 130
             
             # <<< START: 2. ตั้งค่าให้คอลัมน์ใหม่เป็นชิดขวา และกำหนดขนาด >>>
-            if col_id in ['sales_target', 'total_sales', 'final_commission', 
-                           'incentives_total', 'deductions_total', 'net_commission']:
+            if col_id in ['sales_target', 'total_sales', 'final_commission',
+                'incentives_total', 'deductions_total', 
+                'withholding_tax', 'net_commission']: # <--- ✅ เพิ่ม 'withholding_tax' ที่นี่
                 anchor = 'e'
-                width = 130 
+                width = 130
             elif col_id in ['total_normal_sales', 'total_below_sales']:
                 anchor = 'e'
                 width = 100 
@@ -951,18 +956,22 @@ class HRScreen(CTkFrame):
             base_query = """
                 SELECT 
                     log.id, 
+                    log.payout_period_text,   -- <<< ✅ เพิ่มบรรทัดนี้
                     log.sale_key, 
                     u.sale_name, 
                     log.plan_name, 
                     u.sales_target,
-                    log.total_sales,          -- เพิ่มคอลัมน์นี้
-                    log.total_normal_sales,   -- เพิ่มคอลัมน์นี้
-                    log.total_below_sales,    -- เพิ่มคอลัมน์นี้
-                    log.timestamp, 
+                    log.total_sales,
+                    log.total_normal_sales,
+                    log.total_below_sales,
+                    log.timestamp,            -- (เก็บไว้เพื่อแสดงผล 'วันที่จ่าย')
                     log.final_commission, 
                     log.incentives_total,
                     log.deductions_total, 
-                    log.net_commission
+                    log.withholding_tax,
+                    log.net_commission,
+                    log.commission_year,      -- <<< ✅ เพิ่มบรรทัดนี้
+                    log.commission_month      -- <<< ✅ เพิ่มบรรทัดนี้
                 FROM commission_payout_logs log
                 JOIN sales_users u ON log.sale_key = u.sale_key
             """
@@ -973,16 +982,16 @@ class HRScreen(CTkFrame):
                 params.extend([f"%{search_term}%", f"%{search_term}%"])
 
             if selected_year != "ทุกปี":
-                where_clauses.append("EXTRACT(YEAR FROM log.timestamp) = %s")
+                where_clauses.append("log.commission_year = %s") # <--- ✅ แก้ไข
                 params.append(int(selected_year))
 
             if selected_month != "ทุกเดือน":
                 month_num = self.thai_month_map[selected_month]
-                where_clauses.append("EXTRACT(MONTH FROM log.timestamp) = %s")
+                where_clauses.append("log.commission_month = %s") # <--- ✅ แก้ไข
                 params.append(month_num)
             
             where_clause = " AND ".join(where_clauses)
-            query = f"{base_query} WHERE {where_clause} ORDER BY log.timestamp DESC"
+            query = f"{base_query} WHERE {where_clause} ORDER BY log.commission_year DESC, log.commission_month DESC, log.timestamp DESC"
             
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
             
@@ -2851,6 +2860,12 @@ class HRScreen(CTkFrame):
         month_num = self.thai_month_map[month_name]
         year_ad = int(year_be_str) - 543
 
+        # <<< START: เพิ่ม 3 บรรทัดนี้เพื่อบันทึกค่างวดไว้ใช้ตอน Save >>>
+        self.current_period_text = selected_period
+        self.selected_month = month_num
+        self.selected_year = year_ad
+        # <<< END >>>
+
         plan_info = self.sales_user_info.get(sale_key, {})
         plan = plan_info.get('plan', 'Plan A')
         sales_target = float(plan_info.get('target', 0.0))
@@ -2867,15 +2882,19 @@ class HRScreen(CTkFrame):
                     FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
                 WHERE c.sale_key = %s 
-                  AND c.status = 'HR Verified' 
-                  AND c.payout_id IS NULL
-                  AND c.commission_month = %s 
-                  AND c.commission_year = %s
-                  AND c.is_active = 1
+                    AND c.status = 'HR Verified' 
+                    AND c.payout_id IS NULL
+                    AND c.commission_month = %s 
+                    AND c.commission_year = %s
+                    AND c.is_active = 1
             """
             params = (sale_key, month_num, year_ad)
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
 
+            # <<< START: บันทึก ID ของ SO ที่จะถูกประมวลผล >>>
+            self.current_so_ids = self.current_comm_df['id'].tolist()
+            # <<< END >>>
+            
             self.current_total_sales = self.current_comm_df['final_sales_amount'].sum()
             self.current_total_cost = self.current_comm_df['final_cost_amount'].sum()
 
@@ -2911,7 +2930,6 @@ class HRScreen(CTkFrame):
             print("-" * 15)
             print("Part 2: Brokerage Difference")
             
-            # +++ START: เพิ่ม Debug แสดงรายละเอียดของ Difference Amount +++
             print("  --- Breakdown of Difference Amount ---")
             df_with_diff = self.current_comm_df[self.current_comm_df['difference_amount'] != 0]
             if not df_with_diff.empty:
@@ -2920,7 +2938,6 @@ class HRScreen(CTkFrame):
             else:
                 print("    -> No SOs with a non-zero difference amount.")
             print("  ------------------------------------")
-            # +++ END +++
 
             total_brokerage = self.current_comm_df['brokerage_fee'].sum()
             total_difference = self.current_comm_df['difference_amount'].sum()
@@ -2954,16 +2971,49 @@ class HRScreen(CTkFrame):
             df_for_calc = self.current_comm_df.copy()
             df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
             
-            default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
-            default_operating_fee = default_fees.get(plan, 0.0)
-
-            self.initial_commission_result = business_logic.calculate_monthly_commission(
-                plan_name=plan,
-                comm_df=df_for_calc,
-                sales_target=sales_target,
-                operating_fee=default_operating_fee
-            )
+            # <<< START: แก้ไข Logic การดึงค่าดำเนินการ >>>
+            default_operating_fee = 0.0
+            try:
+                fee_str = self.operating_fee_entry.get()
+                default_operating_fee = utils.convert_to_float(fee_str)
+                print(f"-> [DEBUG] อ่านค่า Operating Fee จาก Textbox: {default_operating_fee} (จาก string: '{fee_str}')")
+            except AttributeError:
+                default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
+                default_operating_fee = default_fees.get(plan, 0.0)
+                print(f"-> [DEBUG] Textbox ยังไม่ถูกสร้าง (ครั้งแรก), ใช้ค่า Hardcode: {default_operating_fee}")
+            except Exception as e:
+                print(f"-> [DEBUG] Error อ่านค่า Operating Fee, ใช้ค่า 0.0. (Error: {e})")
+                default_operating_fee = 0.0
+            # <<< END: สิ้นสุดการแก้ไข >>>
             
+            # --- คำนวณค่าคอม ---
+            if plan == 'Plan A':
+                print(f"-> [DEBUG] กำลังส่งค่า Operating Fee: {default_operating_fee} ไปคำนวณ (Plan A)")
+                print("="*30 + "\n")
+                self.initial_commission_result = business_logic.calculate_monthly_commission(
+                    plan_name=plan,
+                    comm_df=df_for_calc, # Plan A ใช้ df_for_calc
+                    sales_target=sales_target,
+                    operating_fee=default_operating_fee,
+                    incentives=None, 
+                    additional_deductions=None
+                )
+            
+            elif plan in ["Plan B", "Plan C", "Plan D"]:
+                print(f"-> [DEBUG] กำลังส่งค่า Operating Fee: {default_operating_fee} ไปคำนวณ (Plan {plan})")
+                print("="*30 + "\n")
+                self.initial_commission_result = business_logic.calculate_monthly_commission(
+                    plan_name=plan,
+                    comm_df=df_for_calc, # Plan B,C,D ก็ควรใช้ df_for_calc
+                    sales_target=sales_target,
+                    operating_fee=default_operating_fee,
+                    incentives=None,
+                    additional_deductions=None
+                )
+            
+            else:
+                self.initial_commission_result = {'type': 'error', 'message': f'ไม่รู้จัก Plan: {plan}'}
+
             self.latest_commission_result = self.initial_commission_result
 
             result_type = self.initial_commission_result.get('type')
@@ -2978,17 +3028,20 @@ class HRScreen(CTkFrame):
                 else:
                     self.commission_details_df = None
                 
-                self._create_hr_input_interface(auto_deduction_value=final_auto_deduction)
+                self._create_hr_input_interface(
+                    auto_deduction_value=final_auto_deduction,
+                    default_operating_fee_to_display=default_operating_fee 
+                )
 
         except Exception as e:
             if loading.winfo_exists(): loading.destroy()
             traceback.print_exc()
             messagebox.showerror("Calculation Error", f"เกิดข้อผิดพลาดในการคำนวณ: {e}", parent=self)
 
-    def _create_hr_input_interface(self, auto_deduction_value=0.0):
+    def _create_hr_input_interface(self, auto_deduction_value=0.0, default_operating_fee_to_display=None):
         """
         สร้างหน้าจอสำหรับกรอก Incentive/Deduction และแสดงผลสรุปค่าคอม
-        (ฉบับแก้ไข: เพิ่มปุ่ม 'แสดงการคิดแบบละเอียด')
+        (ฉบับแก้ไข: ดึงค่าคอมที่ถูกต้องมาแสดง)
         """
         for widget in self.process_result_frame.winfo_children():
             widget.destroy()
@@ -2996,11 +3049,19 @@ class HRScreen(CTkFrame):
         self.process_result_frame.grid_rowconfigure(1, weight=1)
         self.process_result_frame.grid_columnconfigure(0, weight=1)
 
-        calculated_commission = self.initial_commission_result.get('final_commission', 0.0)
+        if not hasattr(self, 'initial_commission_result'):
+             self.initial_commission_result = {}
+             
+        # <<< START: แก้ไข Key ที่ดึงข้อมูลตรงนี้ >>>
+        # เปลี่ยนจาก 'final_commission' เป็น 'final_commission_pre_deductions'
+        calculated_commission = (
+        self.initial_commission_result.get('final_commission_pre_deductions') or 
+        self.initial_commission_result.get('final_commission', 0.0)
+        )   
+        # <<< END >>>
 
         input_frame = CTkFrame(self.process_result_frame)
         input_frame.grid(row=0, column=0, pady=(10, 0), padx=10, sticky="ew")
-        # input_frame.grid_columnconfigure(1, weight=1) # <--- ลบบรรทัดนี้ออกไปแล้ว ถูกต้องครับ
 
         plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
         self.plan_display_label = CTkLabel(input_frame, text=f"แผนค่าคอมมิชชั่น: {plan_name}", font=self.header_font_table, text_color=self.theme["primary"])
@@ -3013,19 +3074,29 @@ class HRScreen(CTkFrame):
         stats_frame = CTkFrame(input_frame, fg_color="transparent")
         stats_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(5,0))
         stats_frame.grid_columnconfigure((1, 3), weight=1)
+
+        # ดึงค่าจาก self.current_total_sales และ self.current_total_cost แทน
+        # (ค่าเหล่านี้ถูกคำนวณไว้แล้วใน _calculate_commission_for_period)
+        total_sales_display = getattr(self, 'current_total_sales', 0.0)
+        total_cost_display = getattr(self, 'current_total_cost', 0.0)
+
         CTkLabel(stats_frame, text="ยอดขายรวม (ที่ใช้คำนวณ):", font=self.label_font, text_color="#2563EB").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        CTkLabel(stats_frame, text=f"{getattr(self, 'current_total_sales', 0.0):,.2f} บาท", font=self.entry_font).grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        CTkLabel(stats_frame, text=f"{total_sales_display:,.2f} บาท", font=self.entry_font).grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
         CTkLabel(stats_frame, text="ต้นทุนรวม (ที่ใช้คำนวณ):", font=self.label_font, text_color="#D97706").grid(row=0, column=2, padx=(20, 10), pady=5, sticky="w")
-        CTkLabel(stats_frame, text=f"{getattr(self, 'current_total_cost', 0.0):,.2f} บาท", font=self.entry_font).grid(row=0, column=3, padx=10, pady=5, sticky="w")
+        CTkLabel(stats_frame, text=f"{total_cost_display:,.2f} บาท", font=self.entry_font).grid(row=0, column=3, padx=10, pady=5, sticky="w")
 
         CTkLabel(input_frame, text="(-) ค่าดำเนินการ:", font=self.label_font).grid(row=3, column=0, padx=10, pady=10, sticky="w")
         self.operating_fee_entry = NumericEntry(input_frame, placeholder_text="0.00")
         self.operating_fee_entry.grid(row=3, column=1, padx=10, pady=10, sticky="ew")
         
-        default_fees = {'Plan A': 25000, 'Plan B': 100000, 'Plan C': 100000, 'Plan D': 750000}
-        default_fee = default_fees.get(plan_name, 0.0)
-        self.operating_fee_entry.insert(0, f"{default_fee:,.2f}")
-
+        if default_operating_fee_to_display is not None:
+            self.operating_fee_entry.insert(0, f"{default_operating_fee_to_display:,.2f}")
+        else:
+            default_fees = {'Plan A': 25000, 'Plan B': 100000, 'Plan C': 100000, 'Plan D': 750000}
+            default_fee = default_fees.get(plan_name, 0.0)
+            self.operating_fee_entry.insert(0, f"{default_fee:,.2f}")
+        
         CTkLabel(input_frame, text="(+) Incentive:", font=self.label_font).grid(row=4, column=0, padx=10, pady=10, sticky="w")
         self.incentive_entry = NumericEntry(input_frame, placeholder_text="0.00")
         self.incentive_entry.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
@@ -3061,10 +3132,9 @@ class HRScreen(CTkFrame):
         bottom_action_frame.grid(row=2, column=0, pady=(0, 10), padx=10, sticky="ew")
         
         self.confirm_payout_button = CTkButton(bottom_action_frame, text="✅ ยืนยันการจ่ายเงินและบันทึก",
-                            command=self._confirm_payout_and_save,
-                            fg_color="#16A34A", hover_color="#15803D",
-                            font=CTkFont(size=16, weight="bold"))
-
+                                command=self._confirm_payout_and_save,
+                                fg_color="#16A34A", hover_color="#15803D",
+                                font=CTkFont(size=16, weight="bold"))
 
     def _perform_final_calculation(self):
         try:
@@ -3131,42 +3201,119 @@ class HRScreen(CTkFrame):
     
     def _confirm_payout_and_save(self):
         """
-        (เวอร์ชันแก้ไข) ยืนยันการจ่ายเงิน, อัปเดตสถานะ SO, และบันทึก Log การจ่ายเงิน
-        พร้อมบันทึก total_sales, total_normal_sales, total_below_sales
+        (เวอร์ชันปรับปรุงล่าสุด)
+        ✅ ยืนยันการจ่ายเงิน, อัปเดตสถานะ SO, และบันทึก Log การจ่ายเงิน
+        ✅ คำนวณยอดหักเฉพาะ Decentive (ไม่นับค่าดำเนินการ / หัก ณ ที่จ่าย)
+        ✅ รองรับชื่อ Gross Commission ที่แตกต่างกันในแต่ละ Plan
+        ✅ รองรับชื่อยอดขาย Normal / Below ของทุกแผน (รวม Tier 1/2/3)
         """
         try:
-            if not hasattr(self, 'final_commission_result') or not self.final_commission_result:
-                messagebox.showwarning("ยังไม่พร้อม", "กรุณากด 'คำนณขั้นสุดท้าย' ก่อนยืนยันการจ่ายเงิน", parent=self)
+            # --- ตรวจสอบความพร้อมก่อน ---
+            if not hasattr(self, 'latest_commission_result') or not self.latest_commission_result:
+                messagebox.showwarning("ยังไม่พร้อม", "กรุณากด 'คำนวณขั้นสุดท้าย' ก่อนยืนยันการจ่ายเงิน", parent=self)
                 return
 
-            if not messagebox.askyesno("ยืนยันการจ่ายเงิน", "คุณยืนยันที่จะบันทึกการจ่ายเงินนี้ใช่หรือไม่?\nการดำเนินการนี้จะอัปเดตสถานะ SO ทั้งหมดเป็น 'Paid' และไม่สามารถย้อนกลับได้จากหน้านี้", parent=self):
+            if not messagebox.askyesno(
+                "ยืนยันการจ่ายเงิน",
+                "คุณยืนยันที่จะบันทึกการจ่ายเงินนี้ใช่หรือไม่?\n"
+                "การดำเนินการนี้จะอัปเดตสถานะ SO ทั้งหมดเป็น 'Paid' และไม่สามารถย้อนกลับได้จากหน้านี้",
+                parent=self
+            ):
                 return
             
             # --- 1. ดึงข้อมูลสรุปทั้งหมด ---
             payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
-            summary_df = self.final_commission_result['summary']
-            
-            # ฟังก์ชันช่วยดึงค่าจาก summary_df
-            def get_summary_value(key_name):
-                try:
-                    return summary_df.loc[summary_df['description'] == key_name, 'value'].values[0]
-                except (IndexError, KeyError):
-                    return 0.0
-
-            # <<< START: 1. ดึงข้อมูลสรุปยอดขายสำหรับบันทึก >>>
             plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
-            total_sales = 0.0
-            total_normal_sales = 0.0
-            total_below_sales = 0.0
+            
+            final_summary_df = None
+            initial_summary_df = None 
 
-            if plan_name == 'Plan A':
-                total_sales = get_summary_value("ยอดขายดิบรวม (Total Revenue)")
-                # Plan A ไม่มียอด Normal/BelowT ให้เป็น 0
-            else: # Plan B, C, D
-                total_sales = get_summary_value("ยอดขายรวม (Total Sales)")
-                total_normal_sales = get_summary_value("ยอดขาย Normal (>=10%)")
-                total_below_sales = get_summary_value("ยอดขาย Below T (<10%)")
-            # <<< END >>>
+            result_type = self.latest_commission_result.get('type')
+            if result_type == 'summary_plan_a':
+                final_summary_df = self.latest_commission_result.get('summary')
+                initial_summary_df = self.latest_commission_result.get('summary') 
+            elif result_type == 'summary_other':
+                final_summary_df = self.latest_commission_result.get('data') 
+                initial_summary_df = self.latest_commission_result.get('data') 
+
+            if final_summary_df is None or initial_summary_df is None:
+                messagebox.showerror("ผิดพลาด", "ไม่พบข้อมูลสรุปผลการคำนวณ (Summary DF is None)", parent=self)
+                return
+            
+            # --- ฟังก์ชันช่วย ---
+            def get_final_summary_value(key_name, default=0.0):
+                try:
+                    value = final_summary_df.loc[final_summary_df['description'] == key_name, 'value'].values[0]
+                    return float(value)
+                except (IndexError, KeyError):
+                    return default
+
+            def get_initial_summary_value(key_name, default=0.0):
+                if initial_summary_df is None:
+                    return default
+                try:
+                    if 'description' in initial_summary_df.columns:
+                        value = initial_summary_df.loc[initial_summary_df['description'] == key_name, 'value'].values[0]
+                        return float(value)
+                    else:
+                        print("Warning: 'description' column not found in initial_summary_df.")
+                        return default
+                except (IndexError, KeyError):
+                    return default
+
+            # --- ✅ Logic ยืดหยุ่นในการดึงยอดขาย Normal / Below ---
+            try:
+                # Normal (Tier 1)
+                normal_row = initial_summary_df[
+                    initial_summary_df['description'].str.contains("ปกติ|Normal|Tier 1", case=False, na=False)
+                ]
+                total_normal_sales = float(normal_row['value'].iloc[0]) if not normal_row.empty else 0.0
+
+                # Below Tier (Tier 2 หรือ Tier 3)
+                below_row = initial_summary_df[
+                    initial_summary_df['description'].str.contains("Below|นอกเงื่อนไข|Tier 2|Tier 3", case=False, na=False)
+                ]
+                total_below_sales = below_row['value'].sum() if not below_row.empty else 0.0
+
+                total_sales = total_normal_sales + total_below_sales
+
+                print(f"\n💡 ตรวจพบยอดขายจาก Summary:")
+                print(f"   - Normal (Tier 1): {total_normal_sales:,.2f}")
+                print(f"   - Below (Tier 2+3): {total_below_sales:,.2f}")
+                print(f"   - Total Sales: {total_sales:,.2f}")
+
+            except Exception:
+                total_sales = total_normal_sales = total_below_sales = 0.0
+                print("⚠️ ไม่พบข้อมูลยอดขาย Normal/Below ใน summary dataframe")
+
+            # --- ✅ START: ปรับ logic การคำนวณยอดหัก ---
+            # 1. Incentive รวม
+            incentives_df = final_summary_df[
+                final_summary_df['description'].str.startswith('(+) ')
+            ]
+            incentives_total = incentives_df['value'].sum()
+
+            # 2. Deduction (เฉพาะรายการจริง)
+            deductions_df = final_summary_df[
+                final_summary_df['description'].str.startswith('(-) ')
+                & (~final_summary_df['description'].str.contains('ดำเนินการ', case=False, na=False))
+                & (~final_summary_df['description'].str.contains('หัก ณ ที่จ่าย', case=False, na=False))
+            ]
+            deductions_total = deductions_df['value'].sum()
+
+            print("\n🟡 รายการที่ถูกนับเป็น (-) Deductions (หลังกรอง):")
+            print(deductions_df[['description', 'value']])
+            print(f"✅ Deductions Total (ไม่รวมค่าดำเนินการ/WHT): {deductions_total:,.2f}")
+            # --- ✅ END ---
+
+            # --- ✅ Logic ตรวจหา Gross Commission แบบยืดหยุ่น ---
+            try:
+                gross_row = final_summary_df[
+                    final_summary_df['description'].str.contains("ขั้นต้น|ก่อนหัก|Gross", case=False, na=False)
+                ]
+                final_commission_val = float(gross_row['value'].iloc[0]) if not gross_row.empty else 0.0
+            except Exception:
+                final_commission_val = 0.0
 
             # --- 2. เตรียมข้อมูลสำหรับบันทึกลง log ---
             log_data = {
@@ -3175,47 +3322,41 @@ class HRScreen(CTkFrame):
                 "payout_period_text": self.current_period_text,
                 "commission_month": self.selected_month,
                 "commission_year": self.selected_year,
-                "calculated_commission": self.initial_commission_result.get('final_commission_pre_deductions', 0.0),
-                "incentives_total": get_summary_value("ยอดรวม Incentives"), # สมมติว่ามี key นี้
-                "deductions_total": get_summary_value("ยอดรวมหัก"), # สมมติว่ามี key นี้
-                "final_commission": get_summary_value("ยอดคอมมิชชั่นก่อนหักภาษี"),
-                "withholding_tax": get_summary_value("(-) หัก ณ ที่จ่าย 3%"),
-                "net_commission": get_summary_value("ยอดสรุปคอมหลังหัก ณ ที่จ่าย"),
+                "calculated_commission": float(self.latest_commission_result.get('final_commission_pre_deductions', 0.0)),
+                "incentives_total": float(incentives_total),
+                "deductions_total": float(deductions_total),
+                "final_commission": final_commission_val,  # ✅ ใช้ค่าที่หาได้แบบยืดหยุ่น
+                "withholding_tax": get_final_summary_value("(-) หัก ณ ที่จ่าย 3%"),
+                "net_commission": get_final_summary_value("ยอดสรุปคอมหลังหัก ณ ที่จ่าย"),
                 "notes": payout_notes,
-                "summary_data_json": self.final_commission_result['summary'].to_json(orient='records'),
-                "so_ids_json": json.dumps(self.current_so_ids), # บันทึก SO IDs ที่เกี่ยวข้อง
-                
-                # <<< START: 2. เพิ่มข้อมูลใหม่ 3 คอลัมน์เข้าไป >>>
-                "total_sales": total_sales,
-                "total_normal_sales": total_normal_sales,
-                "total_below_sales": total_below_sales
-                # <<< END >>>
+                "summary_data_json": final_summary_df.to_json(orient='records'),
+                "so_ids_json": json.dumps(self.current_so_ids),
+                "total_sales": float(total_sales),
+                "total_normal_sales": float(total_normal_sales),
+                "total_below_sales": float(total_below_sales)
             }
-            
-            # กรองข้อมูลที่มีค่า None ออกก่อน (ถ้ามี)
             log_data = {k: v for k, v in log_data.items() if v is not None}
 
+            # --- Debug: แสดงค่าที่จะบันทึกลงฐานข้อมูล ---
+            print("\n🧾 ข้อมูล log_data ที่จะถูกบันทึก:")
+            for k, v in log_data.items():
+                print(f"  {k}: {v}")
+
+            # --- 3. บันทึกลงฐานข้อมูล ---
             conn = self.app_container.get_connection()
             try:
                 with conn.cursor() as cursor:
-                    # --- 3. บันทึก Log การจ่ายเงิน และดึง ID กลับมา ---
-                    
-                    # <<< START: 3. อัปเดตคำสั่ง INSERT ให้มีคอลัมน์ใหม่ >>>
                     columns = ", ".join(log_data.keys())
                     placeholders = ", ".join(["%s"] * len(log_data))
-                    
                     sql_insert_log = f"""
                         INSERT INTO commission_payout_logs ({columns}, timestamp)
                         VALUES ({placeholders}, %s)
                         RETURNING id;
                     """
                     params = list(log_data.values()) + [datetime.now()]
-                    # <<< END >>>
-                    
                     cursor.execute(sql_insert_log, tuple(params))
                     payout_id = cursor.fetchone()[0]
 
-                    # --- 4. อัปเดตสถานะ SO ทั้งหมดเป็น 'Paid' ---
                     so_ids_tuple = tuple(self.current_so_ids)
                     if so_ids_tuple:
                         cursor.execute("""
@@ -3223,20 +3364,25 @@ class HRScreen(CTkFrame):
                             SET status = 'Paid', payout_id = %s
                             WHERE id IN %s
                         """, (payout_id, so_ids_tuple))
-                    
+                
                 conn.commit()
-                messagebox.showinfo("สำเร็จ", f"บันทึกการจ่ายเงิน (Payout ID: {payout_id}) เรียบร้อยแล้ว!\nอัปเดตสถานะ SO จำนวน {len(self.current_so_ids)} รายการเป็น 'Paid'", parent=self)
+                messagebox.showinfo(
+                    "สำเร็จ",
+                    f"บันทึกการจ่ายเงิน (Payout ID: {payout_id}) เรียบร้อยแล้ว!\n"
+                    f"อัปเดตสถานะ SO จำนวน {len(self.current_so_ids)} รายการเป็น 'Paid'",
+                    parent=self
+                )
                 
-                # ล้างหน้าจอและโหลดประวัติใหม่
-                self._reset_process_ui()
+                self._on_sale_selected_for_process()
                 self._load_payout_history()
-                
+            
             except Exception as e:
                 if conn: conn.rollback()
                 messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดระหว่างบันทึกข้อมูล: {e}", parent=self)
                 traceback.print_exc()
             finally:
-                if conn: self.app_container.release_connection(conn)
+                if conn:
+                    self.app_container.release_connection(conn)
 
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูล: {e}", parent=self)
