@@ -1,4 +1,4 @@
-# export_utils.py (ฉบับแก้ไขล่าสุด: เพิ่มการกรองข้อมูลตามวันที่)
+# export_utils.py (ฉบับแก้ไขล่าสุด: เพิ่มฟังก์ชัน export รายละเอียดค่าคอม)
 
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 import traceback
-
+import psycopg2.extras
 from customtkinter import CTkToplevel, CTkFrame, CTkLabel, CTkButton
 from custom_widgets import DateSelector
 
@@ -76,6 +76,13 @@ class DateRangeDialog(CTkToplevel):
 
         if not self.start_date:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาเลือกวันที่เริ่มต้น", parent=self)
+            return
+        
+        if not self.end_date:
+            self.end_date = date.today() # ถ้าไม่เลือกวันที่สิ้นสุด ให้เป็นวันนี้
+
+        if self.start_date > self.end_date:
+            messagebox.showwarning("วันที่ผิดพลาด", "วันที่เริ่มต้นต้องมาก่อนวันที่สิ้นสุด", parent=self)
             return
 
         self.destroy()
@@ -156,3 +163,170 @@ def export_approved_pos_to_excel(parent_window, pg_engine):
     except Exception as e:
         messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)
         traceback.print_exc()
+
+
+# --- START: ฟังก์ชันใหม่สำหรับ Export รายละเอียดค่าคอม ---
+
+def export_commission_details_to_excel(parent_window, pg_engine, sale_key, sale_name=""):
+    """
+    Export ข้อมูลรายละเอียดค่าคอมมิชชั่น (สันนิษฐานว่าสถานะ 'Paid') 
+    สำหรับพนักงานขายที่เลือก (sale_key) ตามช่วงวันที่
+    """
+    # 1. เปิดหน้าต่างเลือกช่วงวันที่
+    dialog = DateRangeDialog(parent_window)
+    parent_window.wait_window(dialog)
+
+    start_date = dialog.start_date
+    end_date = dialog.end_date
+
+    if not start_date or not end_date:
+        print("Export canceled by user.")
+        return
+
+    try:
+        # 2. สร้าง Query เพื่อดึงข้อมูล
+        # (เราจะดึงเฉพาะรายการ 'Paid' ที่อยู่ในช่วงวันที่ที่เลือก และสำหรับ sale_key นี้)
+        query = """
+        SELECT
+            c.so_number,
+            c.bill_date,
+            c.customer_name,
+            c.customer_type,
+            c.sales_service_amount,
+            c.final_sales_amount,
+            c.final_cost_amount,
+            c.final_gp,
+            c.final_margin,
+            c.final_commission,
+            c.commission_plan,
+            c.status,
+            su.sale_name
+        FROM
+            commissions c
+        LEFT JOIN
+            sales_users su ON c.sale_key = su.sale_key
+        WHERE
+            c.sale_key = %s
+            AND c.bill_date::date BETWEEN %s AND %s
+            AND c.is_active = 1
+            AND c.status = 'Paid'  -- ดึงเฉพาะรายการที่จ่ายแล้ว
+        ORDER BY
+            c.bill_date DESC;
+        """
+        
+        # 3. ดึงข้อมูลด้วย Pandas
+        df = pd.read_sql_query(query, pg_engine, params=(sale_key, start_date, end_date))
+
+        if df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", 
+                                   f"ไม่พบข้อมูลค่าคอมมิชชั่นที่ 'Paid' ของ {sale_name}\n"
+                                   f"ในช่วงวันที่ {start_date.strftime('%d/%m/%Y')} ถึง {end_date.strftime('%d/%m/%Y')}", 
+                                   parent=parent_window)
+            return
+
+        # 4. แปลงชื่อคอลัมน์ (ใช้ HEADER_MAP จาก AppContainer ถ้ามี)
+        header_map = {}
+        if hasattr(parent_window, 'app_container') and hasattr(parent_window.app_container, 'HEADER_MAP'):
+             header_map = parent_window.app_container.HEADER_MAP
+        
+        df.rename(columns=lambda c: header_map.get(c, c), inplace=True)
+        
+        # 5. ถามที่บันทึกไฟล์
+        safe_sale_name = sale_name.replace(" ", "_") if sale_name else sale_key
+        default_filename = (f"commission_paid_{safe_sale_name}_"
+                            f"{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.xlsx")
+        
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="บันทึกรายละเอียดค่าคอมมิชชั่นที่จ่ายแล้ว",
+            initialfile=default_filename,
+            parent=parent_window
+        )
+
+        # 6. บันทึกไฟล์ Excel
+        if save_path:
+            df.to_excel(save_path, index=False)
+            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลสำเร็จ!\nบันทึกที่: {save_path}", parent=parent_window)
+
+    except Exception as e:
+        messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)
+        traceback.print_exc()
+
+# --- END: ฟังก์ชันใหม่ ---
+
+import json
+import psycopg2.extras # <--- อาจจะต้องเพิ่ม import นี้ ถ้ายังไม่มี
+
+def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
+    """
+    Export รายการ SO ทั้งหมดที่อยู่ใน Payout ID ที่กำหนด ออกเป็นไฟล์ Excel
+    """
+    conn = None
+    try:
+        conn = app_container.get_connection()
+        
+        # 1. ดึงข้อมูล Log เพื่อเอา so_ids_json และ sale_key
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute("SELECT so_ids_json, sale_key FROM commission_payout_logs WHERE id = %s", (payout_id,))
+            log_data = cursor.fetchone()
+
+        if not log_data:
+            messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูล Payout Log ID: {payout_id}", parent=parent_window)
+            return
+            
+        sale_key = log_data['sale_key']
+        so_id_list = json.loads(log_data['so_ids_json'])
+        so_ids_in_log = tuple(so_id_list)
+
+        if not so_ids_in_log:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบรายการ SO ในรอบการจ่ายนี้", parent=parent_window)
+            return
+
+        # 2. Query ข้อมูล SO ทั้งหมดจาก List ID ที่ได้มา
+        # (ใช้ Query เดียวกันกับที่ PayoutDetailWindow ใช้สร้างตาราง)
+        placeholders = ', '.join(['%s'] * len(so_ids_in_log))
+        query = f"""
+            SELECT so_number, final_sales_amount, final_margin
+            FROM commissions
+            WHERE id IN ({placeholders}) AND is_active = 1
+        """
+        df = pd.read_sql_query(query, app_container.pg_engine, params=so_ids_in_log)
+        
+        # 3. เตรียม DataFrame (เพิ่มคอลัมน์ Status)
+        df['status'] = df['final_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
+        
+        # 4. แปลงชื่อคอลัมน์ (ใช้ HEADER_MAP จาก AppContainer ถ้ามี)
+        header_map = {}
+        if hasattr(app_container, 'HEADER_MAP'):
+             header_map = app_container.HEADER_MAP
+        
+        df.rename(columns={
+            'so_number': header_map.get('so_number', 'SO Number'),
+            'final_sales_amount': header_map.get('final_sales_amount', 'ยอดขายสุดท้าย (บาท)'),
+            'final_margin': header_map.get('final_margin', 'Margin สุดท้าย (%)'),
+            'status': 'สถานะ (คำนวณ)'
+        }, inplace=True)
+
+        # 5. ถามที่บันทึกไฟล์
+        default_filename = f"Payout_{payout_id}_{sale_key}_SOs_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="บันทึกรายการ SO ที่จ่ายแล้ว",
+            initialfile=default_filename,
+            parent=parent_window
+        )
+
+        # 6. บันทึกไฟล์ Excel
+        if save_path:
+            df.to_excel(save_path, index=False)
+            messagebox.showinfo("สำเร็จ", f"Export รายการ SO สำเร็จ!\nบันทึกที่: {save_path}", parent=parent_window)
+
+    except Exception as e:
+        messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)
+        traceback.print_exc()
+    finally:
+        if conn:
+            app_container.release_connection(conn)

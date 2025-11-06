@@ -25,6 +25,8 @@ from outstanding_dashboard_tab import OutstandingDashboardTab
 import matplotlib
 matplotlib.use('TkAgg')
 from matplotlib.font_manager import fontManager
+from export_utils import export_commission_details_to_excel
+import matplotlib
 
 try:
     # ใช้ os.path.join เพื่อให้ทำงานได้ทุกระบบปฏิบัติการ

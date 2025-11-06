@@ -9,7 +9,7 @@ from datetime import datetime
 import traceback
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 import utils
-
+from export_utils import export_commission_details_to_excel, export_payout_so_list_to_excel
 import psycopg2.errors
 import psycopg2.extras
 import numpy as np
@@ -1914,13 +1914,28 @@ class PayoutDetailWindow(CTkToplevel):
         self.info_label = CTkLabel(top_frame, text="กำลังโหลดข้อมูล...", font=('Roboto', 14), anchor="w")
         self.info_label.grid(row=0, column=0, sticky="w")
         
+        # --- START: แก้ไขส่วนนี้ (จัดกลุ่มปุ่ม) ---
+        # สร้าง Frame ใหม่สำหรับจัดกลุ่มปุ่มด้านขวา
+        button_container = CTkFrame(top_frame, fg_color="transparent")
+        button_container.grid(row=0, column=1, padx=10, sticky="e")
+
         self.show_calc_button = CTkButton(
-            top_frame, 
+            button_container, # <--- เปลี่ยน parent
             text="แสดงสรุปการคำนวณ", 
             command=self._show_calculation_summary,
             state="disabled"
         )
-        self.show_calc_button.grid(row=0, column=1, padx=10, sticky="e")
+        self.show_calc_button.pack(side="left", padx=(0, 5)) # <--- เปลี่ยนเป็น .pack()
+
+        # +++ ปุ่ม Export ใหม่ +++
+        self.export_button = CTkButton(
+            button_container, # <--- ใช้ parent ใหม่
+            text="Export SO List (Excel)",
+            command=self._on_export_excel, # <--- ฟังก์ชันใหม่ที่จะสร้าง
+            state="disabled"
+        )
+        self.export_button.pack(side="left", padx=(5, 0)) # <--- เปลี่ยนเป็น .pack()
+        # --- END: สิ้นสุดการแก้ไข ---
 
         # --- Frame สำหรับ Notes/Remarks ---
         notes_frame = CTkFrame(self, fg_color="transparent")
@@ -1928,6 +1943,8 @@ class PayoutDetailWindow(CTkToplevel):
         CTkLabel(notes_frame, text="หมายเหตุ:", font=('Roboto', 12, 'bold')).pack(anchor="w")
         self.notes_text = CTkTextbox(notes_frame, height=80, font=('Roboto', 12), state="disabled", fg_color="gray95")
         self.notes_text.pack(fill="x", expand=True)
+
+        
 
         # --- Frame สำหรับแสดงรายการ SO ---
         so_list_frame = CTkScrollableFrame(self, label_text="รายการ SO ทั้งหมดในการจ่ายรอบนี้:")
@@ -1941,6 +1958,21 @@ class PayoutDetailWindow(CTkToplevel):
         self.transient(master)
         self.grab_set()
     
+    def _on_export_excel(self):
+        """
+        Callback เมื่อผู้ใช้กดปุ่ม Export Excel
+        """
+        if not self.payout_id:
+            messagebox.showerror("ผิดพลาด", "ไม่พบ Payout ID ที่จะ Export", parent=self)
+            return
+        
+        # เรียกใช้ฟังก์ชัน Export ที่เราสร้างไว้ใน export_utils.py
+        export_payout_so_list_to_excel(
+            parent_window=self,
+            app_container=self.app_container,
+            payout_id=self.payout_id
+        )
+
     def _prepare_so_dataframe(self):
         """(ฟังก์ชันใหม่) เตรียม DataFrame ของ SOs สำหรับแสดงใน Treeview"""
         if not self.payout_log_data or not self.payout_log_data.get('so_ids_json'):
@@ -2000,6 +2032,7 @@ class PayoutDetailWindow(CTkToplevel):
 
         # เปิดใช้งานปุ่ม "แสดงสรุปการคำนวณ"
         self.show_calc_button.configure(state="normal")
+        self.export_button.configure(state="normal")
 
     def _load_data(self):
         """(ฟังก์ชันใหม่) โหลดข้อมูล Log การจ่ายเงินจากฐานข้อมูล"""
