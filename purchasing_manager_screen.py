@@ -1,4 +1,4 @@
-# purchasing_manager_screen.py (ฉบับแก้ไข ArgumentError)
+# purchasing_manager_screen.py (ฉบับปรับปรุง เพิ่มแท็บ Master Edit)
 
 import tkinter as tk
 from tkinter import ttk
@@ -293,11 +293,21 @@ class PurchasingManagerScreen(CTkFrame):
         self.manager_view_tab = self.tab_view.add("ภาพรวมและอนุมัติ (Manager View)")
         self.staff_view_tab = self.tab_view.add("สร้าง/แก้ไข PO (Staff View)")
         
+        # --- START: เพิ่มแท็บ Master Edit ---
+        self.master_edit_tab = self.tab_view.add("ค้นหา & ตีกลับ (Master Edit)")
+        self.master_edit_tab.grid_columnconfigure(0, weight=1)
+        self.master_edit_tab.grid_rowconfigure(1, weight=1)
+        # --- END ---
+
         self.manager_view_tab.grid_columnconfigure(0, weight=1)
         self.manager_view_tab.grid_rowconfigure(1, weight=1)
 
         self._create_dashboard_view(parent_tab=self.manager_view_tab)
         self._create_pending_list_view(parent_tab=self.manager_view_tab)
+        
+        # --- START: เพิ่มการเรียกใช้ฟังก์ชันสร้างแท็บใหม่ ---
+        self._create_master_edit_tab(self.master_edit_tab)
+        # --- END ---
         
         # +++ START: แก้ไขการสร้าง PurchasingScreen ตรงนี้ +++
         self.purchasing_staff_screen = PurchasingScreen(
@@ -313,6 +323,363 @@ class PurchasingManagerScreen(CTkFrame):
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
+    
+    # --- START: เพิ่ม 6 ฟังก์ชันใหม่สำหรับแท็บ Master Edit ---
+    
+    def _create_master_edit_tab(self, parent_tab):
+        """สร้าง UI สำหรับแท็บ Master Edit (คล้ายของ HR)"""
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1) # ให้แถวที่ 1 (ScrollFrame) ขยาย
+
+        # --- Frame สำหรับฟิลเตอร์และการค้นหา ---
+        search_frame = CTkFrame(parent_tab)
+        search_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        search_frame.grid_columnconfigure(0, weight=1)
+        
+        self.mp_master_search_entry = CTkEntry(search_frame, font=self.header_font, placeholder_text="กรอก SO หรือ PO ที่ต้องการค้นหา...")
+        self.mp_master_search_entry.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="ew")
+        
+        self.mp_master_search_entry.bind("<Return>", lambda event: self._mp_master_search())
+        self.mp_master_search_entry.bind("<KP_Enter>", lambda event: self._mp_master_search())
+        
+        search_button = CTkButton(search_frame, text="ค้นหา", command=self._mp_master_search, width=100)
+        search_button.grid(row=0, column=1, padx=5, pady=10)
+        
+        clear_button = CTkButton(search_frame, text="ล้างค่า", command=lambda: self.mp_master_search_entry.delete(0, 'end'), fg_color="gray", width=80)
+        clear_button.grid(row=0, column=2, padx=5, pady=10)
+
+        # --- Frame สำหรับแสดงผลลัพธ์ ---
+        self.mp_master_results_frame = CTkScrollableFrame(parent_tab, label_text="ผลการค้นหา")
+        self.mp_master_results_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.mp_master_results_frame.grid_columnconfigure(0, weight=1)
+
+    def _mp_master_search(self):
+        """ค้นหา SO/PO ทั้งหมดจาก Keyword"""
+        for widget in self.mp_master_results_frame.winfo_children():
+            widget.destroy()
+            
+        keyword = self.mp_master_search_entry.get().strip().upper()
+        if not keyword:
+            return
+
+        search_term = keyword
+        if search_term.startswith("SO"): search_term = search_term[2:]
+        elif search_term.startswith("PO"): search_term = search_term[2:]
+        
+        try:
+            # ค้นหา SO (ดึงข้อมูลเซลส์และสถานะมาด้วย)
+            so_query = """
+                SELECT c.id, c.so_number, c.customer_name, c.sale_key, c.status, u.sale_name
+                FROM commissions c
+                LEFT JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE c.so_number ILIKE %s AND c.is_active = 1
+            """
+            so_df = pd.read_sql_query(so_query, self.pg_engine, params=(f"%{search_term}%",))
+            
+            # ค้นหา PO (ดึงข้อมูลผู้สร้างและสถานะมาด้วย)
+            po_query = """
+                SELECT p.id, p.so_number, p.po_number, p.supplier_name, p.status, p.user_key
+                FROM purchase_orders p 
+                WHERE p.po_number ILIKE %s
+            """
+            po_df = pd.read_sql_query(po_query, self.pg_engine, params=(f"%{search_term}%",))
+
+            if so_df.empty and po_df.empty:
+                CTkLabel(self.mp_master_results_frame, text=f"ไม่พบข้อมูลสำหรับ '{keyword}'").pack(pady=20)
+                return
+
+            if not so_df.empty:
+                CTkLabel(self.mp_master_results_frame, text="ผลการค้นหา: Sales Orders (SO)", font=self.header_font).pack(anchor="w", padx=10, pady=(10,0))
+                for _, row in so_df.iterrows():
+                    self._create_mp_so_card(self.mp_master_results_frame, row.to_dict())
+
+            if not po_df.empty:
+                CTkLabel(self.mp_master_results_frame, text="ผลการค้นหา: Purchase Orders (PO)", font=self.header_font).pack(anchor="w", padx=10, pady=(10,0))
+                for _, row in po_df.iterrows():
+                    self._create_mp_po_card(self.mp_master_results_frame, row.to_dict())
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการค้นหา: {e}", parent=self)
+
+    def _create_mp_so_card(self, parent, so_data):
+        """สร้าง Card แสดงผลลัพธ์ SO (เวอร์ชันปรับปรุง: เพิ่มปุ่มตีกลับ SO)"""
+        so_number = so_data['so_number']
+        so_status = so_data.get('status', 'N/A')
+        
+        status_colors = {
+            'Paid': '#D1FAE5', 'HR Verified': '#A7F3D0', 
+            'PO Sent': '#67E8F9', 'Pending Sale Manager Approval': '#FDE047',
+            'PO In Progress': '#FEF3C7', 'Draft': '#E5E7EB',
+            'Rejected': '#FECACA', 'Cancelled': '#FECACA'
+        }
+        card_color = status_colors.get(so_status, "#F9FAFB")
+
+        so_card = CTkFrame(parent, border_width=1, fg_color=card_color)
+        so_card.pack(fill="x", padx=10, pady=5)
+        
+        info_text = f"SO: {so_number} | ลูกค้า: {so_data.get('customer_name','N/A')} | สถานะ: {so_status}"
+        CTkLabel(so_card, text=info_text).pack(side="left", padx=10, pady=5)
+        
+        # --- START: เพิ่ม Frame สำหรับจัดวางปุ่ม ---
+        action_frame = CTkFrame(so_card, fg_color="transparent")
+        action_frame.pack(side="right", padx=10, pady=5)
+        
+        # ปุ่มสำหรับ SO "แก้ไข" (เหมือนเดิม)
+        CTkButton(
+            action_frame, 
+            text="แก้ไข SO", 
+            width=100, 
+            command=lambda s=so_number: self._open_so_editor_for_mp(s)
+        ).pack(side="left", padx=5)
+        
+        # --- START: เพิ่มปุ่ม "ตีกลับ SO ทั้งหมด" (ปุ่มใหม่) ---
+        CTkButton(
+            action_frame, 
+            text="ตีกลับ SO ทั้งหมด", 
+            width=140, 
+            fg_color="#D32F2F", hover_color="#B71C1C", # สีแดง (อันตราย)
+            command=lambda s_num=so_number: self._mp_master_revert_so(s_num)
+        ).pack(side="left", padx=5)
+
+    def _create_mp_po_card(self, parent, po_data):
+        """สร้าง Card แสดงผลลัพธ์ PO"""
+        po_id = int(po_data['id'])
+        po_number = po_data['po_number']
+        so_number = po_data['so_number']
+        po_status = po_data.get('status', 'N/A')
+        po_creator = po_data.get('user_key', 'N/A')
+        
+        status_colors = {
+            'Approved': '#D1FAE5', 'Pending Approval': '#FEF3C7',
+            'Draft': '#E5E7EB', 'Rejected': '#FECACA', 'Cancelled': '#FECACA'
+        }
+        card_color = status_colors.get(po_status, "#F9FAFB")
+
+        po_card = CTkFrame(parent, border_width=1, fg_color=card_color)
+        po_card.pack(fill="x", padx=10, pady=5)
+        
+        info_text = f"PO: {po_number} | SO: {so_number} | Supplier: {po_data.get('supplier_name','N/A')} | สถานะ: {po_status}"
+        CTkLabel(po_card, text=info_text).pack(side="left", padx=10, pady=5)
+        
+        action_frame = CTkFrame(po_card, fg_color="transparent")
+        action_frame.pack(side="right", padx=10, pady=5)
+
+        # ปุ่ม "แก้ไข" (เปิดหน้าต่างแก้ไข PO)
+        CTkButton(
+            action_frame, 
+            text="แก้ไข PO", 
+            width=100, 
+            command=lambda pid=po_id: self._view_details(pid)
+        ).pack(side="left", padx=5)
+
+        # ปุ่ม "ตีกลับ" (Revert)
+        CTkButton(
+            action_frame, 
+            text="ตีกลับ (Revert)", 
+            width=120, 
+            fg_color="#F97316", hover_color="#EA580C",
+            command=lambda pid=po_id, s_num=so_number, creator=po_creator: self._mp_master_revert_po(pid, s_num, creator)
+        ).pack(side="left", padx=5)
+
+    def _mp_master_revert_po(self, po_id, so_number, po_creator_key):
+        """
+        ฟังก์ชันสำหรับ "ตีกลับ" PO ที่เลือกให้กลับไปเป็น Draft
+        """
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # 1. ตรวจสอบสถานะ SO ก่อน
+                cursor.execute("SELECT status FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", (so_number,))
+                so_record = cursor.fetchone()
+                
+                so_status = so_record['status'] if so_record else 'N/A'
+                
+                # 2. ตั้งค่าคำเตือน
+                warning_message = ""
+                if so_status in ('Paid', 'HR Verified'):
+                    warning_message = (
+                        f"\n\n!! คำเตือน !!\n"
+                        f"SO ({so_number}) นี้ อยู่ในสถานะ '{so_status}' แล้ว\n"
+                        "การตีกลับ PO อาจทำให้ข้อมูลค่าคอมมิชชั่นที่คำนวณไปแล้ว 'ผิดพลาด'\n"
+                        "กรุณาประสานงานกับ HR ก่อนดำเนินการ"
+                    )
+                
+                if not messagebox.askyesno(
+                    "ยืนยันการตีกลับ (Revert)",
+                    f"คุณต้องการตีกลับ PO ID: {po_id} ใช่หรือไม่?\n"
+                    f"PO ใบนี้จะถูกเปลี่ยนเป็น 'Draft' และส่งกลับไปให้ฝ่ายจัดซื้อ ({po_creator_key}) แก้ไข"
+                    f"{warning_message}",
+                    icon="warning",
+                    parent=self
+                ):
+                    return
+
+                # 3. ดำเนินการตีกลับ (Revert)
+                # 3.1 อัปเดต PO
+                cursor.execute("""
+                    UPDATE purchase_orders 
+                    SET 
+                        status = 'Draft', 
+                        approval_status = 'Draft',
+                        approver_manager1_key = NULL, approval_date_manager1 = NULL,
+                        approver_manager2_key = NULL, approval_date_manager2 = NULL,
+                        approver_director_key = NULL, approval_date_director = NULL,
+                        last_modified_by = %s,
+                        rejection_reason = %s
+                    WHERE id = %s
+                """, (self.user_key, f"Reverted by MP ({self.user_key}) at {datetime.now()}", po_id))
+
+                # 3.2 อัปเดต SO (ถ้า SO ยังไม่ถูกจ่ายเงิน)
+                if so_status not in ('Paid', 'HR Verified'):
+                    cursor.execute("""
+                        UPDATE commissions 
+                        SET status = 'PO In Progress' 
+                        WHERE so_number = %s AND is_active = 1
+                    """, (so_number,))
+                
+                # 3.3 ส่ง Notification
+                message_to_pu = f"PO ID: {po_id} ถูกตีกลับ (Revert) โดย Manager ({self.user_key}) กรุณาแก้ไขและส่งอนุมัติใหม่"
+                cursor.execute(
+                    "INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)", 
+                    (po_creator_key, message_to_pu, po_id)
+                )
+
+                # 3.4 บันทึก Audit Log
+                log_details = {'reverted_by': self.user_key, 'original_so_status': so_status}
+                cursor.execute(
+                    "INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", 
+                    ('PO Reverted', 'purchase_orders', po_id, self.user_key, json.dumps(log_details), datetime.now())
+                )
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ตีกลับ PO ID: {po_id} เป็น 'Draft' เรียบร้อยแล้ว", parent=self)
+            
+            # Refresh หน้าจอค้นหา
+            self._mp_master_search()
+            
+            # Refresh หน้าจอหลัก (เผื่อรายการนั้นค้างอยู่ที่หน้าแรก)
+            self._load_data()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการ Revert PO: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _mp_master_revert_so(self, so_number):
+        """
+        (ฟังก์ชันใหม่)
+        สำหรับ "ตีกลับ" SO ทั้งระบบ โดยการบังคับให้ PO ทุกใบที่เกี่ยวข้อง
+        กลับไปเป็น 'Draft' และตั้งค่า SO กลับไปเป็น 'PO In Progress'
+        """
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                
+                # 1. ค้นหา SO และ POs ที่เกี่ยวข้อง
+                cursor.execute("SELECT status FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", (so_number,))
+                so_record = cursor.fetchone()
+                so_status = so_record['status'] if so_record else 'N/A'
+                
+                cursor.execute(
+                    "SELECT id, user_key, po_number, status FROM purchase_orders WHERE so_number = %s AND status NOT IN ('Draft', 'Rejected', 'Cancelled')", 
+                    (so_number,)
+                )
+                po_records = cursor.fetchall()
+                po_count = len(po_records)
+
+                if po_count == 0:
+                    messagebox.showinfo("ไม่พบ PO", f"ไม่พบ PO ที่เกี่ยวข้อง (ที่ยัง Active) สำหรับ SO: {so_number} ที่จะตีกลับ", parent=self)
+                    return
+
+                # 2. สร้างคำเตือน
+                warning_message = ""
+                if so_status in ('Paid', 'HR Verified'):
+                    warning_message = (
+                        f"\n\n!! คำเตือนรุนแรง !!\n"
+                        f"SO ({so_number}) นี้ อยู่ในสถานะ '{so_status}' แล้ว\n"
+                        "การตีกลับจะส่งผลกระทบต่อข้อมูลการเงินและค่าคอมฯ\n"
+                        "**กรุณาประสานงานกับ HR และบัญชีทันทีหากดำเนินการต่อ**"
+                    )
+                
+                if not messagebox.askyesno(
+                    "ยืนยันการตีกลับ SO ทั้งระบบ",
+                    f"คุณต้องการตีกลับ SO: {so_number} ใช่หรือไม่?\n\n"
+                    f"การกระทำนี้จะบังคับตีกลับ PO ที่เกี่ยวข้องทั้งหมด {po_count} ใบ ให้กลับไปเป็น 'Draft'\n"
+                    f"และตั้งค่า SO กลับไปเป็น 'PO In Progress' (หากยังไม่จ่ายเงิน)"
+                    f"{warning_message}",
+                    icon="warning",
+                    parent=self
+                ):
+                    return
+
+                # 3. ดำเนินการตีกลับ (Revert)
+                po_ids_to_revert = [po['id'] for po in po_records]
+                po_creators_to_notify = set([po['user_key'] for po in po_records])
+                revert_reason = f"Full SO Reverted by MP ({self.user_key}) at {datetime.now()}"
+
+                # 3.1 อัปเดต POs ทั้งหมด
+                if po_ids_to_revert:
+                    cursor.execute("""
+                        UPDATE purchase_orders 
+                        SET 
+                            status = 'Draft', 
+                            approval_status = 'Draft',
+                            approver_manager1_key = NULL, approval_date_manager1 = NULL,
+                            approver_manager2_key = NULL, approval_date_manager2 = NULL,
+                            approver_director_key = NULL, approval_date_director = NULL,
+                            last_modified_by = %s,
+                            rejection_reason = %s
+                        WHERE id = ANY(%s)
+                    """, (self.user_key, revert_reason, po_ids_to_revert))
+
+                # 3.2 อัปเดต SO (ถ้า SO ยังไม่ถูกจ่ายเงิน/Verify)
+                if so_status not in ('Paid', 'HR Verified'):
+                    cursor.execute("""
+                        UPDATE commissions 
+                        SET status = 'PO In Progress' 
+                        WHERE so_number = %s AND is_active = 1
+                    """, (so_number,))
+                
+                # 3.3 ส่ง Notification
+                message_to_pu = f"SO: {so_number} (และ POs ทั้งหมด) ถูกตีกลับโดย Manager ({self.user_key}) กรุณาตรวจสอบและแก้ไข PO ใหม่ทั้งหมด"
+                for creator_key in po_creators_to_notify:
+                    cursor.execute(
+                        "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", 
+                        (creator_key, message_to_pu)
+                    )
+
+                # 3.4 บันทึก Audit Log
+                log_details = {
+                    'reverted_by': self.user_key, 
+                    'reverted_po_ids': po_ids_to_revert, 
+                    'original_so_status': so_status
+                }
+                cursor.execute(
+                    "INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, (SELECT id FROM commissions WHERE so_number = %s AND is_active=1 LIMIT 1), %s, %s, %s)", 
+                    ('SO Reverted', 'commissions', so_number, self.user_key, json.dumps(log_details, default=str), datetime.now())
+                )
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ตีกลับ SO: {so_number} และ POs ที่เกี่ยวข้อง {po_count} ใบ เป็น 'Draft' เรียบร้อยแล้ว", parent=self)
+            
+            # Refresh หน้าจอค้นหา
+            self._mp_master_search()
+            # Refresh หน้าจอหลัก
+            self._load_data()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการ Revert SO: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+    
+    # --- END: สิ้นสุด 6 ฟังก์ชันใหม่ ---
+    
     
     def _clear_search(self):
         """ล้างข้อความในช่องค้นหาและโหลดข้อมูลทั้งหมดใหม่"""
