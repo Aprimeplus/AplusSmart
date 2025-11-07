@@ -368,7 +368,7 @@ class HRScreen(CTkFrame):
         }
         
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-        self.period_options = ["ปีนี้", "เดือนนี้"] + self.thai_months
+        self.period_options = ["ปีนี้", "เดือนนี้", "Q1", "Q2", "Q3", "Q4"] + self.thai_months
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
 
         self.history_current_page, self.history_rows_per_page, self.history_total_rows = 0, 20, 0
@@ -1437,6 +1437,26 @@ class HRScreen(CTkFrame):
             elif period == "ปีนี้":
                 commission_filter_clauses.append("c.commission_year = %s")
                 params.append(current_year)
+            
+            # --- START: เพิ่ม Logic ของ Q1-Q4 ตรงนี้ ---
+            elif period == "Q1":
+                commission_filter_clauses.append("c.commission_month IN (1, 2, 3)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "Q2":
+                commission_filter_clauses.append("c.commission_month IN (4, 5, 6)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "Q3":
+                commission_filter_clauses.append("c.commission_month IN (7, 8, 9)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "Q4":
+                commission_filter_clauses.append("c.commission_month IN (10, 11, 12)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            # --- END: สิ้นสุด Logic Q1-Q4 ---
+            
             elif period in self.thai_month_map:
                 month_num = self.thai_month_map[period]
                 commission_filter_clauses.append("c.commission_month = %s")
@@ -1465,12 +1485,12 @@ class HRScreen(CTkFrame):
                 GROUP BY su.sale_key, su.sale_name, su.sales_target 
                 ORDER BY su.sale_name;
             """
-            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params)) # <-- แก้ไขตรงนี้
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
             return df
         except Exception as e: 
             print(f"Error getting sales vs target data: {e}") 
             messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self)
-            traceback.print_exc() # เพิ่ม traceback
+            traceback.print_exc() 
             return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales'])
 
     def _create_sales_vs_target_chart(self, parent_frame, data_df):
@@ -1649,11 +1669,12 @@ class HRScreen(CTkFrame):
 
     def _get_sales_by_employee_data(self, period): # <-- parameter ถูกต้องแล้ว
         try:
-            # --- START: สร้าง logic การกรองใหม่ (เหมือนเดิม) ---
+            # --- START: สร้าง logic การกรองใหม่ ---
             today = datetime.now()
             current_year = today.year
             params = []
             
+            # 1. สร้าง WHERE clause สำหรับ commission period
             commission_filter_clauses = []
             if period == "เดือนนี้":
                 commission_filter_clauses.append("c.commission_month = %s")
@@ -1663,12 +1684,32 @@ class HRScreen(CTkFrame):
             elif period == "ปีนี้":
                 commission_filter_clauses.append("c.commission_year = %s")
                 params.append(current_year)
+            
+            # --- START: เพิ่ม Logic ของ Q1-Q4 ตรงนี้ ---
+            elif period == "Q1":
+                commission_filter_clauses.append("c.commission_month IN (1, 2, 3)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "Q2":
+                commission_filter_clauses.append("c.commission_month IN (4, 5, 6)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "Q3":
+                commission_filter_clauses.append("c.commission_month IN (7, 8, 9)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "Q4":
+                commission_filter_clauses.append("c.commission_month IN (10, 11, 12)")
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            # --- END: สิ้นสุด Logic Q1-Q4 ---
+            
             elif period in self.thai_month_map:
                 month_num = self.thai_month_map[period]
                 commission_filter_clauses.append("c.commission_month = %s")
                 params.append(month_num)
                 commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year)
+                params.append(current_year) # กรองตามปีปัจจุบัน
             else: # Fallback (เหมือน "เดือนนี้")
                 commission_filter_clauses.append("c.commission_month = %s")
                 params.append(today.month)
@@ -1678,9 +1719,6 @@ class HRScreen(CTkFrame):
             commission_filter_sql = " AND ".join(commission_filter_clauses)
             # --- END ---
 
-            # --- START: แก้ไข Query ตรงนี้ ---
-            # 1. เพิ่ม su.sales_target ใน SELECT
-            # 2. เพิ่ม su.sales_target ใน GROUP BY
             query = f"""
                 SELECT 
                     su.sale_name, 
@@ -1696,7 +1734,6 @@ class HRScreen(CTkFrame):
                 HAVING COALESCE(SUM(c.sales_service_amount), 0) > 0
                 ORDER BY su.sale_name, total_sales DESC;
             """
-            # --- END: สิ้นสุดการแก้ไข Query ---
             
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params)) 
             return df
