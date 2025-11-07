@@ -1398,8 +1398,20 @@ class HRScreen(CTkFrame):
     def _update_sales_target_dashboard(self):
         loading = self._show_loading(self.sales_target_chart_frame)
         try:
-            period = self.sales_target_period_var.get(); start_date, end_date = self._get_date_range_from_period(period); start_date_str, end_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S"), end_date.strftime("%Y-%m-%d %H:%M:%S"); sales_vs_target_data = self._get_sales_vs_target_data(start_date_str, end_date_str); loading.destroy(); self._create_sales_vs_target_chart(self.sales_target_chart_frame, sales_vs_target_data)
-        except Exception as e: loading.destroy(); messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการอัปเดต Dashboard: {e}", parent=self)
+            period = self.sales_target_period_var.get()
+            
+            # --- START: แก้ไขการส่งค่า ---
+            # ลบ start_date, end_date ที่ไม่จำเป็นออก
+            # ส่ง 'period' (string) ไปแทน
+            sales_vs_target_data = self._get_sales_vs_target_data(period)
+            # --- END ---
+            
+            loading.destroy()
+            self._create_sales_vs_target_chart(self.sales_target_chart_frame, sales_vs_target_data)
+        except Exception as e: 
+            loading.destroy()
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการอัปเดต Dashboard: {e}", parent=self)
+            traceback.print_exc() # เพิ่ม traceback
     
     def _initial_load_sales_target(self):
         """
@@ -1409,10 +1421,57 @@ class HRScreen(CTkFrame):
         # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดและวาดกราฟ
         self._update_sales_target_dashboard()
 
-    def _get_sales_vs_target_data(self, start_date, end_date):
+    def _get_sales_vs_target_data(self, period): # <-- แก้ไข parameter
         try:
-            query = "SELECT su.sale_name, su.sales_target, COALESCE(SUM(c.sales_service_amount), 0) as total_sales FROM sales_users su LEFT JOIN commissions c ON su.sale_key = c.sale_key AND c.is_active = 1 AND c.timestamp BETWEEN %s AND %s WHERE su.role = 'Sale' AND su.sales_target > 0 AND su.status = 'Active' GROUP BY su.sale_key, su.sale_name, su.sales_target ORDER BY su.sale_name;"; df = pd.read_sql_query(query, self.pg_engine, params=(start_date, end_date)); return df
-        except Exception as e: print(f"Error getting sales vs target data: {e}"); messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self); return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales'])
+            # --- START: สร้าง logic การกรองใหม่ (เหมือนกับ _get_sales_by_employee_data) ---
+            today = datetime.now()
+            current_year = today.year
+            params = []
+            
+            commission_filter_clauses = []
+            if period == "เดือนนี้":
+                commission_filter_clauses.append("c.commission_month = %s")
+                params.append(today.month)
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "ปีนี้":
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period in self.thai_month_map:
+                month_num = self.thai_month_map[period]
+                commission_filter_clauses.append("c.commission_month = %s")
+                params.append(month_num)
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year) # กรองตามปีปัจจุบัน
+            else: # Fallback (เหมือน "เดือนนี้")
+                commission_filter_clauses.append("c.commission_month = %s")
+                params.append(today.month)
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+                
+            commission_filter_sql = " AND ".join(commission_filter_clauses)
+            # --- END ---
+
+            query = f"""
+                SELECT su.sale_name, su.sales_target, 
+                       COALESCE(SUM(c.sales_service_amount), 0) as total_sales 
+                FROM sales_users su 
+                LEFT JOIN commissions c ON su.sale_key = c.sale_key 
+                                     AND c.is_active = 1 
+                                     AND {commission_filter_sql} -- <-- แก้ไขตรงนี้
+                WHERE su.role = 'Sale' 
+                  AND su.sales_target > 0 
+                  AND su.status = 'Active' 
+                GROUP BY su.sale_key, su.sale_name, su.sales_target 
+                ORDER BY su.sale_name;
+            """
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params)) # <-- แก้ไขตรงนี้
+            return df
+        except Exception as e: 
+            print(f"Error getting sales vs target data: {e}") 
+            messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self)
+            traceback.print_exc() # เพิ่ม traceback
+            return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales'])
 
     def _create_sales_vs_target_chart(self, parent_frame, data_df):
         if hasattr(self, 'sales_target_chart_canvas') and self.sales_target_chart_canvas:
@@ -1563,7 +1622,10 @@ class HRScreen(CTkFrame):
             start_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
             end_date_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
 
-            sales_by_employee_data = self._get_sales_by_employee_data(start_date_str, end_date_str)
+            # --- START: แก้ไขการส่งค่า ---
+            # ส่ง 'period' (string) ไปแทน start_date, end_date
+            sales_by_employee_data = self._get_sales_by_employee_data(period) 
+            # --- END ---
             po_summary_data = self._get_po_status_summary(start_date_str, end_date_str)
 
             loading1.destroy()
@@ -1585,23 +1647,56 @@ class HRScreen(CTkFrame):
         # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดและวาดกราฟ
         self._update_dashboard()
 
-    def _get_sales_by_employee_data(self, start_date, end_date):
+    def _get_sales_by_employee_data(self, period): # <-- แก้ไข parameter
         try:
-            query = """
+            # --- START: สร้าง logic การกรองใหม่ ---
+            today = datetime.now()
+            current_year = today.year
+            params = []
+            
+            # 1. สร้าง WHERE clause สำหรับ commission period
+            commission_filter_clauses = []
+            if period == "เดือนนี้":
+                commission_filter_clauses.append("c.commission_month = %s")
+                params.append(today.month)
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period == "ปีนี้":
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+            elif period in self.thai_month_map:
+                month_num = self.thai_month_map[period]
+                commission_filter_clauses.append("c.commission_month = %s")
+                params.append(month_num)
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year) # กรองตามปีปัจจุบัน
+            else: # Fallback (เหมือน "เดือนนี้")
+                commission_filter_clauses.append("c.commission_month = %s")
+                params.append(today.month)
+                commission_filter_clauses.append("c.commission_year = %s")
+                params.append(current_year)
+                
+            commission_filter_sql = " AND ".join(commission_filter_clauses)
+            # --- END ---
+
+            query = f"""
                 SELECT su.sale_name, COALESCE(SUM(c.sales_service_amount), 0) as total_sales
                 FROM sales_users su
                 LEFT JOIN commissions c ON su.sale_key = c.sale_key
                                      AND c.is_active = 1
-                                     AND c.timestamp BETWEEN %s AND %s
+                                     AND {commission_filter_sql}  -- <-- แก้ไขตรงนี้
                 WHERE su.role = 'Sale' AND su.status = 'Active'
                 GROUP BY su.sale_key, su.sale_name
                 HAVING COALESCE(SUM(c.sales_service_amount), 0) > 0
                 ORDER BY total_sales DESC;
             """
-            df = pd.read_sql_query(query, self.pg_engine, params=(start_date, end_date))
+            
+            # params ถูกสร้างไว้แล้ว
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params)) 
             return df
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลยอดขายตามพนักงานได้: {e}", parent=self)
+            traceback.print_exc() # เพิ่ม traceback
             return pd.DataFrame(columns=['sale_name', 'total_sales'])
 
     def _create_sales_by_employee_chart(self, parent_frame, data_df):
