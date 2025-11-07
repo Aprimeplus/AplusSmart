@@ -1647,14 +1647,13 @@ class HRScreen(CTkFrame):
         # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดและวาดกราฟ
         self._update_dashboard()
 
-    def _get_sales_by_employee_data(self, period): # <-- แก้ไข parameter
+    def _get_sales_by_employee_data(self, period): # <-- parameter ถูกต้องแล้ว
         try:
-            # --- START: สร้าง logic การกรองใหม่ ---
+            # --- START: สร้าง logic การกรองใหม่ (เหมือนเดิม) ---
             today = datetime.now()
             current_year = today.year
             params = []
             
-            # 1. สร้าง WHERE clause สำหรับ commission period
             commission_filter_clauses = []
             if period == "เดือนนี้":
                 commission_filter_clauses.append("c.commission_month = %s")
@@ -1669,7 +1668,7 @@ class HRScreen(CTkFrame):
                 commission_filter_clauses.append("c.commission_month = %s")
                 params.append(month_num)
                 commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year) # กรองตามปีปัจจุบัน
+                params.append(current_year)
             else: # Fallback (เหมือน "เดือนนี้")
                 commission_filter_clauses.append("c.commission_month = %s")
                 params.append(today.month)
@@ -1679,25 +1678,32 @@ class HRScreen(CTkFrame):
             commission_filter_sql = " AND ".join(commission_filter_clauses)
             # --- END ---
 
+            # --- START: แก้ไข Query ตรงนี้ ---
+            # 1. เพิ่ม su.sales_target ใน SELECT
+            # 2. เพิ่ม su.sales_target ใน GROUP BY
             query = f"""
-                SELECT su.sale_name, COALESCE(SUM(c.sales_service_amount), 0) as total_sales
+                SELECT 
+                    su.sale_name, 
+                    su.sale_key, 
+                    su.sales_target, 
+                    COALESCE(SUM(c.sales_service_amount), 0) as total_sales
                 FROM sales_users su
                 LEFT JOIN commissions c ON su.sale_key = c.sale_key
                                      AND c.is_active = 1
-                                     AND {commission_filter_sql}  -- <-- แก้ไขตรงนี้
+                                     AND {commission_filter_sql}
                 WHERE su.role = 'Sale' AND su.status = 'Active'
-                GROUP BY su.sale_key, su.sale_name
+                GROUP BY su.sale_name, su.sale_key, su.sales_target
                 HAVING COALESCE(SUM(c.sales_service_amount), 0) > 0
-                ORDER BY total_sales DESC;
+                ORDER BY su.sale_name, total_sales DESC;
             """
+            # --- END: สิ้นสุดการแก้ไข Query ---
             
-            # params ถูกสร้างไว้แล้ว
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params)) 
             return df
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลยอดขายตามพนักงานได้: {e}", parent=self)
-            traceback.print_exc() # เพิ่ม traceback
-            return pd.DataFrame(columns=['sale_name', 'total_sales'])
+            traceback.print_exc()
+            return pd.DataFrame(columns=['sale_name', 'sale_key', 'sales_target', 'total_sales'])
 
     def _create_sales_by_employee_chart(self, parent_frame, data_df):
         if hasattr(self, 'sales_chart_canvas') and self.sales_chart_canvas:
@@ -1708,27 +1714,75 @@ class HRScreen(CTkFrame):
         if data_df.empty:
             CTkLabel(parent_frame, text="ไม่พบข้อมูลยอดขายตามพนักงานในช่วงเวลานี้", font=self.header_font_table).pack(expand=True)
             return
-
-        colors = ['#2a9d8f', '#e9c46a', '#f4a261', '#e76f51', '#264653']
-        bar_colors = [colors[i % len(colors)] for i in range(len(data_df))]
-
+        
         fig = Figure(figsize=(6, 4), dpi=100, facecolor=self.theme["bg"])
         ax = fig.add_subplot(111)
         ax.set_facecolor(self.theme["bg"])
 
-        bars = ax.bar(data_df['sale_name'], data_df['total_sales'], color=bar_colors)
+        # --- ส่วนการเรียงลำดับ (จากมากไปน้อย) ---
+        person_totals = data_df.groupby('sale_name')['total_sales'].sum()
+        data_df['person_total'] = data_df['sale_name'].map(person_totals)
+        data_df = data_df.sort_values(by=['person_total', 'total_sales'], ascending=[False, False])
         
+        unique_names = data_df['sale_name'].unique() 
+        x = np.arange(len(unique_names))
+        width = 0.6 
+        
+        # --- ดึงข้อมูล Target สำหรับวาดเส้น ---
+        target_data = data_df.drop_duplicates(subset='sale_name')['sales_target'].values
+        
+        # --- (โค้ดส่วน "กราฟสายรุ้ง" เหมือนเดิม) ---
+        base_colors = ['#2a9d8f', '#e76f51', '#3B82F6', '#8B5CF6', '#e9c46a', '#10B981', '#264653']
+        stack_color = '#f4a261' 
+
+        for i, sale_name in enumerate(unique_names):
+            sales_data_for_person = data_df[data_df['sale_name'] == sale_name]
+            current_bottom = 0 
+            
+            for j, (_, row) in enumerate(sales_data_for_person.iterrows()):
+                sales_value = row['total_sales']
+                sale_key = row['sale_key']
+
+                if j == 0:
+                    color = base_colors[i % len(base_colors)]
+                else:
+                    color = stack_color
+                
+                rects = ax.bar(x[i], sales_value, width, 
+                               bottom=current_bottom, 
+                               color=color)
+                
+                if sales_value > 0:
+                    ax.bar_label(rects, labels=[f'{sales_value:,.0f}'], 
+                                 label_type='center', color='white', weight='bold', fontsize=9)
+                
+                current_bottom += sales_value
+
+            if current_bottom > 0:
+                y_offset = current_bottom * 0.01
+                ax.text(x[i], current_bottom + y_offset, f'{current_bottom:,.0f}',
+                        ha='center', va='bottom', fontsize=10, weight='bold')
+
+        # --- START: แก้ไข linestyle (เส้นประ -> เส้นทึบ) ---
+        ax.plot(x, target_data, 
+                color='#F97316',     # สีส้ม
+                marker='o',          # จุดกลม
+                linestyle='-',       # <--- แก้ไขตรงนี้เป็นเส้นทึบ
+                linewidth=2.5,       # เส้นหนา
+                label='Target')      
+        # --- END ---
+
         ax.set_ylabel('ยอดขาย (บาท)', fontsize=12)
         ax.set_title('สรุปยอดขายตามพนักงาน (Active)', fontsize=16, weight="bold")
         
-        if len(data_df) > 4:
-            ax.tick_params(axis='x', rotation=45)
+        ax.set_xticks(x)
+        ax.set_xticklabels(unique_names, rotation=45, ha="right", fontsize=11)
 
         formatter = FuncFormatter(lambda y, pos: f'{int(y):,}')
         ax.yaxis.set_major_formatter(formatter)
         ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-        ax.bar_label(bars, fmt='{:,.0f}', padding=3, fontsize=9)
+        
+        ax.legend(prop={'size': 12})
         
         fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
