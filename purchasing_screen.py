@@ -2015,8 +2015,9 @@ class PurchasingScreen(CTkFrame):
         self.products_frame = CTkFrame(product_container, fg_color="transparent")
         self.products_frame.pack(fill="x", expand=True, padx=10, pady=5)
         
-        headers = ["สถานะ", "รหัสสินค้า", "ชื่อสินค้า", "คลัง", "แก้ไข", "จำนวน", "ต้นทุนหน่วย (ไม่รวม VAT)", "ส่วนลด", "น้ำหนัก/หน่วย (กก.)", "น้ำหนักรวม (กก.)", "ต้นทุนรวม"]
-        col_weights = [2, 4, 6, 2, 1, 2, 2, 3, 2, 2, 3]
+        # +++ เพิ่ม "ลบ" ในรายการ headers +++
+        headers = ["สถานะ", "รหัสสินค้า", "ชื่อสินค้า", "คลัง", "แก้ไข", "จำนวน", "ต้นทุนหน่วย (ไม่รวม VAT)", "ส่วนลด", "น้ำหนัก/หน่วย (กก.)", "น้ำหนักรวม (กก.)", "ต้นทุนรวม", "ลบ"]
+        col_weights = [2, 4, 6, 2, 1, 2, 2, 3, 2, 2, 3, 1]  # เพิ่ม weight สำหรับคอลัมน์ลบ
 
         for i, h_text in enumerate(headers):
             self.products_frame.grid_columnconfigure(i, weight=col_weights[i])
@@ -2028,8 +2029,60 @@ class PurchasingScreen(CTkFrame):
         buttons_frame = CTkFrame(product_container, fg_color="transparent")
         buttons_frame.pack(anchor="e", pady=10, padx=10)
         CTkButton(buttons_frame, text="เพิ่มรายการสินค้า", command=self._add_product_row).pack(side="left", padx=5)
-        self.delete_row_button = CTkButton(buttons_frame, text="ลบรายการล่าสุด", command=self._delete_last_product_row, fg_color="#D32F2F", hover_color="#B71C1C")
-        self.delete_row_button.pack(side="left", padx=5)
+    
+    def _delete_product_row_by_index(self, index):
+        """ลบแถวสินค้าตาม index ที่ระบุ"""
+        if len(self.product_rows) <= 1:
+            messagebox.showwarning("ไม่สามารถลบได้", "ต้องมีรายการสินค้าอย่างน้อย 1 แถว", parent=self)
+            return
+        
+        if 0 <= index < len(self.product_rows):
+            # ลบ widgets ทั้งหมดในแถวนั้น
+            row_to_delete = self.product_rows[index]
+            for widget in row_to_delete["widgets"]:
+                widget.destroy()
+            
+            # ลบออกจาก list
+            self.product_rows.pop(index)
+            
+            # Re-arrange grid positions สำหรับแถวที่เหลือ
+            self._rearrange_product_rows()
+            
+            # อัปเดตปุ่มลบทั้งหมด (เพราะ index เปลี่ยน)
+            self._update_delete_button_commands()
+            
+            # อัปเดตสถานะปุ่มลบ
+            self._update_delete_buttons_state()
+            
+            # คำนวณยอดใหม่
+            self._update_summary()
+
+    def _rearrange_product_rows(self):
+        """จัดเรียง grid positions ของแถวสินค้าใหม่หลังจากลบ"""
+        for idx, row_dict in enumerate(self.product_rows):
+            row_num = idx + 1
+            for col, widget in enumerate(row_dict["widgets"]):
+                if widget.winfo_exists():
+                    widget.grid(row=row_num, column=col, padx=1, pady=1, sticky="ew")
+
+    def _update_delete_button_commands(self):
+        """อัปเดต command ของปุ่มลบทั้งหมดให้ตรงกับ index ปัจจุบัน"""
+        for idx, row_dict in enumerate(self.product_rows):
+            if "delete_button" in row_dict and row_dict["delete_button"].winfo_exists():
+                row_dict["delete_button"].configure(
+                    command=lambda i=idx: self._delete_product_row_by_index(i)
+                )
+
+    def _update_delete_buttons_state(self):
+        """อัปเดตสถานะของปุ่มลบ (ถ้ามีแถวเดียวให้ปิดการใช้งานปุ่มลบ)"""
+        has_only_one_row = len(self.product_rows) <= 1
+        
+        for row_dict in self.product_rows:
+            if "delete_button" in row_dict and row_dict["delete_button"].winfo_exists():
+                if has_only_one_row:
+                    row_dict["delete_button"].configure(state="disabled")
+                else:
+                    row_dict["delete_button"].configure(state="normal")
 
     def _delete_last_product_row(self):
         if len(self.product_rows) > 1:
@@ -2047,15 +2100,12 @@ class PurchasingScreen(CTkFrame):
         status_var = tk.StringVar(value="Stock")
         status_menu = CTkOptionMenu(self.products_frame, variable=status_var, values=["Stock", "Trade"], **self.dropdown_style)
         
-        # --- START: แก้ไขการสร้าง AutoCompleteEntry สำหรับรหัสสินค้าตรงนี้ ---
         product_code_entry = AutoCompleteEntry(
             self.products_frame, 
             completion_list=self.product_completion_data, 
             display_key='display',
             placeholder_text="Code"
-            # command จะถูกกำหนดค่าด้านล่างหลังจากสร้าง row_dict แล้ว
         )
-        # --- END ---
 
         product_name_entry = CTkEntry(self.products_frame, placeholder_text="Name", textvariable=product_name_var)
         warehouse_entry = CTkEntry(self.products_frame, placeholder_text="คลัง", textvariable=warehouse_var)
@@ -2075,10 +2125,22 @@ class PurchasingScreen(CTkFrame):
         total_weight_entry = CTkEntry(self.products_frame, state="readonly", fg_color="gray85")
         total_price_entry = CTkEntry(self.products_frame, state="readonly", fg_color="gray85")
         
+        # +++ START: เพิ่มปุ่มลบในแต่ละแถว +++
+        delete_button = CTkButton(
+            self.products_frame, 
+            text="❌", 
+            width=40,
+            fg_color="#DC2626",
+            hover_color="#B91C1C",
+            command=lambda: self._delete_product_row_by_index(row_num - 1)  # ส่ง index ของแถว
+        )
+        # +++ END +++
+        
         widgets = [
             status_menu, product_code_entry, product_name_entry,
             warehouse_entry, warning_label, qty_entry, price_entry, 
-            discount_frame, weight_entry, total_weight_entry, total_price_entry
+            discount_frame, weight_entry, total_weight_entry, total_price_entry,
+            delete_button  # เพิ่ม delete_button เข้าไปใน widgets list
         ]
 
         for col, widget in enumerate(widgets):
@@ -2092,15 +2154,13 @@ class PurchasingScreen(CTkFrame):
             "total_price": total_price_entry, "widgets": widgets,
             "warning_label": warning_label, "master_data": None,
             "name_var": product_name_var,
-            "warehouse_var": warehouse_var
+            "warehouse_var": warehouse_var,
+            "delete_button": delete_button  # เก็บ reference ของปุ่มลบ
         }
         
         self.product_rows.append(row_dict)
         
-        # <<< START: จุดแก้ไขสำคัญ ย้ายการกำหนด command มาไว้ตรงนี้ >>>
-        # เพื่อให้ r=row_dict อ้างอิงถึง dictionary ที่เพิ่งสร้างเสร็จได้อย่างถูกต้อง
         product_code_entry.command = lambda selection_dict, r=row_dict: self._on_product_selected(selection_dict, r)
-        # <<< END: สิ้นสุดการแก้ไข >>>
 
         product_name_var.trace_add("write", lambda *args, r=row_dict: self._check_for_override(r))
         warehouse_var.trace_add("write", lambda *args, r=row_dict: self._check_for_override(r))
@@ -2108,6 +2168,9 @@ class PurchasingScreen(CTkFrame):
         for entry in [qty_entry, weight_entry, price_entry, discount_value_entry]:
             entry.bind("<KeyRelease>", self._update_summary)
         discount_type_menu.configure(command=self._update_summary)
+        
+        # อัปเดตสถานะปุ่มลบ
+        self._update_delete_buttons_state()
 
     def _create_bottom_summary_frame(self, parent):
         bottom_container = CTkFrame(parent, fg_color="transparent")
