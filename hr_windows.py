@@ -1978,40 +1978,81 @@ class PayoutDetailWindow(CTkToplevel):
         if not self.payout_log_data or not self.payout_log_data.get('so_ids_json'):
             return pd.DataFrame()
         
-        # --- START: ✅ แก้ไขจุดนี้ ---
-        # 1. โหลด JSON string ให้กลับมาเป็น Python List
         so_id_list = json.loads(self.payout_log_data['so_ids_json'])
-        # 2. แปลง List ของ ID (ตัวเลข) ให้เป็น Tuple
         so_ids_in_log = tuple(so_id_list)
-        # --- END ---
 
         if not so_ids_in_log:
             return pd.DataFrame()
             
+        plan_name = self.payout_log_data.get('plan_name')
+        if not plan_name:
+            messagebox.showerror("ผิดพลาด", "ไม่พบ Plan Name ใน Payout Log นี้", parent=self)
+            return pd.DataFrame()
+            
         try:
-            placeholders = ', '.join(['%s'] * len(so_ids_in_log))
+            placeholders = ', '.join(['%s']*len(so_ids_in_log))
+            
+            # +++ 1. Query คอลัมน์ที่จำเป็น (ตัด total_revenue และ total_po_shipping_cost ออก) +++
+            query_cols = [
+                "so_number", 
+                "sales_service_amount",     # <-- ยอดขายดิบ (สำหรับแสดงผล)
+                "final_sales_amount",       # <-- ยอดขายที่ HR ยืนยัน (สำหรับคำนวณ Profit)
+                "final_cost_amount",        
+                "cost_multiplier",          
+                "difference_amount"
+            ]
+            
             query = f"""
-                SELECT so_number, final_sales_amount, final_margin
+                SELECT {', '.join(query_cols)}
                 FROM commissions
-                WHERE id IN ({placeholders}) AND is_active = 1 -- <--- 2. ✅ แก้ไขจุดนี้
+                WHERE id IN ({placeholders}) AND is_active = 1
             """
+            
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=so_ids_in_log)
+
+            # --- 2. แปลงเป็นตัวเลข ---
+            # ยอดขายดิบ (ตัวหาร Margin)
+            sales_raw = pd.to_numeric(df['sales_service_amount'], errors='coerce').fillna(0)
             
-            # สร้างคอลัมน์ใหม่สำหรับบอกสถานะ
-            df['status'] = df['final_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
+            # ยอดขายที่ HR ยืนยัน (ตัวตั้ง Profit)
+            final_sales = pd.to_numeric(df['final_sales_amount'], errors='coerce').fillna(0)
             
-            # เปลี่ยนชื่อคอลัมน์ให้เป็นมิตรกับผู้ใช้
+            po_cost = pd.to_numeric(df['final_cost_amount'], errors='coerce').fillna(0)
+            multiplier = pd.to_numeric(df['cost_multiplier'], errors='coerce').fillna(1.03)
+            difference_amount = pd.to_numeric(df['difference_amount'], errors='coerce').fillna(0)
+            
+            # +++ 3. คำนวณ Profit (ตาม Logic ที่ถูกต้อง) +++
+            # Profit = (ยอดขายที่ HR ยืนยัน - ต้นทุนปรับปรุง) + ส่วนต่าง
+            profit = (final_sales - (po_cost * multiplier)) + difference_amount
+            
+            # (สำหรับ Plan D - เราไม่มี total_po_shipping_cost ที่นี่, 
+            # แต่ profit ข้างบนนี้คำนวณจาก final_sales/cost ซึ่ง HR ตรวจสอบแล้ว)
+            # *** ไม่ต้องเช็ค Plan D อีกต่อไป เพราะเราใช้ค่าที่ HR ยืนยันแล้ว ***
+
+            # +++ 4. คำนวณ Margin (Profit / ยอดขายดิบ) +++
+            # นี่คือสูตรที่ถูกต้อง: profit (จากยอดที่ HR ยืนยัน) / sales_raw (ยอดขายดิบ)
+            df['calculated_margin'] = (profit / sales_raw.replace(0, np.nan)) * 100
+            df['calculated_margin'] = df['calculated_margin'].fillna(0)
+            
+            # 5. คำนวณ status จาก Margin ใหม่
+            df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
+            
+            # 6. เปลี่ยนชื่อคอลัมน์
             df.rename(columns={
                 'so_number': 'SO Number',
                 'status': 'สถานะ (คำนวณ)',
-                'final_sales_amount': 'ยอดขายสุดท้าย (บาท)',
-                'final_margin': 'Margin สุดท้าย (%)'
+                'sales_service_amount': 'ยอดขายสุดท้าย (บาท)', # <-- แสดงยอดขายดิบ
+                'calculated_margin': 'Margin สุดท้าย (%)'      # <-- แสดง Margin ที่คำนวณใหม่
             }, inplace=True)
             
-            return df
+            # 7. เลือกเฉพาะคอลัมน์ที่จะแสดงผล
+            df_display = df[['SO Number', 'สถานะ (คำนวณ)', 'ยอดขายสุดท้าย (บาท)', 'Margin สุดท้าย (%)']]
+            
+            return df_display
 
         except Exception as e:
             print(f"Error preparing SO DataFrame for PayoutDetailWindow: {e}")
+            traceback.print_exc() # พิมพ์ Error เต็มๆ ออกมา
             return pd.DataFrame()
 
     def _populate_data(self):
