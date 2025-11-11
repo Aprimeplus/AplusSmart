@@ -2232,7 +2232,7 @@ class PurchasingScreen(CTkFrame):
         self.shipping_to_stock_date_selector = DateSelector(parent_frame, dropdown_style=self.dropdown_style)
         self.shipping_to_stock_date_selector.grid(row=5, column=1, sticky="w", padx=5, pady=2)
         
-        self.shipping_to_stock_type_var = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
+        self.shipping_to_stock_type_var = tk.StringVar(value="Aplus Logistic")
         stock_shipper_radio_frame = CTkFrame(parent_frame, fg_color="transparent")
         stock_shipper_radio_frame.grid(row=6, column=1, sticky="w", padx=5, pady=2)
         CTkRadioButton(stock_shipper_radio_frame, text="ซัพพลายเออร์จัดส่ง", variable=self.shipping_to_stock_type_var, value="ซัพพลายเออร์จัดส่ง", command=self._update_summary).pack(side="left")
@@ -2281,7 +2281,7 @@ class PurchasingScreen(CTkFrame):
         self.shipping_to_site_date_selector = DateSelector(parent_frame, dropdown_style=self.dropdown_style)
         self.shipping_to_site_date_selector.grid(row=13, column=1, sticky="w", padx=5, pady=2)
         
-        self.shipping_to_site_type_var = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
+        self.shipping_to_site_type_var = tk.StringVar(value="Aplus Logistic")
         site_shipper_radio_frame = CTkFrame(parent_frame, fg_color="transparent")
         site_shipper_radio_frame.grid(row=14, column=1, sticky="w", padx=5, pady=2)
         CTkRadioButton(site_shipper_radio_frame, text="ซัพพลายเออร์จัดส่ง", variable=self.shipping_to_site_type_var, value="ซัพพลายเออร์จัดส่ง", command=self._update_summary).pack(side="left")
