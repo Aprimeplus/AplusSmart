@@ -2545,15 +2545,30 @@ class HRScreen(CTkFrame):
                 
                 # Query ที่สมบูรณ์เพื่อดึงทั้งข้อมูล SO และต้นทุนล่าสุดจาก PO Items
                 query = f"""
-                    SELECT c.*, po.cogs_db
+                    SELECT
+                        c.*, 
+                        -- 3. นำยอดรวมสินค้า มาลบกับ ยอดรวมส่วนลด
+                        (COALESCE(po_items.total_item_cost, 0) - COALESCE(po_discounts.total_bill_discount, 0)) as cogs_db
                     FROM commissions c
                     LEFT JOIN (
-                        SELECT p.so_number, SUM(COALESCE(poi.total_price, 0)) as cogs_db
+                        -- 1. รวมยอดราคาสินค้าทั้งหมด (จะได้ 5,737)
+                        SELECT 
+                            p.so_number,
+                            SUM(COALESCE(poi.total_price, 0)) as total_item_cost
                         FROM purchase_orders p
                         LEFT JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
-                        WHERE p.status = 'Approved'
+                        WHERE p.status = 'Approved' AND p.so_number IN ({placeholders})
                         GROUP BY p.so_number
-                    ) po ON c.so_number = po.so_number
+                    ) po_items ON c.so_number = po_items.so_number
+                    LEFT JOIN (
+                        -- 2. รวมยอดส่วนลดท้ายบิลทั้งหมด (จะได้ 37)
+                        SELECT
+                            so_number,
+                            SUM(COALESCE(bill_discount, 0)) as total_bill_discount
+                        FROM purchase_orders
+                        WHERE status = 'Approved' AND so_number IN ({placeholders})
+                        GROUP BY so_number
+                    ) po_discounts ON c.so_number = po_discounts.so_number
                     WHERE c.so_number IN ({placeholders}) AND c.is_active = 1
                 """
                 cursor.execute(query, so_numbers_to_verify)

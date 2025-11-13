@@ -14,7 +14,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         required_cols = [
             'total_revenue', 'sales_service_amount', 'final_cost_amount', 'giveaways', 
             'brokerage_fee', 'difference_amount', 'payment_before_vat', 'payment_no_vat', 
-            'shipping_cost', 'coupon_fee'
+            'shipping_cost', 'coupon_fee', 
+            'total_po_shipping_cost' # <-- [เพิ่ม]
         ]
         for col in required_cols:
             if col not in comm_df.columns:
@@ -29,6 +30,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         payment_before_vat = pd.to_numeric(comm_df['payment_before_vat'], errors='coerce').fillna(0)
         payment_no_vat = pd.to_numeric(comm_df['payment_no_vat'], errors='coerce').fillna(0)
         so_shipping_cost = pd.to_numeric(comm_df['shipping_cost'], errors='coerce').fillna(0)
+        po_shipping_cost = pd.to_numeric(comm_df['total_po_shipping_cost'], errors='coerce').fillna(0) # <-- [เพิ่ม]
         coupon_fee = pd.to_numeric(comm_df['coupon_fee'], errors='coerce').fillna(0)
 
         if 'cost_multiplier' in comm_df.columns and not comm_df['cost_multiplier'].isnull().all():
@@ -38,9 +40,13 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
                 
         other_deductions = giveaways + brokerage + coupon_fee - difference_amount
         net_shipping_adjustment = (payment_before_vat - payment_no_vat) - so_shipping_cost
+        
+        # [เพิ่ม] คำนวณขาดทุนค่าส่ง
+        net_shipping_deduction = (po_shipping_cost - so_shipping_cost).clip(lower=0)
 
         # --- 2. คำนวณ Profit/Margin ---
-        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount
+        # [แก้ไข] หักขาดทุนค่าส่งออกจากกำไร
+        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount - net_shipping_deduction
         comm_df['margin'] = (comm_df['profit'] / sales_raw.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
 
@@ -88,11 +94,13 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         # สร้างคอลัมน์ชั่วคราวเพื่อแสดงผล
         comm_df['debug_adj_cost'] = po_cost * multiplier
         comm_df['debug_other_deduct'] = other_deductions
+        comm_df['debug_shipping_loss'] = net_shipping_deduction # [เพิ่ม]
         for index, row in comm_df.iterrows():
             print(f"\n -> SO: {row['so_number']}")
             print(f"    - Total Revenue : {row['total_revenue']:,.2f}")
             print(f"    - Adjusted Cost : {row['debug_adj_cost']:,.2f}")
             print(f"    - Other Deduct  : {row['debug_other_deduct']:,.2f}")
+            print(f"    - Shipping Loss : {row['debug_shipping_loss']:,.2f}") # [เพิ่ม]
             print(f"    - Profit        : {row['profit']:,.2f}")
             print(f"    - Margin        : {row['margin']:.2f}%")
             print(f"    - Commission Amt: {row['commission_amount']:,.2f}")
@@ -109,7 +117,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         cost_c3 = (giveaways + coupon_fee + brokerage).sum()
         cost_c4_diff = (payment_before_vat - payment_no_vat).sum()
         cost_c4_deduct = so_shipping_cost.sum()
-        total_cost = cost_c2 + cost_c3 - difference_amount.sum() + net_shipping_adjustment.sum()
+        
+        # [แก้ไข] เพิ่ม net_shipping_deduction.sum() เข้าไปใน total_cost
+        total_cost = cost_c2 + cost_c3 - difference_amount.sum() + net_shipping_adjustment.sum() + net_shipping_deduction.sum()
+        
         debug_details.append({'รายการ': '## Report I: Sale Summary ##', 'ค่า': ''})
         debug_details.append({'รายการ': 'Commission Plan', 'ค่า': plan_name})
         debug_details.append({'รายการ': 'Sale Target KPI', 'ค่า': sales_target})
@@ -121,7 +132,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้า', 'ค่า': cost_c1})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้าบวกค่าใช้จ่ายบริหารจัดการ', 'ค่า': cost_c2})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าใช้จ่ายการตลาด', 'ค่า': cost_c3})
-        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ส่วนต่าง - ติดลบ)', 'ค่า': f"{cost_c4_diff:,.2f} - {cost_c4_deduct:,.2f}"})
+        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ส่วนต่าง SO)', 'ค่า': f"{cost_c4_diff:,.2f} - {cost_c4_deduct:,.2f}"})
+        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ขาดทุน PO)', 'ค่า': net_shipping_deduction.sum()}) # [เพิ่ม]
         debug_details.append({'รายการ': 'ต้นทุนรวม', 'ค่า': total_cost})
         debug_details.append({'รายการ': '---', 'ค่า': ''})
         
@@ -190,11 +202,13 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         if 'so_number' in comm_df.columns:
             comm_df = comm_df.drop_duplicates(subset=['so_number'])
                 
-        for col in ['coupon_fee', 'giveaways', 'brokerage_fee', 'difference_amount', 'payment_no_vat']:
+        # [เพิ่ม] 'total_po_shipping_cost'
+        for col in ['coupon_fee', 'giveaways', 'brokerage_fee', 'difference_amount', 'payment_no_vat', 'total_po_shipping_cost']:
             if col not in comm_df.columns: comm_df[col] = 0
         numeric_cols = [
             'total_revenue', 'sales_service_amount', 'final_cost_amount', 'giveaways', 'brokerage_fee',
-            'difference_amount', 'payment_before_vat', 'payment_no_vat', 'shipping_cost', 'coupon_fee'
+            'difference_amount', 'payment_before_vat', 'payment_no_vat', 'shipping_cost', 'coupon_fee',
+            'total_po_shipping_cost' # <-- [เพิ่ม]
         ]
         for col in numeric_cols:
             comm_df[col] = pd.to_numeric(comm_df.get(col), errors='coerce').fillna(0)
@@ -204,15 +218,25 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'total_revenue': 'sum', 'sales_service_amount': 'sum', 'giveaways': 'sum', 
             'coupon_fee': 'sum', 'brokerage_fee': 'sum', 'difference_amount': 'sum', 
             'payment_before_vat': 'first', 'payment_no_vat': 'first', 'shipping_cost': 'first', 
+            'total_po_shipping_cost': 'first', # <-- [เพิ่ม]
             'final_cost_amount': 'first', 'cost_multiplier': 'first', 
             'so_number': lambda x: ', '.join(sorted(set(x)))
         }
         po_grouped_df = comm_df.groupby('po_number').agg(agg_rules).reset_index()
 
         # --- ขั้นตอนที่ 3: คำนวณ Profit และ Margin ---
+        
+        # [เพิ่ม] คำนวณขาดทุนค่าส่ง (จากข้อมูลที่ Group แล้ว)
+        so_shipping = po_grouped_df['shipping_cost']
+        po_shipping = po_grouped_df['total_po_shipping_cost']
+        net_shipping_deduction = (po_shipping - so_shipping).clip(lower=0)
+
         main_profit = po_grouped_df['total_revenue'] - (po_grouped_df['final_cost_amount'] * po_grouped_df['cost_multiplier'])
         difference_adjustment = po_grouped_df['difference_amount']
-        po_grouped_df['profit'] = main_profit + difference_adjustment
+        
+        # [แก้ไข] หักขาดทุนค่าส่งออกจากกำไร
+        po_grouped_df['profit'] = main_profit + difference_adjustment - net_shipping_deduction
+        
         po_grouped_df['margin'] = (po_grouped_df['profit'] / po_grouped_df['sales_service_amount'].replace(0, np.nan)) * 100    
         po_grouped_df['margin'] = po_grouped_df['margin'].fillna(0)
 
@@ -288,7 +312,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         shipping_profit_or_loss = cost_c4_diff - cost_c4_deduct
         shipping_adjustment_for_cost_report = min(shipping_profit_or_loss, 0)
         
-        total_cost = cost_c2 + cost_c3 - po_grouped_df['difference_amount'].sum() - shipping_adjustment_for_cost_report
+        # [แก้ไข] เพิ่ม net_shipping_deduction.sum() เข้าไปใน total_cost
+        total_cost = cost_c2 + cost_c3 - po_grouped_df['difference_amount'].sum() - shipping_adjustment_for_cost_report + net_shipping_deduction.sum()
 
         debug_details.append({'รายการ': '## Report I: Sale Summary ##', 'ค่า': ''})
         debug_details.append({'รายการ': 'Commission Plan', 'ค่า': plan_name})
@@ -305,7 +330,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้า', 'ค่า': cost_c1})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้าบวกค่าใช้จ่ายบริหารจัดการ', 'ค่า': cost_c2})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าใช้จ่ายการตลาด', 'ค่า': cost_c3})
-        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ส่วนต่าง - ติดลบ)', 'ค่า': f"{cost_c4_diff:,.2f} - {cost_c4_deduct:,.2f}"})
+        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ส่วนต่าง SO)', 'ค่า': f"{cost_c4_diff:,.2f} - {cost_c4_deduct:,.2f}"})
+        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ขาดทุน PO)', 'ค่า': net_shipping_deduction.sum()}) # [เพิ่ม]
         debug_details.append({'รายการ': 'ต้นทุนรวม', 'ค่า': total_cost})
         debug_details.append({'รายการ': '---', 'ค่า': ''})
         
@@ -396,7 +422,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         # --- [แก้ไข] 1. เตรียมข้อมูล ---
         required_cols = [
             'total_revenue', 'sales_service_amount', 'final_cost_amount', 'giveaways', 
-            'brokerage_fee', 'difference_amount', 'coupon_fee'
+            'brokerage_fee', 'difference_amount', 'coupon_fee',
+            'shipping_cost', 'total_po_shipping_cost' # <-- [เพิ่ม]
         ]
         for col in required_cols:
             if col not in comm_df.columns:
@@ -409,6 +436,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         brokerage = pd.to_numeric(comm_df['brokerage_fee'], errors='coerce').fillna(0)
         coupon_fee = pd.to_numeric(comm_df['coupon_fee'], errors='coerce').fillna(0)
         difference_amount = pd.to_numeric(comm_df['difference_amount'], errors='coerce').fillna(0)
+        so_shipping_cost = pd.to_numeric(comm_df['shipping_cost'], errors='coerce').fillna(0) # <-- [เพิ่ม]
+        po_shipping_cost = pd.to_numeric(comm_df['total_po_shipping_cost'], errors='coerce').fillna(0) # <-- [เพิ่ม]
         
         if 'cost_multiplier' in comm_df.columns and not comm_df['cost_multiplier'].isnull().all():
             multiplier = pd.to_numeric(comm_df['cost_multiplier'], errors='coerce').fillna(1.03)
@@ -416,9 +445,13 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             multiplier = 1.03
             
         other_deductions = giveaways + brokerage + coupon_fee - difference_amount
+        
+        # [เพิ่ม] คำนวณขาดทุนค่าส่ง
+        net_shipping_deduction = (po_shipping_cost - so_shipping_cost).clip(lower=0)
 
         # --- 2. คำนวณกำไรและ Margin ---
-        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount
+        # [แก้ไข] หักขาดทุนค่าส่งออกจากกำไร
+        comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount - net_shipping_deduction
         comm_df['margin'] = (comm_df['profit'] / sales_service_amount.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
 
@@ -455,7 +488,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         cost_c1 = po_cost.sum()
         cost_c2 = (po_cost * multiplier).sum()
         cost_c3 = (giveaways + coupon_fee + brokerage).sum()
-        total_cost = cost_c2 + cost_c3 - difference_amount.sum()
+        
+        # [แก้ไข] เพิ่ม net_shipping_deduction.sum() เข้าไปใน total_cost
+        total_cost = cost_c2 + cost_c3 - difference_amount.sum() + net_shipping_deduction.sum()
+        
         debug_details.append({'รายการ': '## Report I: Sale Summary ##', 'ค่า': ''})
         debug_details.append({'รายการ': 'Commission Plan', 'ค่า': plan_name})
         debug_details.append({'รายการ': 'Sale Target KPI', 'ค่า': sales_target})
@@ -469,6 +505,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้า', 'ค่า': cost_c1})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าสินค้าบวกค่าใช้จ่ายบริหารจัดการ', 'ค่า': cost_c2})
         debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าใช้จ่ายการตลาด', 'ค่า': cost_c3})
+        debug_details.append({'รายการ': 'สรุปต้นทุน: ค่าบริการขนส่ง (ขาดทุน PO)', 'ค่า': net_shipping_deduction.sum()}) # [เพิ่ม]
         debug_details.append({'รายการ': 'ต้นทุนรวม', 'ค่า': total_cost})
         debug_details.append({'รายการ': '---', 'ค่า': ''})
         if total_sales >= 500000:
@@ -542,7 +579,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         for key, value in additional_deductions.items(): summary_desc.append(f"(-) หัก: {key}"); summary_val.append(value)
         summary_desc.extend(["ยอดคอมมิชชั่นก่อนหักภาษี", "(-) หัก ณ ที่จ่าย 3%", "ยอดสรุปคอมหลังหัก ณ ที่จ่าย"]); summary_val.extend([pre_tax_commission, withholding_tax, net_commission])
         summary_data = {'description': summary_desc, 'value': summary_val}
+        
+        # [แก้ไข] เพิ่ม 'shipping_cost' เข้ามาใน so_breakdown
         so_breakdown_df = comm_df[['so_number', 'sales_service_amount', 'shipping_cost', 'final_cost_amount', 'profit', 'margin']].copy()
+        
         def assign_tier_status(margin):
             if margin >= 10: return "Normal (>=10%)"
             if margin >= 7.99: return "Below Tier (7.99-10%)"
@@ -588,9 +628,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         multiplier = pd.to_numeric(comm_df.get('cost_multiplier'), errors='coerce').fillna(1.03)
 
         other_deductions = giveaways + brokerage + coupon_fee
+        
+        # (Logic เดิมของ Plan D)
         net_shipping_deduction = (po_shipping_cost - so_shipping_cost).clip(lower=0)
         
         # --- 2. คำนวณ Profit/Margin (เวอร์ชันแก้ไข) ---
+        # (Logic เดิมของ Plan D)
         comm_df['profit'] = (total_revenue - (po_cost * multiplier)) + difference_amount - net_shipping_deduction
         comm_df['margin'] = (comm_df['profit'] / sales_service_amount.replace(0, np.nan)) * 100
         comm_df['margin'] = comm_df['margin'].fillna(0)
@@ -643,7 +686,9 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         cost_c3 = (giveaways + coupon_fee + brokerage).sum()
         cost_c4_diff = (payment_before_vat - payment_no_vat).sum()
         cost_c4_deduct = so_shipping_cost.sum()
-        total_cost = cost_c2 + cost_c3 - difference_amount.sum()
+        
+        # [แก้ไข] เพิ่ม net_shipping_deduction.sum() เข้าไปใน total_cost
+        total_cost = cost_c2 + cost_c3 - difference_amount.sum() + net_shipping_deduction.sum()
 
         debug_details.append({'รายการ': '## Report I: Sale Summary ##', 'ค่า': ''})
         debug_details.append({'รายการ': 'Commission Plan', 'ค่า': plan_name})

@@ -747,7 +747,7 @@ class PurchaseDetailWindow(CTkToplevel):
         if not self.winfo_exists():
             return
             
-        total_cost = 0.0
+        total_cost = 0.0 # <--- นี่คือยอดรวมย่อย (Subtotal)
         total_weight = 0.0
         
         for item_row in self.item_entries:
@@ -774,11 +774,27 @@ class PurchaseDetailWindow(CTkToplevel):
                 if total_price_label and total_price_label.winfo_exists():
                     total_price_label.configure(text="Error")
 
+        # --- START: จุดที่แก้ไข ---
+        
+        # 1. ดึงค่าส่วนลดท้ายบิลมาทันที
+        try:
+            if not self.po_entries['bill_discount'].winfo_exists(): return
+            bill_discount = self.po_entries['bill_discount'].get_value()
+        except (KeyError, ValueError, TypeError):
+            bill_discount = 0.0
+
+        # 2. คำนวณต้นทุนสุทธิ (Net Cost) ที่คุณต้องการ
+        net_product_cost = total_cost - bill_discount
+
+        # 3. อัปเดต Label "ยอดรวมต้นทุนสินค้า" ให้แสดงเป็นยอดสุทธิ (5,700)
         if hasattr(self, 'total_cost_label') and self.total_cost_label.winfo_exists():
-            self.total_cost_label.configure(text=f"{total_cost:,.2f}")
+            self.total_cost_label.configure(text=f"{net_product_cost:,.2f}")
+        
+        # (อัปเดตน้ำหนักรวมตามปกติ)
         if hasattr(self, 'total_weight_label') and self.total_weight_label.winfo_exists():
             self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
         
+        # 4. ดึงข้อมูลส่วนที่เหลือ (ค่าส่ง, ภาษี ฯลฯ)
         try:
             if not self.po_entries['shipping_to_stock_cost'].winfo_exists(): return
             
@@ -791,26 +807,24 @@ class PurchaseDetailWindow(CTkToplevel):
             shipping_site_wht_type = self.po_entries['shipping_to_site_wht_type'].get()
 
             relocation_cost = self.po_entries['relocation_cost'].get_value()
-            bill_discount = self.po_entries['bill_discount'].get_value()
             wht_entry = self.po_entries.get('wht_3_percent')
             vat_entry = self.po_entries.get('vat_7_percent')
         
         except (KeyError, ValueError, TypeError):
-            return
+            return # ออกจากฟังก์ชันหาก Widget ยังไม่พร้อม
 
+        # (ส่วนการคำนวณ VAT/WHT ของค่าส่ง ไม่มีการเปลี่ยนแปลง)
         stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
         site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
-
         if self.po_entries.get("shipping_to_stock_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_vat_display"], f"{stock_vat_amount:,.2f}")
         if self.po_entries.get("shipping_to_site_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_site_vat_display"], f"{site_vat_amount:,.2f}")
-
         shipping_stock_wht_amount = shipping_stock * (0.01 if shipping_stock_wht_type == '1%' else 0.03 if shipping_stock_wht_type == '3%' else 0)
         shipping_site_wht_amount = shipping_site * (0.01 if shipping_site_wht_type == '1%' else 0.03 if shipping_site_wht_type == '3%' else 0)
-
         if self.po_entries.get("shipping_to_stock_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_wht_display"], f"{shipping_stock_wht_amount:,.2f}")
         if self.po_entries.get("shipping_to_site_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_site_wht_display"], f"{shipping_site_wht_amount:,.2f}")
 
-        base_for_tax = total_cost - bill_discount
+        # 5. ใช้ "ยอดสุทธิ" (5,700) เป็นฐานในการคำนวณภาษี
+        base_for_tax = net_product_cost # <--- ใช้ยอดสุทธิเป็นฐาน
         if shipping_stock_vat_type == 'VAT': base_for_tax += shipping_stock
         if shipping_site_vat_type == 'VAT': base_for_tax += shipping_site
 
@@ -820,6 +834,7 @@ class PurchaseDetailWindow(CTkToplevel):
         if wht_entry and wht_entry.winfo_exists(): wht_entry.set(wht_amount_products)
         if vat_entry and vat_entry.winfo_exists(): vat_entry.set(vat_amount_total)
 
+        # 6. คำนวณยอดรวมสุทธิ (Grand Total)
         non_vat_costs = 0.0
         if shipping_stock_vat_type == 'CASH': non_vat_costs += shipping_stock
         if shipping_site_vat_type == 'CASH': non_vat_costs += shipping_site
@@ -830,7 +845,6 @@ class PurchaseDetailWindow(CTkToplevel):
         
         if hasattr(self, 'grand_total_label') and self.grand_total_label.winfo_exists():
             self.grand_total_label.configure(text=f"{grand_total:,.2f}")
-
     
     def _create_payments_section(self, parent, payments_list):
         """แก้ไขส่วนการชำระเงินให้แสดงผลถูกต้องและไม่ซ้อนทับ"""
