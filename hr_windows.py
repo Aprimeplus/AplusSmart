@@ -2879,6 +2879,7 @@ class CalculationDetailViewer(CTkToplevel):
         super().__init__(master)
         self.app_container = master.app_container
         self.title(f"รายละเอียดการคำนวณ - {plan_name}")
+        self.plan_name = plan_name
         self.geometry("900x600")
         
         self.grid_rowconfigure(0, weight=1)
@@ -2964,9 +2965,7 @@ class CalculationDetailViewer(CTkToplevel):
             item = row['รายการ']
             value = row['ค่า']
             tags = ()
-            
-            # ใช้ i % 2 เพื่อสลับสีแถว (ถ้าต้องการ)
-            # tags += ('oddrow',) if i % 2 != 0 else ()
+        
             
             if str(item).startswith('##') and str(item).endswith('##'):
                 item = item.replace('##', '').strip()
@@ -3076,10 +3075,17 @@ class CalculationDetailViewer(CTkToplevel):
         # --- 1. กำหนด Tag สีสำหรับสถานะ ---
         tree.tag_configure('Normal (>=10%)', background='#F0FDF4') # สีเขียวอ่อน
         tree.tag_configure('Below Tier (<10%)', background='#FEF2F2') # สีแดงอ่อน
-        # (เพิ่มสีสำหรับ Plan C เผื่อไว้)
         tree.tag_configure('Below Tier (7.99-10%)', background='#FEFCE8') # สีเหลืองอ่อน
         tree.tag_configure('Below Tier (<7.99%)', background='#FEF2F2') # สีแดงอ่อน
 
+        # +++ START: 2. ดึง Plan Name และกำหนด Multiplier +++
+        plan_name = self.plan_name
+        cost_multiplier = 1.0  # ค่าเริ่มต้น (สำหรับ Plan B)
+        
+        # ตรวจสอบว่า Plan นี้มีการคูณ 1.03 หรือไม่ (ตาม business_logic.py)
+        if plan_name in ['Plan A', 'Plan C', 'Plan D']:
+            cost_multiplier = 1.03 #
+        # +++ END +++
 
         for col_id in columns:
             anchor = 'w'
@@ -3092,13 +3098,39 @@ class CalculationDetailViewer(CTkToplevel):
             tree.heading(col_id, text=col_id)
             tree.column(col_id, width=width, anchor=anchor)
 
-        for _, row in df.iterrows():
-            # --- 2. ใช้ค่าจากคอลัมน์ Status เป็น Tag โดยตรง ---
-            tag = row['Status'] 
-            values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in row]
-            tree.insert("", "end", values=tuple(values), tags=(tag,))
+        # +++ START: 3. แก้ไขการวนลูป Loop เพื่อปรับค่า "ต้นทุน" +++
+        try:
+            # หา index ของคอลัมน์ "ต้นทุน"
+            cost_col_index = columns.index('ต้นทุน')
+        except ValueError:
+            messagebox.showerror("ผิดพลาด", "ไม่พบคอลัมน์ 'ต้นทุน' ใน DataFrame", parent=self)
+            return
 
-        # --- 3. ผูก Event ดับเบิลคลิก (เหมือนเดิม) ---
+        for _, row in df.iterrows():
+            tag = row['Status'] 
+            
+            # สร้าง list ของ values (ยังไม่ format)
+            original_values = list(row)
+            
+            # --- 4. ปรับค่า "ต้นทุน" ที่จะแสดงผล ---
+            try:
+                raw_cost = pd.to_numeric(original_values[cost_col_index], errors='coerce')
+                
+                # คูณต้นทุนดิบด้วย multiplier
+                adjusted_cost = raw_cost * cost_multiplier
+                
+                # ใส่ค่าที่คำนวณใหม่กลับเข้าไปใน list
+                original_values[cost_col_index] = adjusted_cost
+
+            except (ValueError, TypeError) as e:
+                print(f"Warning: Could not adjust cost for display. {e}")
+            
+            # --- 5. Format list (เหมือนเดิม) ---
+            values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in original_values]
+            tree.insert("", "end", values=tuple(values), tags=(tag,))
+        # +++ END: สิ้นสุดการแก้ไข Loop +++
+
+        # --- 6. ผูก Event ดับเบิลคลิก (เหมือนเดิม) ---
         tree.bind("<Double-1>", self._on_so_row_double_click)
             
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
