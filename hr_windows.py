@@ -3072,21 +3072,36 @@ class CalculationDetailViewer(CTkToplevel):
         tree = ttk.Treeview(tree_frame, columns=columns, show="headings", style="Breakdown.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
         
-        # --- 1. กำหนด Tag สีสำหรับสถานะ ---
-        tree.tag_configure('Normal (>=10%)', background='#F0FDF4') # สีเขียวอ่อน
-        tree.tag_configure('Below Tier (<10%)', background='#FEF2F2') # สีแดงอ่อน
-        tree.tag_configure('Below Tier (7.99-10%)', background='#FEFCE8') # สีเหลืองอ่อน
-        tree.tag_configure('Below Tier (<7.99%)', background='#FEF2F2') # สีแดงอ่อน
+        # --- 1. กำหนด Tag สีสำหรับสถานะ (และเพิ่มแถว Total) ---
+        tree.tag_configure('Normal (>=10%)', background='#F0FDF4')
+        tree.tag_configure('Below Tier (<10%)', background='#FEF2F2')
+        tree.tag_configure('Below Tier (7.99-10%)', background='#FEFCE8')
+        tree.tag_configure('Below Tier (<7.99%)', background='#FEF2F2')
+        tree.tag_configure('total_row', font=CTkFont(size=12, weight="bold"), background='#EBF5FF', foreground="#1E40AF")
 
-        # +++ START: 2. ดึง Plan Name และกำหนด Multiplier +++
-        plan_name = self.plan_name
-        cost_multiplier = 1.0  # ค่าเริ่มต้น (สำหรับ Plan B)
+        # +++ START: 2. ดึง Plan Name (แก้ไข Error จากรอบที่แล้ว) และกำหนด Multiplier +++
+        plan_name = self.plan_name # <-- ใช้ self.plan_name ที่เราเก็บไว้ใน __init__
+        cost_multiplier = 1.0  
         
-        # ตรวจสอบว่า Plan นี้มีการคูณ 1.03 หรือไม่ (ตาม business_logic.py)
         if plan_name in ['Plan A', 'Plan C', 'Plan D']:
-            cost_multiplier = 1.03 #
+            cost_multiplier = 1.03
         # +++ END +++
 
+        # +++ START: 3. คำนวณยอดรวมทั้งหมด (Total) ก่อน +++
+        total_so_count = len(df)
+        total_sales = pd.to_numeric(df['ยอดขาย'], errors='coerce').fillna(0).sum()
+        total_shipping = pd.to_numeric(df['ค่าส่ง'], errors='coerce').fillna(0).sum()
+        total_profit = pd.to_numeric(df['กำไร'], errors='coerce').fillna(0).sum()
+        total_commission = pd.to_numeric(df['ค่าคอมที่ได้รับ'], errors='coerce').fillna(0).sum()
+        
+        raw_costs = pd.to_numeric(df['ต้นทุน'], errors='coerce').fillna(0)
+        adjusted_costs_series = raw_costs * cost_multiplier
+        total_cost = adjusted_costs_series.sum()
+        
+        total_margin_percent = (total_profit / total_sales) * 100 if total_sales != 0 else 0
+        # +++ END +++
+
+        # --- 4. สร้าง Headings (เหมือนเดิม) ---
         for col_id in columns:
             anchor = 'w'
             width = 150
@@ -3098,39 +3113,55 @@ class CalculationDetailViewer(CTkToplevel):
             tree.heading(col_id, text=col_id)
             tree.column(col_id, width=width, anchor=anchor)
 
-        # +++ START: 3. แก้ไขการวนลูป Loop เพื่อปรับค่า "ต้นทุน" +++
+        # --- 5. หา Index ของคอลัมน์ที่จะแก้ไข ---
         try:
-            # หา index ของคอลัมน์ "ต้นทุน"
             cost_col_index = columns.index('ต้นทุน')
         except ValueError:
-            messagebox.showerror("ผิดพลาด", "ไม่พบคอลัมน์ 'ต้นทุน' ใน DataFrame", parent=self)
+            messagebox.showerror("ผิดพลาด", "ไม่พบคอลัมน์ 'ต้นทุน'", parent=self)
             return
 
-        for _, row in df.iterrows():
+        # --- 6. ใส่ข้อมูลแต่ละแถว (ปรับค่า ต้นทุน แต่ *ไม่ปรับ* Margin) ---
+        
+        # สร้าง DataFrame ใหม่สำหรับแสดงผล (เพื่อไม่ให้กระทบ df เดิม)
+        df_display = df.copy()
+        
+        # 6.1 ใส่ต้นทุนที่คูณ 1.03 แล้ว
+        df_display['ต้นทุน'] = adjusted_costs_series
+        
+        # 6.2 (ลบออก) เราไม่ปรับ Margin ที่แสดงผลแล้ว
+        # df_display['Margin (%)'] = df_display.apply(adjust_margin_for_display, axis=1)
+
+        # วนลูป DataFrame ที่แก้ไขแล้วเพื่อแสดงผล
+        for _, row in df_display.iterrows():
             tag = row['Status'] 
-            
-            # สร้าง list ของ values (ยังไม่ format)
-            original_values = list(row)
-            
-            # --- 4. ปรับค่า "ต้นทุน" ที่จะแสดงผล ---
-            try:
-                raw_cost = pd.to_numeric(original_values[cost_col_index], errors='coerce')
-                
-                # คูณต้นทุนดิบด้วย multiplier
-                adjusted_cost = raw_cost * cost_multiplier
-                
-                # ใส่ค่าที่คำนวณใหม่กลับเข้าไปใน list
-                original_values[cost_col_index] = adjusted_cost
-
-            except (ValueError, TypeError) as e:
-                print(f"Warning: Could not adjust cost for display. {e}")
-            
-            # --- 5. Format list (เหมือนเดิม) ---
-            values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in original_values]
+            # Format the values (จะแสดง Raw Margin ที่ปัดเศษ .2f)
+            values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in row]
             tree.insert("", "end", values=tuple(values), tags=(tag,))
-        # +++ END: สิ้นสุดการแก้ไข Loop +++
 
-        # --- 6. ผูก Event ดับเบิลคลิก (เหมือนเดิม) ---
+        # +++ START: 7. เพิ่มแถวสรุป (Total Row) +++
+        try:
+            col_indices = {col: i for i, col in enumerate(columns)}
+            so_col_name = 'SO Number (Grouped)' if 'SO Number (Grouped)' in columns else 'SO Number'
+            
+            total_values_list = [''] * len(columns)
+            
+            total_values_list[col_indices[so_col_name]] = f"รวม {total_so_count} รายการ"
+            total_values_list[col_indices['ยอดขาย']] = f"{total_sales:,.2f}"
+            total_values_list[col_indices['ค่าส่ง']] = f"{total_shipping:,.2f}"
+            total_values_list[col_indices['ต้นทุน']] = f"{total_cost:,.2f}"
+            total_values_list[col_indices['กำไร']] = f"{total_profit:,.2f}"
+            total_values_list[col_indices['Margin (%)']] = f"{total_margin_percent:,.2f}%" 
+            total_values_list[col_indices['ค่าคอมที่ได้รับ']] = f"{total_commission:,.2f}"
+            total_values_list[col_indices['Status']] = "Total"
+
+            tree.insert("", "end", values=tuple(total_values_list), tags=('total_row',))
+            
+        except Exception as e:
+            print(f"Error creating total row: {e}")
+            traceback.print_exc()
+        # +++ END +++
+
+        # --- 8. ผูก Event ดับเบิลคลิก (เหมือนเดิม) ---
         tree.bind("<Double-1>", self._on_so_row_double_click)
             
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
