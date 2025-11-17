@@ -645,12 +645,15 @@ class HRScreen(CTkFrame):
             so_shared_vars['cash_required_total_var'] = tk.StringVar()
             so_shared_vars['cash_verification_result_var'] = tk.StringVar()
             
+            
             # --- START: เพิ่ม StringVars สำหรับแสดง VAT ที่ขาดไป ---
             so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
             so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
             so_shared_vars['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
             so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
             so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+            so_shared_vars['relocation_vat_option_var'] = tk.StringVar(value="VAT")
+            so_shared_vars['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
             # --- END ---
 
             # เรียกใช้ SOPopupWindow จาก hr_windows.py
@@ -1344,8 +1347,8 @@ class HRScreen(CTkFrame):
         CTkLabel(header_frame, text=main_info_text, font=self.entry_font).grid(row=0, column=0, sticky="w")
 
         # แสดงข้อความยอดค้างชำระ ถ้ามี
-        if difference_amount > 0:
-            due_text = f"⚠️ ยอดโอนขาด: {difference_amount:,.2f} บาท"
+        if difference_amount < 0:
+            due_text = f"⚠️ ยอดโอนขาด: {abs(difference_amount):,.2f} บาท"
             CTkLabel(so_card, text=due_text, text_color=info_text_color, font=CTkFont(size=12, weight="bold")).grid(row=1, column=0, sticky="w", padx=10, pady=(0,5))
         # --- END ---
         

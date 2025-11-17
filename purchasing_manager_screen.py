@@ -490,10 +490,15 @@ class PurchasingManagerScreen(CTkFrame):
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 # 1. ตรวจสอบสถานะ SO ก่อน
-                cursor.execute("SELECT status FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", (so_number,))
-                so_record = cursor.fetchone()
-                
+                cursor.execute("SELECT status, sale_key FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", (so_number,))
+                so_record = cursor.fetchone()          
                 so_status = so_record['status'] if so_record else 'N/A'
+                so_sale_key = so_record['sale_key'] if so_record and 'sale_key' in so_record else None # <-- เพิ่มบรรทัดนี้
+                print(f"--- DEBUG REVERT PO ---")
+                print(f"SO: {so_number} | Status ที่ดึงได้: {so_status} | Sale Key ที่ดึงได้: {so_sale_key}")
+                # ^^^^ สิ้นสุดส่วนที่เพิ่ม ^^^^
+                                
+                
                 
                 # 2. ตั้งค่าคำเตือน
                 warning_message = ""
@@ -534,7 +539,7 @@ class PurchasingManagerScreen(CTkFrame):
                 if so_status not in ('Paid', 'HR Verified'):
                     cursor.execute("""
                         UPDATE commissions 
-                        SET status = 'PO In Progress' 
+                        SET status = 'Draft'
                         WHERE so_number = %s AND is_active = 1
                     """, (so_number,))
                 
@@ -544,7 +549,14 @@ class PurchasingManagerScreen(CTkFrame):
                     "INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)", 
                     (po_creator_key, message_to_pu, po_id)
                 )
-
+                
+                if so_sale_key:
+                    message_to_sale = f"SO: {so_number} (จาก PO ID: {po_id}) ถูกตีกลับโดย Manager ({self.user_key}) กรุณาตรวจสอบและแก้ไข SO"
+                    cursor.execute(
+                        "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", 
+                        (so_sale_key, message_to_sale)
+                    )
+                 
                 # 3.4 บันทึก Audit Log
                 log_details = {'reverted_by': self.user_key, 'original_so_status': so_status}
                 cursor.execute(
@@ -580,10 +592,13 @@ class PurchasingManagerScreen(CTkFrame):
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 
                 # 1. ค้นหา SO และ POs ที่เกี่ยวข้อง
-                cursor.execute("SELECT status FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", (so_number,))
+                cursor.execute("SELECT status, sale_key FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", (so_number,)) # <-- แก้ไขบรรทัดนี้
                 so_record = cursor.fetchone()
                 so_status = so_record['status'] if so_record else 'N/A'
-                
+                so_sale_key = so_record['sale_key'] if so_record and 'sale_key' in so_record else None
+                print(f"--- DEBUG REVERT SO (ปุ่มสีแดง) ---")
+                print(f"SO: {so_number} | Status: {so_status} | Sale Key: {so_sale_key}")
+                                
                 cursor.execute(
                     "SELECT id, user_key, po_number, status FROM purchase_orders WHERE so_number = %s AND status NOT IN ('Draft', 'Rejected', 'Cancelled')", 
                     (so_number,)
@@ -608,8 +623,8 @@ class PurchasingManagerScreen(CTkFrame):
                 if not messagebox.askyesno(
                     "ยืนยันการตีกลับ SO ทั้งระบบ",
                     f"คุณต้องการตีกลับ SO: {so_number} ใช่หรือไม่?\n\n"
-                    f"การกระทำนี้จะบังคับตีกลับ PO ที่เกี่ยวข้องทั้งหมด {po_count} ใบ ให้กลับไปเป็น 'Draft'\n"
-                    f"และตั้งค่า SO กลับไปเป็น 'PO In Progress' (หากยังไม่จ่ายเงิน)"
+                    f"การกระทำนี้จะตั้งค่า SO: {so_number} กลับไปเป็น 'Draft' (ส่งให้เซลส์แก้ไข)\n"
+                    f"**การดำเนินการนี้จะไม่ส่งผลกระทบต่อ POs ที่มีอยู่**"
                     f"{warning_message}",
                     icon="warning",
                     parent=self
@@ -621,35 +636,31 @@ class PurchasingManagerScreen(CTkFrame):
                 po_creators_to_notify = set([po['user_key'] for po in po_records])
                 revert_reason = f"Full SO Reverted by MP ({self.user_key}) at {datetime.now()}"
 
-                # 3.1 อัปเดต POs ทั้งหมด
-                if po_ids_to_revert:
-                    cursor.execute("""
-                        UPDATE purchase_orders 
-                        SET 
-                            status = 'Draft', 
-                            approval_status = 'Draft',
-                            approver_manager1_key = NULL, approval_date_manager1 = NULL,
-                            approver_manager2_key = NULL, approval_date_manager2 = NULL,
-                            approver_director_key = NULL, approval_date_director = NULL,
-                            last_modified_by = %s,
-                            rejection_reason = %s
-                        WHERE id = ANY(%s)
-                    """, (self.user_key, revert_reason, po_ids_to_revert))
+               
 
                 # 3.2 อัปเดต SO (ถ้า SO ยังไม่ถูกจ่ายเงิน/Verify)
                 if so_status not in ('Paid', 'HR Verified'):
                     cursor.execute("""
                         UPDATE commissions 
-                        SET status = 'PO In Progress' 
+                        SET status = 'Draft' 
                         WHERE so_number = %s AND is_active = 1
                     """, (so_number,))
                 
                 # 3.3 ส่ง Notification
-                message_to_pu = f"SO: {so_number} (และ POs ทั้งหมด) ถูกตีกลับโดย Manager ({self.user_key}) กรุณาตรวจสอบและแก้ไข PO ใหม่ทั้งหมด"
+                message_to_pu = f"SO: {so_number} ถูกตีกลับไปหาเซลส์โดย Manager ({self.user_key}) กรุณารับทราบ"
                 for creator_key in po_creators_to_notify:
                     cursor.execute(
                         "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", 
                         (creator_key, message_to_pu)
+                    )
+
+                # --- เพิ่มส่วนนี้เข้าไป ---
+                # (แจ้งเตือนเซลส์เจ้าของ SO)
+                if so_sale_key:
+                    message_to_sale = f"SO: {so_number} ถูกตีกลับโดย Manager ({self.user_key}) กรุณาตรวจสอบและแก้ไข SO"
+                    cursor.execute(
+                        "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", 
+                        (so_sale_key, message_to_sale)
                     )
 
                 # 3.4 บันทึก Audit Log
@@ -664,7 +675,7 @@ class PurchasingManagerScreen(CTkFrame):
                 )
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", f"ตีกลับ SO: {so_number} และ POs ที่เกี่ยวข้อง {po_count} ใบ เป็น 'Draft' เรียบร้อยแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", f"ตีกลับ SO: {so_number} เป็น 'Draft' (ส่งหาเซลส์) เรียบร้อยแล้ว", parent=self)
             
             # Refresh หน้าจอค้นหา
             self._mp_master_search()

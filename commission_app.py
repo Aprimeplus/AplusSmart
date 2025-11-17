@@ -168,7 +168,7 @@ class SalesTasksWindow(CTkToplevel):
             query = """
                 SELECT * FROM commissions 
                 WHERE sale_key = %s 
-                AND difference_amount > 0
+                AND difference_amount < 0
                 AND is_active = 1
                 AND status != 'Paid'
                 ORDER BY timestamp DESC
@@ -244,7 +244,7 @@ class SalesTasksWindow(CTkToplevel):
             # <<< START: แก้ไข Query ให้รองรับสถานะ Deferred ด้วย >>>
             query = """
                 SELECT * FROM commissions 
-                WHERE sale_key = %s AND status IN ('Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR') AND is_active = 1 
+                WHERE sale_key = %s AND status IN ('Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR', 'Draft') AND is_active = 1 
                 ORDER BY timestamp DESC
             """
             # <<< END >>>
@@ -260,10 +260,14 @@ class SalesTasksWindow(CTkToplevel):
                     card_color = "#FEF2F2" # แดงอ่อน
                     reason_color = "#B91C1C"
                     status_prefix = "ตีกลับ"
-                else: # Deferred
+                elif 'Defer' in status: # Deferred
                     card_color = "#FEFCE8" # เหลืองอ่อน
                     reason_color = "#A16207"
                     status_prefix = "เลื่อน"
+                else: # ถ้าไม่ใช่ Reject หรือ Defer ก็ต้องเป็น Draft
+                    card_color = "#FEF2F2" # แดงอ่อน (เหมือนตีกลับ)
+                    reason_color = "#B91C1C"
+                    status_prefix = "ตีกลับ (โดย Manager)"
                 
                 card = CTkFrame(self.rejected_frame, border_width=1, fg_color=card_color)
                 # ... (โค้ดสร้าง Card ส่วนที่เหลือเหมือนเดิม) ...

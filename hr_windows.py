@@ -1188,6 +1188,8 @@ class HRVerificationWindow(CTkToplevel):
         self.so_form_widgets['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_form_widgets['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_form_widgets['relocation_cost_vat_option_var'] = tk.StringVar(value="VAT")
+        self.so_form_widgets['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
 
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         """
