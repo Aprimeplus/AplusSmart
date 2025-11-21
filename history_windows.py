@@ -2532,3 +2532,204 @@ class SOPopupWindow(CTkToplevel):
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
+
+class SOReassignmentDialog(CTkToplevel):
+    """
+    หน้าต่างสำหรับ Sale Support ใช้ย้ายความเป็นเจ้าของ SO (Reassign Sale Key)
+    * รองรับการย้ายทุกสถานะ (Draft, Pending, PO In Progress, etc.)
+    """
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.title("เครื่องมือย้ายเจ้าของ SO (Reassign Owner)")
+        self.geometry("500x500")
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        # --- ส่วนที่ 1: ค้นหา SO ---
+        search_frame = CTkFrame(self)
+        search_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+        search_frame.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(search_frame, text="ระบุเลขที่ SO:", font=CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=10, pady=10)
+        self.so_entry = CTkEntry(search_frame, placeholder_text="เช่น SO6811AM001")
+        self.so_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        self.so_entry.bind("<Return>", lambda e: self._search_so())
+        
+        search_btn = CTkButton(search_frame, text="ค้นหา", width=100, command=self._search_so)
+        search_btn.grid(row=0, column=2, padx=10, pady=10)
+        
+        # --- ส่วนที่ 2: แสดงรายละเอียดและเลือกเจ้าของใหม่ ---
+        self.detail_frame = CTkFrame(self)
+        self.detail_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        self.detail_frame.grid_columnconfigure(1, weight=1)
+
+        # ซ่อนไว้ก่อน จนกว่าจะกดค้นหาเจอ
+        self.detail_frame.grid_remove() 
+
+        # ข้อมูลปัจจุบัน
+        CTkLabel(self.detail_frame, text="ลูกค้า:", font=CTkFont(size=12)).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.lbl_customer = CTkLabel(self.detail_frame, text="-", font=CTkFont(weight="bold"))
+        self.lbl_customer.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
+        CTkLabel(self.detail_frame, text="เจ้าของปัจจุบัน:", font=CTkFont(size=12)).grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.lbl_current_sale = CTkLabel(self.detail_frame, text="-", font=CTkFont(weight="bold"), text_color="#D97706") # สีส้ม
+        self.lbl_current_sale.grid(row=1, column=1, padx=10, pady=5, sticky="w")
+
+        CTkLabel(self.detail_frame, text="สถานะปัจจุบัน:", font=CTkFont(size=12)).grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.lbl_status = CTkLabel(self.detail_frame, text="-", font=CTkFont(weight="bold"))
+        self.lbl_status.grid(row=2, column=1, padx=10, pady=5, sticky="w")
+
+        # ส่วนเลือกเจ้าของใหม่
+        CTkLabel(self.detail_frame, text="เลือกเจ้าของใหม่:", font=CTkFont(size=14, weight="bold")).grid(row=3, column=0, padx=10, pady=(20,5), sticky="w")
+        
+        self.new_sale_var = tk.StringVar(value="เลือกเซลส์...")
+        self.sale_dropdown = CTkOptionMenu(self.detail_frame, variable=self.new_sale_var, values=[])
+        self.sale_dropdown.grid(row=3, column=1, padx=10, pady=(20,5), sticky="ew")
+
+        # --- ส่วนที่ 3: ปุ่มบันทึก ---
+        self.action_frame = CTkFrame(self, fg_color="transparent")
+        self.action_frame.grid(row=3, column=0, padx=20, pady=20, sticky="ew")
+        self.action_frame.grid_columnconfigure(0, weight=1)
+        
+        self.save_btn = CTkButton(self.action_frame, text="บันทึกการย้าย (Reassign)", fg_color="#16A34A", hover_color="#15803D", command=self._save_reassignment, height=40, font=CTkFont(size=16, weight="bold"))
+        self.save_btn.pack(fill="x")
+        
+        self.action_frame.grid_remove() # ซ่อนไว้ก่อน
+
+        self.current_so_data = None
+        self._load_sales_list()
+        
+        self.transient(master)
+        self.grab_set()
+
+    def _load_sales_list(self):
+        """ดึงรายชื่อเซลส์ทั้งหมดมาใส่ Dropdown"""
+        try:
+            query = "SELECT sale_key, sale_name FROM sales_users WHERE role = 'Sale' AND status = 'Active' ORDER BY sale_key"
+            df = pd.read_sql_query(query, self.app_container.pg_engine)
+            
+            if not df.empty:
+                # สร้าง list แบบ "SALE01 : ชื่อเซลส์"
+                sale_options = [f"{row['sale_key']} : {row['sale_name']}" for _, row in df.iterrows()]
+                self.sale_dropdown.configure(values=sale_options)
+        except Exception as e:
+            print(f"Error loading sales list: {e}")
+
+    def _search_so(self):
+        so_num = self.so_entry.get().strip().upper()
+        if not so_num: return
+
+        try:
+            # ดึงข้อมูล SO พร้อมชื่อเซลส์ปัจจุบัน (ดึง status มาเช็คด้วย)
+            query = """
+                SELECT c.id, c.so_number, c.customer_name, c.status, c.sale_key, u.sale_name
+                FROM commissions c
+                LEFT JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE c.so_number = %s AND c.is_active = 1
+                LIMIT 1
+            """
+            df = pd.read_sql_query(query, self.app_container.pg_engine, params=(so_num,))
+
+            if df.empty:
+                messagebox.showinfo("ไม่พบข้อมูล", f"ไม่พบ SO หมายเลข: {so_num} ในระบบ", parent=self)
+                self.detail_frame.grid_remove()
+                self.action_frame.grid_remove()
+                self.current_so_data = None
+                return
+
+            # พบข้อมูล
+            row = df.iloc[0]
+            self.current_so_data = row
+            
+            self.lbl_customer.configure(text=row['customer_name'])
+            sale_display = f"{row['sale_key']} ({row['sale_name']})" if row['sale_name'] else row['sale_key']
+            self.lbl_current_sale.configure(text=sale_display)
+            
+            # แสดงสถานะและเปลี่ยนสีถ้าสถานะซีเรียส
+            status = row['status']
+            self.lbl_status.configure(text=status)
+            if status in ['Paid', 'HR Verified', 'Cancelled']:
+                self.lbl_status.configure(text_color="#B91C1C") # สีแดงเข้ม
+            else:
+                self.lbl_status.configure(text_color="black")
+
+            # แสดง Frame
+            self.detail_frame.grid()
+            self.action_frame.grid()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+
+    def _save_reassignment(self):
+        if self.current_so_data is None: return
+        
+        selected_str = self.new_sale_var.get()
+        if not selected_str or "เลือก" in selected_str:
+            messagebox.showwarning("แจ้งเตือน", "กรุณาเลือกเจ้าของใหม่ (Salesperson)", parent=self)
+            return
+
+        # แยกเอาเฉพาะ Sale Key (เช่น "SALE01 : Somchai" -> "SALE01")
+        new_sale_key = selected_str.split(":")[0].strip()
+        so_number = self.current_so_data['so_number']
+        old_sale_key = self.current_so_data['sale_key']
+        so_id = int(self.current_so_data['id'])
+        current_status = self.current_so_data['status']
+
+        if new_sale_key == old_sale_key:
+            messagebox.showwarning("แจ้งเตือน", "คุณเลือกเจ้าของเดิม ไม่มีการเปลี่ยนแปลง", parent=self)
+            return
+
+        # --- START: Logic การแจ้งเตือนตามสถานะ ---
+        warning_msg = ""
+        # ถ้าสถานะเป็น Paid หรือ HR Verified ให้เตือนแรงหน่อย เพราะอาจกระทบยอดเงิน
+        if current_status in ['Paid', 'HR Verified']:
+            warning_msg = (f"\n⚠️ คำเตือน: SO นี้อยู่ในสถานะ '{current_status}' แล้ว\n"
+                           "การย้ายเจ้าของอาจส่งผลต่อการคำนวณค่าคอมมิชชั่นที่ทำไปแล้ว\n"
+                           "กรุณาตรวจสอบให้แน่ใจก่อนดำเนินการ")
+        # ถ้าส่งไปแล้ว (Pending...) ก็เตือนปกติ
+        elif current_status not in ['Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR']:
+            warning_msg = (f"\nℹ️ หมายเหตุ: SO นี้ถูกส่งเข้าระบบแล้ว (สถานะ: {current_status})\n"
+                           "ระบบจะทำการเปลี่ยนชื่อเจ้าของให้ทันที")
+
+        if not messagebox.askyesno("ยืนยันการย้าย", f"ยืนยันย้าย SO: {so_number}\n\nจาก: {old_sale_key}\nไปเป็น: {new_sale_key}\n{warning_msg}", icon="warning" if warning_msg else "question"):
+            return
+        # --- END ---
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # 1. อัปเดตเจ้าของในตาราง commissions (ทำได้เลย ไม่ติด WHERE status)
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET sale_key = %s 
+                    WHERE id = %s
+                """, (new_sale_key, so_id))
+
+                # 2. บันทึก Log
+                log_detail = {
+                    "message": "Reassign Owner by Sale Support",
+                    "from_sale": old_sale_key,
+                    "to_sale": new_sale_key,
+                    "so_number": so_number,
+                    "original_status": current_status
+                }
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, ('Reassign SO', 'commissions', so_id, self.app_container.current_user_key, json.dumps(log_detail), datetime.now()))
+                
+                # 3. แจ้งเตือน Sale คนใหม่
+                msg = f"SO: {so_number} ถูกย้ายมาเป็นของคุณ โดย Sale Support (สถานะปัจจุบัน: {current_status})"
+                cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", (new_sale_key, msg))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ย้าย SO: {so_number} ไปยัง {new_sale_key} เรียบร้อยแล้ว", parent=self)
+            self.destroy()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึก: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)

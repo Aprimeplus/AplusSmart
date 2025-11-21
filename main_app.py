@@ -654,20 +654,38 @@ class AppContainer(CTk):
         print("Database connection pool closed.")
         if self.pg_engine: self.pg_engine.dispose()
         self.destroy()
+
+    def clear_screen(self):
+        """ล้างหน้าจอโดยการลบ Widget ทั้งหมดใน container"""
+        for widget in self.container.winfo_children():
+            widget.destroy()
     
     def show_sale_support_screen(self, user_key, user_name, user_role):
-        """เปิดหน้าจอสำหรับ Sale Support"""
+        """เปิดหน้าจอสำหรับ Sale Support (ฉบับแก้จอลอยซ้อนกัน)"""
+        
+        # 1. Import ไฟล์ที่ถูกต้อง
         from sales_proxy_screen import SalesProxyScreen 
         
-        self.show_screen(
-            SalesProxyScreen, 
+        # 2. --- [จุดสำคัญ] ล้างหน้าจอเก่าออกให้หมดเกลี้ยง ---
+        # วนลูปหา Widget ทุกตัวที่อยู่บนหน้าต่างหลัก (self) แล้วสั่งทำลายทิ้ง
+        for widget in self.winfo_children():
+            # (ข้ามพวกหน้าต่าง Pop-up ถ้ามี เพื่อไม่ให้ error)
+            if isinstance(widget, tk.Toplevel): 
+                continue
+            widget.destroy()
+        # ------------------------------------------------
+
+        # 3. สร้างหน้าจอใหม่ (ใช้ master=self)
+        self.current_screen = SalesProxyScreen(
+            master=self, 
             app_container=self, 
             proxy_user_key=user_key, 
             proxy_user_name=user_name,
-            user_role=user_role, # <--- เพิ่มบรรทัดนี้
+            user_role=user_role,
             role_to_proxy="Sale",
             show_logout_button=True
         )
+        self.current_screen.pack(fill="both", expand=True)
         
 if __name__ == "__main__":
     app = AppContainer()

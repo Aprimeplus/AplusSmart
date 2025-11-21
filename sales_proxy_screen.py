@@ -1,17 +1,16 @@
-# sales_proxy_screen.py (เนื้อหาที่ถูกต้อง)
+# sales_proxy_screen.py (ฉบับ Debug: บังคับโชว์ปุ่ม)
 
 import tkinter as tk
 from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkOptionMenu, CTkButton
 from tkinter import messagebox
 import pandas as pd
 
-# Import คลาสหลักที่เราจะสืบทอด
+# Import คลาสแม่
 from commission_app import CommissionApp
 
 class SalesProxyScreen(CommissionApp):
     """
     หน้าจอสำหรับให้ Role อื่น (เช่น Sale Support, HR) ทำงานในนามของ Sale
-    สืบทอดความสามารถทั้งหมดมาจาก CommissionApp แต่เพิ่มส่วนของการเลือกคนทำงานแทน
     """
     def __init__(self, master, app_container, proxy_user_key, proxy_user_name, user_role, role_to_proxy="Sale", show_logout_button=False):
         
@@ -20,44 +19,41 @@ class SalesProxyScreen(CommissionApp):
         self.role_to_proxy = role_to_proxy
         self.show_logout_button = show_logout_button
         self.sale_key_owner = None
+        self.user_role = user_role 
 
-        # --- การควบคุมการสร้าง Header ---
-        # เราจะบอกให้ CommissionApp สร้าง Header Frame เสมอ
-        # แต่จะแสดงปุ่ม Logout หรือไม่ ขึ้นอยู่กับค่า show_logout_button
+        # เรียกใช้ Class แม่ (CommissionApp)
         super().__init__(master=master, 
                          app_container=app_container, 
                          sale_key=proxy_user_key, 
                          sale_name=proxy_user_name,
                          user_role=user_role,
                          show_logout_button=show_logout_button,
-                         create_default_header=True) # <--- บอกให้สร้าง Header Frame เสมอ
+                         create_default_header=True)
 
         self.active_sales_list = self._get_all_active_sales()
         
-        # ใช้ .after() เพื่อรอให้ UI หลักของ CommissionApp วาดเสร็จก่อน
-        self.after(1, self._setup_proxy_ui)
+        # รอให้ UI วาดเสร็จแล้วค่อยสร้าง Header พิเศษด้านบน
+        self.after(10, self._setup_proxy_ui)
 
     def _setup_proxy_ui(self):
-        """สร้าง UI พิเศษสำหรับหน้า Proxy และซ่อนฟอร์มหลักไว้ก่อน"""
+        """สร้าง UI พิเศษสำหรับหน้า Proxy"""
         self._create_sale_selection_header()
         self._toggle_main_form(state="disabled")
 
     def _create_sale_selection_header(self):
         """สร้างแถบ Header สีเหลืองสำหรับเลือกเซลส์"""
-        # ล้างวิดเจ็ตเก่าทั้งหมดใน header_frame ทิ้งไปก่อน
         for widget in self.header_frame.winfo_children():
             widget.destroy()
 
-        # สร้างแถบสีเหลืองใส่เข้าไปใน header_frame ที่ว่างเปล่า
         selection_header = CTkFrame(self.header_frame, fg_color="#FFFBEB", border_width=1, border_color="#FBBF24")
         selection_header.pack(side="left", fill="x", expand=True, pady=(0, 10))
         
-        CTkLabel(selection_header, text=f"ผู้ดำเนินการ: {self.proxy_user_name} ({self.proxy_user_key})", font=CTkFont(size=16, weight="bold")).pack(side="left", padx=10, pady=10)
+        CTkLabel(selection_header, text=f"ผู้ดำเนินการ: {self.proxy_user_name} ({self.proxy_user_key})", font=CTkFont(size=16, weight="bold"), text_color="black").pack(side="left", padx=10, pady=10)
         
         sale_selection_frame = CTkFrame(selection_header, fg_color="transparent")
         sale_selection_frame.pack(side="left", padx=10, pady=10)
         
-        CTkLabel(sale_selection_frame, text="ทำงานในนามของ (เซลส์):", font=CTkFont(size=14)).pack(side="left")
+        CTkLabel(sale_selection_frame, text="ทำงานในนามของ (เซลส์):", font=CTkFont(size=14), text_color="black").pack(side="left")
         
         sale_display_names = [f"{sale['sale_name']} ({sale['sale_key']})" for sale in self.active_sales_list]
         self.selected_sale_key_full = tk.StringVar(value="- กรุณาเลือกเซลส์ -")
@@ -69,19 +65,61 @@ class SalesProxyScreen(CommissionApp):
             command=self._on_sale_selected
         )
         self.sale_selector_menu.pack(side="left", padx=10)
-    
+
+    # -----------------------------------------------------------
+    #  ★ จุดสำคัญ: บังคับโชว์ปุ่มโดยไม่สนเงื่อนไข ★
+    # -----------------------------------------------------------
+    def _populate_action_frame(self, parent):
+        # 1. สร้างปุ่มมาตรฐานก่อน
+        super()._populate_action_frame(parent)
+
+        # --- [DEBUG] แสดง Role ปัจจุบันให้ดูหน่อย ---
+        print(f"---- DEBUG: Current Role is '{self.user_role}' ----")
+        
+        # 2. บังคับสร้างปุ่มเสมอ (เอา if ออกชั่วคราว)
+        # if self.user_role == 'Sale Support': 
+            
+        # เส้นคั่น
+        separator = tk.Frame(parent, height=2, bd=1, relief="sunken")
+        separator.pack(fill="x", padx=20, pady=(15, 10))
+
+        # หัวข้อ
+        tool_label = CTkLabel(parent, text=f"เครื่องมือพิเศษ (Role: {self.user_role}):", font=CTkFont(size=14, weight="bold"), text_color="gray50")
+        tool_label.pack(anchor="w", padx=20, pady=(0, 5))
+
+        # ปุ่มสีม่วง
+        reassign_btn = CTkButton(
+            parent, 
+            text="🔄 ย้ายเจ้าของ SO (Reassign Owner)", 
+            fg_color="#8B5CF6", # สีม่วง
+            hover_color="#7C3AED",
+            height=40,
+            font=CTkFont(size=16, weight="bold"),
+            command=self._open_reassign_window
+        )
+        reassign_btn.pack(fill="x", padx=20, pady=(0, 20))
+
+    def _open_reassign_window(self):
+        """เปิดหน้าต่างย้ายเจ้าของ SO"""
+        try:
+            from history_windows import SOReassignmentDialog
+            SOReassignmentDialog(self, self.app_container)
+        except ImportError:
+            messagebox.showerror("Error", "ไม่พบ Class 'SOReassignmentDialog' ใน history_windows.py")
+        except Exception as e:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}")
+
+    # --- ฟังก์ชัน Helper อื่นๆ ---
     def _get_all_active_sales(self):
-        """ดึงรายชื่อเซลส์ที่ยัง Active อยู่ทั้งหมด"""
         try:
             query = "SELECT sale_key, sale_name FROM sales_users WHERE role = %s AND status = 'Active' ORDER BY sale_name"
             df = pd.read_sql(query, self.pg_engine, params=(self.role_to_proxy,))
             return df.to_dict('records')
         except Exception as e:
-            messagebox.showerror("Database Error", f"ไม่สามารถดึงรายชื่อเซลส์ได้: {e}", parent=self)
+            print(f"Database Error: {e}")
             return []
 
     def _on_sale_selected(self, selected_display_name):
-        """Callback เมื่อมีการเลือกเซลส์จาก Dropdown"""
         if "- กรุณาเลือกเซลส์ -" in selected_display_name:
             self.sale_key_owner = None
             self._toggle_main_form(state="disabled")
@@ -89,7 +127,6 @@ class SalesProxyScreen(CommissionApp):
             selected_sale_data = next((sale for sale in self.active_sales_list if f"{sale['sale_name']} ({sale['sale_key']})" == selected_display_name), None)
             if selected_sale_data:
                 self.sale_key_owner = selected_sale_data['sale_key']
-                # อัปเดต sale_key ของคลาสแม่ (CommissionApp) ให้เป็นของคนที่ถูกเลือก
                 self.sale_key = self.sale_key_owner
                 self.sale_name = selected_sale_data['sale_name']
                 self._toggle_main_form(state="normal")
@@ -98,29 +135,14 @@ class SalesProxyScreen(CommissionApp):
                 self._toggle_main_form(state="disabled")
     
     def _toggle_main_form(self, state):
-        """(เวอร์ชันใหม่) เปิด/ปิด การใช้งานฟอร์มหลัก โดยจะเข้าไปจัดการวิดเจ็ตข้างในทั้งหมด"""
         if hasattr(self, 'scrollable_main_container') and self.scrollable_main_container.winfo_exists():
-            # เริ่มการทำงานที่ container หลัก
             self._recursive_toggle_state(self.scrollable_main_container, state)
 
     def _recursive_toggle_state(self, parent_widget, state):
-        """
-        ฟังก์ชัน Helper ที่จะทำงานซ้ำๆ (Recursive) เพื่อเข้าไปจัดการสถานะของวิดเจ็ตในทุกระดับชั้น
-        """
-        # วนลูปดูวิดเจ็ตลูกทั้งหมดของ parent_widget
         for child in parent_widget.winfo_children():
-            # 1. ลองสั่งเปลี่ยนสถานะของวิดเจ็ตลูกตัวนี้
             try:
-                # คำสั่งนี้จะทำงานสำเร็จกับวิดเจ็ต เช่น CTkButton, CTkEntry, CTkOptionMenu
-                # และจะเกิด Error กับวิดเจ็ต เช่น CTkFrame, CTkLabel (ซึ่งเป็นสิ่งที่เราต้องการ)
                 child.configure(state=state)
             except Exception:
-                # ถ้าเกิด Error (เช่น ValueError, AttributeError) แปลว่าวิดเจ็ตนี้ไม่มี state ให้ปรับ
-                # ก็ไม่ต้องทำอะไร ให้ข้ามไป
                 pass
-
-            # 2. ตรวจสอบว่าวิดเจ็ตลูกตัวนี้ มีลูกๆ ของมันเองอีกหรือไม่ (เป็น container หรือไม่)
             if child.winfo_children():
-                # ถ้ามี ให้เรียกฟังก์ชันนี้อีกครั้ง โดยส่ง child ตัวนี้เป็น parent ใหม่
-                # เพื่อให้มัน 'ล้วง' เข้าไปจัดการวิดเจ็ตข้างในต่อไป
                 self._recursive_toggle_state(child, state)
