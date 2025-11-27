@@ -3054,6 +3054,12 @@ class CalculationDetailViewer(CTkToplevel):
 
 
     def _populate_so_breakdown_tab(self, tab, df):
+        """
+        (ฉบับแก้ไขสมบูรณ์ Final: ตัดโค้ดซ้ำซ้อนออกทั้งหมด)
+        """
+        # 1. ล้างหน้าจอเก่า
+        for widget in tab.winfo_children(): widget.destroy()
+        
         tab.grid_rowconfigure(0, weight=1)
         tab.grid_columnconfigure(0, weight=1)
         tree_frame = CTkFrame(tab, fg_color="transparent")
@@ -3065,6 +3071,13 @@ class CalculationDetailViewer(CTkToplevel):
             CTkLabel(tree_frame, text="ไม่พบข้อมูลรายละเอียด SO").pack(pady=20)
             return
 
+        # 2. หารูปแบบชื่อคอลัมน์ SO Number
+        so_col_name = next((col for col in df.columns if 'SO Number' in col), 'SO Number')
+
+        # 3. กำจัด SO ซ้ำ
+        df = df.drop_duplicates(subset=[so_col_name]).copy()
+        
+        # 4. สร้าง Treeview
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Breakdown.Treeview.Heading", font=CTkFont(size=12, weight="bold"), background="#F1F5F9", relief="flat")
@@ -3074,36 +3087,14 @@ class CalculationDetailViewer(CTkToplevel):
         tree = ttk.Treeview(tree_frame, columns=columns, show="headings", style="Breakdown.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
         
-        # --- 1. กำหนด Tag สีสำหรับสถานะ (และเพิ่มแถว Total) ---
+        # กำหนด Tag สี
         tree.tag_configure('Normal (>=10%)', background='#F0FDF4')
         tree.tag_configure('Below Tier (<10%)', background='#FEF2F2')
         tree.tag_configure('Below Tier (7.99-10%)', background='#FEFCE8')
         tree.tag_configure('Below Tier (<7.99%)', background='#FEF2F2')
         tree.tag_configure('total_row', font=CTkFont(size=12, weight="bold"), background='#EBF5FF', foreground="#1E40AF")
 
-        # +++ START: 2. ดึง Plan Name (แก้ไข Error จากรอบที่แล้ว) และกำหนด Multiplier +++
-        plan_name = self.plan_name # <-- ใช้ self.plan_name ที่เราเก็บไว้ใน __init__
-        cost_multiplier = 1.0  
-        
-        if plan_name in ['Plan A', 'Plan C', 'Plan D']:
-            cost_multiplier = 1.03
-        # +++ END +++
-
-        # +++ START: 3. คำนวณยอดรวมทั้งหมด (Total) ก่อน +++
-        total_so_count = len(df)
-        total_sales = pd.to_numeric(df['ยอดขาย'], errors='coerce').fillna(0).sum()
-        total_shipping = pd.to_numeric(df['ค่าส่ง'], errors='coerce').fillna(0).sum()
-        total_profit = pd.to_numeric(df['กำไร'], errors='coerce').fillna(0).sum()
-        total_commission = pd.to_numeric(df['ค่าคอมที่ได้รับ'], errors='coerce').fillna(0).sum()
-        
-        raw_costs = pd.to_numeric(df['ต้นทุน'], errors='coerce').fillna(0)
-        adjusted_costs_series = raw_costs * cost_multiplier
-        total_cost = adjusted_costs_series.sum()
-        
-        total_margin_percent = (total_profit / total_sales) * 100 if total_sales != 0 else 0
-        # +++ END +++
-
-        # --- 4. สร้าง Headings (เหมือนเดิม) ---
+        # 5. สร้าง Headings
         for col_id in columns:
             anchor = 'w'
             width = 150
@@ -3111,61 +3102,75 @@ class CalculationDetailViewer(CTkToplevel):
                 anchor = 'e'
             if col_id == 'Status':
                 width = 200
-            
             tree.heading(col_id, text=col_id)
             tree.column(col_id, width=width, anchor=anchor)
 
-        # --- 5. หา Index ของคอลัมน์ที่จะแก้ไข ---
-        try:
-            cost_col_index = columns.index('ต้นทุน')
-        except ValueError:
-            messagebox.showerror("ผิดพลาด", "ไม่พบคอลัมน์ 'ต้นทุน'", parent=self)
-            return
-
-        # --- 6. ใส่ข้อมูลแต่ละแถว (ปรับค่า ต้นทุน แต่ *ไม่ปรับ* Margin) ---
+        # 6. คำนวณยอดรวม (Total)
+        cost_multiplier = 1.03 if self.plan_name in ['Plan A', 'Plan C', 'Plan D'] else 1.0
         
-        # สร้าง DataFrame ใหม่สำหรับแสดงผล (เพื่อไม่ให้กระทบ df เดิม)
+        def safe_sum_col(col_name):
+            if col_name in df.columns:
+                return pd.to_numeric(df[col_name], errors='coerce').fillna(0).sum()
+            return 0.0
+
+        total_so_count = len(df)
+        total_sales = safe_sum_col('ยอดขาย')
+        total_profit = safe_sum_col('กำไร')
+        total_commission = safe_sum_col('ค่าคอมที่ได้รับ')
+        
+        # รวมค่าส่ง (เช็คทั้ง 2 ชื่อที่เป็นไปได้)
+        total_shipping = safe_sum_col('ค่าส่ง') + safe_sum_col('ค่าขนส่ง')
+
+        # คำนวณต้นทุนรวม
+        raw_costs = pd.to_numeric(df.get('ต้นทุน', 0), errors='coerce').fillna(0)
+        if isinstance(raw_costs, (int, float)) and raw_costs == 0:
+             adjusted_costs_series = pd.Series([0] * len(df), index=df.index)
+        else:
+             adjusted_costs_series = raw_costs * cost_multiplier
+        
+        total_cost = adjusted_costs_series.sum()
+        total_margin_percent = (total_profit / total_sales) * 100 if total_sales != 0 else 0
+
+        # 7. ใส่ข้อมูลแต่ละแถวลงตาราง
         df_display = df.copy()
-        
-        # 6.1 ใส่ต้นทุนที่คูณ 1.03 แล้ว
-        df_display['ต้นทุน'] = adjusted_costs_series
-        
-        # 6.2 (ลบออก) เราไม่ปรับ Margin ที่แสดงผลแล้ว
-        # df_display['Margin (%)'] = df_display.apply(adjust_margin_for_display, axis=1)
+        if 'ต้นทุน' in df_display.columns:
+            df_display['ต้นทุน'] = adjusted_costs_series
 
-        # วนลูป DataFrame ที่แก้ไขแล้วเพื่อแสดงผล
         for _, row in df_display.iterrows():
-            tag = row['Status'] 
-            # Format the values (จะแสดง Raw Margin ที่ปัดเศษ .2f)
+            tag = row.get('Status', '')
             values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in row]
             tree.insert("", "end", values=tuple(values), tags=(tag,))
 
-        # +++ START: 7. เพิ่มแถวสรุป (Total Row) +++
+        # 8. เพิ่มแถวสรุป (Total Row) แบบปลอดภัย
         try:
             col_indices = {col: i for i, col in enumerate(columns)}
-            so_col_name = 'SO Number (Grouped)' if 'SO Number (Grouped)' in columns else 'SO Number'
-            
             total_values_list = [''] * len(columns)
             
-            total_values_list[col_indices[so_col_name]] = f"รวม {total_so_count} รายการ"
-            total_values_list[col_indices['ยอดขาย']] = f"{total_sales:,.2f}"
-            total_values_list[col_indices['ค่าส่ง']] = f"{total_shipping:,.2f}"
-            total_values_list[col_indices['ต้นทุน']] = f"{total_cost:,.2f}"
-            total_values_list[col_indices['กำไร']] = f"{total_profit:,.2f}"
-            total_values_list[col_indices['Margin (%)']] = f"{total_margin_percent:,.2f}%" 
-            total_values_list[col_indices['ค่าคอมที่ได้รับ']] = f"{total_commission:,.2f}"
-            total_values_list[col_indices['Status']] = "Total"
+            # Helper function
+            def set_val(key, val):
+                if key in col_indices:
+                    total_values_list[col_indices[key]] = val
+
+            set_val(so_col_name, f"รวม {total_so_count} รายการ")
+            set_val('ยอดขาย', f"{total_sales:,.2f}")
+            
+            # เช็คทั้ง 2 ชื่อที่เป็นไปได้ของค่าส่ง
+            set_val('ค่าส่ง', f"{total_shipping:,.2f}")
+            set_val('ค่าขนส่ง', f"{total_shipping:,.2f}")
+
+            set_val('ต้นทุน', f"{total_cost:,.2f}")
+            set_val('กำไร', f"{total_profit:,.2f}")
+            set_val('Margin (%)', f"{total_margin_percent:,.2f}%")
+            set_val('ค่าคอมที่ได้รับ', f"{total_commission:,.2f}")
+            set_val('Status', "Total")
 
             tree.insert("", "end", values=tuple(total_values_list), tags=('total_row',))
             
         except Exception as e:
-            print(f"Error creating total row: {e}")
-            traceback.print_exc()
-        # +++ END +++
+            print(f"Warning: Could not create total row: {e}")
 
-        # --- 8. ผูก Event ดับเบิลคลิก (เหมือนเดิม) ---
+        # 9. ผูก Event และ Scrollbar
         tree.bind("<Double-1>", self._on_so_row_double_click)
-            
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)

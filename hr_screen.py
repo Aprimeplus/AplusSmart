@@ -1424,14 +1424,16 @@ class HRScreen(CTkFrame):
         # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดและวาดกราฟ
         self._update_sales_target_dashboard()
 
-    def _get_sales_vs_target_data(self, period): # <-- แก้ไข parameter
+    def _get_sales_vs_target_data(self, period):
         try:
-            # --- START: สร้าง logic การกรองใหม่ (เหมือนกับ _get_sales_by_employee_data) ---
+            # --- START: สร้าง logic การกรองช่วงเวลา ---
             today = datetime.now()
             current_year = today.year
             params = []
             
             commission_filter_clauses = []
+            
+            # Logic การกรองช่วงเวลา (เหมือนเดิม)
             if period == "เดือนนี้":
                 commission_filter_clauses.append("c.commission_month = %s")
                 params.append(today.month)
@@ -1440,8 +1442,6 @@ class HRScreen(CTkFrame):
             elif period == "ปีนี้":
                 commission_filter_clauses.append("c.commission_year = %s")
                 params.append(current_year)
-            
-            # --- START: เพิ่ม Logic ของ Q1-Q4 ตรงนี้ ---
             elif period == "Q1":
                 commission_filter_clauses.append("c.commission_month IN (1, 2, 3)")
                 commission_filter_clauses.append("c.commission_year = %s")
@@ -1458,15 +1458,13 @@ class HRScreen(CTkFrame):
                 commission_filter_clauses.append("c.commission_month IN (10, 11, 12)")
                 commission_filter_clauses.append("c.commission_year = %s")
                 params.append(current_year)
-            # --- END: สิ้นสุด Logic Q1-Q4 ---
-            
             elif period in self.thai_month_map:
                 month_num = self.thai_month_map[period]
                 commission_filter_clauses.append("c.commission_month = %s")
                 params.append(month_num)
                 commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year) # กรองตามปีปัจจุบัน
-            else: # Fallback (เหมือน "เดือนนี้")
+                params.append(current_year)
+            else: # Fallback
                 commission_filter_clauses.append("c.commission_month = %s")
                 params.append(today.month)
                 commission_filter_clauses.append("c.commission_year = %s")
@@ -1475,20 +1473,27 @@ class HRScreen(CTkFrame):
             commission_filter_sql = " AND ".join(commission_filter_clauses)
             # --- END ---
 
+            # --- แก้ไข SQL Query: ลบเงื่อนไข sales_target > 0 ออก ---
             query = f"""
-                SELECT su.sale_name, su.sales_target, 
+                SELECT su.sale_name, 
+                       COALESCE(su.sales_target, 0) as sales_target, 
                        COALESCE(SUM(c.sales_service_amount), 0) as total_sales 
                 FROM sales_users su 
                 LEFT JOIN commissions c ON su.sale_key = c.sale_key 
                                      AND c.is_active = 1 
-                                     AND {commission_filter_sql} -- <-- แก้ไขตรงนี้
+                                     AND {commission_filter_sql}
                 WHERE su.role = 'Sale' 
-                  AND su.sales_target > 0 
+                  -- AND su.sales_target > 0  <-- ลบบรรทัดนี้ออก เพื่อให้แสดงทุกคน
                   AND su.status = 'Active' 
                 GROUP BY su.sale_key, su.sale_name, su.sales_target 
-                ORDER BY su.sale_name;
+                ORDER BY su.sale_name ASC; -- เรียงตามชื่อ ก-ฮ เพื่อหาง่ายขึ้น หรือใช้ total_sales DESC ก็ได้
             """
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+            
+            # เติม 0 ในกรณีที่เป็น Null เพื่อป้องกัน Error ตอนวาดกราฟ
+            df['sales_target'] = df['sales_target'].fillna(0)
+            df['total_sales'] = df['total_sales'].fillna(0)
+            
             return df
         except Exception as e: 
             print(f"Error getting sales vs target data: {e}") 
@@ -1503,11 +1508,12 @@ class HRScreen(CTkFrame):
             widget.destroy()
             
         if data_df.empty:
-            CTkLabel(parent_frame, text="ไม่พบข้อมูลพนักงานขายที่มีการตั้งเป้าหมาย", font=self.header_font_table).pack(expand=True)
+            CTkLabel(parent_frame, text="ไม่พบข้อมูลพนักงานขาย", font=self.header_font_table).pack(expand=True)
             return
 
-        # ไม่ต้องกำหนด font_name แล้ว เพราะเราตั้งค่า Default ไว้แล้ว
-        fig = Figure(figsize=(10, 6), dpi=100, facecolor=self.theme["bg"])
+        # ปรับขนาดกราฟ: ถ้าคนเยอะ ให้กราฟกว้างขึ้นเล็กน้อย
+        chart_width = max(10, len(data_df) * 0.5) 
+        fig = Figure(figsize=(chart_width, 6), dpi=100, facecolor=self.theme["bg"])
         ax = fig.add_subplot(111)
         ax.set_facecolor(self.theme["bg"])
         
@@ -1516,18 +1522,26 @@ class HRScreen(CTkFrame):
 
         x = np.arange(len(data_df['sale_name']))
         width = 0.35
+        
+        # วาดกราฟแท่ง
         rects1 = ax.bar(x - width/2, data_df['total_sales'], width, label='ยอดขายจริง', color=self.theme["primary"])
         rects2 = ax.bar(x + width/2, data_df['sales_target'], width, label='ยอดเป้าหมาย', color='#CBD5E1', edgecolor='#94A3B8', linewidth=1)
 
         ax.set_ylabel('ยอดขาย (บาท)', fontsize=12)
-        ax.set_title('กราฟเปรียบเทียบยอดขายจริงกับยอดเป้าหมาย', fontsize=18, weight="bold")
+        ax.set_title(f'เปรียบเทียบยอดขายจริง vs เป้าหมาย (ทั้งหมด {len(data_df)} คน)', fontsize=18, weight="bold")
         ax.set_xticks(x)
-        ax.set_xticklabels(data_df['sale_name'], rotation=45, ha="right", fontsize=11)
+        
+        # ปรับตัวหนังสือแกน X ให้เล็กลงหน่อยถ้าคนเยอะ
+        font_size_x = 10 if len(data_df) > 10 else 11
+        ax.set_xticklabels(data_df['sale_name'], rotation=45, ha="right", fontsize=font_size_x)
+        
         ax.legend(prop={'size': 12})
         ax.grid(axis='y', linestyle='--', alpha=0.7)
 
-        ax.bar_label(rects1, padding=3, fmt='{:,.0f}', fontsize=9)
-        ax.bar_label(rects2, padding=3, fmt='{:,.0f}', fontsize=9)
+        # ใส่ตัวเลขบนกราฟ (ถ้ากราฟไม่แน่นเกินไป)
+        if len(data_df) <= 15:
+            ax.bar_label(rects1, padding=3, fmt='{:,.0f}', fontsize=9)
+            ax.bar_label(rects2, padding=3, fmt='{:,.0f}', fontsize=8)
         
         fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
@@ -2574,7 +2588,7 @@ class HRScreen(CTkFrame):
                     ) po_discounts ON c.so_number = po_discounts.so_number
                     WHERE c.so_number IN ({placeholders}) AND c.is_active = 1
                 """
-                cursor.execute(query, so_numbers_to_verify)
+                cursor.execute(query, so_numbers_to_verify * 3)
                 latest_so_data = cursor.fetchall()
 
                 # 4. วนลูปคำนวณค่าสุดท้ายใหม่ทั้งหมดด้วย Logic ล่าสุด
