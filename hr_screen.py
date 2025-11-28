@@ -3094,6 +3094,7 @@ class HRScreen(CTkFrame):
         loading = self._show_loading(self.process_result_frame)
 
         try:
+            # --- [แก้ไข] SQL Query: เปลี่ยนเงื่อนไขเวลาเพื่อดึงยอดตกค้าง ---
             query_comm = """
                 SELECT c.*, COALESCE(po_costs.total_po_shipping_cost, 0) as total_po_shipping_cost
                 FROM commissions c
@@ -3104,11 +3105,17 @@ class HRScreen(CTkFrame):
                 WHERE c.sale_key = %s 
                     AND c.status = 'HR Verified' 
                     AND c.payout_id IS NULL
-                    AND c.commission_month = %s 
-                    AND c.commission_year = %s
                     AND c.is_active = 1
+                    AND (
+                        (c.commission_year < %s) 
+                        OR 
+                        (c.commission_year = %s AND c.commission_month <= %s)
+                    )
             """
-            params = (sale_key, month_num, year_ad)
+            
+            # --- [แก้ไข] Params: ส่งปี 2 ครั้ง และเดือน 1 ครั้ง ตามลำดับใน Query ---
+            params = (sale_key, year_ad, year_ad, month_num)
+            
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
 
             # <<< START: บันทึก ID ของ SO ที่จะถูกประมวลผล >>>

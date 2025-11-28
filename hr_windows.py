@@ -1688,13 +1688,13 @@ class HRVerificationWindow(CTkToplevel):
     
     def _defer_so(self):
         """
-        (เวอร์ชันแก้ไขสมบูรณ์) เลื่อน SO ไปเดือนถัดไป และอัปเดตสถานะเพื่อซ่อนจากหน้าจอปัจจุบัน
+        (เวอร์ชันแก้ไข: ไม่ต้องส่งกลับ Sale) เลื่อน SO ไปเดือนถัดไป โดยคงสถานะรอตรวจสอบไว้ ('PO Sent')
         """
         so_number = self.system_data.get('so_number')
         so_id = self.system_data.get('id')
         current_month = self.system_data.get('commission_month')
         current_year = self.system_data.get('commission_year')
-        sale_key_to_notify = self.system_data.get('sale_key') # ## เพิ่มบรรทัดนี้
+        sale_key_to_notify = self.system_data.get('sale_key') 
 
         # 1. คำนวณเดือนและปีถัดไป
         next_month = current_month + 1
@@ -1712,7 +1712,7 @@ class HRVerificationWindow(CTkToplevel):
 
         # 3. ยืนยันการทำงาน
         msg = (f"คุณต้องการเลื่อน SO: {so_number} ไปคำนวณค่าคอมในเดือน {next_month}/{next_year} ใช่หรือไม่?\n\n"
-               "SO นี้จะหายไปจากหน้าเปรียบเทียบของเดือนปัจจุบัน")
+               "SO นี้จะหายไปจากหน้าเปรียบเทียบของเดือนปัจจุบัน และไปโผล่ในเดือนถัดไปแทน")
         
         if not messagebox.askyesno("ยืนยันการเลื่อน SO", msg, parent=self):
             return
@@ -1721,21 +1721,21 @@ class HRVerificationWindow(CTkToplevel):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 4. ## แก้ไขคำสั่ง UPDATE ที่สำคัญ ##
-                #    - อัปเดตเดือนและปีสำหรับรอบถัดไป
-                #    - อัปเดตสถานะเป็น 'Deferred by HR' เพื่อให้ถูกกรองออกจากหน้าจอปัจจุบันทันที
+                # 4. ## แก้ไขคำสั่ง UPDATE ##
+                #    - เปลี่ยนเดือน/ปี เป็นเดือนหน้า
+                #    - ตั้งสถานะเป็น 'PO Sent' (เพื่อให้ยังคงอยู่ในสถานะรอ HR ตรวจสอบในรอบหน้า ไม่เด้งกลับไปหา Sale)
                 cursor.execute("""
                     UPDATE commissions 
                     SET 
-                        status = 'Deferred by HR', 
+                        status = 'PO Sent', 
                         commission_month = %s, 
                         commission_year = %s,
                         rejection_reason = %s
                     WHERE id = %s
                 """, (next_month, next_year, f"Deferred to {next_month}/{next_year}: {reason.strip()}", so_id))
                 
-                # 5. ## เพิ่มการสร้าง Notification (เพื่อให้เซลส์ทราบว่า SO ถูกเลื่อน) ##
-                message = f"SO: {so_number} ของคุณถูกเลื่อนไปคิดค่าคอมเดือน {next_month}/{next_year} โดย HR\nเหตุผล: {reason.strip()}"
+                # 5. สร้าง Notification แจ้งเตือน Sale (แต่ไม่ต้องให้เขากดส่งใหม่)
+                message = f"SO: {so_number} ถูกเลื่อนไปคิดค่าคอมเดือน {next_month}/{next_year} โดย HR\n(ไม่ต้องแก้ไขข้อมูล ระบบดำเนินการให้อัตโนมัติ)\nเหตุผล: {reason.strip()}"
                 cursor.execute("""
                     INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id)
                     VALUES (%s, %s, FALSE, %s)
@@ -1744,7 +1744,7 @@ class HRVerificationWindow(CTkToplevel):
             conn.commit()
             messagebox.showinfo("สำเร็จ", f"เลื่อน SO: {so_number} ไปยังเดือน {next_month}/{next_year} เรียบร้อยแล้ว", parent=self.master)
             
-            self._on_close()
+            self._on_close() # ปิดหน้าต่างและ Refresh
 
         except Exception as e:
             if conn: conn.rollback()
