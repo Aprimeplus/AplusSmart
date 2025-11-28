@@ -2725,7 +2725,7 @@ class HRScreen(CTkFrame):
 
             merged_df = pd.merge(db_compare_df, uploaded_compare_df, on='so_number', how='outer', suffixes=('_db', '_uploaded'), indicator=True)
             
-            merged_df['sales_uploaded'] = merged_df['sales_uploaded'].fillna(0) - merged_df['shipping_cost'].fillna(0)
+            merged_df['sales_uploaded'] = pd.to_numeric(merged_df['sales_uploaded'], errors='coerce').fillna(0) - pd.to_numeric(merged_df['shipping_cost'], errors='coerce').fillna(0)
 
             merged_df['แหล่งยอดขาย'] = merged_df['hr_sale_source'].apply(
                 lambda x: 'ระบบ' if x == 'system' else ('Express' if x == 'express' else 'ยังไม่เลือก')
