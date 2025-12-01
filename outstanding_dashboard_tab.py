@@ -6,7 +6,8 @@ import traceback
 
 class OutstandingDashboardTab(ctk.CTkFrame):
     """
-    คลาสสำหรับสร้าง Tab Dashboard ติดตามยอดค้างชำระ (เวอร์ชันปรับปรุงสำหรับเซลส์)
+    คลาสสำหรับสร้าง Tab Dashboard ติดตามยอดค้างชำระ 
+    (เวอร์ชันปรับปรุง: ตัดสถานะ 'รอเคลียร์นายหน้า' ออก เหลือแค่ ครบถ้วน/เกิน/ขาด)
     """
     def __init__(self, master, app_container):
         super().__init__(master, fg_color="transparent")
@@ -51,26 +52,23 @@ class OutstandingDashboardTab(ctk.CTkFrame):
 
     def _fetch_outstanding_data(self):
         """
-        ดึงข้อมูล SO ที่ "ยังไม่ถูกจ่ายเงิน" ทั้งหมด และคำนวณสถานะที่ถูกต้อง
+        ดึงข้อมูล SO ที่ยังไม่ Paid และคำนวณสถานะ 'Real Diff' (หักนายหน้า)
         """
         print("Fetching all non-paid SO status data...")
         try:
-            # Query ข้อมูล (ดึง difference_amount มาด้วย)
-            # difference_amount = paid - due
-            #   - ถ้าเป็นลบ (-) แปลว่า "โอนขาด" (ค้างชำระ)
-            #   - ถ้าเป็นบวก (+) แปลว่า "โอนเกิน"
+            # Query ข้อมูล
             query = """
                 SELECT 
                     c.sale_key AS "พนักงานขาย",
                     c.customer_name AS "ชื่อลูกค้า",
                     c.so_number AS "เลขที่ SO",
-                    c.status AS "สถานะระบบ", -- เก็บสถานะเดิมไว้
+                    c.status AS "สถานะระบบ",
                     CASE 
                         WHEN c.credit_term IS NULL OR c.credit_term = 'เงินสด' OR c.credit_term = '0' THEN 'ลูกค้าเงินสด'
                         ELSE 'ลูกค้าเครดิต'
                     END AS "ประเภทการชำระ",
                     
-                    -- คำนวณยอดเต็ม (Total)
+                    -- ยอดเต็ม (ค่าสินค้า + ค่าส่ง + ฯลฯ + VAT - WHT)
                     (COALESCE(c.sales_service_amount, 0) + 
                      COALESCE(c.cutting_drilling_fee, 0) + 
                      COALESCE(c.other_service_fee, 0) +
@@ -78,13 +76,18 @@ class OutstandingDashboardTab(ctk.CTkFrame):
                      COALESCE(c.credit_card_fee, 0)) * 1.07 - COALESCE(c.wht_3_percent, 0) as "ยอดเต็ม",
                     
                     COALESCE(c.total_payment_amount, 0) as "ยอดที่ชำระแล้ว",
-                    COALESCE(c.difference_amount, 0) as "ผลต่าง"
+                    
+                    -- ผลต่างดิบ (Paid - GrandTotal)
+                    COALESCE(c.difference_amount, 0) as "ผลต่างดิบ",
+                    
+                    -- ค่านายหน้าดิบ (Brokerage Fee)
+                    COALESCE(c.brokerage_fee, 0) as "ค่านายหน้าดิบ"
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
                 WHERE 
                     c.status != 'Paid'
                     AND c.is_active = 1
-                    AND c.difference_amount != 0 -- ดึงเฉพาะที่มีผลต่าง (ไม่ครบ)
+                    AND c.difference_amount != 0 -- ดึงเฉพาะที่มีผลต่าง
                 ORDER BY c.bill_date DESC;
             """
             df = pd.read_sql_query(query, self.pg_engine)
@@ -93,23 +96,39 @@ class OutstandingDashboardTab(ctk.CTkFrame):
                 print("No active, non-paid SO found.")
                 return pd.DataFrame()
 
-            # --- [แก้ไข Logic การกำหนดสถานะตรงนี้] ---
-            def determine_status(diff):
-                if diff < -0.01: 
-                    return "ค้างชำระ"  # ติดลบ = จ่ายน้อยกว่ายอดเต็ม = ค้าง
-                elif diff > 0.01:
-                    return "ชำระเกิน"  # บวก = จ่ายมากกว่ายอดเต็ม
-                else:
-                    return "ครบถ้วน"
+            # --- Smart Logic: คำนวณสถานะโดยหักค่านายหน้า ---
+            def calculate_real_status(row):
+                raw_diff = row['ผลต่างดิบ']       # ยอดที่โอนเกิน/ขาด (จาก DB)
+                broker_raw = row['ค่านายหน้าดิบ'] # ค่านายหน้า (Base)
+                
+                # คำนวณค่านายหน้า + VAT 7% (ยอดที่ลูกค้ามักจะโอนมาจริง)
+                broker_vat = broker_raw * 1.07
+                
+                # Real Diff = เงินที่เกิน - (ค่านายหน้า+VAT)
+                real_diff = raw_diff - broker_vat
+                
+                # กำหนดสถานะ
+                status = "ครบถ้วน"
+                # ยอมรับความคลาดเคลื่อนทศนิยม ±5 บาท
+                if real_diff < -5.0:       
+                    status = "ค้างชำระ"         # ยังขาดอยู่ (สีแดง)
+                elif real_diff > 5.0:      
+                    status = "ชำระเกิน"         # เกินจริง ๆ (สีเขียว)
+                else:                      
+                    status = "ครบถ้วน"          # พอดี (เพราะหักนายหน้าแล้วลงตัว หรือโอนพอดีแต่แรก)
 
-            df['สถานะ'] = df['ผลต่าง'].apply(determine_status)
+                return pd.Series([status, real_diff, broker_vat])
+
+            # Apply Logic
+            df[['สถานะ', 'real_diff', 'broker_vat_display']] = df.apply(calculate_real_status, axis=1)
             
-            # สร้างคอลัมน์ 'ยอดคงเหลือ' (Display Balance)
-            # ถ้าค้าง (ลบ) ให้แสดงเป็นยอดบวก เพื่อบอกว่า "ต้องจ่ายอีกเท่าไหร่"
-            df['ยอดคงเหลือ'] = df['ผลต่าง'].apply(lambda x: abs(x))
+            # เตรียมข้อมูลสำหรับแสดงผล
+            # ยอดคงเหลือ: ถ้าขาด แสดงยอดที่ขาด, ถ้าเกิน แสดงยอดที่เกิน, ถ้าครบถ้วน แสดง 0
+            df['ยอดคงเหลือ'] = df['real_diff'].apply(lambda x: abs(x) if abs(x) > 5.0 else 0.0)
+            
+            # แสดงค่านายหน้า (ยอดรวม VAT)
+            df['ค่านายหน้า'] = df['broker_vat_display']
 
-            # กรองเฉพาะรายการที่ "ค้างชำระ" หรือ "ชำระเกิน" (จริงๆ Query กรองมาแล้วระดับนึง)
-            # แต่เผื่อไว้สำหรับ Logic อื่นๆ
             print(f"Fetched {len(df)} records with outstanding balance.")
             return df
 
@@ -118,7 +137,6 @@ class OutstandingDashboardTab(ctk.CTkFrame):
             traceback.print_exc()
             ctk.CTkLabel(self.main_container, text=f"เกิดข้อผิดพลาดในการดึงข้อมูล:\n{e}", text_color="red").pack(expand=True)
             return pd.DataFrame()
-
 
     def _create_widgets(self):
         self.tab_view = ctk.CTkTabview(self.main_container)
@@ -144,14 +162,25 @@ class OutstandingDashboardTab(ctk.CTkFrame):
 
         filter_bar = ctk.CTkFrame(parent_tab, fg_color="transparent")
         filter_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
-        ctk.CTkLabel(filter_bar, text="กรองตามพนักงานขาย:").pack(side="left")
         
+        # 1. Filter: พนักงานขาย
+        ctk.CTkLabel(filter_bar, text="พนักงานขาย:").pack(side="left", padx=(0, 5))
         sales_people = ['ทั้งหมด'] + sorted(self.full_df['พนักงานขาย'].unique().tolist())
-        filter_var = ctk.StringVar(value="ทั้งหมด")
+        sale_var = ctk.StringVar(value="ทั้งหมด")
         
-        ctk.CTkOptionMenu(filter_bar, variable=filter_var, values=sales_people,
-            command=lambda choice: self._filter_and_update_tab(parent_tab, data_df, choice)
-        ).pack(side="left", padx=10)
+        # 2. Filter: สถานะ
+        ctk.CTkLabel(filter_bar, text="สถานะ:").pack(side="left", padx=(15, 5))
+        # ตัด "รอเคลียร์นายหน้า" ออกตามที่ขอ
+        status_options = ['ทั้งหมด', 'ค้างชำระ', 'ชำระเกิน', 'ครบถ้วน'] 
+        status_var = ctk.StringVar(value="ทั้งหมด")
+
+        ctk.CTkOptionMenu(filter_bar, variable=sale_var, values=sales_people,
+            command=lambda choice: self._filter_and_update_tab(parent_tab, data_df, choice, status_var.get())
+        ).pack(side="left", padx=5)
+
+        ctk.CTkOptionMenu(filter_bar, variable=status_var, values=status_options,
+            command=lambda choice: self._filter_and_update_tab(parent_tab, data_df, sale_var.get(), choice)
+        ).pack(side="left", padx=5)
 
         kpi_frame = ctk.CTkFrame(parent_tab, fg_color="transparent")
         kpi_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
@@ -162,24 +191,31 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         parent_tab.kpi_frame = kpi_frame
         parent_tab.table_frame = table_frame
 
-        self._filter_and_update_tab(parent_tab, data_df, "ทั้งหมด")
+        self._filter_and_update_tab(parent_tab, data_df, "ทั้งหมด", "ทั้งหมด")
 
-    def _filter_and_update_tab(self, parent_tab, original_df, selected_salesperson):
+    def _filter_and_update_tab(self, parent_tab, original_df, selected_salesperson, selected_status):
+        # 1. กรองตามพนักงานขาย
         if selected_salesperson != "ทั้งหมด":
             df_filtered = original_df[original_df['พนักงานขาย'] == selected_salesperson]
         else:
             df_filtered = original_df
 
+        # 2. กรองตามสถานะ
+        if selected_status != "ทั้งหมด":
+            df_filtered = df_filtered[df_filtered['สถานะ'] == selected_status]
+
         for widget in parent_tab.kpi_frame.winfo_children(): widget.destroy()
         for widget in parent_tab.table_frame.winfo_children(): widget.destroy()
         
-        # คำนวณยอดเฉพาะรายการที่ "ค้างชำระ" เท่านั้น (ไม่นับยอดชำระเกิน)
+        # KPI 1: ยอดหนี้คงค้างรวม (นับเฉพาะ 'ค้างชำระ' เท่านั้น)
         outstanding_only = df_filtered[df_filtered['สถานะ'] == 'ค้างชำระ']
         total_outstanding = outstanding_only['ยอดคงเหลือ'].sum() if not outstanding_only.empty else 0
+        
+        # KPI 2: จำนวนรายการ (ตามที่กรองมา)
         invoice_count = len(df_filtered)
 
-        self._create_kpi_box(parent_tab.kpi_frame, "ยอดหนี้คงค้างรวม", f"{total_outstanding:,.2f} บาท", "#DC2626").pack(side="left", fill="x", expand=True, padx=5)
-        self._create_kpi_box(parent_tab.kpi_frame, "จำนวน SO ที่มีปัญหา", f"{invoice_count} รายการ", "#F97316").pack(side="left", fill="x", expand=True, padx=5)
+        self._create_kpi_box(parent_tab.kpi_frame, "ยอดหนี้คงค้างสุทธิ (Net Debt)", f"{total_outstanding:,.2f} บาท", "#DC2626").pack(side="left", fill="x", expand=True, padx=5)
+        self._create_kpi_box(parent_tab.kpi_frame, "จำนวนรายการ", f"{invoice_count} รายการ", "#F97316").pack(side="left", fill="x", expand=True, padx=5)
 
         parent_tab.table_frame.grid_columnconfigure(0, weight=1)
         parent_tab.table_frame.grid_rowconfigure(0, weight=1)
@@ -195,37 +231,42 @@ class OutstandingDashboardTab(ctk.CTkFrame):
 
     def _create_treeview_table(self, parent, df):
         if df.empty:
-            ctk.CTkLabel(parent, text="ไม่พบข้อมูลค้างชำระ", font=("Arial", 18)).pack(expand=True)
+            ctk.CTkLabel(parent, text="ไม่พบข้อมูลตามเงื่อนไข", font=("Arial", 18)).pack(expand=True)
             return
             
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Treeview.Heading", font=('Arial', 14, 'bold'), padding=10)
+        style.configure("Treeview.Heading", font=('Arial', 12, 'bold'), padding=5)
         style.configure("Treeview", rowheight=30, font=('Arial', 12))
         style.map("Treeview", background=[('selected', '#3B82F6')])
 
-        columns = ['สถานะ', 'พนักงานขาย', 'ชื่อลูกค้า', 'เลขที่ SO', 'ยอดเต็ม', 'ยอดที่ชำระแล้ว', 'ยอดคงเหลือ']
+        # --- คอลัมน์ตาราง ---
+        columns = ['สถานะ', 'พนักงานขาย', 'ชื่อลูกค้า', 'เลขที่ SO', 'ยอดเต็ม', 'ยอดที่ชำระแล้ว', 'ยอดคงเหลือ', 'ค่านายหน้า']
         tree = ttk.Treeview(parent, columns=columns, show='headings', style="Treeview")
 
-        # --- [เพิ่ม] กำหนดสี Tag ใหม่ให้ถูกต้อง ---
+        # --- กำหนดสี Tag ---
         status_colors = {
-            "ค้างชำระ": "#FEE2E2",  # สีแดงอ่อน
-            "ชำระเกิน": "#D1FAE5",  # สีเขียวอ่อน
-            "ครบถ้วน": "#F3F4F6"    # สีเทาอ่อน (ปกติไม่ควรโชว์)
+            "ค้างชำระ": "#FEE2E2",        # สีแดงอ่อน (หนี้จริง)
+            "ชำระเกิน": "#D1FAE5",        # สีเขียวอ่อน (เกินจริง)
+            "ครบถ้วน": "#F3F4F6"          # สีเทา (พอดี หรือหักนายหน้าแล้วพอดี)
         }
         for status, color in status_colors.items():
             tree.tag_configure(status, background=color)
             
-        # เพิ่ม Tag สำหรับสีตัวอักษร (Optional)
-        tree.tag_configure('text_red', foreground='#991B1B')
-        tree.tag_configure('text_green', foreground='#065F46')
-        
+        # ตั้งค่าหัวตาราง
         for col in columns:
-            tree.heading(col, text=col, anchor="center", command=lambda _col=col: self._sort_treeview(tree, _col, False))
-            anchor = "w"; width = 150
-            if "ยอด" in col: anchor = "e"
-            elif col == 'สถานะ': width = 120
-            elif col == 'ชื่อลูกค้า': width = 250
+            header_text = col
+            if col == 'ค่านายหน้า':
+                header_text = 'ค่านายหน้า (+VAT 7%)' 
+            
+            tree.heading(col, text=header_text, anchor="center", command=lambda _col=col: self._sort_treeview(tree, _col, False))
+            
+            anchor = "w"; width = 120
+            if "ยอด" in col or "ค่า" in col: 
+                anchor = "e"
+                width = 120
+            elif col == 'สถานะ': width = 150
+            elif col == 'ชื่อลูกค้า': width = 200
             tree.column(col, anchor=anchor, width=width)
 
         for _, row in df.iterrows():
@@ -233,14 +274,19 @@ class OutstandingDashboardTab(ctk.CTkFrame):
             values[4] = f"{row['ยอดเต็ม']:,.2f}"
             values[5] = f"{row['ยอดที่ชำระแล้ว']:,.2f}"
             
-            # ใส่เครื่องหมาย + หรือ - หน้ายอดคงเหลือ เพื่อความชัดเจน
+            # แสดงยอดคงเหลือพร้อมเครื่องหมาย
             balance_val = row['ยอดคงเหลือ']
-            if row['สถานะ'] == 'ค้างชำระ':
-                values[6] = f"-{balance_val:,.2f}" # แสดงเป็นลบ (หนี้)
-            elif row['สถานะ'] == 'ชำระเกิน':
-                values[6] = f"+{balance_val:,.2f}" # แสดงเป็นบวก (เกิน)
-            else:
-                values[6] = f"{balance_val:,.2f}"
+            status = row['สถานะ']
+            
+            if status == 'ค้างชำระ':
+                values[6] = f"-{balance_val:,.2f}" # ติดลบ (หนี้)
+            elif status == 'ชำระเกิน':
+                values[6] = f"+{balance_val:,.2f}" # บวก (เกิน)
+            else: # ครบถ้วน
+                values[6] = "0.00" # แสดงเป็น 0 ให้ชัดเจนว่าเคลียร์แล้ว
+
+            # แสดงค่านายหน้า (ยอดรวม VAT)
+            values[7] = f"{row['ค่านายหน้า']:,.2f}"
 
             tag_to_apply = row.get('สถานะ', '')
             tree.insert("", "end", values=values, tags=(tag_to_apply,))
@@ -253,14 +299,11 @@ class OutstandingDashboardTab(ctk.CTkFrame):
     
     def _sort_treeview(self, tree, col, reverse):
         data_list = [(tree.set(k, col), k) for k in tree.get_children('')]
-        
         try:
-            # ลบเครื่องหมาย , + - ออกก่อนแปลงเป็นตัวเลขเพื่อเรียงลำดับ
             data_list.sort(key=lambda t: float(str(t[0]).replace(",", "").replace("+", "").replace("-", "")), reverse=reverse)
         except ValueError:
             data_list.sort(key=lambda t: t[0], reverse=reverse)
 
         for index, (val, k) in enumerate(data_list):
             tree.move(k, '', index)
-
         tree.heading(col, command=lambda _col=col: self._sort_treeview(tree, _col, not reverse))
