@@ -51,28 +51,41 @@ class OutstandingDashboardTab(ctk.CTkFrame):
 
     def _fetch_outstanding_data(self):
         """
-        ดึงข้อมูล SO ที่ "ยังไม่ถูกจ่ายเงิน" ทั้งหมด
+        ดึงข้อมูล SO ที่ "ยังไม่ถูกจ่ายเงิน" ทั้งหมด และคำนวณสถานะที่ถูกต้อง
         """
         print("Fetching all non-paid SO status data...")
         try:
+            # Query ข้อมูล (ดึง difference_amount มาด้วย)
+            # difference_amount = paid - due
+            #   - ถ้าเป็นลบ (-) แปลว่า "โอนขาด" (ค้างชำระ)
+            #   - ถ้าเป็นบวก (+) แปลว่า "โอนเกิน"
             query = """
-                SELECT
+                SELECT 
                     c.sale_key AS "พนักงานขาย",
                     c.customer_name AS "ชื่อลูกค้า",
                     c.so_number AS "เลขที่ SO",
-                    c.status AS "สถานะ",
-                    CASE
+                    c.status AS "สถานะระบบ", -- เก็บสถานะเดิมไว้
+                    CASE 
                         WHEN c.credit_term IS NULL OR c.credit_term = 'เงินสด' OR c.credit_term = '0' THEN 'ลูกค้าเงินสด'
                         ELSE 'ลูกค้าเครดิต'
                     END AS "ประเภทการชำระ",
-                    (COALESCE(c.total_payment_amount, 0) + COALESCE(c.difference_amount, 0)) AS "ยอดเต็ม",
-                    COALESCE(c.total_payment_amount, 0) AS "ยอดที่ชำระแล้ว",
-                    COALESCE(c.difference_amount, 0) AS "ยอดคงเหลือ"
-                FROM
-                    commissions c
-                WHERE
+                    
+                    -- คำนวณยอดเต็ม (Total)
+                    (COALESCE(c.sales_service_amount, 0) + 
+                     COALESCE(c.cutting_drilling_fee, 0) + 
+                     COALESCE(c.other_service_fee, 0) +
+                     COALESCE(c.shipping_cost, 0) +
+                     COALESCE(c.credit_card_fee, 0)) * 1.07 - COALESCE(c.wht_3_percent, 0) as "ยอดเต็ม",
+                    
+                    COALESCE(c.total_payment_amount, 0) as "ยอดที่ชำระแล้ว",
+                    COALESCE(c.difference_amount, 0) as "ผลต่าง"
+                FROM commissions c
+                LEFT JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE 
                     c.status != 'Paid'
-                    AND c.is_active = 1;
+                    AND c.is_active = 1
+                    AND c.difference_amount != 0 -- ดึงเฉพาะที่มีผลต่าง (ไม่ครบ)
+                ORDER BY c.bill_date DESC;
             """
             df = pd.read_sql_query(query, self.pg_engine)
 
@@ -80,14 +93,29 @@ class OutstandingDashboardTab(ctk.CTkFrame):
                 print("No active, non-paid SO found.")
                 return pd.DataFrame()
 
-            # ✅ ไม่ต้องคำนวณยอดคงเหลือใหม่อีก เพราะ SQL มีอยู่แล้ว
-            df_filtered = df[df['ยอดคงเหลือ'] > 0].copy()
+            # --- [แก้ไข Logic การกำหนดสถานะตรงนี้] ---
+            def determine_status(diff):
+                if diff < -0.01: 
+                    return "ค้างชำระ"  # ติดลบ = จ่ายน้อยกว่ายอดเต็ม = ค้าง
+                elif diff > 0.01:
+                    return "ชำระเกิน"  # บวก = จ่ายมากกว่ายอดเต็ม
+                else:
+                    return "ครบถ้วน"
 
-            print(f"Fetched {len(df_filtered)} records with outstanding balance.")
-            return df_filtered
+            df['สถานะ'] = df['ผลต่าง'].apply(determine_status)
+            
+            # สร้างคอลัมน์ 'ยอดคงเหลือ' (Display Balance)
+            # ถ้าค้าง (ลบ) ให้แสดงเป็นยอดบวก เพื่อบอกว่า "ต้องจ่ายอีกเท่าไหร่"
+            df['ยอดคงเหลือ'] = df['ผลต่าง'].apply(lambda x: abs(x))
+
+            # กรองเฉพาะรายการที่ "ค้างชำระ" หรือ "ชำระเกิน" (จริงๆ Query กรองมาแล้วระดับนึง)
+            # แต่เผื่อไว้สำหรับ Logic อื่นๆ
+            print(f"Fetched {len(df)} records with outstanding balance.")
+            return df
 
         except Exception as e:
             print(f"!!! DATABASE ERROR fetching SO status data: {e}")
+            traceback.print_exc()
             ctk.CTkLabel(self.main_container, text=f"เกิดข้อผิดพลาดในการดึงข้อมูล:\n{e}", text_color="red").pack(expand=True)
             return pd.DataFrame()
 
@@ -145,11 +173,13 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         for widget in parent_tab.kpi_frame.winfo_children(): widget.destroy()
         for widget in parent_tab.table_frame.winfo_children(): widget.destroy()
         
-        total_outstanding = df_filtered['ยอดคงเหลือ'].sum() if not df_filtered.empty else 0
+        # คำนวณยอดเฉพาะรายการที่ "ค้างชำระ" เท่านั้น (ไม่นับยอดชำระเกิน)
+        outstanding_only = df_filtered[df_filtered['สถานะ'] == 'ค้างชำระ']
+        total_outstanding = outstanding_only['ยอดคงเหลือ'].sum() if not outstanding_only.empty else 0
         invoice_count = len(df_filtered)
 
-        self._create_kpi_box(parent_tab.kpi_frame, "ยอดค้างชำระรวม", f"{total_outstanding:,.2f} บาท", "#DC2626").pack(side="left", fill="x", expand=True, padx=5)
-        self._create_kpi_box(parent_tab.kpi_frame, "จำนวน SO ที่ค้างชำระ", f"{invoice_count} รายการ", "#F97316").pack(side="left", fill="x", expand=True, padx=5)
+        self._create_kpi_box(parent_tab.kpi_frame, "ยอดหนี้คงค้างรวม", f"{total_outstanding:,.2f} บาท", "#DC2626").pack(side="left", fill="x", expand=True, padx=5)
+        self._create_kpi_box(parent_tab.kpi_frame, "จำนวน SO ที่มีปัญหา", f"{invoice_count} รายการ", "#F97316").pack(side="left", fill="x", expand=True, padx=5)
 
         parent_tab.table_frame.grid_columnconfigure(0, weight=1)
         parent_tab.table_frame.grid_rowconfigure(0, weight=1)
@@ -177,24 +207,24 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         columns = ['สถานะ', 'พนักงานขาย', 'ชื่อลูกค้า', 'เลขที่ SO', 'ยอดเต็ม', 'ยอดที่ชำระแล้ว', 'ยอดคงเหลือ']
         tree = ttk.Treeview(parent, columns=columns, show='headings', style="Treeview")
 
+        # --- [เพิ่ม] กำหนดสี Tag ใหม่ให้ถูกต้อง ---
         status_colors = {
-            "Original": "#FEFCE8", "Edited": "#FEFCE8", 
-            "Pending PU": "#F1F5F9",
-            "PO In Progress": "#E0E7FF", "PO Sent": "#DBEAFE", 
-            "Approved by SM": "#D1FAE5", "HR Verified": "#A7F3D0",
-            "Rejected by SM": "#FEF2F2", "Rejected by HR": "#FECACA",
-            "Paid": "#E5E7EB"
+            "ค้างชำระ": "#FEE2E2",  # สีแดงอ่อน
+            "ชำระเกิน": "#D1FAE5",  # สีเขียวอ่อน
+            "ครบถ้วน": "#F3F4F6"    # สีเทาอ่อน (ปกติไม่ควรโชว์)
         }
         for status, color in status_colors.items():
             tree.tag_configure(status, background=color)
+            
+        # เพิ่ม Tag สำหรับสีตัวอักษร (Optional)
+        tree.tag_configure('text_red', foreground='#991B1B')
+        tree.tag_configure('text_green', foreground='#065F46')
         
-        # <<< ไม่จำเป็นต้องใช้ Tag 'Overpaid' อีกต่อไป >>>
-
         for col in columns:
             tree.heading(col, text=col, anchor="center", command=lambda _col=col: self._sort_treeview(tree, _col, False))
             anchor = "w"; width = 150
             if "ยอด" in col: anchor = "e"
-            elif col == 'สถานะ': width = 180
+            elif col == 'สถานะ': width = 120
             elif col == 'ชื่อลูกค้า': width = 250
             tree.column(col, anchor=anchor, width=width)
 
@@ -202,8 +232,16 @@ class OutstandingDashboardTab(ctk.CTkFrame):
             values = list(row[columns])
             values[4] = f"{row['ยอดเต็ม']:,.2f}"
             values[5] = f"{row['ยอดที่ชำระแล้ว']:,.2f}"
-            values[6] = f"{row['ยอดคงเหลือ']:,.2f}"
             
+            # ใส่เครื่องหมาย + หรือ - หน้ายอดคงเหลือ เพื่อความชัดเจน
+            balance_val = row['ยอดคงเหลือ']
+            if row['สถานะ'] == 'ค้างชำระ':
+                values[6] = f"-{balance_val:,.2f}" # แสดงเป็นลบ (หนี้)
+            elif row['สถานะ'] == 'ชำระเกิน':
+                values[6] = f"+{balance_val:,.2f}" # แสดงเป็นบวก (เกิน)
+            else:
+                values[6] = f"{balance_val:,.2f}"
+
             tag_to_apply = row.get('สถานะ', '')
             tree.insert("", "end", values=values, tags=(tag_to_apply,))
         
@@ -217,7 +255,8 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         data_list = [(tree.set(k, col), k) for k in tree.get_children('')]
         
         try:
-            data_list.sort(key=lambda t: float(str(t[0]).replace(",", "")), reverse=reverse)
+            # ลบเครื่องหมาย , + - ออกก่อนแปลงเป็นตัวเลขเพื่อเรียงลำดับ
+            data_list.sort(key=lambda t: float(str(t[0]).replace(",", "").replace("+", "").replace("-", "")), reverse=reverse)
         except ValueError:
             data_list.sort(key=lambda t: t[0], reverse=reverse)
 
