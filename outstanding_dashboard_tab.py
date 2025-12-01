@@ -7,7 +7,7 @@ import traceback
 class OutstandingDashboardTab(ctk.CTkFrame):
     """
     คลาสสำหรับสร้าง Tab Dashboard ติดตามยอดค้างชำระ 
-    (เวอร์ชันปรับปรุง: ตัดสถานะ 'รอเคลียร์นายหน้า' ออก เหลือแค่ ครบถ้วน/เกิน/ขาด)
+    (เวอร์ชันปรับปรุง: ดึงรายชื่อ Sale ทั้งหมดมาแสดงในตัวกรอง แม้ไม่มีรายการค้าง)
     """
     def __init__(self, master, app_container):
         super().__init__(master, fg_color="transparent")
@@ -49,6 +49,17 @@ class OutstandingDashboardTab(ctk.CTkFrame):
             widget.destroy()
         self._build_ui()
         print("Refresh complete.")
+    
+    def _fetch_all_active_sales(self):
+        """[เพิ่มใหม่] ดึงรายชื่อ Sale ที่ Active ทั้งหมดจากฐานข้อมูลโดยตรง"""
+        try:
+            # ดึงเฉพาะ role = 'Sale' และสถานะ Active
+            query = "SELECT sale_key FROM sales_users WHERE role = 'Sale' AND status = 'Active' ORDER BY sale_key"
+            df = pd.read_sql_query(query, self.pg_engine)
+            return df['sale_key'].tolist()
+        except Exception as e:
+            print(f"Error fetching all active sales: {e}")
+            return []
 
     def _fetch_outstanding_data(self):
         """
@@ -104,7 +115,8 @@ class OutstandingDashboardTab(ctk.CTkFrame):
                 # คำนวณค่านายหน้า + VAT 7% (ยอดที่ลูกค้ามักจะโอนมาจริง)
                 broker_vat = broker_raw * 1.07
                 
-                # Real Diff = เงินที่เกิน - (ค่านายหน้า+VAT)
+                # Real Diff = ยอดเกิน - (ค่านายหน้า+VAT)
+                # ถ้าผลลัพธ์เป็น 0 แสดงว่าที่เกินมาคือค่านายหน้าพอดี
                 real_diff = raw_diff - broker_vat
                 
                 # กำหนดสถานะ
@@ -138,6 +150,7 @@ class OutstandingDashboardTab(ctk.CTkFrame):
             ctk.CTkLabel(self.main_container, text=f"เกิดข้อผิดพลาดในการดึงข้อมูล:\n{e}", text_color="red").pack(expand=True)
             return pd.DataFrame()
 
+
     def _create_widgets(self):
         self.tab_view = ctk.CTkTabview(self.main_container)
         self.tab_view.pack(fill="both", expand=True)
@@ -145,9 +158,12 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         self.cash_tab = self.tab_view.add("ลูกค้าเงินสด (ค้างชำระ)")
         self.credit_tab = self.tab_view.add("ลูกค้าเครดิต (ค้างชำระ)")
         
+        # แม้ไม่มีข้อมูล ก็ยังต้องสร้าง Tab เปล่าๆ เพื่อให้แสดงผลได้
         if self.full_df.empty:
-            ctk.CTkLabel(self.cash_tab, text="ไม่พบข้อมูลค้างชำระ").pack(expand=True)
-            ctk.CTkLabel(self.credit_tab, text="ไม่พบข้อมูลค้างชำระ").pack(expand=True)
+            # สร้าง DataFrame เปล่าที่มีโครงสร้าง column ครบถ้วน
+            empty_df = pd.DataFrame(columns=['พนักงานขาย', 'ชื่อลูกค้า', 'เลขที่ SO', 'ยอดเต็ม', 'ยอดที่ชำระแล้ว', 'ยอดคงเหลือ', 'สถานะ', 'ค่านายหน้า', 'ประเภทการชำระ'])
+            self._create_tab_content(self.cash_tab, empty_df)
+            self._create_tab_content(self.credit_tab, empty_df)
             return
 
         cash_df = self.full_df[self.full_df['ประเภทการชำระ'] == 'ลูกค้าเงินสด']
@@ -163,17 +179,29 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         filter_bar = ctk.CTkFrame(parent_tab, fg_color="transparent")
         filter_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
         
-        # 1. Filter: พนักงานขาย
+        # --- 1. Filter: พนักงานขาย ---
         ctk.CTkLabel(filter_bar, text="พนักงานขาย:").pack(side="left", padx=(0, 5))
-        sales_people = ['ทั้งหมด'] + sorted(self.full_df['พนักงานขาย'].unique().tolist())
+        
+        # [แก้ไข] ดึงรายชื่อ Sale จาก Master Data มารวมกับคนที่มีรายการในตาราง
+        active_sales = self._fetch_all_active_sales()
+        
+        # ดึงรายชื่อคนที่มีรายการค้างอยู่ (เผื่อคนที่ Inactive ไปแล้วแต่ยังมีรายการค้าง)
+        sales_in_data = []
+        if not data_df.empty and 'พนักงานขาย' in data_df.columns:
+            sales_in_data = data_df['พนักงานขาย'].unique().tolist()
+            
+        # รวมและเรียงลำดับ
+        all_sales = sorted(list(set(active_sales + sales_in_data)))
+        sales_people = ['ทั้งหมด'] + all_sales
+        
         sale_var = ctk.StringVar(value="ทั้งหมด")
         
-        # 2. Filter: สถานะ
+        # --- 2. Filter: สถานะ ---
         ctk.CTkLabel(filter_bar, text="สถานะ:").pack(side="left", padx=(15, 5))
-        # ตัด "รอเคลียร์นายหน้า" ออกตามที่ขอ
-        status_options = ['ทั้งหมด', 'ค้างชำระ', 'ชำระเกิน', 'ครบถ้วน'] 
+        status_options = ['ทั้งหมด', 'ค้างชำระ', 'ชำระเกิน', 'ครบถ้วน']
         status_var = ctk.StringVar(value="ทั้งหมด")
 
+        # สร้าง OptionMenu
         ctk.CTkOptionMenu(filter_bar, variable=sale_var, values=sales_people,
             command=lambda choice: self._filter_and_update_tab(parent_tab, data_df, choice, status_var.get())
         ).pack(side="left", padx=5)
@@ -191,28 +219,37 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         parent_tab.kpi_frame = kpi_frame
         parent_tab.table_frame = table_frame
 
+        # โหลดข้อมูลครั้งแรก
         self._filter_and_update_tab(parent_tab, data_df, "ทั้งหมด", "ทั้งหมด")
 
     def _filter_and_update_tab(self, parent_tab, original_df, selected_salesperson, selected_status):
         # 1. กรองตามพนักงานขาย
-        if selected_salesperson != "ทั้งหมด":
+        if original_df.empty:
+             df_filtered = original_df
+        elif selected_salesperson != "ทั้งหมด":
             df_filtered = original_df[original_df['พนักงานขาย'] == selected_salesperson]
         else:
             df_filtered = original_df
 
         # 2. กรองตามสถานะ
-        if selected_status != "ทั้งหมด":
+        if not df_filtered.empty and selected_status != "ทั้งหมด":
             df_filtered = df_filtered[df_filtered['สถานะ'] == selected_status]
 
+        # --- Clear Widgets ---
         for widget in parent_tab.kpi_frame.winfo_children(): widget.destroy()
         for widget in parent_tab.table_frame.winfo_children(): widget.destroy()
         
-        # KPI 1: ยอดหนี้คงค้างรวม (นับเฉพาะ 'ค้างชำระ' เท่านั้น)
-        outstanding_only = df_filtered[df_filtered['สถานะ'] == 'ค้างชำระ']
-        total_outstanding = outstanding_only['ยอดคงเหลือ'].sum() if not outstanding_only.empty else 0
-        
-        # KPI 2: จำนวนรายการ (ตามที่กรองมา)
-        invoice_count = len(df_filtered)
+        # --- คำนวณ KPI ---
+        total_outstanding = 0
+        invoice_count = 0
+
+        if not df_filtered.empty:
+            # KPI 1: ยอดหนี้คงค้างรวม (นับเฉพาะ 'ค้างชำระ' เท่านั้น)
+            outstanding_only = df_filtered[df_filtered['สถานะ'] == 'ค้างชำระ']
+            total_outstanding = outstanding_only['ยอดคงเหลือ'].sum() if not outstanding_only.empty else 0
+            
+            # KPI 2: จำนวนรายการ
+            invoice_count = len(df_filtered)
 
         self._create_kpi_box(parent_tab.kpi_frame, "ยอดหนี้คงค้างสุทธิ (Net Debt)", f"{total_outstanding:,.2f} บาท", "#DC2626").pack(side="left", fill="x", expand=True, padx=5)
         self._create_kpi_box(parent_tab.kpi_frame, "จำนวนรายการ", f"{invoice_count} รายการ", "#F97316").pack(side="left", fill="x", expand=True, padx=5)
