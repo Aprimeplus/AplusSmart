@@ -3198,19 +3198,32 @@ class HRScreen(CTkFrame):
             df_for_calc = self.current_comm_df.copy()
             df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
             
-            # <<< START: แก้ไข Logic การดึงค่าดำเนินการ >>>
+            # <<< START: แก้ไข Logic การดึงค่าดำเนินการ (ฉบับแก้ไขปัญหาเปลี่ยนหน้าแล้วเป็น 0) >>>
             default_operating_fee = 0.0
+            
+            # 1. เตรียมค่า Default มาตรฐานตาม Plan ไว้ก่อน
+            default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
+            standard_plan_fee = default_fees.get(plan, 0.0)
+
             try:
-                fee_str = self.operating_fee_entry.get()
-                default_operating_fee = utils.convert_to_float(fee_str)
-                print(f"-> [DEBUG] อ่านค่า Operating Fee จาก Textbox: {default_operating_fee} (จาก string: '{fee_str}')")
-            except AttributeError:
-                default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
-                default_operating_fee = default_fees.get(plan, 0.0)
-                print(f"-> [DEBUG] Textbox ยังไม่ถูกสร้าง (ครั้งแรก), ใช้ค่า Hardcode: {default_operating_fee}")
-            except Exception as e:
-                print(f"-> [DEBUG] Error อ่านค่า Operating Fee, ใช้ค่า 0.0. (Error: {e})")
-                default_operating_fee = 0.0
+                # 2. ลองดึงค่าจากช่องกรอกเดิม (กรณี User แก้ตัวเลขแล้วกดคำนวณใหม่ในหน้าเดิม)
+                # ต้องเช็ค winfo_exists() เพื่อดูว่าปุ่มยังอยู่จริงไหม
+                if hasattr(self, 'operating_fee_entry') and self.operating_fee_entry and self.operating_fee_entry.winfo_exists():
+                    fee_str = self.operating_fee_entry.get()
+                    # ถ้า User ลบจนว่าง ให้ถือว่าเป็น 0, ถ้ามีค่าให้ใช้ค่านั้น
+                    if fee_str.strip() == "":
+                        default_operating_fee = 0.0
+                    else:
+                        default_operating_fee = utils.convert_to_float(fee_str)
+                    print(f"-> [DEBUG] อ่านค่าจาก Textbox เดิม: {default_operating_fee}")
+                else:
+                    # ถ้าปุ่มไม่อยู่แล้ว (เปลี่ยนหน้ามา) ให้ Raise Error เพื่อเข้า except
+                    raise AttributeError("Widget not found")
+
+            except (AttributeError, Exception) as e:
+                # 3. ถ้าหาปุ่มไม่เจอ (เปลี่ยนหน้า) หรือเกิด Error -> ให้ใช้ค่า Default ตาม Plan
+                print(f"-> [DEBUG] โหลดใหม่/เปลี่ยนหน้า -> ใช้ค่า Default ตาม Plan: {standard_plan_fee}")
+                default_operating_fee = standard_plan_fee
             # <<< END: สิ้นสุดการแก้ไข >>>
             
             # --- คำนวณค่าคอม ---
