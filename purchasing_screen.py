@@ -24,6 +24,7 @@ from export_utils import export_approved_pos_to_excel
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 from simple_async import SimpleAsyncHelper, show_loading_message, hide_loading_message
 from purchasing_windows import SOFinderDialog
+from daily_report_widget import DailyReportWidget
 
 
 
@@ -56,6 +57,8 @@ class SubmitPODialog(CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
+        
+        
 
         top_frame = CTkFrame(self, fg_color="transparent")
         top_frame.grid(row=0, column=0, padx=15, pady=(10, 0), sticky="ew")
@@ -854,7 +857,6 @@ class ProductEditDialog(CTkToplevel):
 class PurchasingScreen(CTkFrame):
     # ให้นำฟังก์ชัน __init__ นี้ไปวางทับของเดิมทั้งหมด
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None, initial_so_number=None):
-        self.master, self.app_container = master, master
         self.master = master
         self.app_container = app_container
         self.user_key, self.user_name = user_key, user_name
@@ -882,7 +884,7 @@ class PurchasingScreen(CTkFrame):
         self.editing_po_id, self.pg_engine = None, self.app_container.pg_engine
         self.current_commission_data = None
         
-        # <<< แก้ไข: khởi tạo (initialize) ตัวแปร completion_data เป็น list ว่างก่อน >>>
+        # ตัวแปร completion_data สำหรับ AutoComplete
         self.supplier_completion_data = []
         self.product_completion_data = []
 
@@ -907,25 +909,41 @@ class PurchasingScreen(CTkFrame):
 
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(1, weight=1)
 
-        # <<< START: แก้ไขลำดับการทำงาน >>>
-        # 1. สร้าง Widgets ทั้งหมดให้เสร็จก่อน
+        # <<< START: แก้ไขลำดับการทำงานและเพิ่ม Tabs >>>
+        # 1. สร้าง Header
         self._create_header()
-        self.po_pane = CTkFrame(self, fg_color="transparent")
+
+        # 2. สร้าง TabView แทน Frame เดิม เพื่อรองรับ Daily Report
+        self.tab_view = CTkTabview(self, text_color="black") # หรือใช้ self.theme["text"] ถ้ามี
+        self.tab_view.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
+        # --- Tab 1: สร้างใบสั่งซื้อ (PO) ---
+        self.tab_view.add("สร้างใบสั่งซื้อ (PO)")
+        self.po_pane = self.tab_view.tab("สร้างใบสั่งซื้อ (PO)")
         self.po_pane.grid_rowconfigure(0, weight=1)
         self.po_pane.grid_columnconfigure(0, weight=1)
-        self.po_pane.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        
+        # สร้างฟอร์ม PO ลงใน Tab 1 (ใช้ self.po_pane เหมือนเดิม โค้ดส่วนอื่นจึงไม่ต้องแก้)
         self._create_po_form_layout(self.po_pane)
         
-        # 2. หลังจาก Widgets ถูกสร้างแล้ว จึงค่อยโหลดข้อมูลมาใส่
+        # --- Tab 2: Daily Report ---
+        self.tab_view.add("Daily Report")
+        report_tab = self.tab_view.tab("Daily Report")
+        report_tab.grid_columnconfigure(0, weight=1)
+        report_tab.grid_rowconfigure(0, weight=1)
+        
+        # ฝัง DailyReportWidget ลงใน Tab 2
+        # (ต้องมั่นใจว่า import DailyReportWidget มาไว้ที่หัวไฟล์แล้ว)
+        self.daily_report = DailyReportWidget(report_tab, self.app_container)
+        self.daily_report.pack(fill="both", expand=True)
+
+        # 3. หลังจาก Widgets ถูกสร้างแล้ว จึงค่อยโหลดข้อมูลมาใส่
         self._load_supplier_data()
         self._load_product_master_data()
 
-        # 3. เริ่มการทำงานอื่นๆ
+        # 4. เริ่มการทำงานอื่นๆ
         self._poll_and_update_tasks_badge()
         self.bind("<Destroy>", self._on_destroy)
-        # <<< END: สิ้นสุดการแก้ไข >>>
-    
-    # purchasing_screen.py (ภายในคลาส PurchasingScreen)
 
     def _save_po_data(self):
         """รวบรวมข้อมูลจากฟอร์ม, ตรวจสอบ, และบันทึกลงฐานข้อมูล"""

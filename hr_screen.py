@@ -1502,6 +1502,10 @@ class HRScreen(CTkFrame):
             return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales'])
 
     def _create_sales_vs_target_chart(self, parent_frame, data_df):
+        # import เพิ่มเติมเฉพาะในฟังก์ชันนี้
+        import matplotlib.colors as mcolors
+
+        # ล้างกราฟเก่า
         if hasattr(self, 'sales_target_chart_canvas') and self.sales_target_chart_canvas:
             self.sales_target_chart_canvas.get_tk_widget().destroy()
         for widget in parent_frame.winfo_children():
@@ -1511,8 +1515,39 @@ class HRScreen(CTkFrame):
             CTkLabel(parent_frame, text="ไม่พบข้อมูลพนักงานขาย", font=self.header_font_table).pack(expand=True)
             return
 
-        # ปรับขนาดกราฟ: ถ้าคนเยอะ ให้กราฟกว้างขึ้นเล็กน้อย
-        chart_width = max(10, len(data_df) * 0.5) 
+        # --- 1. เตรียมข้อมูล: รวมยอดตามชื่อพนักงาน ---
+        person_agg = data_df.groupby('sale_name').agg({
+            'total_sales': 'sum',
+            'sales_target': 'sum'
+        }).reset_index()
+        
+        # เรียงลำดับตามยอดขายรวม (มากไปน้อย)
+        person_agg = person_agg.sort_values(by='total_sales', ascending=False)
+        unique_names = person_agg['sale_name'].unique()
+        
+        # นับจำนวนก้อนข้อมูลทั้งหมด (เพื่อสร้างสีให้ครบทุกก้อนไม่ซ้ำ)
+        total_segments = len(data_df)
+
+        # --- 2. สร้างชุดสีพาสเทล (Soft Pastel Colors) ---
+        def generate_pastel_colors(n):
+            colors = []
+            # ใช้ Golden Ratio เพื่อกระจายเฉดสีให้ต่างกันที่สุด
+            golden_ratio = 0.618033988749895
+            for i in range(n):
+                hue = (i * golden_ratio) % 1
+                # ปรับ Saturation ให้อ่อนลง (0.4 - 0.55) เพื่อความสบายตา (ไม่แสบตา)
+                saturation = 0.4 + (i % 2) * 0.15 
+                # Value สูงหน่อย (0.9 - 0.95) เพื่อให้สีสว่างนวล
+                value = 0.9 + (i % 3) * 0.03
+                
+                rgb = mcolors.hsv_to_rgb((hue, saturation, value))
+                colors.append(mcolors.to_hex(rgb))
+            return colors
+
+        all_colors = generate_pastel_colors(total_segments)
+
+        # --- 3. ตั้งค่ากราฟ ---
+        chart_width = max(10, len(unique_names) * 0.8) 
         fig = Figure(figsize=(chart_width, 6), dpi=100, facecolor=self.theme["bg"])
         ax = fig.add_subplot(111)
         ax.set_facecolor(self.theme["bg"])
@@ -1520,30 +1555,75 @@ class HRScreen(CTkFrame):
         formatter = FuncFormatter(lambda y, pos: f'{y:,.0f}')
         ax.yaxis.set_major_formatter(formatter)
 
-        x = np.arange(len(data_df['sale_name']))
-        width = 0.35
-        
-        # วาดกราฟแท่ง
-        rects1 = ax.bar(x - width/2, data_df['total_sales'], width, label='ยอดขายจริง', color=self.theme["primary"])
-        rects2 = ax.bar(x + width/2, data_df['sales_target'], width, label='ยอดเป้าหมาย', color='#CBD5E1', edgecolor='#94A3B8', linewidth=1)
+        x = np.arange(len(unique_names))
+        width = 0.35 
 
+        # ตัวนับลำดับสี (ใช้ไล่สีไปเรื่อยๆ ให้ไม่ซ้ำ)
+        color_idx = 0
+
+        # --- 4. วาดกราฟ ---
+        for i, name in enumerate(unique_names):
+            # ดึงข้อมูลทุก Key ของพนักงานคนนี้
+            sales_data_for_person = data_df[data_df['sale_name'] == name]
+            
+            # --- A. วาดกราฟยอดขายจริง (Stacked Bar) ---
+            current_bottom = 0 
+            for j, (_, row) in enumerate(sales_data_for_person.iterrows()):
+                sales_value = row['total_sales']
+                
+                # เลือกสีจากรายการที่สร้างไว้ แล้วขยับ index ถัดไป
+                color = all_colors[color_idx % len(all_colors)]
+                color_idx += 1
+                
+                # วาดแท่ง
+                rects = ax.bar(x[i] - width/2, sales_value, width, 
+                               bottom=current_bottom, 
+                               color=color,
+                               edgecolor='white', linewidth=0.5, # ขอบบางๆ สีขาว
+                               label='ยอดขายจริง' if i==0 and j==0 else "")
+                
+                # ใส่ตัวเลขในแท่ง
+                if sales_value > 0:
+                    font_s = 8 if sales_value < (person_agg.iloc[i]['total_sales'] * 0.1) else 9
+                    # เปลี่ยนสีตัวอักษรเป็นสีเทาเข้ม เพื่อให้อ่านง่ายบนพื้นพาสเทล
+                    ax.bar_label(rects, labels=[f'{sales_value:,.0f}'], 
+                                 label_type='center', color='#333333', weight='bold', fontsize=font_s)
+                
+                current_bottom += sales_value
+            
+            # ใส่ยอดรวมไว้บนหัวแท่งซ้าย
+            if current_bottom > 0:
+                ax.text(x[i] - width/2, current_bottom + (current_bottom*0.01), f'{current_bottom:,.0f}',
+                        ha='center', va='bottom', fontsize=10, weight='bold', color='black')
+
+            # --- B. วาดกราฟเป้าหมาย (Total Target Bar) ---
+            total_target_for_person = sales_data_for_person['sales_target'].sum()
+            
+            rects_target = ax.bar(x[i] + width/2, total_target_for_person, width, 
+                                  label='ยอดเป้าหมาย' if i==0 else "", 
+                                  color='#E2E8F0', edgecolor='#94A3B8', hatch='///', linewidth=0) # ปรับสีเป้าหมายให้อ่อนลงด้วย
+            
+            ax.bar_label(rects_target, padding=3, fmt='{:,.0f}', fontsize=9, color='#64748B')
+
+        # --- 5. ตกแต่งกราฟ ---
         ax.set_ylabel('ยอดขาย (บาท)', fontsize=12)
-        ax.set_title(f'เปรียบเทียบยอดขายจริง vs เป้าหมาย (ทั้งหมด {len(data_df)} คน)', fontsize=18, weight="bold")
+        ax.set_title(f'เปรียบเทียบยอดขายจริง vs เป้าหมาย (รวม {len(unique_names)} คน)', fontsize=16, weight="bold")
+        
         ax.set_xticks(x)
+        ax.set_xticklabels(unique_names, rotation=45, ha="right", fontsize=11)
         
-        # ปรับตัวหนังสือแกน X ให้เล็กลงหน่อยถ้าคนเยอะ
-        font_size_x = 10 if len(data_df) > 10 else 11
-        ax.set_xticklabels(data_df['sale_name'], rotation=45, ha="right", fontsize=font_size_x)
-        
-        ax.legend(prop={'size': 12})
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        # จัด Legend
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        desired_order = ['ยอดขายจริง', 'ยอดเป้าหมาย']
+        ordered_handles = [by_label[l] for l in desired_order if l in by_label]
+        ordered_labels = [l for l in desired_order if l in by_label]
+        ax.legend(ordered_handles, ordered_labels, prop={'size': 12})
 
-        # ใส่ตัวเลขบนกราฟ (ถ้ากราฟไม่แน่นเกินไป)
-        if len(data_df) <= 15:
-            ax.bar_label(rects1, padding=3, fmt='{:,.0f}', fontsize=9)
-            ax.bar_label(rects2, padding=3, fmt='{:,.0f}', fontsize=8)
-        
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
+
         fig.tight_layout()
+        
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
