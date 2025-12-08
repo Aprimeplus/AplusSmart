@@ -24,6 +24,7 @@ class SOPopupWindow(CTkToplevel):
         self.master = master
         self.app_container = app_container # <-- รับ app_container
         self.sales_data = sales_data
+        self.original_so_number = sales_data.get('so_number')
         self.so_shared_vars = so_shared_vars
         self.sale_theme = sale_theme
         self.on_save_callback = on_save_callback # <-- รับ callback
@@ -148,6 +149,11 @@ class SOPopupWindow(CTkToplevel):
     def _create_so_data_form_content(self, parent_frame):
         # Section 1: Sales Details
         f1 = self._create_so_section_frame(parent_frame, "รายละเอียดการขาย")
+        
+        # +++ [เพิ่ม] ช่องสำหรับแก้ไขเลขที่ SO +++
+        self._add_form_row(f1, "เลขที่ SO:", CTkEntry(f1), 'so_number_entry', 0)
+        # ++++++++++++++++++++++++++++++++++
+
         self._add_form_row(f1, "วันที่เปิด SO:", DateSelector(f1, dropdown_style=self.master.dropdown_style), 'bill_date_selector', 1)
         self._add_form_row(f1, "ชื่อลูกค้า:", CTkEntry(f1), 'customer_name_entry', 2)
         self._add_form_row(f1, "รหัสลูกค้า:", CTkEntry(f1), 'customer_id_entry', 3)
@@ -155,7 +161,6 @@ class SOPopupWindow(CTkToplevel):
 
         # Section 2: Sales and Services
         f2 = self._create_so_section_frame(parent_frame, "ยอดขายและบริการ")
-        # <<< แก้ไข: เพิ่ม Argument 'vat_display_var_key' ที่ขาดไปให้ครบ >>>
         self._add_item_row_with_vat(f2, "ยอดขายสินค้า/บริการ:", 'sales_amount_entry', 'sales_service_vat_option', 'sales_vat_calc_var', 1)
         self._add_item_row_with_vat(f2, "ค่าบริการตัด/เจาะ:", 'cutting_drilling_fee_entry', 'cutting_drilling_fee_vat_option', 'cutting_drilling_vat_calc_var', 2)
         self._add_item_row_with_vat(f2, "ค่าบริการอื่นๆ:", 'other_service_fee_entry', 'other_service_fee_vat_option', 'other_service_vat_calc_var', 3)
@@ -358,6 +363,10 @@ class SOPopupWindow(CTkToplevel):
 
         # Key map ที่เพิ่มฟิลด์ใหม่ทั้งหมดเข้ามา
         key_map = {
+            # +++ [เพิ่ม] Mapping สำหรับ SO Number +++
+            'so_number': 'so_number_entry', 
+            # +++++++++++++++++++++++++++++++++++
+            
             'bill_date': 'bill_date_selector', 'customer_name': 'customer_name_entry', 'customer_id': 'customer_id_entry',
             'credit_term': 'credit_term_entry', 'sales_service_amount': 'sales_amount_entry', 'cutting_drilling_fee': 'cutting_drilling_fee_entry',
             'other_service_fee': 'other_service_fee_entry', 'shipping_cost': 'shipping_cost_entry', 'delivery_date': 'delivery_date_selector',
@@ -400,6 +409,10 @@ class SOPopupWindow(CTkToplevel):
         updated_data = {}
         
         key_map = {
+            # +++ [เพิ่ม] รับค่าจากช่อง SO Number +++
+            'so_number_entry': 'so_number',
+            # +++++++++++++++++++++++++++++++++++
+            
             'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id', 'credit_term_entry': 'credit_term',
             'pickup_location_entry': 'pickup_location', 'pickup_rego_entry': 'pickup_registration',
             'bill_date_selector': 'bill_date', 'delivery_date_selector': 'delivery_date', 'payment_date_selector': 'payment_date',
@@ -423,6 +436,11 @@ class SOPopupWindow(CTkToplevel):
                         value = widget.get()
                         if any(k in data_key for k in ['amount', 'cost', 'fee', 'wht', 'percent', 'coupons', 'giveaways']):
                             value = utils.convert_to_float(value)
+                    
+                    # สำหรับ so_number ไม่ต้องแปลงเป็น float ให้เก็บเป็น string
+                    if data_key == 'so_number' and value:
+                        value = str(value).strip()
+
             if value is not None: updated_data[data_key] = value
 
         shared_vars_map = {
@@ -448,10 +466,27 @@ class SOPopupWindow(CTkToplevel):
                 params = list(updated_data.values()) + [so_id]
                 sql_update = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
                 cursor.execute(sql_update, tuple(params))
+                
+                # +++ [เพิ่ม] Logic ตรวจสอบและอัปเดต PO +++
+                new_so_number = updated_data.get('so_number')
+                
+                if new_so_number and self.original_so_number and new_so_number != self.original_so_number:
+                    print(f"กำลังอัปเดตเลข SO ในตารางใบสั่งซื้อ (PO): {self.original_so_number} -> {new_so_number}")
+                    
+                    cursor.execute("""
+                        UPDATE purchase_orders 
+                        SET so_number = %s 
+                        WHERE so_number = %s
+                    """, (new_so_number, self.original_so_number))
+                # +++++++++++++++++++++++++++++++++++++++
+
             conn.commit()
             messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข SO เรียบร้อยแล้ว", parent=self)
             if self.on_save_callback:
                 self.on_save_callback() # เรียก callback เพื่อ refresh หน้าจอหลัก
+                
+            self.destroy() # ปิดหน้าต่างหลังจากบันทึกสำเร็จ
+
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
@@ -3360,75 +3395,6 @@ class SODetailViewer(CTkToplevel):
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
     
-class EditPOWindowByHR(CTkToplevel):
-    def __init__(self, master, app_container, po_id, on_close_callback=None):
-        super().__init__(master)
-        self.app_container = app_container
-        self.pg_engine = app_container.pg_engine
-        self.po_id = po_id
-        self.on_close_callback = on_close_callback
-        self.item_widgets = []
-
-        self.title(f"HR: แก้ไขข้อมูล PO ID: {self.po_id}")
-        self.geometry("900x600")
-
-        # --- [แก้ไข] ใช้ grid layout หลัก ---
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1) # แถวที่ 1 (ScrollFrame) จะขยาย
-
-        # --- สร้าง UI ของฟอร์ม ---
-        self._create_widgets()
-        
-        # --- โหลดข้อมูลมาใส่ฟอร์ม ---
-        self.after(50, self._load_data)
-
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.transient(master)
-        self.grab_set()
-
-    def _load_data(self):
-        # โค้ดสำหรับดึงข้อมูล PO และ PO Items จากฐานข้อมูลมาใส่ในฟอร์ม
-        pass
-
-    def _save_changes(self):
-        # โค้ดสำหรับรวบรวมข้อมูลจากฟอร์มและบันทึกลงฐานข้อมูล
-        
-        # --- ตัวอย่าง Logic การบันทึก ---
-        conn = self.app_container.get_connection()
-        try:
-            with conn.cursor() as cursor:
-                # 1. อัปเดตข้อมูลหลักในตาราง purchase_orders
-                # (ตัวอย่าง: อัปเดตแค่ชื่อ Supplier)
-                # new_supplier = self.entry_supplier.get()
-                # cursor.execute("UPDATE purchase_orders SET supplier_name = %s WHERE id = %s", (new_supplier, self.po_id))
-
-                # 2. อัปเดตข้อมูลรายการสินค้าในตาราง purchase_order_items (ต้องวนลูป)
-                # for item in self.item_widgets:
-                #    new_qty = item['qty_entry'].get()
-                #    item_id = item['id']
-                #    cursor.execute("UPDATE purchase_order_items SET quantity = %s WHERE id = %s", (new_qty, item_id))
-
-                # 3. (สำคัญมาก) บันทึก Log ว่า HR เป็นคนแก้ไข
-                log_details = { "message": "Edited by HR", "po_id": self.po_id }
-                cursor.execute("""
-                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, ('PO Edited by HR', 'purchase_orders', self.po_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
-
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข PO เรียบร้อยแล้ว", parent=self)
-            self._on_close()
-
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
-        finally:
-            if conn: self.app_container.release_connection(conn)
-
-    def _on_close(self):
-        if self.on_close_callback:
-            self.on_close_callback() # สั่งให้หน้าต่าง HRVerificationWindow รีเฟรชตัวเอง
-        self.destroy()
 
 class EditPOWindowByHR(CTkToplevel):
     def __init__(self, master, app_container, po_id, on_close_callback=None):

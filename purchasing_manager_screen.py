@@ -1493,14 +1493,16 @@ class PurchasingManagerScreen(CTkFrame):
             return
         
         # จัดการค่า NaN ใน so_owner ก่อน Group
-        if 'so_owner' in df_to_show.columns:
-            df_to_show['so_owner'] = df_to_show['so_owner'].fillna('Unknown')
-        else:
-            df_to_show['so_owner'] = 'Unknown'
+        df_display = df_to_show.copy() 
 
+        if 'so_owner' in df_display.columns:
+            df_display['so_owner'] = df_display['so_owner'].fillna('Unknown')
+        else:
+            df_display['so_owner'] = 'Unknown'
+        
         # --- Logic การแบ่งหน้า (Group โดย SO และ Owner) ---
         # แก้ไข: Group โดยทั้ง so_number และ so_owner เพื่อให้ดึงค่า so_owner มาใช้ได้
-        grouped_so = df_to_show.groupby(['so_number', 'so_owner'], sort=False).size().reset_index(name='po_count')
+        grouped_so = df_display.groupby(['so_number', 'so_owner'], sort=False).size().reset_index(name='po_count')
         
         total_groups = len(grouped_so)
         total_pages = (total_groups + self.rows_per_page - 1) // self.rows_per_page
