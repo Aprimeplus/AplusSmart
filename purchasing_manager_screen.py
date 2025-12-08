@@ -1001,27 +1001,32 @@ class PurchasingManagerScreen(CTkFrame):
          self.reopen_window.focus()
 
     def _create_so_group_card(self, row_data):
-        so_number, po_count = row_data['so_number'], row_data['po_count']
+        """(เวอร์ชันแก้ไข) สร้างการ์ด SO พร้อมแสดงชื่อเจ้าของ"""
+        so_number = row_data['so_number']
+        po_count = row_data['po_count']
+        so_owner = row_data.get('so_owner', 'Unknown') # ดึงชื่อเจ้าของ
+
         card = CTkFrame(self.main_frame, border_width=1, corner_radius=10, fg_color="#F9FAFB")
         header = CTkFrame(card, fg_color="transparent")
         header.pack(fill="x", padx=10, pady=10)
         header.grid_columnconfigure(0, weight=1)
 
-        CTkLabel(header, text=f"SO: {so_number} (มี {po_count} POs รออนุมัติ)", font=self.header_font).grid(row=0, column=0, sticky="w")
+        # แก้ไข: เพิ่มชื่อเจ้าของในวงเล็บ
+        display_text = f"SO: {so_number} (เจ้าของ: {so_owner}) | มี {po_count} POs รออนุมัติ"
+        
+        CTkLabel(header, text=display_text, font=self.header_font).grid(row=0, column=0, sticky="w")
         
         action_frame = CTkFrame(header, fg_color="transparent")
         action_frame.grid(row=0, column=1, sticky="e")
         
         detail_frame = CTkFrame(card, fg_color="transparent")
         
-        # --- START: เพิ่มปุ่ม "อนุมัติทั้งหมด" ใหม่ ---
         approve_all_button = CTkButton(action_frame, 
                                     text=f"อนุมัติทั้งหมด ({po_count})", 
                                     command=lambda s=so_number: self._approve_all_for_so(s),
-                                    fg_color="#16A34A", # สีเขียว
+                                    fg_color="#16A34A",
                                     hover_color="#15803D")
         approve_all_button.pack(side="right", padx=(10,0))
-        # --- END ---
 
         edit_so_button = CTkButton(action_frame, 
                                 text="ดู/แก้ไขข้อมูล SO", 
@@ -1441,25 +1446,29 @@ class PurchasingManagerScreen(CTkFrame):
         self.main_frame.grid_columnconfigure(0, weight=1)
         
     def _load_pending_pos(self):
-        """(เวอร์ชันแก้ไข) โหลดข้อมูล PO ที่รออนุมัติสำหรับ Manager คนเดียว"""
+        """(เวอร์ชันแก้ไข) โหลดข้อมูล PO พร้อมชื่อเจ้าของ SO"""
         try:
-            query = ""
-            params = None
+            # Base Query: เพิ่มการ JOIN ไปหา sales_users เพื่อเอาชื่อเจ้าของ SO
+            base_query = """
+                SELECT 
+                    po.id, po.timestamp, po.user_key, po.so_number, po.po_number, 
+                    po.supplier_name, po.grand_total, po.approval_status, po.approver_manager1_key,
+                    u.sale_name AS so_owner
+                FROM purchase_orders po
+                LEFT JOIN commissions c ON po.so_number = c.so_number AND c.is_active = 1
+                LEFT JOIN sales_users u ON c.sale_key = u.sale_key
+            """
             
-            # --- แก้ไข Query ให้ดึงเฉพาะงานที่รอ Mgr 1 เท่านั้น ---
+            where_clause = ""
+            
             if self.user_role == 'Purchasing Manager':
-                query = """
-                    SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
-                    FROM purchase_orders WHERE status = 'Pending Approval' AND approval_status = 'Pending Mgr 1'
-                    ORDER BY timestamp ASC"""
-            
+                where_clause = "WHERE po.status = 'Pending Approval' AND po.approval_status = 'Pending Mgr 1'"
             elif self.user_role == 'Director':
-                query = """
-                    SELECT id, timestamp, user_key, so_number, po_number, supplier_name, grand_total, approval_status, approver_manager1_key
-                    FROM purchase_orders WHERE status = 'Pending Approval' AND approval_status = 'Pending Director' ORDER BY timestamp ASC"""
+                where_clause = "WHERE po.status = 'Pending Approval' AND po.approval_status = 'Pending Director'"
             
-            if query:
-                self.all_pending_df = pd.read_sql_query(query, self.app_container.pg_engine, params=params if params else None)
+            if where_clause:
+                final_query = f"{base_query} {where_clause} ORDER BY po.timestamp ASC"
+                self.all_pending_df = pd.read_sql_query(final_query, self.app_container.pg_engine)
             else:
                 self.all_pending_df = pd.DataFrame()
 
@@ -1468,10 +1477,10 @@ class PurchasingManagerScreen(CTkFrame):
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูล PO ที่รออนุมัติได้: {e}", parent=self)
             self.all_pending_df = pd.DataFrame()
-            self._populate_pending_list(self.all_pending_df)
+            self._populate_pending_list(self.all_pending_df)    
             
     def _populate_pending_list(self, df_to_show):
-        """(เวอร์ชันแก้ไข) วาด UI ตามข้อมูลในหน้าที่กำหนด และอัปเดต Pagination"""
+        """(เวอร์ชันแก้ไข) แสดงรายการโดยจัดกลุ่มตาม SO และแสดงชื่อเจ้าของ"""
         for widget in self.main_frame.winfo_children(): widget.destroy()
         self.so_cards.clear(); self.po_cards.clear()
 
@@ -1483,8 +1492,16 @@ class PurchasingManagerScreen(CTkFrame):
             self.next_button.configure(state="disabled")
             return
         
-        # --- Logic การแบ่งหน้า ---
-        grouped_so = df_to_show.groupby('so_number', sort=False).size().reset_index(name='po_count')
+        # จัดการค่า NaN ใน so_owner ก่อน Group
+        if 'so_owner' in df_to_show.columns:
+            df_to_show['so_owner'] = df_to_show['so_owner'].fillna('Unknown')
+        else:
+            df_to_show['so_owner'] = 'Unknown'
+
+        # --- Logic การแบ่งหน้า (Group โดย SO และ Owner) ---
+        # แก้ไข: Group โดยทั้ง so_number และ so_owner เพื่อให้ดึงค่า so_owner มาใช้ได้
+        grouped_so = df_to_show.groupby(['so_number', 'so_owner'], sort=False).size().reset_index(name='po_count')
+        
         total_groups = len(grouped_so)
         total_pages = (total_groups + self.rows_per_page - 1) // self.rows_per_page
         start_index = self.current_page * self.rows_per_page
@@ -1492,12 +1509,10 @@ class PurchasingManagerScreen(CTkFrame):
         
         # --- แสดงผลเฉพาะ SO ในหน้าปัจจุบัน ---
         for _, group_row in grouped_so.iloc[start_index:end_index].iterrows():
-            so_number = group_row['so_number']
-            # ดึงข้อมูลแถวเต็มจาก grouped_so เพื่อส่งไปสร้าง card
-            full_row_data = grouped_so[grouped_so['so_number'] == so_number].iloc[0]
-            so_card = self._create_so_group_card(full_row_data)
+            # ส่งข้อมูลทั้งแถว (มี so_number, so_owner, po_count) ไปให้ฟังก์ชันสร้างการ์ด
+            so_card = self._create_so_group_card(group_row)
             so_card.pack(fill="x", padx=10, pady=(10, 5))
-            self.so_cards[so_number] = so_card
+            self.so_cards[group_row['so_number']] = so_card
 
         # --- อัปเดต UI (Pagination และปุ่มอนุมัติทั้งหมด) ---
         total_pending_count = len(df_to_show)
