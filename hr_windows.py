@@ -161,7 +161,7 @@ class SOPopupWindow(CTkToplevel):
         # --- [แก้ไข] ส่วน Credit Term เป็น Dropdown ---
         
         # 1. ✅ ประกาศตัวแปร credit_options ก่อนใช้งาน
-        credit_options = ["เงินสด", "30 วัน", "45 วัน", "60 วัน", "90 วัน", "120 วัน", "เครดิต"]
+        credit_options = ["เงินสด","3 วัน", "7 วัน", "15 วัน", "30 วัน"]
         
         # 2. ตรวจสอบว่ามีตัวแปรรับค่าหรือยัง
         if 'credit_term_var' not in self.so_shared_vars:
