@@ -200,7 +200,7 @@ class AppContainer(CTk):
         self.bind("<Configure>", self._on_window_resize_or_move)
         self.notification_poll_id = None
         try:
-            db_params = {"host": "192.168.1.51", "dbname": "aplus_com_test", "user": "app_user", "password": "cailfornia123"}
+            db_params = {"host": "Server-APrime", "dbname": "aplus_com_test", "user": "app_user", "password": "cailfornia123"}
             self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, **db_params)
             self.pg_engine = create_engine(f'postgresql+psycopg2://{db_params["user"]}:{db_params["password"]}@{db_params["host"]}:5432/{db_params["dbname"]}?client_encoding=utf8')
             conn = self.get_connection()

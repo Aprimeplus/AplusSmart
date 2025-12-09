@@ -5,7 +5,7 @@ import json
 
 # --- ตั้งค่าการเชื่อมต่อฐานข้อมูล (เหมือนใน main_app.py) ---
 DB_PARAMS = {
-    "host": "192.168.1.51",
+    "host": "Server-APrime",
     "dbname": "aplus_com_test",
     "user": "app_user",
     "password": "cailfornia123"
