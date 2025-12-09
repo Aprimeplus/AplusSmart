@@ -159,18 +159,19 @@ class SOPopupWindow(CTkToplevel):
         self._add_form_row(f1, "รหัสลูกค้า:", CTkEntry(f1), 'customer_id_entry', 3)
         
         # --- [แก้ไข] ส่วน Credit Term เป็น Dropdown ---
-        # 1. กำหนดตัวเลือกเครดิตก่อน
+        
+        # 1. ✅ ประกาศตัวแปร credit_options ก่อนใช้งาน
         credit_options = ["เงินสด", "30 วัน", "45 วัน", "60 วัน", "90 วัน", "120 วัน", "เครดิต"]
         
         # 2. ตรวจสอบว่ามีตัวแปรรับค่าหรือยัง
         if 'credit_term_var' not in self.so_shared_vars:
             self.so_shared_vars['credit_term_var'] = tk.StringVar(value="เงินสด")
 
-        # 3. สร้าง Dropdown (แก้ไข values ให้ถูกต้อง)
+        # 3. สร้าง Dropdown (ตอนนี้ใช้ credit_options ได้แล้ว)
         credit_menu = CTkOptionMenu(
             f1, 
             variable=self.so_shared_vars['credit_term_var'], 
-            values=credit_options, # <--- ต้องใช้ credit_options ที่ประกาศไว้ข้างบน
+            values=credit_options, 
             **self.master.dropdown_style
         )
         self._add_form_row(f1, "Credit Term:", credit_menu, 'credit_term_menu', 4)
