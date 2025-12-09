@@ -644,6 +644,7 @@ class HRScreen(CTkFrame):
             so_shared_vars['difference_amount_var'] = tk.StringVar()
             so_shared_vars['cash_required_total_var'] = tk.StringVar()
             so_shared_vars['cash_verification_result_var'] = tk.StringVar()
+            so_shared_vars['credit_term_var'] = tk.StringVar(value="เงินสด")
             
             
             # --- START: เพิ่ม StringVars สำหรับแสดง VAT ที่ขาดไป ---

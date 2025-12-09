@@ -157,7 +157,24 @@ class SOPopupWindow(CTkToplevel):
         self._add_form_row(f1, "วันที่เปิด SO:", DateSelector(f1, dropdown_style=self.master.dropdown_style), 'bill_date_selector', 1)
         self._add_form_row(f1, "ชื่อลูกค้า:", CTkEntry(f1), 'customer_name_entry', 2)
         self._add_form_row(f1, "รหัสลูกค้า:", CTkEntry(f1), 'customer_id_entry', 3)
-        self._add_form_row(f1, "Credit Term:", CTkEntry(f1), 'credit_term_entry', 4)
+        
+        # --- [แก้ไข] ส่วน Credit Term เป็น Dropdown ---
+        # 1. กำหนดตัวเลือกเครดิตก่อน
+        credit_options = ["เงินสด", "30 วัน", "45 วัน", "60 วัน", "90 วัน", "120 วัน", "เครดิต"]
+        
+        # 2. ตรวจสอบว่ามีตัวแปรรับค่าหรือยัง
+        if 'credit_term_var' not in self.so_shared_vars:
+            self.so_shared_vars['credit_term_var'] = tk.StringVar(value="เงินสด")
+
+        # 3. สร้าง Dropdown (แก้ไข values ให้ถูกต้อง)
+        credit_menu = CTkOptionMenu(
+            f1, 
+            variable=self.so_shared_vars['credit_term_var'], 
+            values=credit_options, # <--- ต้องใช้ credit_options ที่ประกาศไว้ข้างบน
+            **self.master.dropdown_style
+        )
+        self._add_form_row(f1, "Credit Term:", credit_menu, 'credit_term_menu', 4)
+        # ---------------------------------------------
 
         # Section 2: Sales and Services
         f2 = self._create_so_section_frame(parent_frame, "ยอดขายและบริการ")
@@ -172,6 +189,8 @@ class SOPopupWindow(CTkToplevel):
 
         # Section 4: Delivery Note
         f4 = self._create_so_section_frame(parent_frame, "Delivery Note")
+        
+        # ประกาศ delivery_options ตรงนี้ถูกต้องแล้วสำหรับส่วนนี้
         delivery_options = [
             "ซัพพลายเออร์จัดส่ง", "Aplus Logistic ส่งหน้างาน", "ลูกค้ารับเองที่ซัพ",
             "ลูกค้ารับเองที่คลัง 132", "ย้ายเข้าคลัง Aplus Logistic รอลูกค้ารับที่คลัง",
@@ -368,7 +387,7 @@ class SOPopupWindow(CTkToplevel):
             # +++++++++++++++++++++++++++++++++++
             
             'bill_date': 'bill_date_selector', 'customer_name': 'customer_name_entry', 'customer_id': 'customer_id_entry',
-            'credit_term': 'credit_term_entry', 'sales_service_amount': 'sales_amount_entry', 'cutting_drilling_fee': 'cutting_drilling_fee_entry',
+            'credit_term': 'credit_term_var', 'sales_service_amount': 'sales_amount_entry', 'cutting_drilling_fee': 'cutting_drilling_fee_entry',
             'other_service_fee': 'other_service_fee_entry', 'shipping_cost': 'shipping_cost_entry', 'delivery_date': 'delivery_date_selector',
             'credit_card_fee': 'credit_card_fee_entry', 'transfer_fee': 'transfer_fee_entry', 'wht_3_percent': 'wht_fee_entry',
             'brokerage_fee': 'brokerage_fee_entry', 'coupons': 'coupon_value_entry', 'giveaways': 'giveaway_value_entry',
@@ -413,7 +432,7 @@ class SOPopupWindow(CTkToplevel):
             'so_number_entry': 'so_number',
             # +++++++++++++++++++++++++++++++++++
             
-            'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id', 'credit_term_entry': 'credit_term',
+            'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id', 
             'pickup_location_entry': 'pickup_location', 'pickup_rego_entry': 'pickup_registration',
             'bill_date_selector': 'bill_date', 'delivery_date_selector': 'delivery_date', 'payment_date_selector': 'payment_date',
             'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
@@ -444,7 +463,7 @@ class SOPopupWindow(CTkToplevel):
             if value is not None: updated_data[data_key] = value
 
         shared_vars_map = {
-            'delivery_type_var': 'delivery_type', 'sales_service_vat_option': 'sales_service_vat_option',
+            'delivery_type_var': 'delivery_type', 'sales_service_vat_option': 'sales_service_vat_option','credit_term_var': 'credit_term',
             'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option', 'other_service_fee_vat_option': 'other_service_fee_vat_option',
             'relocation_cost_vat_option_var': 'relocation_cost_vat_option',
             'shipping_vat_option_var': 'shipping_vat_option', 'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option'
