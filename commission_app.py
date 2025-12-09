@@ -621,7 +621,7 @@ class CommissionApp(CTkFrame):
     def _on_history_so_select(self, row_data):
         """
         Callback function เมื่อมีการดับเบิลคลิกที่ SO ในหน้าต่างประวัติ
-        (เวอร์ชันแก้ไข: เพิ่มการตั้งค่า editing_record_id ให้ถูกต้อง)
+        (เวอร์ชันแก้ไข: เพิ่ม 'Draft' ลงในสถานะที่อนุญาตให้แก้ไข)
         """
         if row_data is None:
             return
@@ -629,12 +629,13 @@ class CommissionApp(CTkFrame):
         so_status = row_data.get('status')
         so_number = row_data.get('so_number')
         
-        editable_statuses = ['Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR']
+        # --- จุดที่แก้ไข: เพิ่ม 'Draft' เข้าไปในรายการนี้ ---
+        editable_statuses = ['Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR', 'Draft']
+        # --------------------------------------------------
 
         if so_status in editable_statuses:
             if messagebox.askyesno("โหลดข้อมูล", f"คุณต้องการโหลดข้อมูล SO: {so_number} เพื่อแก้ไขหรือไม่?"):
                 
-                # <<< START: แก้ไข Logic ทั้งหมดตรงนี้ >>>
                 # 1. ล้างข้อมูลในฟอร์มให้เป็นค่าเริ่มต้นก่อน เพื่อป้องกันข้อมูลเก่าค้าง
                 self._clear_form(confirm=False)
                 
@@ -642,12 +643,14 @@ class CommissionApp(CTkFrame):
                 self.editing_record_id = int(row_data.get('id'))
                 
                 # 3. โหลดข้อมูลจากแถวที่เลือกมาใส่ในฟอร์ม
-                self._populate_form_from_data(row_data.to_dict()) 
+                # (ใช้ .to_dict() หากข้อมูลมาเป็น Series จาก Pandas)
+                data_to_load = row_data.to_dict() if hasattr(row_data, 'to_dict') else row_data
+                self._populate_form_from_data(data_to_load) 
                 
-                # 4. ปิดหน้าต่างประวัติ (เหมือนเดิม)
+                # 4. ปิดหน้าต่างประวัติ (เพื่อให้กลับไปหน้าจอหลัก)
                 if self.history_window and self.history_window.winfo_exists():
                     self.history_window.destroy()
-                # <<< END: สิ้นสุดการแก้ไข >>>
+                    self.history_window = None
         else:
             messagebox.showinfo(
                 "ไม่สามารถแก้ไขได้",

@@ -1961,21 +1961,24 @@ class CommissionHistoryWindow(CTkToplevel):
         self._populate_history_table()
 
     def _populate_history_table(self):
-        """โหลดและแสดงข้อมูลตาม Tab และฟิลเตอร์ที่เลือก (เวอร์ชันแก้ไขไวยากรณ์ SQL)"""
+        """โหลดและแสดงข้อมูลตาม Tab และฟิลเตอร์ที่เลือก (เพิ่ม 'Draft' เข้าไปในเงื่อนไข)"""
         target_frame = self.draft_frame if self.active_tab == "drafts" else self.submitted_frame
         for widget in target_frame.winfo_children(): widget.destroy()
         self._show_loading()
 
         try:
-            # --- START: แก้ไข Logic การสร้าง Query ทั้งหมด ---
+            # --- START: แก้ไข Logic การสร้าง Query (เพิ่ม 'Draft') ---
             if self.active_tab == "drafts":
-                status_condition = "c.status IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Deferred by HR', 'Deferred by SM')"
+                # เพิ่ม 'Draft' เข้าไปในรายการสถานะที่จะดึงมาแสดงในแท็บแรก
+                status_condition = "c.status IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Deferred by HR', 'Deferred by SM')"
             else:
-                status_condition = "c.status NOT IN ('Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM')"
+                # เพิ่ม 'Draft' เข้าไปในรายการที่จะไม่แสดงในแท็บที่สอง (ถ้าต้องการ)
+                status_condition = "c.status NOT IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM')"
 
             where_clauses = ["c.is_active = 1", status_condition]
             params = []
 
+            # (ส่วนที่เหลือเหมือนเดิม...)
             if self.support_user_key_filter:
                 where_clauses.append("c.support_user_key = %s")
                 params.append(self.support_user_key_filter)
@@ -1995,31 +1998,25 @@ class CommissionHistoryWindow(CTkToplevel):
                 where_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(year_num)
             
-            # 1. สร้างส่วน FROM และ JOIN ทั้งหมดก่อน
             query_body = """
                 FROM commissions c
                 LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
                 LEFT JOIN sales_users su_owner ON c.sale_key = su_owner.sale_key
             """
             
-            # 2. สร้างส่วน WHERE แยกต่างหาก
             where_string = f"WHERE {' AND '.join(where_clauses)}"
 
-            # 3. ประกอบร่าง Query สำหรับนับจำนวนแถว
             count_query = f"SELECT COUNT(c.id) {query_body} {where_string}"
             
-            # --- END: สิ้นสุดการแก้ไข Logic ---
+            # --- END ---
 
             count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
             self.total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
             self.total_pages = (self.total_rows + self.rows_per_page - 1) // self.rows_per_page
 
             offset = self.current_page * self.rows_per_page
-            
-            # สร้าง params สำหรับ data_query โดยเพิ่ม limit และ offset
             data_params = params + [self.rows_per_page, offset]
 
-            # 4. ประกอบร่าง Query สำหรับดึงข้อมูลมาแสดงผล
             data_query = f"""
                 SELECT c.*,
                     ss.sale_name as support_user_name,
@@ -2052,14 +2049,12 @@ class CommissionHistoryWindow(CTkToplevel):
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติได้: {e}", parent=self)
 
     def _create_styled_treeview(self, parent, df):
-        """สร้าง Treeview และเติมข้อมูล (ปรับปรุงให้แสดงชื่อผู้คีย์)"""
+        """สร้าง Treeview และเติมข้อมูล (เพิ่มการจัดการสีสำหรับสถานะ 'Draft')"""
         parent.grid_rowconfigure(0, weight=1)
         parent.grid_columnconfigure(0, weight=1)
 
-        # +++ START: แก้ไขคอลัมน์ที่แสดงผล +++
         columns = ['id', 'timestamp', 'status', 'so_number', 'customer_display', 'sales_service_amount', 'shipping_cost', 'rejection_reason']
         display_columns = ['ID', 'เวลาบันทึก', 'สถานะ', 'SO Number', 'ชื่อลูกค้า (ผู้คีย์)', 'ยอดขาย/บริการ', 'ค่าขนส่ง', 'เหตุผลที่ถูกตีกลับ']
-        # +++ END +++
         
         style = ttk.Style()
         style.theme_use("clam")
@@ -2069,9 +2064,9 @@ class CommissionHistoryWindow(CTkToplevel):
         
         self.tree = ttk.Treeview(parent, columns=columns, show='headings', style="History.Treeview")
         
-        self.tree.tag_configure('Draft', background='#FEFCE8')
-        self.tree.tag_configure('Rejected', background='#FEF2F2')
-        self.tree.tag_configure('Submitted', background='#F0FDF4')
+        self.tree.tag_configure('Draft', background='#FEFCE8') # สีเหลืองอ่อน
+        self.tree.tag_configure('Rejected', background='#FEF2F2') # สีแดงอ่อน
+        self.tree.tag_configure('Submitted', background='#F0FDF4') # สีเขียวอ่อน
         self.tree.tag_configure('Default', background='white')
 
         for i, col_id in enumerate(columns):
@@ -2079,10 +2074,8 @@ class CommissionHistoryWindow(CTkToplevel):
             anchor = 'w'
             if col_id in ['id', 'status']: width = 80
             elif col_id in ['sales_service_amount', 'shipping_cost']: width = 120; anchor = 'e'
-            # +++ START: แก้ไขความกว้างคอลัมน์ +++
             elif col_id == 'customer_display': width = 300
             elif col_id == 'so_number': width = 150
-            # +++ END +++
             elif col_id == 'timestamp': width = 160
             elif col_id == 'rejection_reason': width = 250
             
@@ -2092,9 +2085,16 @@ class CommissionHistoryWindow(CTkToplevel):
         for index, row in df.iterrows():
             status = row['status']
             tag = 'Default'
-            if 'Reject' in status or 'Defer' in status: tag = 'Rejected'
-            elif status in ['Original', 'Edited']: tag = 'Draft'
-            else: tag = 'Submitted'
+            
+            # --- แก้ไขตรงนี้ ---
+            # รวม 'Draft' เข้าไปในกลุ่ม Draft เพื่อให้แสดงสีเหลือง
+            if 'Reject' in status or 'Defer' in status: 
+                tag = 'Rejected'
+            elif status in ['Original', 'Edited', 'Draft']: 
+                tag = 'Draft'
+            else: 
+                tag = 'Submitted'
+            # ------------------
             
             values = []
             for col_name in columns:

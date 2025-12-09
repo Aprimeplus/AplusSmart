@@ -24,6 +24,7 @@ from po_selection_dialog import POSelectionDialog
 from hr_windows import SOPopupWindow
 from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow
 from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
+from reject_history import RejectionHistoryWindow
 
 
 class RejectionReasonDialog(CTkToplevel):
@@ -353,6 +354,12 @@ class PurchasingManagerScreen(CTkFrame):
         self.mp_master_results_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
         self.mp_master_results_frame.grid_columnconfigure(0, weight=1)
 
+    def _open_rejection_history(self):
+        try:
+            RejectionHistoryWindow(master=self, app_container=self.app_container)
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถเปิดประวัติการตีกลับได้: {e}", parent=self)
+
     def _mp_master_search(self):
         """ค้นหา SO/PO ทั้งหมดจาก Keyword"""
         for widget in self.mp_master_results_frame.winfo_children():
@@ -582,33 +589,34 @@ class PurchasingManagerScreen(CTkFrame):
 
     def _mp_master_revert_so(self, so_number):
         """
-        (ฟังก์ชันใหม่)
-        สำหรับ "ตีกลับ" SO ทั้งระบบ โดยการบังคับให้ PO ทุกใบที่เกี่ยวข้อง
-        กลับไปเป็น 'Draft' และตั้งค่า SO กลับไปเป็น 'PO In Progress'
+        (ฟังก์ชันแก้ไข: ตีกลับเฉพาะ SO)
+        สำหรับ "ตีกลับ" SO กลับไปเป็น 'Draft' เพื่อให้เซลส์แก้ไข
+        **โดยจะไม่กระทบสถานะของ PO ที่มีอยู่แล้ว**
+        **และแจ้งเตือนทั้ง Sale หลัก และ Sale Support (ถ้ามี)**
         """
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 
-                # 1. ค้นหา SO และ POs ที่เกี่ยวข้อง
-                cursor.execute("SELECT status, sale_key FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", (so_number,)) # <-- แก้ไขบรรทัดนี้
+                # 1. ค้นหาข้อมูล SO และ Support User Key
+                # (เพิ่มการดึง support_user_key เพื่อนำมาแจ้งเตือน)
+                cursor.execute("""
+                    SELECT id, status, sale_key, support_user_key 
+                    FROM commissions 
+                    WHERE so_number = %s AND is_active = 1 
+                    LIMIT 1
+                """, (so_number,))
                 so_record = cursor.fetchone()
-                so_status = so_record['status'] if so_record else 'N/A'
-                so_sale_key = so_record['sale_key'] if so_record and 'sale_key' in so_record else None
-                print(f"--- DEBUG REVERT SO (ปุ่มสีแดง) ---")
-                print(f"SO: {so_number} | Status: {so_status} | Sale Key: {so_sale_key}")
-                                
-                cursor.execute(
-                    "SELECT id, user_key, po_number, status FROM purchase_orders WHERE so_number = %s AND status NOT IN ('Draft', 'Rejected', 'Cancelled')", 
-                    (so_number,)
-                )
-                po_records = cursor.fetchall()
-                po_count = len(po_records)
-
-                if po_count == 0:
-                    messagebox.showinfo("ไม่พบ PO", f"ไม่พบ PO ที่เกี่ยวข้อง (ที่ยัง Active) สำหรับ SO: {so_number} ที่จะตีกลับ", parent=self)
+                
+                if not so_record:
+                    messagebox.showinfo("ไม่พบข้อมูล", f"ไม่พบ SO: {so_number} ในระบบ", parent=self)
                     return
+
+                so_id = so_record['id']
+                so_status = so_record['status']
+                so_sale_key = so_record['sale_key']
+                support_key = so_record['support_user_key'] # ดึงรหัส Sale Support
 
                 # 2. สร้างคำเตือน
                 warning_message = ""
@@ -616,70 +624,66 @@ class PurchasingManagerScreen(CTkFrame):
                     warning_message = (
                         f"\n\n!! คำเตือนรุนแรง !!\n"
                         f"SO ({so_number}) นี้ อยู่ในสถานะ '{so_status}' แล้ว\n"
-                        "การตีกลับจะส่งผลกระทบต่อข้อมูลการเงินและค่าคอมฯ\n"
-                        "**กรุณาประสานงานกับ HR และบัญชีทันทีหากดำเนินการต่อ**"
+                        "การตีกลับอาจส่งผลกระทบต่อข้อมูลการเงินและค่าคอมมิชชั่น\n"
+                        "**กรุณาประสานงานกับ HR และบัญชีหากดำเนินการต่อ**"
                     )
                 
+                # ข้อความยืนยัน
                 if not messagebox.askyesno(
-                    "ยืนยันการตีกลับ SO ทั้งระบบ",
+                    "ยืนยันการตีกลับ SO (เฉพาะ SO)",
                     f"คุณต้องการตีกลับ SO: {so_number} ใช่หรือไม่?\n\n"
-                    f"การกระทำนี้จะตั้งค่า SO: {so_number} กลับไปเป็น 'Draft' (ส่งให้เซลส์แก้ไข)\n"
-                    f"**การดำเนินการนี้จะไม่ส่งผลกระทบต่อ POs ที่มีอยู่**"
+                    f"1. SO จะถูกเปลี่ยนสถานะเป็น 'Draft' (ส่งคืนเซลส์/Support)\n"
+                    f"2. ใบสั่งซื้อ (PO) ที่เกี่ยวข้องจะ **ไม่ถูกแก้ไข** และคงสถานะเดิม\n"
                     f"{warning_message}",
                     icon="warning",
                     parent=self
                 ):
                     return
 
-                # 3. ดำเนินการตีกลับ (Revert)
-                po_ids_to_revert = [po['id'] for po in po_records]
-                po_creators_to_notify = set([po['user_key'] for po in po_records])
-                revert_reason = f"Full SO Reverted by MP ({self.user_key}) at {datetime.now()}"
-
-               
-
-                # 3.2 อัปเดต SO (ถ้า SO ยังไม่ถูกจ่ายเงิน/Verify)
-                if so_status not in ('Paid', 'HR Verified'):
-                    cursor.execute("""
-                        UPDATE commissions 
-                        SET status = 'Draft' 
-                        WHERE so_number = %s AND is_active = 1
-                    """, (so_number,))
+                # 3. ดำเนินการตีกลับ (Revert) เฉพาะ SO
                 
-                # 3.3 ส่ง Notification
-                message_to_pu = f"SO: {so_number} ถูกตีกลับไปหาเซลส์โดย Manager ({self.user_key}) กรุณารับทราบ"
-                for creator_key in po_creators_to_notify:
-                    cursor.execute(
-                        "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", 
-                        (creator_key, message_to_pu)
-                    )
+                # อัปเดต SO ให้เป็น Draft (เพื่อให้เซลส์/Support แก้ไขได้)
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET status = 'Draft', rejection_reason = %s
+                    WHERE so_number = %s AND is_active = 1
+                """, (f"Reverted by MP ({self.user_key}) on {datetime.now().strftime('%Y-%m-%d')}", so_number))
+                
+                # 4. ส่ง Notification
+                msg_content = f"SO: {so_number} ถูกตีกลับโดย Manager ({self.user_key}) เพื่อให้แก้ไขข้อมูล (PO ไม่ถูกยกเลิก)"
 
-                # --- เพิ่มส่วนนี้เข้าไป ---
-                # (แจ้งเตือนเซลส์เจ้าของ SO)
+                # 4.1 แจ้งเตือน Sale เจ้าของเคส
                 if so_sale_key:
-                    message_to_sale = f"SO: {so_number} ถูกตีกลับโดย Manager ({self.user_key}) กรุณาตรวจสอบและแก้ไข SO"
                     cursor.execute(
                         "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", 
-                        (so_sale_key, message_to_sale)
+                        (so_sale_key, msg_content)
+                    )
+                
+                # 4.2 [เพิ่ม] แจ้งเตือน Sale Support (ถ้ามีคนทำให้)
+                if support_key and support_key != so_sale_key:
+                    msg_support = f"งาน SO: {so_number} ที่คุณดูแล ถูกตีกลับโดย Manager ({self.user_key}) กรุณาตรวจสอบ"
+                    cursor.execute(
+                        "INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", 
+                        (support_key, msg_support)
                     )
 
-                # 3.4 บันทึก Audit Log
+                # 5. บันทึก Audit Log
                 log_details = {
                     'reverted_by': self.user_key, 
-                    'reverted_po_ids': po_ids_to_revert, 
-                    'original_so_status': so_status
+                    'action': 'Revert SO Only (Keep POs)', 
+                    'original_so_status': so_status,
+                    'notified_support': support_key
                 }
                 cursor.execute(
-                    "INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, (SELECT id FROM commissions WHERE so_number = %s AND is_active=1 LIMIT 1), %s, %s, %s)", 
-                    ('SO Reverted', 'commissions', so_number, self.user_key, json.dumps(log_details, default=str), datetime.now())
+                    "INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", 
+                    ('SO Reverted', 'commissions', so_id, self.user_key, json.dumps(log_details, default=str), datetime.now())
                 )
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", f"ตีกลับ SO: {so_number} เป็น 'Draft' (ส่งหาเซลส์) เรียบร้อยแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", f"ตีกลับ SO: {so_number} เป็น 'Draft' เรียบร้อยแล้ว\n(PO ทั้งหมดยังคงสถานะเดิม)", parent=self)
             
-            # Refresh หน้าจอค้นหา
+            # Refresh หน้าจอ
             self._mp_master_search()
-            # Refresh หน้าจอหลัก
             self._load_data()
 
         except Exception as e:
@@ -982,6 +986,7 @@ class PurchasingManagerScreen(CTkFrame):
         self.approve_all_button.pack(side="left", padx=10)
         CTkButton(button_container, text="📄 พิมพ์ใบสั่งซื้อ PO", command=self._open_po_print_dialog, fg_color="#7C3AED", hover_color="#6D28D9").pack(side="left", padx=10)
         CTkButton(button_container, text="ดึงงาน PO กลับมาแก้ไข", command=self._open_reopen_po_window, fg_color="#F97316", hover_color="#EA580C").pack(side="left", padx=10)
+        CTkButton(button_container, text="ประวัติการตีกลับ", command=self._open_rejection_history, fg_color="#EF4444", hover_color="#B91C1C").pack(side="left", padx=10)
         CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=self._open_approved_po_history).pack(side="left", padx=(0, 10))
         CTkButton(button_container, text="Refresh All", command=self._load_data).pack(side="left", padx=10)
         CTkButton(button_container, text="Export PDF (PO อนุมัติ)", command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
