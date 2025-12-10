@@ -1507,12 +1507,10 @@ class PurchaseHistoryWindow(CTkToplevel):
         self.grab_set()
     
     def _create_new_layout(self):
-        """สร้าง UI Layout ใหม่ทั้งหมดสำหรับหน้าต่างประวัติ PO"""
         # --- Top Frame (Filter & Pagination) ---
         top_frame = CTkFrame(self, fg_color="transparent")
         top_frame.grid(row=0, column=0, padx=10, pady=(10,0), sticky="ew")
-
-        # --- Filter Section ---
+        
         filter_frame = CTkFrame(top_frame, fg_color="transparent")
         filter_frame.pack(side="left")
 
@@ -1522,19 +1520,12 @@ class PurchaseHistoryWindow(CTkToplevel):
         current_year = datetime.now().year
         year_options = ["ทุกปี"] + [str(y) for y in range(current_year, current_year - 5, -1)]
         CTkOptionMenu(filter_frame, variable=self.year_var, values=year_options).pack(side="left", padx=5)
+        
+        CTkButton(filter_frame, text="ค้นหา", command=self._populate_history_table, width=80).pack(side="left", padx=10)
 
-        self.search_entry = CTkEntry(filter_frame, placeholder_text="ค้นหา SO, PO, Supplier...")
-        self.search_entry.pack(side="left", padx=10, fill="x", expand=True)
-        # --- แก้ไข: เปลี่ยน event จาก KeyRelease เป็น Debounce เพื่อประสิทธิภาพที่ดีกว่า ---
-        self._debounce_job = None 
-        self.search_entry.bind("<KeyRelease>", self._debounce_search)
-
-        CTkButton(filter_frame, text="ค้นหา", command=self._apply_filters, width=80).pack(side="left")
-
-        # --- Pagination Section ---
         pagination_frame = CTkFrame(top_frame, fg_color="transparent")
         pagination_frame.pack(side="right")
-
+        
         self.prev_button = CTkButton(pagination_frame, text="<<", command=self._prev_page, width=50, state="disabled")
         self.prev_button.pack(side="left", padx=5)
         self.page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
@@ -1542,14 +1533,37 @@ class PurchaseHistoryWindow(CTkToplevel):
         self.next_button = CTkButton(pagination_frame, text=">>", command=self._next_page, width=50, state="disabled")
         self.next_button.pack(side="left", padx=5)
 
-        # --- Main Frame for the Treeview ---
-        # (เราจะสร้าง Treeview ข้างในฟังก์ชัน _update_treeview_display)
-        self.history_frame = CTkFrame(self)
-        self.history_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
-        self.history_frame.grid_rowconfigure(0, weight=1)
-        self.history_frame.grid_columnconfigure(0, weight=1)
+        # --- Tab View ---
+        self.tab_view = CTkTabview(self, command=self._on_tab_change)
+        self.tab_view.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        
+        # แท็บ 1: ฉบับร่าง
+        self.draft_tab = self.tab_view.add("ฉบับร่าง / ตีกลับ")
+        self.draft_tab.grid_columnconfigure(0, weight=1); self.draft_tab.grid_rowconfigure(0, weight=1)
+        self.draft_frame = CTkFrame(self.draft_tab, fg_color="transparent")
+        self.draft_frame.grid(row=0, column=0, sticky="nsew")
+        
+        # แท็บ 2: รายการที่ส่งแล้ว
+        self.submitted_tab = self.tab_view.add("รายการที่ส่งแล้ว")
+        self.submitted_tab.grid_columnconfigure(0, weight=1); self.submitted_tab.grid_rowconfigure(0, weight=1)
+        self.submitted_frame = CTkFrame(self.submitted_tab, fg_color="transparent")
+        self.submitted_frame.grid(row=0, column=0, sticky="nsew")
 
-        # --- Loading Label ---
+        # --- [ส่วนสำคัญ] เพิ่มแท็บที่ 3 ตรงนี้ ---
+        self.calculated_tab = self.tab_view.add("SO ที่คิดค่าคอมแล้ว")
+        self.calculated_tab.grid_columnconfigure(0, weight=1); self.calculated_tab.grid_rowconfigure(0, weight=1)
+        self.calculated_frame = CTkFrame(self.calculated_tab, fg_color="transparent")
+        self.calculated_frame.grid(row=0, column=0, sticky="nsew")
+        
+        self.button_frame = CTkFrame(self, fg_color="transparent")
+        self.button_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
+        
+        self.cancel_button = CTkButton(self.button_frame, text="ยกเลิกรายการที่เลือก", command=self._cancel_selected_record, fg_color="#DC2626", hover_color="#B91C1C")
+        self.cancel_button.pack(side="left", padx=10)
+        
+        self.export_button = CTkButton(self.button_frame, text="Export to Excel", command=self._export_history, fg_color=self.theme["primary"])
+        self.export_button.pack(side="left")
+
         self.loading_label = CTkLabel(self, text="กำลังโหลดข้อมูล...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
 
     def _next_page(self):
@@ -1765,6 +1779,71 @@ class CommissionHistoryWindow(CTkToplevel):
         self.transient(master)
         self.grab_set()
         self.focus()
+
+    def _create_new_layout(self):
+        # --- Top Frame (Filter & Pagination) ---
+        top_frame = CTkFrame(self, fg_color="transparent")
+        top_frame.grid(row=0, column=0, padx=10, pady=(10,0), sticky="ew")
+        
+        filter_frame = CTkFrame(top_frame, fg_color="transparent")
+        filter_frame.pack(side="left")
+
+        month_options = ["ทุกเดือน"] + self.thai_months
+        CTkOptionMenu(filter_frame, variable=self.month_var, values=month_options).pack(side="left", padx=5)
+
+        current_year = datetime.now().year
+        year_options = ["ทุกปี"] + [str(y) for y in range(current_year, current_year - 5, -1)]
+        CTkOptionMenu(filter_frame, variable=self.year_var, values=year_options).pack(side="left", padx=5)
+        
+        # --- [NEW] เพิ่มช่องค้นหา ---
+        self.search_entry = CTkEntry(filter_frame, placeholder_text="ค้นหา SO / ลูกค้า...", width=200)
+        self.search_entry.pack(side="left", padx=5)
+        self.search_entry.bind("<Return>", lambda event: self._populate_history_table()) # กด Enter เพื่อค้นหาได้
+        
+        CTkButton(filter_frame, text="ค้นหา", command=self._populate_history_table, width=80).pack(side="left", padx=10)
+
+        pagination_frame = CTkFrame(top_frame, fg_color="transparent")
+        pagination_frame.pack(side="right")
+        
+        self.prev_button = CTkButton(pagination_frame, text="<<", command=self._prev_page, width=50, state="disabled")
+        self.prev_button.pack(side="left", padx=5)
+        self.page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
+        self.page_label.pack(side="left", padx=5)
+        self.next_button = CTkButton(pagination_frame, text=">>", command=self._next_page, width=50, state="disabled")
+        self.next_button.pack(side="left", padx=5)
+
+        # --- Tab View ---
+        self.tab_view = CTkTabview(self, command=self._on_tab_change)
+        self.tab_view.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        
+        # แท็บ 1: ฉบับร่าง
+        self.draft_tab = self.tab_view.add("ฉบับร่าง / ตีกลับ")
+        self.draft_tab.grid_columnconfigure(0, weight=1); self.draft_tab.grid_rowconfigure(0, weight=1)
+        self.draft_frame = CTkFrame(self.draft_tab, fg_color="transparent")
+        self.draft_frame.grid(row=0, column=0, sticky="nsew")
+        
+        # แท็บ 2: รายการที่ส่งแล้ว
+        self.submitted_tab = self.tab_view.add("รายการที่ส่งแล้ว")
+        self.submitted_tab.grid_columnconfigure(0, weight=1); self.submitted_tab.grid_rowconfigure(0, weight=1)
+        self.submitted_frame = CTkFrame(self.submitted_tab, fg_color="transparent")
+        self.submitted_frame.grid(row=0, column=0, sticky="nsew")
+
+        # แท็บ 3: SO ที่คิดค่าคอมแล้ว
+        self.calculated_tab = self.tab_view.add("SO ที่คิดค่าคอมแล้ว")
+        self.calculated_tab.grid_columnconfigure(0, weight=1); self.calculated_tab.grid_rowconfigure(0, weight=1)
+        self.calculated_frame = CTkFrame(self.calculated_tab, fg_color="transparent")
+        self.calculated_frame.grid(row=0, column=0, sticky="nsew")
+        
+        self.button_frame = CTkFrame(self, fg_color="transparent")
+        self.button_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
+        
+        self.cancel_button = CTkButton(self.button_frame, text="ยกเลิกรายการที่เลือก", command=self._cancel_selected_record, fg_color="#DC2626", hover_color="#B91C1C")
+        self.cancel_button.pack(side="left", padx=10)
+        
+        self.export_button = CTkButton(self.button_frame, text="Export to Excel", command=self._export_history, fg_color=self.theme["primary"])
+        self.export_button.pack(side="left")
+
+        self.loading_label = CTkLabel(self, text="กำลังโหลดข้อมูล...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
     
     def _on_tree_row_double_click(self, event, tree):
         """Callback เมื่อดับเบิลคลิกที่แถวใน Treeview"""
@@ -1894,91 +1973,62 @@ class CommissionHistoryWindow(CTkToplevel):
         """ซ่อน Label 'กำลังโหลดข้อมูล...'"""
         self.loading_label.place_forget()
 
-    def _create_new_layout(self):
-        """สร้าง UI Layout ใหม่ทั้งหมดที่มี Tabs และฟิลเตอร์"""
-        # --- Top Frame (Filter & Pagination) ---
-        top_frame = CTkFrame(self, fg_color="transparent")
-        top_frame.grid(row=0, column=0, padx=10, pady=(10,0), sticky="ew")
-        
-        # --- START: เพิ่ม UI สำหรับฟิลเตอร์เดือน/ปี ---
-        filter_frame = CTkFrame(top_frame, fg_color="transparent")
-        filter_frame.pack(side="left")
-
-        month_options = ["ทุกเดือน"] + self.thai_months
-        CTkOptionMenu(filter_frame, variable=self.month_var, values=month_options).pack(side="left", padx=5)
-
-        current_year = datetime.now().year
-        year_options = ["ทุกปี"] + [str(y) for y in range(current_year, current_year - 5, -1)]
-        CTkOptionMenu(filter_frame, variable=self.year_var, values=year_options).pack(side="left", padx=5)
-        
-        CTkButton(filter_frame, text="ค้นหา", command=self._populate_history_table, width=80).pack(side="left", padx=10)
-        # --- END ---
-
-        pagination_frame = CTkFrame(top_frame, fg_color="transparent")
-        pagination_frame.pack(side="right")
-        
-        self.prev_button = CTkButton(pagination_frame, text="<<", command=self._prev_page, width=50, state="disabled")
-        self.prev_button.pack(side="left", padx=5)
-        self.page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
-        self.page_label.pack(side="left", padx=5)
-        self.next_button = CTkButton(pagination_frame, text=">>", command=self._next_page, width=50, state="disabled")
-        self.next_button.pack(side="left", padx=5)
-
-        # --- Tab View ---
-        self.tab_view = CTkTabview(self, command=self._on_tab_change)
-        self.tab_view.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        
-        self.draft_tab = self.tab_view.add("ฉบับร่าง / ตีกลับ")
-        self.submitted_tab = self.tab_view.add("รายการที่ส่งแล้ว")
-        
-        self.draft_tab.grid_columnconfigure(0, weight=1); self.draft_tab.grid_rowconfigure(0, weight=1)
-        self.submitted_tab.grid_columnconfigure(0, weight=1); self.submitted_tab.grid_rowconfigure(0, weight=1)
-
-        self.draft_frame = CTkFrame(self.draft_tab, fg_color="transparent"); self.draft_frame.grid(row=0, column=0, sticky="nsew")
-        self.submitted_frame = CTkFrame(self.submitted_tab, fg_color="transparent"); self.submitted_frame.grid(row=0, column=0, sticky="nsew")
-        
-        self.button_frame = CTkFrame(self, fg_color="transparent")
-        self.button_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
-        
-        self.cancel_button = CTkButton(self.button_frame, text="ยกเลิกรายการที่เลือก", command=self._cancel_selected_record, fg_color="#DC2626", hover_color="#B91C1C")
-        self.cancel_button.pack(side="left", padx=10)
-        
-        self.export_button = CTkButton(self.button_frame, text="Export to Excel", command=self._export_history, fg_color=self.theme["primary"])
-        self.export_button.pack(side="left")
-
-        self.loading_label = CTkLabel(self, text="กำลังโหลดข้อมูล...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
-
 
     def _on_tab_change(self):
         """Callback เมื่อมีการเปลี่ยน Tab"""
         selected_tab = self.tab_view.get()
-        self.active_tab = "drafts" if selected_tab == "ฉบับร่าง / ตีกลับ" else "submitted"
         
-        if self.active_tab == "drafts": self.cancel_button.pack(side="left", padx=10)
-        else: self.cancel_button.pack_forget()
+        # --- [แก้ไข] เพิ่มเงื่อนไขเช็คแท็บใหม่ ---
+        if selected_tab == "ฉบับร่าง / ตีกลับ":
+            self.active_tab = "drafts"
+        elif selected_tab == "รายการที่ส่งแล้ว":
+            self.active_tab = "submitted"
+        elif selected_tab == "SO ที่คิดค่าคอมแล้ว":
+            self.active_tab = "calculated"
+        
+        # ปุ่มยกเลิกแสดงเฉพาะแท็บ Draft
+        if self.active_tab == "drafts": 
+            self.cancel_button.pack(side="left", padx=10)
+        else: 
+            self.cancel_button.pack_forget()
         
         self.current_page = 0
         self._populate_history_table()
 
     def _populate_history_table(self):
-        """โหลดและแสดงข้อมูลตาม Tab และฟิลเตอร์ที่เลือก (เพิ่ม 'Draft' เข้าไปในเงื่อนไข)"""
-        target_frame = self.draft_frame if self.active_tab == "drafts" else self.submitted_frame
+        """โหลดและแสดงข้อมูลตาม Tab และฟิลเตอร์ (แก้ไข SQL Alias และ Search)"""
+        # เลือก Frame เป้าหมายตาม Tab
+        if self.active_tab == "drafts":
+            target_frame = self.draft_frame
+        elif self.active_tab == "submitted":
+            target_frame = self.submitted_frame
+        else: # calculated
+            target_frame = self.calculated_frame
+
         for widget in target_frame.winfo_children(): widget.destroy()
         self._show_loading()
 
         try:
-            # --- START: แก้ไข Logic การสร้าง Query (เพิ่ม 'Draft') ---
+            # --- สร้างเงื่อนไข SQL ตาม Tab ---
             if self.active_tab == "drafts":
-                # เพิ่ม 'Draft' เข้าไปในรายการสถานะที่จะดึงมาแสดงในแท็บแรก
                 status_condition = "c.status IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Deferred by HR', 'Deferred by SM')"
-            else:
-                # เพิ่ม 'Draft' เข้าไปในรายการที่จะไม่แสดงในแท็บที่สอง (ถ้าต้องการ)
-                status_condition = "c.status NOT IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM')"
+            elif self.active_tab == "submitted":
+                status_condition = "c.status NOT IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM', 'Paid', 'HR Verified')"
+            else: # calculated
+                status_condition = "c.status IN ('Paid', 'HR Verified')"
 
             where_clauses = ["c.is_active = 1", status_condition]
             params = []
 
-            # (ส่วนที่เหลือเหมือนเดิม...)
+            # --- [NEW] Filter การค้นหา (SO หรือ ชื่อลูกค้า) ---
+            if hasattr(self, 'search_entry'):
+                search_text = self.search_entry.get().strip()
+                if search_text:
+                    # ค้นหาทั้ง SO Number และ Customer Name
+                    where_clauses.append("(c.so_number ILIKE %s OR c.customer_name ILIKE %s)")
+                    params.extend([f"%{search_text}%", f"%{search_text}%"])
+
+            # --- Filter อื่นๆ ---
             if self.support_user_key_filter:
                 where_clauses.append("c.support_user_key = %s")
                 params.append(self.support_user_key_filter)
@@ -1998,29 +2048,32 @@ class CommissionHistoryWindow(CTkToplevel):
                 where_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(year_num)
             
+            # --- Base Query Body ---
             query_body = """
                 FROM commissions c
                 LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
                 LEFT JOIN sales_users su_owner ON c.sale_key = su_owner.sale_key
+                LEFT JOIN commission_payout_logs cr ON c.payout_id = cr.id  
             """
             
             where_string = f"WHERE {' AND '.join(where_clauses)}"
 
+            # Count Query
             count_query = f"SELECT COUNT(c.id) {query_body} {where_string}"
-            
-            # --- END ---
-
             count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
             self.total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
             self.total_pages = (self.total_rows + self.rows_per_page - 1) // self.rows_per_page
 
+            # Data Query
             offset = self.current_page * self.rows_per_page
             data_params = params + [self.rows_per_page, offset]
 
             data_query = f"""
                 SELECT c.*,
                     ss.sale_name as support_user_name,
-                    su_owner.sale_name as owner_name
+                    su_owner.sale_name as owner_name,
+                    cr.commission_month AS paid_month, 
+                    cr.commission_year AS paid_year
                 {query_body}
                 {where_string}
                 ORDER BY c.timestamp DESC
@@ -2029,8 +2082,14 @@ class CommissionHistoryWindow(CTkToplevel):
             
             self.df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(data_params))
 
+            # สร้างชื่อลูกค้า + ผู้คีย์
             self.df['customer_display'] = self.df.apply(
                 lambda row: f"{row['customer_name']} (คีย์โดย: {row['support_user_name']})" if pd.notna(row['support_user_name']) else f"{row['customer_name']} (คีย์โดย: {row.get('owner_name', 'N/A')})",
+                axis=1
+            )
+            
+            self.df['payment_period_display'] = self.df.apply(
+                lambda row: f"{int(row['paid_month'])}/{int(row['paid_year'])}" if pd.notna(row['paid_month']) else "-",
                 axis=1
             )
 
@@ -2049,13 +2108,23 @@ class CommissionHistoryWindow(CTkToplevel):
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติได้: {e}", parent=self)
 
     def _create_styled_treeview(self, parent, df):
-        """สร้าง Treeview และเติมข้อมูล (เพิ่มการจัดการสีสำหรับสถานะ 'Draft')"""
+        """สร้าง Treeview (เพิ่มคอลัมน์รอบเดือนที่จ่ายถ้าเป็นแท็บ Calculated)"""
         parent.grid_rowconfigure(0, weight=1)
         parent.grid_columnconfigure(0, weight=1)
 
-        columns = ['id', 'timestamp', 'status', 'so_number', 'customer_display', 'sales_service_amount', 'shipping_cost', 'rejection_reason']
-        display_columns = ['ID', 'เวลาบันทึก', 'สถานะ', 'SO Number', 'ชื่อลูกค้า (ผู้คีย์)', 'ยอดขาย/บริการ', 'ค่าขนส่ง', 'เหตุผลที่ถูกตีกลับ']
+        # กำหนดคอลัมน์พื้นฐาน
+        columns = ['id', 'timestamp', 'status', 'so_number', 'customer_display', 'sales_service_amount', 'shipping_cost']
+        display_columns = ['ID', 'เวลาบันทึก', 'สถานะ', 'SO Number', 'ชื่อลูกค้า (ผู้คีย์)', 'ยอดขาย/บริการ', 'ค่าขนส่ง']
         
+        # --- [แก้ไข] ถ้าเป็นแท็บ "Calculated" ให้เพิ่มคอลัมน์ "รอบเดือนที่จ่าย" ---
+        if self.active_tab == "calculated":
+            columns.append('payment_period_display')
+            display_columns.append('รอบเดือนที่จ่าย')
+        else:
+            # ถ้าไม่ใช่แท็บ Calculated ให้แสดงเหตุผลตีกลับแทน (เหมือนเดิม)
+            columns.append('rejection_reason')
+            display_columns.append('เหตุผลที่ถูกตีกลับ')
+
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("History.Treeview.Heading", font=('Roboto', 11, 'bold'), relief="flat", background="#E5E7EB")
@@ -2064,11 +2133,14 @@ class CommissionHistoryWindow(CTkToplevel):
         
         self.tree = ttk.Treeview(parent, columns=columns, show='headings', style="History.Treeview")
         
-        self.tree.tag_configure('Draft', background='#FEFCE8') # สีเหลืองอ่อน
-        self.tree.tag_configure('Rejected', background='#FEF2F2') # สีแดงอ่อน
-        self.tree.tag_configure('Submitted', background='#F0FDF4') # สีเขียวอ่อน
+        # Config Tags สี
+        self.tree.tag_configure('Draft', background='#FEFCE8') 
+        self.tree.tag_configure('Rejected', background='#FEF2F2')
+        self.tree.tag_configure('Submitted', background='#F0FDF4')
+        self.tree.tag_configure('Paid', background='#DCFCE7') # สีเขียวเข้มขึ้นนิดหน่อยสำหรับ Paid
         self.tree.tag_configure('Default', background='white')
 
+        # ตั้งค่า Column Headers
         for i, col_id in enumerate(columns):
             width = 100
             anchor = 'w'
@@ -2078,29 +2150,26 @@ class CommissionHistoryWindow(CTkToplevel):
             elif col_id == 'so_number': width = 150
             elif col_id == 'timestamp': width = 160
             elif col_id == 'rejection_reason': width = 250
+            elif col_id == 'payment_period_display': width = 120; anchor = 'center' # [NEW]
             
             self.tree.heading(col_id, text=display_columns[i])
             self.tree.column(col_id, anchor=anchor, width=width)
         
+        # Insert Data
         for index, row in df.iterrows():
             status = row['status']
             tag = 'Default'
             
-            # --- แก้ไขตรงนี้ ---
-            # รวม 'Draft' เข้าไปในกลุ่ม Draft เพื่อให้แสดงสีเหลือง
-            if 'Reject' in status or 'Defer' in status: 
-                tag = 'Rejected'
-            elif status in ['Original', 'Edited', 'Draft']: 
-                tag = 'Draft'
-            else: 
-                tag = 'Submitted'
-            # ------------------
+            if 'Reject' in status or 'Defer' in status: tag = 'Rejected'
+            elif status in ['Original', 'Edited', 'Draft']: tag = 'Draft'
+            elif status in ['Paid', 'HR Verified']: tag = 'Paid'
+            else: tag = 'Submitted'
             
             values = []
             for col_name in columns:
                 value = row.get(col_name)
                 if pd.notna(value):
-                    if isinstance(value, (float, np.floating)):
+                    if col_name in ['sales_service_amount', 'shipping_cost'] and isinstance(value, (float, np.floating, int)):
                         values.append(f"{value:,.2f}")
                     elif isinstance(value, (datetime, pd.Timestamp)):
                         values.append(value.strftime('%Y-%m-%d %H:%M'))

@@ -1427,84 +1427,108 @@ class HRScreen(CTkFrame):
 
     def _get_sales_vs_target_data(self, period):
         try:
-            # --- START: สร้าง logic การกรองช่วงเวลา ---
             today = datetime.now()
             current_year = today.year
             params = []
             
-            commission_filter_clauses = []
+            date_filter_clauses = []
+            target_multiplier = 1 # ค่าเริ่มต้น (สำหรับรายเดือน)
             
-            # Logic การกรองช่วงเวลา (เหมือนเดิม)
+            # --- กำหนดเงื่อนไขเวลา และ ตัวคูณเป้าหมาย ---
+            
             if period == "เดือนนี้":
-                commission_filter_clauses.append("c.commission_month = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
                 params.append(today.month)
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
+                target_multiplier = 1
+                
             elif period == "ปีนี้":
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
+                target_multiplier = 12 # เป้าปี = เป้าเดือน * 12
+                
             elif period == "Q1":
-                commission_filter_clauses.append("c.commission_month IN (1, 2, 3)")
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (1, 2, 3)")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
+                target_multiplier = 3 # เป้าไตรมาส = เป้าเดือน * 3
+                
             elif period == "Q2":
-                commission_filter_clauses.append("c.commission_month IN (4, 5, 6)")
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (4, 5, 6)")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
+                target_multiplier = 3
+                
             elif period == "Q3":
-                commission_filter_clauses.append("c.commission_month IN (7, 8, 9)")
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (7, 8, 9)")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
+                target_multiplier = 3
+                
             elif period == "Q4":
-                commission_filter_clauses.append("c.commission_month IN (10, 11, 12)")
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (10, 11, 12)")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
+                target_multiplier = 3
+                
             elif period in self.thai_month_map:
                 month_num = self.thai_month_map[period]
-                commission_filter_clauses.append("c.commission_month = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
                 params.append(month_num)
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
-            else: # Fallback
-                commission_filter_clauses.append("c.commission_month = %s")
-                params.append(today.month)
-                commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year)
+                target_multiplier = 1
                 
-            commission_filter_sql = " AND ".join(commission_filter_clauses)
-            # --- END ---
-
-            # --- แก้ไข SQL Query: ลบเงื่อนไข sales_target > 0 ออก ---
+            else: # Fallback (กรณีไม่เข้าเงื่อนไขใดเลย ให้คิดเป็นเดือนปัจจุบัน)
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
+                params.append(today.month)
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                params.append(current_year)
+                target_multiplier = 1
+                
+            date_filter_sql = " AND ".join(date_filter_clauses)
+            
+            # --- เงื่อนไขสถานะ (Active) ---
+            status_condition = "c.status NOT IN ('Draft', 'Cancelled', 'Rejected by SM', 'Rejected by HR', 'Original', 'Edited')"
+            
+            # --- Query ---
+            # สังเกตตรง: COALESCE(su.sales_target, 0) * {target_multiplier}
             query = f"""
-                SELECT su.sale_name, 
-                       COALESCE(su.sales_target, 0) as sales_target, 
-                       COALESCE(SUM(c.sales_service_amount), 0) as total_sales 
-                FROM sales_users su 
-                LEFT JOIN commissions c ON su.sale_key = c.sale_key 
-                                     AND c.is_active = 1 
-                                     AND {commission_filter_sql}
-                WHERE su.role = 'Sale' 
-                  -- AND su.sales_target > 0  <-- ลบบรรทัดนี้ออก เพื่อให้แสดงทุกคน
-                  AND su.status = 'Active' 
-                GROUP BY su.sale_key, su.sale_name, su.sales_target 
-                ORDER BY su.sale_name ASC; -- เรียงตามชื่อ ก-ฮ เพื่อหาง่ายขึ้น หรือใช้ total_sales DESC ก็ได้
+                SELECT 
+                    su.sale_name, 
+                    su.sale_key, 
+                    COALESCE(su.sales_target, 0) * {target_multiplier} as sales_target, 
+                    COALESCE(SUM(c.sales_service_amount), 0) as total_sales,
+                    COALESCE(SUM(CASE WHEN COALESCE(c.difference_amount, 0) < -1 THEN ABS(c.difference_amount) ELSE 0 END), 0) as total_outstanding
+                FROM sales_users su
+                LEFT JOIN commissions c ON su.sale_key = c.sale_key
+                                     AND c.is_active = 1
+                                     AND {status_condition}
+                                     AND {date_filter_sql}
+                WHERE su.role = 'Sale' AND su.status = 'Active'
+                GROUP BY su.sale_name, su.sale_key, su.sales_target
+                ORDER BY su.sale_name ASC;
             """
+            
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
             
-            # เติม 0 ในกรณีที่เป็น Null เพื่อป้องกัน Error ตอนวาดกราฟ
+            # เติม 0 กัน Error
             df['sales_target'] = df['sales_target'].fillna(0)
             df['total_sales'] = df['total_sales'].fillna(0)
+            df['total_outstanding'] = df['total_outstanding'].fillna(0)
             
             return df
         except Exception as e: 
             print(f"Error getting sales vs target data: {e}") 
             messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self)
             traceback.print_exc() 
-            return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales'])
+            return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales', 'total_outstanding'])
 
     def _create_sales_vs_target_chart(self, parent_frame, data_df):
-        # import เพิ่มเติมเฉพาะในฟังก์ชันนี้
         import matplotlib.colors as mcolors
+        from matplotlib.patches import Patch
+        from matplotlib.lines import Line2D
 
         # ล้างกราฟเก่า
         if hasattr(self, 'sales_target_chart_canvas') and self.sales_target_chart_canvas:
@@ -1516,39 +1540,42 @@ class HRScreen(CTkFrame):
             CTkLabel(parent_frame, text="ไม่พบข้อมูลพนักงานขาย", font=self.header_font_table).pack(expand=True)
             return
 
-        # --- 1. เตรียมข้อมูล: รวมยอดตามชื่อพนักงาน ---
-        person_agg = data_df.groupby('sale_name').agg({
-            'total_sales': 'sum',
-            'sales_target': 'sum'
-        }).reset_index()
+        # --- 1. จัดกลุ่มข้อมูลตามชื่อพนักงาน ---
+        grouped = data_df.groupby('sale_name')
         
-        # เรียงลำดับตามยอดขายรวม (มากไปน้อย)
-        person_agg = person_agg.sort_values(by='total_sales', ascending=False)
-        unique_names = person_agg['sale_name'].unique()
+        people_data = []
+        for name, group in grouped:
+            total_person_sales = group['total_sales'].sum()
+            total_person_outstanding = group['total_outstanding'].sum()
+            total_person_target = group['sales_target'].sum()
+            
+            sub_items = []
+            for _, row in group.iterrows():
+                sub_items.append({
+                    'sale_key': row['sale_key'],
+                    'sales': row['total_sales']
+                })
+            
+            people_data.append({
+                'name': name,
+                'total_sales': total_person_sales,
+                'total_outstanding': total_person_outstanding,
+                'target': total_person_target,
+                'sub_items': sub_items
+            })
+
+        # เรียงลำดับจากมากไปน้อย
+        people_data.sort(key=lambda x: x['total_sales'], reverse=True)
+
+        unique_names = [p['name'] for p in people_data]
+        targets = [p['target'] for p in people_data]
+        outstandings = [p['total_outstanding'] for p in people_data]
         
-        # นับจำนวนก้อนข้อมูลทั้งหมด (เพื่อสร้างสีให้ครบทุกก้อนไม่ซ้ำ)
-        total_segments = len(data_df)
+        x = np.arange(len(unique_names))
+        width = 0.35
 
-        # --- 2. สร้างชุดสีพาสเทล (Soft Pastel Colors) ---
-        def generate_pastel_colors(n):
-            colors = []
-            # ใช้ Golden Ratio เพื่อกระจายเฉดสีให้ต่างกันที่สุด
-            golden_ratio = 0.618033988749895
-            for i in range(n):
-                hue = (i * golden_ratio) % 1
-                # ปรับ Saturation ให้อ่อนลง (0.4 - 0.55) เพื่อความสบายตา (ไม่แสบตา)
-                saturation = 0.4 + (i % 2) * 0.15 
-                # Value สูงหน่อย (0.9 - 0.95) เพื่อให้สีสว่างนวล
-                value = 0.9 + (i % 3) * 0.03
-                
-                rgb = mcolors.hsv_to_rgb((hue, saturation, value))
-                colors.append(mcolors.to_hex(rgb))
-            return colors
-
-        all_colors = generate_pastel_colors(total_segments)
-
-        # --- 3. ตั้งค่ากราฟ ---
-        chart_width = max(10, len(unique_names) * 0.8) 
+        # ตั้งค่ากราฟ
+        chart_width = max(10, len(unique_names) * 1.2) 
         fig = Figure(figsize=(chart_width, 6), dpi=100, facecolor=self.theme["bg"])
         ax = fig.add_subplot(111)
         ax.set_facecolor(self.theme["bg"])
@@ -1556,72 +1583,78 @@ class HRScreen(CTkFrame):
         formatter = FuncFormatter(lambda y, pos: f'{y:,.0f}')
         ax.yaxis.set_major_formatter(formatter)
 
-        x = np.arange(len(unique_names))
-        width = 0.35 
+        # --- สร้างชุดสี (Palette) ให้หลากหลายขึ้น ---
+        colors_palette = [
+            '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', 
+            '#06B6D4', '#84CC16', '#6366F1', '#D946EF', '#14B8A6',
+            '#F43F5E', '#EAB308', '#A855F7', '#22C55E', '#0EA5E9'
+        ]
 
-        # ตัวนับลำดับสี (ใช้ไล่สีไปเรื่อยๆ ให้ไม่ซ้ำ)
-        color_idx = 0
+        text_style = dict(facecolor='white', alpha=0.75, edgecolor='#E5E7EB', boxstyle='round,pad=0.2')
 
-        # --- 4. วาดกราฟ ---
-        for i, name in enumerate(unique_names):
-            # ดึงข้อมูลทุก Key ของพนักงานคนนี้
-            sales_data_for_person = data_df[data_df['sale_name'] == name]
+        # --- A. วาดกราฟแท่งยอดขาย (Stacked Bar - สลับสี) ---
+        for i, person in enumerate(people_data):
+            current_bottom = 0
             
-            # --- A. วาดกราฟยอดขายจริง (Stacked Bar) ---
-            current_bottom = 0 
-            for j, (_, row) in enumerate(sales_data_for_person.iterrows()):
-                sales_value = row['total_sales']
+            # วาดทีละ ID ย่อย
+            for j, sub in enumerate(person['sub_items']):
+                val = sub['sales']
+                if val <= 0: continue
                 
-                # เลือกสีจากรายการที่สร้างไว้ แล้วขยับ index ถัดไป
-                color = all_colors[color_idx % len(all_colors)]
-                color_idx += 1
+                # [แก้ไข] คำนวณสีให้ไม่ซ้ำกันในแต่ละชั้นและแต่ละคน
+                # สูตร: (ลำดับคน * 3 + ลำดับชั้น) เพื่อให้สีกระโดดไปมา ไม่ซ้ำกัน
+                color_index = (i * 3 + j) % len(colors_palette)
+                segment_color = colors_palette[color_index]
                 
                 # วาดแท่ง
-                rects = ax.bar(x[i] - width/2, sales_value, width, 
-                               bottom=current_bottom, 
-                               color=color,
-                               edgecolor='white', linewidth=0.5, # ขอบบางๆ สีขาว
-                               label='ยอดขายจริง' if i==0 and j==0 else "")
+                rect = ax.bar(x[i] - width/2, val, width, 
+                              bottom=current_bottom, 
+                              color=segment_color, edgecolor='white', linewidth=1, zorder=2)
                 
-                # ใส่ตัวเลขในแท่ง
-                if sales_value > 0:
-                    font_s = 8 if sales_value < (person_agg.iloc[i]['total_sales'] * 0.1) else 9
-                    # เปลี่ยนสีตัวอักษรเป็นสีเทาเข้ม เพื่อให้อ่านง่ายบนพื้นพาสเทล
-                    ax.bar_label(rects, labels=[f'{sales_value:,.0f}'], 
-                                 label_type='center', color='#333333', weight='bold', fontsize=font_s)
+                # ใส่ตัวเลขของ ID ย่อย
+                if val > (person['total_sales'] * 0.05):
+                    ax.bar_label(rect, labels=[f"{val:,.0f}"], 
+                                 label_type='center', fontsize=10, color='white', weight='bold')
                 
-                current_bottom += sales_value
+                current_bottom += val
             
-            # ใส่ยอดรวมไว้บนหัวแท่งซ้าย
-            if current_bottom > 0:
-                ax.text(x[i] - width/2, current_bottom + (current_bottom*0.01), f'{current_bottom:,.0f}',
-                        ha='center', va='bottom', fontsize=10, weight='bold', color='black')
+            # ใส่ยอดรวมบนหัวแท่ง
+            if person['total_sales'] > 0:
+                ax.text(x[i] - width/2, person['total_sales'] + (person['total_sales']*0.01), 
+                        f"{person['total_sales']:,.0f}",
+                        ha='center', va='bottom', fontsize=12, weight='bold', color='#1E3A8A',
+                        bbox=text_style, zorder=10)
 
-            # --- B. วาดกราฟเป้าหมาย (Total Target Bar) ---
-            total_target_for_person = sales_data_for_person['sales_target'].sum()
-            
-            rects_target = ax.bar(x[i] + width/2, total_target_for_person, width, 
-                                  label='ยอดเป้าหมาย' if i==0 else "", 
-                                  color='#E2E8F0', edgecolor='#94A3B8', hatch='///', linewidth=0) # ปรับสีเป้าหมายให้อ่อนลงด้วย
-            
-            ax.bar_label(rects_target, padding=3, fmt='{:,.0f}', fontsize=9, color='#64748B')
+        # --- B. วาดกราฟยอดค้างชำระ (Summed Bar - สีแดง) ---
+        rects2 = ax.bar(x + width/2, outstandings, width, label='ยอดค้างชำระ', 
+                        color='#EF4444', edgecolor='white', hatch='///', alpha=0.8, zorder=2)
 
-        # --- 5. ตกแต่งกราฟ ---
-        ax.set_ylabel('ยอดขาย (บาท)', fontsize=12)
-        ax.set_title(f'เปรียบเทียบยอดขายจริง vs เป้าหมาย (รวม {len(unique_names)} คน)', fontsize=16, weight="bold")
+        labels_outstanding = [f'{v:,.0f}' if v > 0 else '' for v in outstandings]
+        ax.bar_label(rects2, labels=labels_outstanding, padding=3, 
+                     fontsize=11, weight='bold', color='#991B1B', 
+                     zorder=10, bbox=text_style)
+
+        # --- C. วาดเส้นเป้าหมาย ---
+        ax.plot(x - width/2, targets, 
+                color='#F97316', linewidth=1.5, marker='o', markersize=5, 
+                label='เป้าหมาย', zorder=5, alpha=0.9)
+
+        # --- ตกแต่งกราฟ ---
+        ax.set_ylabel('จำนวนเงิน (บาท)', fontsize=14, weight='bold')
+        ax.set_title('วิเคราะห์ยอดขาย (แยกตาม ID) vs ยอดค้างชำระ', fontsize=18, weight="bold")
         
         ax.set_xticks(x)
-        ax.set_xticklabels(unique_names, rotation=45, ha="right", fontsize=11)
+        ax.set_xticklabels(unique_names, rotation=45, ha="right", fontsize=12, weight='bold')
         
-        # จัด Legend
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        desired_order = ['ยอดขายจริง', 'ยอดเป้าหมาย']
-        ordered_handles = [by_label[l] for l in desired_order if l in by_label]
-        ordered_labels = [l for l in desired_order if l in by_label]
-        ax.legend(ordered_handles, ordered_labels, prop={'size': 12})
-
-        ax.grid(axis='y', linestyle='--', alpha=0.5)
+        # สร้าง Legend แบบกำหนดเอง (เพราะสีแท่งยอดขายมันเยอะ)
+        legend_elements = [
+            Patch(facecolor='#3B82F6', edgecolor='white', label='ยอดขาย (แต่ละสี = ต่าง ID)'),
+            Patch(facecolor='#EF4444', hatch='///', edgecolor='white', label='ยอดค้างชำระ'),
+            Line2D([0], [0], color='#F97316', lw=2, marker='o', label='เป้าหมาย')
+        ]
+        
+        ax.legend(handles=legend_elements, loc='upper right', prop={'size': 12})
+        ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=0)
 
         fig.tight_layout()
         
