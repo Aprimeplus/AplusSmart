@@ -1025,7 +1025,7 @@ class HRScreen(CTkFrame):
     # ให้เป็นฟังก์ชันเดียวคือ _create_commission_summary_table เพื่อลดความซ้ำซ้อนของโค้ด
     # และเพิ่มความยืดหยุ่นในการแสดงผล ไม่ว่าข้อมูลจะมี 2 หรือ 3 คอลัมน์ก็ตาม
     def _create_commission_summary_table(self, summary_df, container=None):
-        """สร้างตารางสรุปผลการคำนวณค่าคอมมิชชั่นแบบไดนามิกตาม DataFrame ที่ได้รับ"""
+        """สร้างตารางสรุปผลการคำนวณค่าคอมมิชชั่นแบบไดนามิก (พร้อม Scrollbar แยก)"""
         if container is None:
             container = self.process_result_frame
             
@@ -1035,6 +1035,7 @@ class HRScreen(CTkFrame):
             CTkLabel(container, text="ไม่พบข้อมูลสำหรับสร้างสรุป").pack(pady=20)
             return
 
+        # สร้าง Frame สำหรับตาราง
         tree_frame = CTkFrame(container, fg_color="transparent")
         tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
         tree_frame.grid_rowconfigure(0, weight=1)
@@ -1048,8 +1049,17 @@ class HRScreen(CTkFrame):
 
         # สร้างคอลัมน์แบบไดนามิกจาก DataFrame
         columns_to_show = list(summary_df.columns)
-        tree = ttk.Treeview(tree_frame, columns=columns_to_show, show="headings", style="Summary.Treeview")
+        
+        # [แก้ไข] กำหนด height=12 (ประมาณ 12 แถว) เพื่อจำกัดความสูงไม่ให้ยืดจนดันหน้าจอ
+        tree = ttk.Treeview(tree_frame, columns=columns_to_show, show="headings", style="Summary.Treeview", height=12)
+        
+        # [แก้ไข] เพิ่ม Scrollbar แนวตั้งเฉพาะสำหรับตารางนี้
+        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=v_scroll.set)
+        
+        # Grid layout (วางตารางคู่กับ Scrollbar)
         tree.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
 
         # กำหนดชื่อหัวตารางและความกว้าง
         header_map = {
@@ -3139,9 +3149,10 @@ class HRScreen(CTkFrame):
         self.process_period_menu = CTkOptionMenu(control_frame, variable=self.process_period_var, values=["-ยังไม่ได้เลือก-"], command=self._calculate_commission_for_period)
         self.process_period_menu.pack(side="left", padx=5)
         
-        self.process_result_frame = CTkFrame(parent_tab)
+        # --- [แก้ไข] เปลี่ยนเป็น CTkScrollableFrame ---
+        # เพื่อให้หน้าจอเลื่อนลงได้เมื่อเนื้อหายาวเกินหน้าจอโน้ตบุ๊ก
+        self.process_result_frame = CTkScrollableFrame(parent_tab, label_text="ผลลัพธ์การคำนวณ")
         self.process_result_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
-        self.process_result_frame.grid_rowconfigure(1, weight=1)
         self.process_result_frame.grid_columnconfigure(0, weight=1)
 
         self.after(100, self._on_sale_selected_for_process)
@@ -3395,24 +3406,20 @@ class HRScreen(CTkFrame):
     def _create_hr_input_interface(self, auto_deduction_value=0.0, default_operating_fee_to_display=None):
         """
         สร้างหน้าจอสำหรับกรอก Incentive/Deduction และแสดงผลสรุปค่าคอม
-        (ฉบับแก้ไข: ดึงค่าคอมที่ถูกต้องมาแสดง)
+        (ฉบับแก้ไข: รองรับจอเล็กด้วย ScrollableFrame)
         """
         for widget in self.process_result_frame.winfo_children():
             widget.destroy()
 
-        self.process_result_frame.grid_rowconfigure(1, weight=1)
         self.process_result_frame.grid_columnconfigure(0, weight=1)
 
         if not hasattr(self, 'initial_commission_result'):
              self.initial_commission_result = {}
              
-        # <<< START: แก้ไข Key ที่ดึงข้อมูลตรงนี้ >>>
-        # เปลี่ยนจาก 'final_commission' เป็น 'final_commission_pre_deductions'
         calculated_commission = (
         self.initial_commission_result.get('final_commission_pre_deductions') or 
         self.initial_commission_result.get('final_commission', 0.0)
         )   
-        # <<< END >>>
 
         input_frame = CTkFrame(self.process_result_frame)
         input_frame.grid(row=0, column=0, pady=(10, 0), padx=10, sticky="ew")
@@ -3429,8 +3436,6 @@ class HRScreen(CTkFrame):
         stats_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(5,0))
         stats_frame.grid_columnconfigure((1, 3), weight=1)
 
-        # ดึงค่าจาก self.current_total_sales และ self.current_total_cost แทน
-        # (ค่าเหล่านี้ถูกคำนวณไว้แล้วใน _calculate_commission_for_period)
         total_sales_display = getattr(self, 'current_total_sales', 0.0)
         total_cost_display = getattr(self, 'current_total_cost', 0.0)
 
@@ -3479,8 +3484,9 @@ class HRScreen(CTkFrame):
         else:
             self.detail_button.configure(state="disabled")
 
-        self.final_summary_frame = CTkScrollableFrame(self.process_result_frame, fg_color="transparent")
-        self.final_summary_frame.grid(row=1, column=0, pady=10, padx=10, sticky="nsew")
+        # [แก้ไข] ใช้ CTkFrame ธรรมดา เพราะ Parent (process_result_frame) เลื่อนได้แล้ว
+        self.final_summary_frame = CTkFrame(self.process_result_frame, fg_color="transparent")
+        self.final_summary_frame.grid(row=1, column=0, pady=10, padx=10, sticky="ew")
         
         bottom_action_frame = CTkFrame(self.process_result_frame, fg_color="transparent")
         bottom_action_frame.grid(row=2, column=0, pady=(0, 10), padx=10, sticky="ew")
