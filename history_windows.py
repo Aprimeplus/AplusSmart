@@ -1750,23 +1750,24 @@ class CommissionHistoryWindow(CTkToplevel):
         self.pg_engine = app_container.pg_engine
         self.sale_key_filter = sale_key_filter
         self.on_row_double_click_callback = on_row_double_click
-        self.support_user_key_filter = support_user_key_filter # <-- บรรทัดนี้จะทำงานได้ถูกต้องแล้ว
+        self.support_user_key_filter = support_user_key_filter
         self.df = None
         
-        # --- ตัวแปรสำหรับ Pagination และ Filter ---
         self.current_page = 0
         self.rows_per_page = 50
         self.total_rows = 0
         self.total_pages = 0
-        self.active_tab = "drafts"
+        self.active_tab = "deferral" # Default เป็นแท็บงานด่วน
 
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
         self.month_var = tk.StringVar(value="ทุกเดือน")
         self.year_var = tk.StringVar(value="ทุกปี")
         
-        self.title(f"ประวัติการบันทึกของ: {self.sale_key_filter}")
-        self.geometry("1400x700")
+        title_text = f"ประวัติการบันทึกของ: {self.sale_key_filter}" if self.sale_key_filter else "ประวัติการบันทึก (Admin View)"
+        self.title(title_text)
+        self.geometry("1400x800")
+        
         try: self.theme = self.app_container.THEME["sale"]
         except (AttributeError, KeyError): self.theme = {"header": "#1D4ED8", "primary": "#3B82F6"}
         
@@ -1781,7 +1782,7 @@ class CommissionHistoryWindow(CTkToplevel):
         self.focus()
 
     def _create_new_layout(self):
-        # --- Top Frame (Filter & Pagination) ---
+        # Top Frame (Filter)
         top_frame = CTkFrame(self, fg_color="transparent")
         top_frame.grid(row=0, column=0, padx=10, pady=(10,0), sticky="ew")
         
@@ -1795,16 +1796,15 @@ class CommissionHistoryWindow(CTkToplevel):
         year_options = ["ทุกปี"] + [str(y) for y in range(current_year, current_year - 5, -1)]
         CTkOptionMenu(filter_frame, variable=self.year_var, values=year_options).pack(side="left", padx=5)
         
-        # --- [NEW] เพิ่มช่องค้นหา ---
         self.search_entry = CTkEntry(filter_frame, placeholder_text="ค้นหา SO / ลูกค้า...", width=200)
         self.search_entry.pack(side="left", padx=5)
-        self.search_entry.bind("<Return>", lambda event: self._populate_history_table()) # กด Enter เพื่อค้นหาได้
+        self.search_entry.bind("<Return>", lambda event: self._populate_history_table())
         
         CTkButton(filter_frame, text="ค้นหา", command=self._populate_history_table, width=80).pack(side="left", padx=10)
 
+        # Pagination
         pagination_frame = CTkFrame(top_frame, fg_color="transparent")
         pagination_frame.pack(side="right")
-        
         self.prev_button = CTkButton(pagination_frame, text="<<", command=self._prev_page, width=50, state="disabled")
         self.prev_button.pack(side="left", padx=5)
         self.page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
@@ -1812,100 +1812,232 @@ class CommissionHistoryWindow(CTkToplevel):
         self.next_button = CTkButton(pagination_frame, text=">>", command=self._next_page, width=50, state="disabled")
         self.next_button.pack(side="left", padx=5)
 
-        # --- Tab View ---
+        # --- Tab View (3 แท็บใหม่) ---
         self.tab_view = CTkTabview(self, command=self._on_tab_change)
         self.tab_view.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
         
-        # แท็บ 1: ฉบับร่าง
-        self.draft_tab = self.tab_view.add("ฉบับร่าง / ตีกลับ")
-        self.draft_tab.grid_columnconfigure(0, weight=1); self.draft_tab.grid_rowconfigure(0, weight=1)
-        self.draft_frame = CTkFrame(self.draft_tab, fg_color="transparent")
-        self.draft_frame.grid(row=0, column=0, sticky="nsew")
-        
-        # แท็บ 2: รายการที่ส่งแล้ว
-        self.submitted_tab = self.tab_view.add("รายการที่ส่งแล้ว")
-        self.submitted_tab.grid_columnconfigure(0, weight=1); self.submitted_tab.grid_rowconfigure(0, weight=1)
-        self.submitted_frame = CTkFrame(self.submitted_tab, fg_color="transparent")
-        self.submitted_frame.grid(row=0, column=0, sticky="nsew")
+        self.deferral_tab = self.tab_view.add("⚠️ รายการรอตัดสินใจ & ถูกเลื่อน")
+        self.deferral_frame = CTkFrame(self.deferral_tab, fg_color="transparent"); self.deferral_frame.pack(fill="both", expand=True)
 
-        # แท็บ 3: SO ที่คิดค่าคอมแล้ว
-        self.calculated_tab = self.tab_view.add("SO ที่คิดค่าคอมแล้ว")
-        self.calculated_tab.grid_columnconfigure(0, weight=1); self.calculated_tab.grid_rowconfigure(0, weight=1)
-        self.calculated_frame = CTkFrame(self.calculated_tab, fg_color="transparent")
-        self.calculated_frame.grid(row=0, column=0, sticky="nsew")
+        self.payout_tab = self.tab_view.add("💰 ประวัติการรับเงิน")
+        self.payout_frame = CTkFrame(self.payout_tab, fg_color="transparent"); self.payout_frame.pack(fill="both", expand=True)
+
+        self.draft_tab = self.tab_view.add("📝 รายการฉบับร่าง / ส่งแล้ว")
+        self.draft_frame = CTkFrame(self.draft_tab, fg_color="transparent"); self.draft_frame.pack(fill="both", expand=True)
         
+        # Bottom Buttons
         self.button_frame = CTkFrame(self, fg_color="transparent")
         self.button_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
         
-        self.cancel_button = CTkButton(self.button_frame, text="ยกเลิกรายการที่เลือก", command=self._cancel_selected_record, fg_color="#DC2626", hover_color="#B91C1C")
+        # ปุ่ม Action (โชว์เฉพาะแท็บ Deferral)
+        self.action_button = CTkButton(self.button_frame, text="⚡ จัดการรายการที่เลือก", command=self._open_deferral_action_window, 
+                                       fg_color="#F59E0B", hover_color="#D97706", font=CTkFont(weight="bold"))
+        self.action_button.pack(side="left", padx=10)
+        
+        self.cancel_button = CTkButton(self.button_frame, text="ยกเลิกรายการที่เลือก", command=self._cancel_selected_record, 
+                                       fg_color="#DC2626", hover_color="#B91C1C")
         self.cancel_button.pack(side="left", padx=10)
+        self.cancel_button.pack_forget() # ซ่อนก่อน
         
         self.export_button = CTkButton(self.button_frame, text="Export to Excel", command=self._export_history, fg_color=self.theme["primary"])
         self.export_button.pack(side="left")
 
         self.loading_label = CTkLabel(self, text="กำลังโหลดข้อมูล...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
-    
-    def _on_tree_row_double_click(self, event, tree):
-        """Callback เมื่อดับเบิลคลิกที่แถวใน Treeview"""
+
+    def _on_tab_change(self):
+        selected_tab = self.tab_view.get()
+        if selected_tab == "⚠️ รายการรอตัดสินใจ & ถูกเลื่อน":
+            self.active_tab = "deferral"
+            self.action_button.pack(side="left", padx=10)
+            self.cancel_button.pack_forget()
+        elif selected_tab == "💰 ประวัติการรับเงิน":
+            self.active_tab = "payout"
+            self.action_button.pack_forget()
+            self.cancel_button.pack_forget()
+        else: # Drafts
+            self.active_tab = "drafts"
+            self.action_button.pack_forget()
+            self.cancel_button.pack(side="left", padx=10)
+        
+        self.current_page = 0
+        self._populate_history_table()
+
+    def _populate_history_table(self):
+        if self.active_tab == "deferral": target_frame = self.deferral_frame
+        elif self.active_tab == "payout": target_frame = self.payout_frame
+        else: target_frame = self.draft_frame
+
+        for widget in target_frame.winfo_children(): widget.destroy()
+        self._show_loading()
+
         try:
-            selected_item = tree.focus()
-            if not selected_item:
-                return
+            # เงื่อนไข SQL ตาม Tab
+            if self.active_tab == "deferral":
+                status_condition = "c.status IN ('Defer Requested', 'Deferred')"
+            elif self.active_tab == "payout":
+                status_condition = "c.status IN ('Paid', 'HR Verified')"
+            else: # drafts
+                status_condition = "c.status IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM', 'PO Sent')"
+
+            where_clauses = ["c.is_active = 1", status_condition]
+            params = []
+
+            if hasattr(self, 'search_entry') and self.search_entry.get().strip():
+                search_text = self.search_entry.get().strip()
+                where_clauses.append("(c.so_number ILIKE %s OR c.customer_name ILIKE %s)")
+                params.extend([f"%{search_text}%", f"%{search_text}%"])
+
+            if self.support_user_key_filter:
+                where_clauses.append("c.support_user_key = %s")
+                params.append(self.support_user_key_filter)
+            elif self.sale_key_filter:
+                where_clauses.append("c.sale_key = %s")
+                params.append(self.sale_key_filter)
+
+            selected_month_str = self.month_var.get()
+            if selected_month_str != "ทุกเดือน":
+                month_num = self.thai_month_map[selected_month_str]
+                where_clauses.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
+                params.append(month_num)
+
+            selected_year_str = self.year_var.get()
+            if selected_year_str != "ทุกปี":
+                year_num = int(selected_year_str)
+                where_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
+                params.append(year_num)
             
-            # ดึงข้อมูลจาก DataFrame โดยใช้ ID ที่เป็น iid
-            record_id = int(selected_item)
-            row_data = self.df[self.df['id'] == record_id].iloc[0]
+            query_body = """
+                FROM commissions c
+                LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
+                LEFT JOIN sales_users su_owner ON c.sale_key = su_owner.sale_key
+                LEFT JOIN commission_payout_logs cr ON c.payout_id = cr.id  
+            """
+            where_string = f"WHERE {' AND '.join(where_clauses)}"
 
-            if self.on_row_double_click_callback:
-                self.on_row_double_click_callback(row_data)
-        except (ValueError, IndexError) as e:
-            print(f"Could not process double click: {e}")
+            count_query = f"SELECT COUNT(c.id) {query_body} {where_string}"
+            count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
+            self.total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
+            self.total_pages = (self.total_rows + self.rows_per_page - 1) // self.rows_per_page
 
-    def _cancel_selected_record(self):
-        try:
-            # ตรวจสอบว่ามี Treeview และมีรายการที่ถูกเลือกหรือไม่
-            if not hasattr(self, 'tree') or not self.tree.focus():
-                messagebox.showwarning("ไม่ได้เลือกรายการ", "กรุณาเลือกรายการที่ต้องการยกเลิก", parent=self)
-                return
+            offset = self.current_page * self.rows_per_page
+            data_params = params + [self.rows_per_page, offset]
 
-            item_id = self.tree.focus()
-            selected_index = self.tree.index(item_id)
-            record_data = self.df.iloc[selected_index]
+            data_query = f"""
+                SELECT c.*,
+                    ss.sale_name as support_user_name,
+                    su_owner.sale_name as owner_name,
+                    cr.commission_month AS paid_month, 
+                    cr.commission_year AS paid_year
+                {query_body}
+                {where_string}
+                ORDER BY c.timestamp DESC
+                LIMIT %s OFFSET %s
+            """
+            self.df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(data_params))
 
-            record_id = record_data['id']
-            record_status = record_data['status']
-            record_so = record_data['so_number']
+            self.df['customer_display'] = self.df.apply(lambda row: f"{row['customer_name']} (คีย์โดย: {row['support_user_name']})" if pd.notna(row['support_user_name']) else f"{row['customer_name']} (คีย์โดย: {row.get('owner_name', 'N/A')})", axis=1)
+            self.df['payment_period_display'] = self.df.apply(lambda row: f"{int(row['paid_month'])}/{int(row['paid_year'])}" if pd.notna(row['paid_month']) else "-", axis=1)
 
-            # อนุญาตให้ยกเลิกได้เฉพาะสถานะที่ยังไม่ได้ส่งเท่านั้น
-            if record_status not in ['Original', 'Edited']:
-                messagebox.showerror("ไม่สามารถยกเลิกได้", 
-                                     f"ไม่สามารถยกเลิกรายการนี้ได้ เนื่องจากมีสถานะเป็น '{record_status}'\n"
-                                     "(ยกเลิกได้เฉพาะรายการที่เป็นฉบับร่างเท่านั้น)", 
-                                     parent=self)
-                return
+            self._hide_loading()
 
-            if messagebox.askyesno("ยืนยันการยกเลิก", 
-                                   f"คุณต้องการยกเลิก SO Number: {record_so} ใช่หรือไม่?\n"
-                                   "(รายการจะถูกซ่อนจากประวัติ แต่ยังสามารถตรวจสอบได้โดยแอดมิน)", 
-                                   parent=self, icon="warning"):
-                conn = None
-                try:
-                    conn = self.app_container.get_connection()
-                    with conn.cursor() as cursor:
-                        # อัปเดต is_active=0 เพื่อซ่อน และเปลี่ยนสถานะเป็น Cancelled
-                        cursor.execute("UPDATE commissions SET is_active = 0, status = 'Cancelled' WHERE id = %s", (int(record_id),))
-                    conn.commit()
-                    messagebox.showinfo("สำเร็จ", "ยกเลิกรายการเรียบร้อยแล้ว", parent=self)
-                    # โหลดข้อมูลใหม่เพื่อรีเฟรชตาราง
-                    self._populate_history_table()
-                except Exception as e:
-                    if conn: conn.rollback()
-                    messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
-                finally:
-                    if conn: self.app_container.release_connection(conn)
+            if self.df.empty and self.current_page == 0:
+                CTkLabel(target_frame, text="ไม่พบข้อมูล").pack(pady=20)
+            else:
+                self._create_styled_treeview(target_frame, self.df)
+
+            self._update_pagination_controls()
+
         except Exception as e:
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถยกเลิกรายการได้: {e}", parent=self)
+            self._hide_loading()
+            traceback.print_exc()
+            messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติได้: {e}", parent=self)
 
+    def _create_styled_treeview(self, parent, df):
+        columns = ['id', 'timestamp', 'status', 'so_number', 'customer_display', 'sales_service_amount']
+        display_columns = ['ID', 'เวลาบันทึก', 'สถานะ', 'SO Number', 'ชื่อลูกค้า', 'ยอดขาย']
+        
+        if self.active_tab == "payout":
+            columns.append('payment_period_display')
+            display_columns.append('รอบจ่าย')
+        elif self.active_tab == "deferral":
+            columns.append('rejection_reason')
+            display_columns.append('เหตุผล/สถานะการเลื่อน')
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("History.Treeview.Heading", font=('Roboto', 11, 'bold'), background="#E5E7EB")
+        style.configure("History.Treeview", rowheight=28)
+        
+        self.tree = ttk.Treeview(parent, columns=columns, show='headings', style="History.Treeview")
+        self.tree.pack(fill="both", expand=True)
+        
+        # Tags สี
+        self.tree.tag_configure('Draft', background='#FEFCE8')
+        self.tree.tag_configure('Rejected', background='#FEF2F2')
+        self.tree.tag_configure('Defer Requested', background='#FFF7ED') # สีส้มอ่อน
+        self.tree.tag_configure('Deferred', background='#F3F4F6') # สีเทา (ดอง)
+        self.tree.tag_configure('Paid', background='#DCFCE7')
+
+        for i, col_id in enumerate(columns):
+            width = 100
+            if col_id == 'so_number': width = 150
+            elif col_id == 'customer_display': width = 250
+            elif col_id == 'rejection_reason': width = 200
+            self.tree.heading(col_id, text=display_columns[i])
+            self.tree.column(col_id, width=width)
+
+        for index, row in df.iterrows():
+            status = row['status']
+            tag = 'Default'
+            if 'Reject' in status: tag = 'Rejected'
+            elif status == 'Defer Requested': tag = 'Defer Requested'
+            elif status == 'Deferred': tag = 'Deferred'
+            elif status in ['Paid', 'HR Verified']: tag = 'Paid'
+            elif status in ['Original', 'Draft']: tag = 'Draft'
+            
+            values = [row.get(col, '') for col in columns]
+            # Format วันที่และตัวเลข
+            if pd.notna(values[1]): values[1] = pd.to_datetime(values[1]).strftime('%Y-%m-%d %H:%M')
+            if pd.notna(values[5]): values[5] = f"{float(values[5]):,.2f}"
+            
+            self.tree.insert("", "end", values=values, tags=(tag,), iid=str(row['id']))
+
+        if self.on_row_double_click_callback:
+            self.tree.bind("<Double-1>", lambda event: self._on_tree_row_double_click(event, self.tree))
+
+    def _open_deferral_action_window(self):
+        if not hasattr(self, 'tree') or not self.tree.focus():
+            messagebox.showwarning("เตือน", "กรุณาเลือกรายการก่อน", parent=self)
+            return
+        
+        item_id = self.tree.focus()
+        index = self.tree.index(item_id)
+        data = self.df.iloc[index]
+        
+        if data['status'] not in ['Defer Requested', 'Deferred']:
+            messagebox.showinfo("ข้อมูล", "รายการนี้ไม่ได้อยู่ในสถานะที่ต้องจัดการเลื่อน", parent=self)
+            return
+            
+        DeferralActionDialog(self, self.app_container, data, callback=self._populate_history_table)
+
+    # --- Pagination & Utils ---
+    def _update_pagination_controls(self):
+        self.page_label.configure(text=f"Page {self.current_page + 1} / {max(1, self.total_pages)}")
+        self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
+        self.next_button.configure(state="normal" if self.current_page < self.total_pages - 1 else "disabled")
+
+    def _next_page(self):
+        if self.current_page < self.total_pages - 1: self.current_page += 1; self._populate_history_table()
+
+    def _prev_page(self):
+        if self.current_page > 0: self.current_page -= 1; self._populate_history_table()
+
+    def _show_loading(self):
+        self.loading_label.place(relx=0.5, rely=0.5, anchor="center"); self.update_idletasks()
+
+    def _hide_loading(self):
+        self.loading_label.place_forget()
+        
     def _export_history(self):
         """
         (เวอร์ชันอัปเกรด) Export ข้อมูลทั้งหมดในช่วงเวลาที่เลือก
@@ -1964,247 +2096,194 @@ class CommissionHistoryWindow(CTkToplevel):
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=self)
             traceback.print_exc()
 
-    def _show_loading(self):
-        """แสดง Label 'กำลังโหลดข้อมูล...'"""
-        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")
-        self.update_idletasks()
-
-    def _hide_loading(self):
-        """ซ่อน Label 'กำลังโหลดข้อมูล...'"""
-        self.loading_label.place_forget()
-
-
-    def _on_tab_change(self):
-        """Callback เมื่อมีการเปลี่ยน Tab"""
-        selected_tab = self.tab_view.get()
-        
-        # --- [แก้ไข] เพิ่มเงื่อนไขเช็คแท็บใหม่ ---
-        if selected_tab == "ฉบับร่าง / ตีกลับ":
-            self.active_tab = "drafts"
-        elif selected_tab == "รายการที่ส่งแล้ว":
-            self.active_tab = "submitted"
-        elif selected_tab == "SO ที่คิดค่าคอมแล้ว":
-            self.active_tab = "calculated"
-        
-        # ปุ่มยกเลิกแสดงเฉพาะแท็บ Draft
-        if self.active_tab == "drafts": 
-            self.cancel_button.pack(side="left", padx=10)
-        else: 
-            self.cancel_button.pack_forget()
-        
-        self.current_page = 0
-        self._populate_history_table()
-
-    def _populate_history_table(self):
-        """โหลดและแสดงข้อมูลตาม Tab และฟิลเตอร์ (แก้ไข SQL Alias และ Search)"""
-        # เลือก Frame เป้าหมายตาม Tab
-        if self.active_tab == "drafts":
-            target_frame = self.draft_frame
-        elif self.active_tab == "submitted":
-            target_frame = self.submitted_frame
-        else: # calculated
-            target_frame = self.calculated_frame
-
-        for widget in target_frame.winfo_children(): widget.destroy()
-        self._show_loading()
-
+    def _on_tree_row_double_click(self, event, tree):
         try:
-            # --- สร้างเงื่อนไข SQL ตาม Tab ---
-            if self.active_tab == "drafts":
-                status_condition = "c.status IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Deferred by HR', 'Deferred by SM')"
-            elif self.active_tab == "submitted":
-                status_condition = "c.status NOT IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM', 'Paid', 'HR Verified')"
-            else: # calculated
-                status_condition = "c.status IN ('Paid', 'HR Verified')"
+            selected_item = tree.focus()
+            if not selected_item: return
+            record_id = int(selected_item)
+            row_data = self.df[self.df['id'] == record_id].iloc[0]
+            if self.on_row_double_click_callback: self.on_row_double_click_callback(row_data)
+        except: pass
+    def _cancel_selected_record(self):
+        try:
+            # ตรวจสอบว่ามี Treeview และมีรายการที่ถูกเลือกหรือไม่
+            if not hasattr(self, 'tree') or not self.tree.focus():
+                messagebox.showwarning("ไม่ได้เลือกรายการ", "กรุณาเลือกรายการที่ต้องการยกเลิก", parent=self)
+                return
 
-            where_clauses = ["c.is_active = 1", status_condition]
-            params = []
+            item_id = self.tree.focus()
+            selected_index = self.tree.index(item_id)
+            record_data = self.df.iloc[selected_index]
 
-            # --- [NEW] Filter การค้นหา (SO หรือ ชื่อลูกค้า) ---
-            if hasattr(self, 'search_entry'):
-                search_text = self.search_entry.get().strip()
-                if search_text:
-                    # ค้นหาทั้ง SO Number และ Customer Name
-                    where_clauses.append("(c.so_number ILIKE %s OR c.customer_name ILIKE %s)")
-                    params.extend([f"%{search_text}%", f"%{search_text}%"])
+            record_id = record_data['id']
+            record_status = record_data['status']
+            record_so = record_data['so_number']
 
-            # --- Filter อื่นๆ ---
-            if self.support_user_key_filter:
-                where_clauses.append("c.support_user_key = %s")
-                params.append(self.support_user_key_filter)
-            elif self.sale_key_filter:
-                where_clauses.append("c.sale_key = %s")
-                params.append(self.sale_key_filter)
+            # อนุญาตให้ยกเลิกได้เฉพาะสถานะที่ยังไม่ได้ส่งเท่านั้น
+            if record_status not in ['Original', 'Edited']:
+                messagebox.showerror("ไม่สามารถยกเลิกได้", 
+                                     f"ไม่สามารถยกเลิกรายการนี้ได้ เนื่องจากมีสถานะเป็น '{record_status}'\n"
+                                     "(ยกเลิกได้เฉพาะรายการที่เป็นฉบับร่างเท่านั้น)", 
+                                     parent=self)
+                return
 
-            selected_month_str = self.month_var.get()
-            if selected_month_str != "ทุกเดือน":
-                month_num = self.thai_month_map[selected_month_str]
-                where_clauses.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
-                params.append(month_num)
+            if messagebox.askyesno("ยืนยันการยกเลิก", 
+                                   f"คุณต้องการยกเลิก SO Number: {record_so} ใช่หรือไม่?\n"
+                                   "(รายการจะถูกซ่อนจากประวัติ แต่ยังสามารถตรวจสอบได้โดยแอดมิน)", 
+                                   parent=self, icon="warning"):
+                conn = None
+                try:
+                    conn = self.app_container.get_connection()
+                    with conn.cursor() as cursor:
+                        # อัปเดต is_active=0 เพื่อซ่อน และเปลี่ยนสถานะเป็น Cancelled
+                        cursor.execute("UPDATE commissions SET is_active = 0, status = 'Cancelled' WHERE id = %s", (int(record_id),))
+                    conn.commit()
+                    messagebox.showinfo("สำเร็จ", "ยกเลิกรายการเรียบร้อยแล้ว", parent=self)
+                    # โหลดข้อมูลใหม่เพื่อรีเฟรชตาราง
+                    self._populate_history_table()
+                except Exception as e:
+                    if conn: conn.rollback()
+                    messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+                finally:
+                    if conn: self.app_container.release_connection(conn)
+        except Exception as e:
+            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถยกเลิกรายการได้: {e}", parent=self)
 
-            selected_year_str = self.year_var.get()
-            if selected_year_str != "ทุกปี":
-                year_num = int(selected_year_str)
-                where_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
-                params.append(year_num)
+class DeferralActionDialog(CTkToplevel):
+    """หน้าต่างสำหรับ Sale เลือกจัดการรายการที่ HR ขอเลื่อน (Defer)"""
+    def __init__(self, master, app_container, record_data, callback=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.record_data = record_data
+        self.callback = callback
+        
+        so_number = record_data.get('so_number')
+        reason = record_data.get('rejection_reason', '-').replace('HR Request:', '').strip()
+        
+        self.title(f"จัดการรายการขอเลื่อนจ่าย: {so_number}")
+        
+        # --- แก้ไข 1: ขยายขนาดให้สูงขึ้น (จาก 450/650 -> 700) และกว้างขึ้นเล็กน้อย ---
+        self.geometry("550x700")
+        
+        # --- แก้ไข 2: ใช้คำสั่ง attributes("-topmost", True) เพื่อบังคับให้ลอยหน้าสุดเสมอ ---
+        self.attributes("-topmost", True)
+        
+        # --- UI Layout ---
+        main_frame = CTkFrame(self, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # ส่วนแสดงข้อมูล
+        CTkLabel(main_frame, text="⚠️ HR ได้ส่งคำขอ 'เลื่อนจ่าย' รายการนี้", font=CTkFont(size=16, weight="bold"), text_color="#F59E0B").pack(pady=(0, 10))
+        
+        info_frame = CTkFrame(main_frame, fg_color=("gray90", "gray20"))
+        info_frame.pack(fill="x", pady=10)
+        
+        CTkLabel(info_frame, text=f"SO Number: {so_number}", font=CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 2))
+        CTkLabel(info_frame, text=f"ลูกค้า: {record_data.get('customer_name')}", font=CTkFont(size=12)).pack(anchor="w", padx=10, pady=2)
+        CTkLabel(info_frame, text=f"ยอดคอมฯ: {record_data.get('sales_service_amount', 0):,.2f}", font=CTkFont(size=12)).pack(anchor="w", padx=10, pady=(2, 10))
+        
+        CTkLabel(main_frame, text="เหตุผลจาก HR:", font=CTkFont(weight="bold")).pack(anchor="w", pady=(10, 0))
+        reason_box = CTkTextbox(main_frame, height=80, fg_color="transparent", border_width=1) # เพิ่มความสูงกล่องข้อความเล็กน้อย
+        reason_box.insert("1.0", reason)
+        reason_box.configure(state="disabled")
+        reason_box.pack(fill="x", pady=5)
+        
+        CTkLabel(main_frame, text="กรุณาเลือกการดำเนินการ:", font=CTkFont(weight="bold")).pack(anchor="w", pady=(20, 10))
+        
+        # --- ปุ่มทางเลือก 1: ไม่ยอมเลื่อน (รับเงินเลย) ---
+        self.btn_reject = CTkButton(main_frame, text="💸 ยืนยันรับเงินรอบนี้ (ไม่เลื่อน)", 
+                                    command=self._on_reject_deferral,
+                                    fg_color="#10B981", hover_color="#059669", # สีเขียว
+                                    height=45, font=CTkFont(size=14, weight="bold")) # เพิ่มความสูงปุ่ม
+        self.btn_reject.pack(fill="x", pady=5)
+        
+        # --- ปุ่มทางเลือก 2: ยอมเลื่อน (เลือกเดือน) ---
+        defer_frame = CTkFrame(main_frame, fg_color="transparent")
+        defer_frame.pack(fill="x", pady=15) # เพิ่มระยะห่าง
+        
+        CTkLabel(defer_frame, text="หรือ ยอมให้เลื่อนไปเดือน:").pack(side="left")
+        
+        # สร้างตัวเลือกเดือน: เริ่มจากเดือนปัจจุบัน (0) ไปจนถึง 12 เดือนข้างหน้า
+        next_months = []
+        curr = datetime.now()
+        for i in range(0, 13): 
+            next_date = curr + pd.DateOffset(months=i)
+            next_months.append(next_date.strftime("%m/%Y"))
             
-            # --- Base Query Body ---
-            query_body = """
-                FROM commissions c
-                LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
-                LEFT JOIN sales_users su_owner ON c.sale_key = su_owner.sale_key
-                LEFT JOIN commission_payout_logs cr ON c.payout_id = cr.id  
-            """
+        self.target_month_var = tk.StringVar(value=next_months[0]) # Default เดือนปัจจุบัน
+        self.month_menu = CTkOptionMenu(defer_frame, variable=self.target_month_var, values=next_months, width=140)
+        self.month_menu.pack(side="left", padx=10)
+        
+        self.btn_confirm = CTkButton(defer_frame, text="ยืนยันการเลื่อน", 
+                                     command=self._on_confirm_deferral,
+                                     fg_color="#F59E0B", hover_color="#D97706", # สีส้ม
+                                     width=120)
+        self.btn_confirm.pack(side="left")
+
+        # บังคับ Focus มาที่หน้าต่างนี้
+        self.transient(master)
+        self.grab_set()
+        self.focus_force()
+
+    def _on_reject_deferral(self):
+        """Sale กดรับเงินเลย (Reject Deferral) -> สถานะกลับไปเป็น PO Sent (เพื่อให้ HR ตรวจสอบ/เทียบใหม่)"""
+        if not messagebox.askyesno("ยืนยัน", "คุณต้องการรับเงินในรอบนี้ทันที ใช่หรือไม่?\n(รายการจะถูกส่งกลับไปให้ HR ตรวจสอบอีกครั้ง)"):
+            return
             
-            where_string = f"WHERE {' AND '.join(where_clauses)}"
-
-            # Count Query
-            count_query = f"SELECT COUNT(c.id) {query_body} {where_string}"
-            count_df = pd.read_sql_query(count_query, self.pg_engine, params=tuple(params))
-            self.total_rows = count_df.iloc[0, 0] if not count_df.empty else 0
-            self.total_pages = (self.total_rows + self.rows_per_page - 1) // self.rows_per_page
-
-            # Data Query
-            offset = self.current_page * self.rows_per_page
-            data_params = params + [self.rows_per_page, offset]
-
-            data_query = f"""
-                SELECT c.*,
-                    ss.sale_name as support_user_name,
-                    su_owner.sale_name as owner_name,
-                    cr.commission_month AS paid_month, 
-                    cr.commission_year AS paid_year
-                {query_body}
-                {where_string}
-                ORDER BY c.timestamp DESC
-                LIMIT %s OFFSET %s
-            """
+        self._update_status(
+            new_status='PO Sent',  # <--- แก้ไขตรงนี้: เปลี่ยนจาก 'HR Verified' เป็น 'PO Sent'
+            log_msg="Sale Rejected Deferral (Requesting Payment Now)",
+            new_month=None, new_year=None
+        )
+    def _on_confirm_deferral(self):
+        """Sale ยอมเลื่อน (Confirm Deferral) -> สถานะเป็น Deferred + ย้ายเดือน"""
+        target_str = self.target_month_var.get() # "MM/YYYY"
+        try:
+            t_month, t_year = map(int, target_str.split('/'))
             
-            self.df = pd.read_sql_query(data_query, self.pg_engine, params=tuple(data_params))
+            msg = f"คุณยืนยันที่จะเลื่อนการรับเงินรายการนี้ ไปเป็นเดือน {t_month}/{t_year} ใช่หรือไม่?"
+            if not messagebox.askyesno("ยืนยันการเลื่อน", msg):
+                return
 
-            # สร้างชื่อลูกค้า + ผู้คีย์
-            self.df['customer_display'] = self.df.apply(
-                lambda row: f"{row['customer_name']} (คีย์โดย: {row['support_user_name']})" if pd.notna(row['support_user_name']) else f"{row['customer_name']} (คีย์โดย: {row.get('owner_name', 'N/A')})",
-                axis=1
+            self._update_status(
+                new_status='Deferred',
+                log_msg=f"Sale Confirmed Deferral to {t_month}/{t_year}",
+                new_month=t_month, new_year=t_year
             )
+        except ValueError:
+            messagebox.showerror("Error", "รูปแบบเดือนไม่ถูกต้อง")
+
+    def _update_status(self, new_status, log_msg, new_month=None, new_year=None):
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # สร้าง SQL Update
+                sql = "UPDATE commissions SET status = %s, rejection_reason = %s"
+                params = [new_status, log_msg]
+                
+                # ถ้ามีการย้ายเดือน (กรณีเลื่อน) ให้แก้ commission_month/year ด้วย
+                if new_month and new_year:
+                    sql += ", commission_month = %s, commission_year = %s"
+                    params.extend([new_month, new_year])
+                
+                sql += " WHERE id = %s"
+                params.append(self.record_data['id'])
+                
+                cursor.execute(sql, tuple(params))
             
-            self.df['payment_period_display'] = self.df.apply(
-                lambda row: f"{int(row['paid_month'])}/{int(row['paid_year'])}" if pd.notna(row['paid_month']) else "-",
-                axis=1
-            )
-
-            self._hide_loading()
-
-            if self.df.empty and self.current_page == 0:
-                CTkLabel(target_frame, text="ไม่พบข้อมูล").pack(pady=20)
-            else:
-                self._create_styled_treeview(target_frame, self.df)
-
-            self._update_pagination_controls()
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกการตัดสินใจเรียบร้อยแล้ว", parent=self)
+            
+            if self.callback:
+                self.callback() # Refresh หน้าจอประวัติ
+            self.destroy()
 
         except Exception as e:
-            self._hide_loading()
-            traceback.print_exc()
-            messagebox.showerror("Database Error", f"ไม่สามารถโหลดประวัติได้: {e}", parent=self)
-
-    def _create_styled_treeview(self, parent, df):
-        """สร้าง Treeview (เพิ่มคอลัมน์รอบเดือนที่จ่ายถ้าเป็นแท็บ Calculated)"""
-        parent.grid_rowconfigure(0, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
-
-        # กำหนดคอลัมน์พื้นฐาน
-        columns = ['id', 'timestamp', 'status', 'so_number', 'customer_display', 'sales_service_amount', 'shipping_cost']
-        display_columns = ['ID', 'เวลาบันทึก', 'สถานะ', 'SO Number', 'ชื่อลูกค้า (ผู้คีย์)', 'ยอดขาย/บริการ', 'ค่าขนส่ง']
-        
-        # --- [แก้ไข] ถ้าเป็นแท็บ "Calculated" ให้เพิ่มคอลัมน์ "รอบเดือนที่จ่าย" ---
-        if self.active_tab == "calculated":
-            columns.append('payment_period_display')
-            display_columns.append('รอบเดือนที่จ่าย')
-        else:
-            # ถ้าไม่ใช่แท็บ Calculated ให้แสดงเหตุผลตีกลับแทน (เหมือนเดิม)
-            columns.append('rejection_reason')
-            display_columns.append('เหตุผลที่ถูกตีกลับ')
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("History.Treeview.Heading", font=('Roboto', 11, 'bold'), relief="flat", background="#E5E7EB")
-        style.configure("History.Treeview", rowheight=28, font=('Roboto', 11))
-        style.map("History.Treeview", background=[('selected', self.theme.get("primary", "#3B82F6"))])
-        
-        self.tree = ttk.Treeview(parent, columns=columns, show='headings', style="History.Treeview")
-        
-        # Config Tags สี
-        self.tree.tag_configure('Draft', background='#FEFCE8') 
-        self.tree.tag_configure('Rejected', background='#FEF2F2')
-        self.tree.tag_configure('Submitted', background='#F0FDF4')
-        self.tree.tag_configure('Paid', background='#DCFCE7') # สีเขียวเข้มขึ้นนิดหน่อยสำหรับ Paid
-        self.tree.tag_configure('Default', background='white')
-
-        # ตั้งค่า Column Headers
-        for i, col_id in enumerate(columns):
-            width = 100
-            anchor = 'w'
-            if col_id in ['id', 'status']: width = 80
-            elif col_id in ['sales_service_amount', 'shipping_cost']: width = 120; anchor = 'e'
-            elif col_id == 'customer_display': width = 300
-            elif col_id == 'so_number': width = 150
-            elif col_id == 'timestamp': width = 160
-            elif col_id == 'rejection_reason': width = 250
-            elif col_id == 'payment_period_display': width = 120; anchor = 'center' # [NEW]
-            
-            self.tree.heading(col_id, text=display_columns[i])
-            self.tree.column(col_id, anchor=anchor, width=width)
-        
-        # Insert Data
-        for index, row in df.iterrows():
-            status = row['status']
-            tag = 'Default'
-            
-            if 'Reject' in status or 'Defer' in status: tag = 'Rejected'
-            elif status in ['Original', 'Edited', 'Draft']: tag = 'Draft'
-            elif status in ['Paid', 'HR Verified']: tag = 'Paid'
-            else: tag = 'Submitted'
-            
-            values = []
-            for col_name in columns:
-                value = row.get(col_name)
-                if pd.notna(value):
-                    if col_name in ['sales_service_amount', 'shipping_cost'] and isinstance(value, (float, np.floating, int)):
-                        values.append(f"{value:,.2f}")
-                    elif isinstance(value, (datetime, pd.Timestamp)):
-                        values.append(value.strftime('%Y-%m-%d %H:%M'))
-                    else:
-                        values.append(str(value))
-                else:
-                    values.append("")
-            self.tree.insert("", "end", values=values, tags=(tag,), iid=str(row['id']))
-        
-        v_scroll = ttk.Scrollbar(parent, orient="vertical", command=self.tree.yview)
-        h_scroll = ttk.Scrollbar(parent, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        
-        self.tree.grid(row=0, column=0, sticky='nsew')
-        v_scroll.grid(row=0, column=1, sticky='ns')
-        h_scroll.grid(row=1, column=0, sticky='ew')
-
-        if self.on_row_double_click_callback:
-            self.tree.bind("<Double-1>", lambda event: self._on_tree_row_double_click(event, self.tree))
-
-    def _update_pagination_controls(self):
-        """อัปเดตสถานะของปุ่ม Pagination"""
-        self.page_label.configure(text=f"Page {self.current_page + 1} / {max(1, self.total_pages)}")
-        self.prev_button.configure(state="normal" if self.current_page > 0 else "disabled")
-        self.next_button.configure(state="normal" if self.current_page < self.total_pages - 1 else "disabled")
-
-    def _next_page(self):
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            self._populate_history_table()
-
-    def _prev_page(self):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self._populate_history_table()
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
 
 class SOPopupWindow(CTkToplevel):
     def __init__(self, master, app_container, sales_data, so_shared_vars, sale_theme, on_save_callback=None):

@@ -2512,7 +2512,7 @@ class HRScreen(CTkFrame):
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
                 WHERE c.is_active = 1 
-                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
+                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled', 'Defer Requested')
 """
             # --- END: สิ้นสุดการแก้ไข Query ---
             params = []
@@ -3065,7 +3065,7 @@ class HRScreen(CTkFrame):
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
                 WHERE c.is_active = 1 
-                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')
+                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled', 'Defer Requested')
             """
             params = []
 
@@ -3321,6 +3321,9 @@ class HRScreen(CTkFrame):
             print("="*25 + "\n")
 
             df_for_calc = self.current_comm_df.copy()
+            
+            # --- แก้ไข: แปลงค่าว่าง (None/NaN) ให้เป็น 0.0 เสมอก่อนส่งไปคำนวณ ---
+            df_for_calc['final_sales_amount'] = pd.to_numeric(df_for_calc['final_sales_amount'], errors='coerce').fillna(0.0)
             df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
             
             # <<< START: แก้ไข Logic การดึงค่าดำเนินการ (ฉบับแก้ไขปัญหาเปลี่ยนหน้าแล้วเป็น 0) >>>
@@ -3512,7 +3515,9 @@ class HRScreen(CTkFrame):
         plan = self.sales_user_info.get(sale_key, {}).get('plan', 'Plan A')
 
         df_for_final_calc = self.current_comm_df.copy()
+        df_for_final_calc['final_sales_amount'] = pd.to_numeric(df_for_final_calc['final_sales_amount'], errors='coerce').fillna(0.0)
         df_for_final_calc['total_revenue'] = df_for_final_calc['final_sales_amount']
+        # -----------------------------------------------------------------
 
         final_result = business_logic.calculate_monthly_commission(
             plan_name=plan,

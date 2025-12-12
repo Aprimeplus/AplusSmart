@@ -13,7 +13,7 @@ from export_utils import export_commission_details_to_excel, export_payout_so_li
 import psycopg2.errors
 import psycopg2.extras
 import numpy as np
-
+from utils import RejectionReasonDialog
 from sqlalchemy import create_engine
 from history_windows import SOPopupWindow
 
@@ -22,21 +22,27 @@ class SOPopupWindow(CTkToplevel):
     def __init__(self, master, app_container, sales_data, so_shared_vars, sale_theme, on_save_callback=None):
         super().__init__(master)
         self.master = master
-        self.app_container = app_container # <-- รับ app_container
+        self.app_container = app_container 
         self.sales_data = sales_data
         self.original_so_number = sales_data.get('so_number')
         self.so_shared_vars = so_shared_vars
         self.sale_theme = sale_theme
-        self.on_save_callback = on_save_callback # <-- รับ callback
+        self.on_save_callback = on_save_callback
         
         self.popup_widgets = {}
         self.trace_ids_for_so_calc = []
-        self.so_shared_vars['relocation_cost_vat_option_var'] = tk.StringVar(value="VAT") # <--- แก้ไขโดยการเพิ่ม _cost_
+        
+        # Init StringVars ที่จำเป็น (ป้องกัน Error กรณีส่งมาไม่ครบ)
+        self.so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['other_service_fee_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
+        self.so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
         self.so_shared_vars['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
-
+        self.so_shared_vars['relocation_cost_vat_option_var'] = tk.StringVar(value="VAT")
 
         self.title(f"ข้อมูล Sales Order (SO: {sales_data.get('so_number', 'N/A')})")
-        self.geometry("700x800")
+        self.geometry("750x850") # ปรับขนาดให้พอดี
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -52,19 +58,73 @@ class SOPopupWindow(CTkToplevel):
         self._so_bind_events()
         self.after(100, lambda: self._populate_so_form(self.sales_data))
 
+        # --- Action Buttons (Bottom) ---
         button_frame = CTkFrame(main_frame, fg_color="transparent")
-        button_frame.grid(row=1, column=0, pady=(5, 15))
+        button_frame.grid(row=1, column=0, pady=(5, 15), padx=10, sticky="ew")
+        button_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
-        save_button = CTkButton(button_frame, text="บันทึก", command=self._save_so_changes, fg_color="#16A34A", hover_color="#15803D")
-        save_button.pack(side="left", padx=10)
+        # 1. ปุ่มขอเลื่อนจ่าย (แสดงเฉพาะสถานะ HR Verified)
+        if self.sales_data.get('status') == 'HR Verified':
+            defer_button = CTkButton(button_frame, text="⏳ ขอเลื่อนจ่าย (Request Defer)", 
+                                     command=self._request_defer_so, 
+                                     fg_color="#F97316", hover_color="#C2410C", font=CTkFont(weight="bold"))
+            defer_button.grid(row=0, column=0, padx=5, sticky="ew")
+        
+        # 2. ปุ่มบันทึก
+        save_button = CTkButton(button_frame, text="บันทึก", command=self._save_so_changes, 
+                                fg_color="#16A34A", hover_color="#15803D", font=CTkFont(weight="bold"))
+        save_button.grid(row=0, column=1, padx=5, sticky="ew")
 
+        # 3. ปุ่มยกเลิก
         close_button = CTkButton(button_frame, text="ยกเลิก", command=self._on_popup_close, fg_color="gray")
-        close_button.pack(side="left", padx=10)
+        close_button.grid(row=0, column=2, padx=5, sticky="ew")
 
         self.protocol("WM_DELETE_WINDOW", self._on_popup_close)
         self.after(100, self._position_window)
         self.transient(master)
         self.grab_set()
+
+    def _request_defer_so(self):
+        if not messagebox.askyesno("ยืนยัน", "ต้องการส่งคำขอเลื่อนจ่าย (Defer Request) ให้ Sale พิจารณาใช่หรือไม่?"):
+            return
+
+        # 1. ให้ HR ใส่เหตุผล
+        dialog = RejectionReasonDialog(self)
+        self.wait_window(dialog)
+        reason = getattr(dialog, '_reason_string', None)
+        
+        if reason is None: return # กดยกเลิก
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # 2. อัปเดตสถานะเป็น 'Defer Requested'
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET status = 'Defer Requested', 
+                        rejection_reason = %s 
+                    WHERE id = %s
+                """, (f"HR Request: {reason}", self.sales_data['id']))
+                
+                # 3. แจ้งเตือน Sale (Optional: ถ้ามีระบบ Notification)
+                sale_key = self.sales_data.get('sale_key')
+                if sale_key:
+                    msg = f"HR ขอเลื่อนจ่าย SO: {self.sales_data.get('so_number')}\nเหตุผล: {reason}"
+                    cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read) VALUES (%s, %s, FALSE)", (sale_key, msg))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "ส่งคำขอเลื่อนจ่ายเรียบร้อยแล้ว\n(สถานะเปลี่ยนเป็น Defer Requested)", parent=self)
+            
+            if self.on_save_callback:
+                self.on_save_callback()
+            self.destroy()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
     
     def _position_window(self):
         """
@@ -1743,68 +1803,51 @@ class HRVerificationWindow(CTkToplevel):
     
     def _defer_so(self):
         """
-        (เวอร์ชันแก้ไข: ไม่ต้องส่งกลับ Sale) เลื่อน SO ไปเดือนถัดไป โดยคงสถานะรอตรวจสอบไว้ ('PO Sent')
+        (แก้ไขใหม่) ส่งคำขอเลื่อนจ่าย (Defer Request) ให้ Sale พิจารณา (แทนการบังคับเลื่อน)
         """
         so_number = self.system_data.get('so_number')
-        so_id = self.system_data.get('id')
-        current_month = self.system_data.get('commission_month')
-        current_year = self.system_data.get('commission_year')
-        sale_key_to_notify = self.system_data.get('sale_key') 
-
-        # 1. คำนวณเดือนและปีถัดไป
-        next_month = current_month + 1
-        next_year = current_year
-        if next_month > 12:
-            next_month = 1
-            next_year += 1
-
-        # 2. ถามเหตุผลในการเลื่อน
-        dialog = CTkInputDialog(text=f"กรุณาระบุเหตุผลที่เลื่อน SO: {so_number}", title=f"เลื่อน SO ไปเดือน {next_month}/{next_year}")
-        reason = dialog.get_input()
         
-        if not reason or not reason.strip():
-            return
-
-        # 3. ยืนยันการทำงาน
-        msg = (f"คุณต้องการเลื่อน SO: {so_number} ไปคำนวณค่าคอมในเดือน {next_month}/{next_year} ใช่หรือไม่?\n\n"
-               "SO นี้จะหายไปจากหน้าเปรียบเทียบของเดือนปัจจุบัน และไปโผล่ในเดือนถัดไปแทน")
+        # 1. ให้ HR ระบุเหตุผล (ใช้ RejectionReasonDialog หรือ InputDialog ก็ได้)
+        # แนะนำใช้ RejectionReasonDialog เพื่อความสวยงามและ UX ที่เหมือนกัน
+        from utils import RejectionReasonDialog # ตรวจสอบว่า import แล้ว
+        dialog = RejectionReasonDialog(self)
+        self.wait_window(dialog)
+        reason = getattr(dialog, '_reason_string', None)
         
-        if not messagebox.askyesno("ยืนยันการเลื่อน SO", msg, parent=self):
+        if reason is None: return # กดยกเลิก
+
+        # ถามยืนยันอีกครั้ง
+        if not messagebox.askyesno("ยืนยัน", f"ต้องการส่งคำขอเลื่อนจ่าย SO: {so_number} ให้ฝ่ายขายพิจารณาใช่หรือไม่?"):
             return
 
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 4. ## แก้ไขคำสั่ง UPDATE ##
-                #    - เปลี่ยนเดือน/ปี เป็นเดือนหน้า
-                #    - ตั้งสถานะเป็น 'PO Sent' (เพื่อให้ยังคงอยู่ในสถานะรอ HR ตรวจสอบในรอบหน้า ไม่เด้งกลับไปหา Sale)
+                # 2. อัปเดตสถานะเป็น 'Defer Requested' 
+                # (ยังไม่เปลี่ยนเดือน/ปี เพราะต้องรอ Sale เลือกเดือนเอง)
                 cursor.execute("""
                     UPDATE commissions 
                     SET 
-                        status = 'PO Sent', 
-                        commission_month = %s, 
-                        commission_year = %s,
+                        status = 'Defer Requested', 
                         rejection_reason = %s
                     WHERE id = %s
-                """, (next_month, next_year, f"Deferred to {next_month}/{next_year}: {reason.strip()}", so_id))
+                """, (f"HR Request: {reason.strip()}", self.system_data['id']))
                 
-                # 5. สร้าง Notification แจ้งเตือน Sale (แต่ไม่ต้องให้เขากดส่งใหม่)
-                message = f"SO: {so_number} ถูกเลื่อนไปคิดค่าคอมเดือน {next_month}/{next_year} โดย HR\n(ไม่ต้องแก้ไขข้อมูล ระบบดำเนินการให้อัตโนมัติ)\nเหตุผล: {reason.strip()}"
-                cursor.execute("""
-                    INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id)
-                    VALUES (%s, %s, FALSE, %s)
-                """, (sale_key_to_notify, message, so_id))
+                # 3. แจ้งเตือน Sale
+                sale_key = self.system_data.get('sale_key')
+                if sale_key:
+                    msg = f"HR ขอเลื่อนจ่าย SO: {so_number}\nเหตุผล: {reason.strip()}\n(กรุณาไปที่เมนู 'งานของฉัน' เพื่อตอบรับหรือปฏิเสธ)"
+                    cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)", (sale_key, msg, self.system_data['id']))
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", f"เลื่อน SO: {so_number} ไปยังเดือน {next_month}/{next_year} เรียบร้อยแล้ว", parent=self.master)
+            messagebox.showinfo("สำเร็จ", f"ส่งคำขอเลื่อนจ่าย SO: {so_number} ให้ฝ่ายขายพิจารณาเรียบร้อยแล้ว", parent=self.master)
             
-            self._on_close() # ปิดหน้าต่างและ Refresh
+            self._on_close() # ปิดหน้าต่างและ Refresh หน้าหลัก
 
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
-            traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
     

@@ -10,10 +10,11 @@ import traceback
 import psycopg2.errors
 import psycopg2.extras
 import os 
-
+from history_windows import PurchaseDetailWindow, DeferralActionDialog
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 import utils
 from export_utils import DateRangeDialog
+from tkinter import ttk
 
 class PaymentUpdateWindow(CTkToplevel):
     """หน้าต่าง Pop-up สำหรับอัปเดตข้อมูลการชำระเงินโดยเฉพาะ"""
@@ -122,42 +123,188 @@ class SalesTasksWindow(CTkToplevel):
         self.sale_key = sale_key
         
         self.title("งานของฉัน (My Tasks)")
-        self.geometry("900x600")
+        
+        # --- ปรับขนาดหน้าต่างให้ใหญ่ขึ้น (1200x800) ---
+        self.geometry("1200x650")
+        
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
+        # --- Header Section ---
         header = CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
-        CTkLabel(header, text="งานของฉัน", font=CTkFont(size=18, weight="bold")).pack(side="left")
-        CTkButton(header, text="Refresh", command=self.load_tasks, width=80).pack(side="right")
+        
+        # ปรับขนาดฟอนต์หัวข้อและปุ่มให้เหมาะสมกับหน้าจอที่ใหญ่ขึ้น
+        CTkLabel(header, text="งานของฉัน", font=CTkFont(size=20, weight="bold")).pack(side="left")
+        CTkButton(header, text="Refresh", command=self.load_tasks, width=100, height=35).pack(side="right")
 
+        # --- Tab View ---
         self.task_tab_view = CTkTabview(self, corner_radius=10)
         self.task_tab_view.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         
-        # --- START: เพิ่มแท็บใหม่สำหรับยอดค้างชำระ ---
+        # 1. แท็บ SO ค้างชำระ
         self.payment_due_tab = self.task_tab_view.add("⚠️ SO ค้างชำระ (แก้ไขยอดโอน)")
-        # --- END ---
         
+        # 2. แท็บงานที่ถูกตีกลับ
         self.rejected_tab = self.task_tab_view.add("งานที่ถูกตีกลับ (Rejected)")
+        
+        # 3. แท็บฉบับร่าง
         self.draft_tab = self.task_tab_view.add("ฉบับร่าง (ยังไม่นำส่ง)")
         
-        # --- START: เพิ่ม Frame สำหรับแท็บใหม่ ---
+        # 4. แท็บติดตามสถานะค่าคอมฯ (Tracking)
+        self.comm_status_tab = self.task_tab_view.add("📊 ติดตามค่าคอมฯ (Tracking)")
+        
+        # --- Create Frames for Each Tab ---
+
+        # Frame 1: Payment Due (ใช้ Scrollable)
         self.payment_due_frame = CTkScrollableFrame(self.payment_due_tab, label_text="รายการที่ยอดโอนชำระไม่ครบ (แก้ไขยอดโอนแล้วกดบันทึก)")
         self.payment_due_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        # --- END ---
 
-        self.rejected_frame = CTkScrollableFrame(self.rejected_tab, label_text="รายการที่ต้องแก้ไข")
+        # Frame 2: Rejected / Deferred (ใช้ Scrollable)
+        self.rejected_frame = CTkScrollableFrame(self.rejected_tab, label_text="รายการที่ต้องแก้ไข หรือ ตัดสินใจ")
         self.rejected_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
+        # Frame 3: Drafts (ใช้ Scrollable)
         self.draft_frame = CTkScrollableFrame(self.draft_tab, label_text="ดับเบิลคลิกรายการเพื่อแก้ไข/ทำต่อ")
         self.draft_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
+        # Frame 4: Commission Tracking
+        # [สำคัญ] ใช้ CTkFrame ธรรมดา (ไม่ Scrollable) เพื่อตรึงหัวข้อ และให้ตารางมี Scrollbar ของตัวเอง
+        self.comm_status_frame = CTkFrame(self.comm_status_tab, fg_color="transparent")
+        self.comm_status_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Setup UI ภายในแท็บ Tracking
+        self._setup_commission_status_tab()
+        
+        # --- Final Steps ---
         self.after(50, self.load_tasks)
         self.transient(master)
         self.grab_set()
     
+    def _setup_commission_status_tab(self):
+        """สร้าง UI สำหรับหน้าติดตามค่าคอมมิชชั่น พร้อมตัวกรองเดือน/ปี (เวอร์ชันปรับขนาดตารางให้เล็กลง)"""
+        
+        # --- กำหนด Style สำหรับตารางหน้านี้โดยเฉพาะ ---
+        style = ttk.Style()
+        style.theme_use("clam")
+        
+        # คงขนาดฟอนต์และความสูงแถวไว้เพื่อให้ "อ่านง่าย" เหมือนเดิม
+        style.configure("Tracking.Treeview", 
+                        font=('Segoe UI', 14),      
+                        rowheight=40,               
+                        foreground="black",         
+                        background="white")
+        
+        style.configure("Tracking.Treeview.Heading", 
+                        font=('Segoe UI', 16, 'bold'), 
+                        padding=(5, 10))
+
+        # --- 1. ส่วนตัวกรอง (Filter) ---
+        filter_frame = CTkFrame(self.comm_status_frame, fg_color="transparent")
+        filter_frame.pack(fill="x", padx=10, pady=(5, 5))
+        
+        CTkLabel(filter_frame, text="เลือกเดือนที่ต้องการดู:", font=CTkFont(size=16)).pack(side="left", padx=(0, 5))
+
+        current_date = datetime.now()
+        thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        
+        try:
+            default_month = thai_months[current_date.month - 1]
+        except IndexError:
+            default_month = thai_months[0]
+            
+        self.track_month_var = tk.StringVar(value=default_month)
+        self.track_year_var = tk.StringVar(value=str(current_date.year + 543))
+
+        month_menu = CTkOptionMenu(filter_frame, variable=self.track_month_var, values=thai_months, width=140, font=CTkFont(size=14))
+        month_menu.pack(side="left", padx=5)
+
+        year_list = [str(y + 543) for y in range(current_date.year - 2, current_date.year + 2)]
+        year_menu = CTkOptionMenu(filter_frame, variable=self.track_year_var, values=year_list, width=100, font=CTkFont(size=14))
+        year_menu.pack(side="left", padx=5)
+
+        btn_search = CTkButton(filter_frame, text="ค้นหา", command=self._load_commission_status, width=100, font=CTkFont(size=14, weight="bold"))
+        btn_search.pack(side="left", padx=10)
+
+        # ========================================================================================
+        
+        # --- 2. ส่วนตารางรายการที่ได้ค่าคอมฯ (บน) ---
+        top_container = CTkFrame(self.comm_status_frame, fg_color="transparent")
+        top_container.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        self.comm_title_label = CTkLabel(top_container, 
+                           text="รายการที่ถูกคิดค่าคอมมิชชั่น (กำลังโหลด...)", 
+                           font=CTkFont(size=18, weight="bold")) 
+        self.comm_title_label.pack(anchor="w", pady=(0, 5))
+
+        tree_frame_1 = CTkFrame(top_container, fg_color="transparent")
+        tree_frame_1.pack(fill="both", expand=True)
+
+        columns_comm = ("SO Number", "ลูกค้า", "ยอดขาย", "สถานะ")
+        
+        # [แก้ไข] ลด height จาก 15 เหลือ 10 แถว
+        self.tree_comm = ttk.Treeview(tree_frame_1, columns=columns_comm, show="headings", style="Tracking.Treeview", height=10)
+        
+        vsb_1 = ttk.Scrollbar(tree_frame_1, orient="vertical", command=self.tree_comm.yview)
+        self.tree_comm.configure(yscrollcommand=vsb_1.set)
+        
+        self.tree_comm.heading("SO Number", text="SO Number")
+        self.tree_comm.heading("ลูกค้า", text="ลูกค้า")
+        self.tree_comm.heading("ยอดขาย", text="ยอดขายสุทธิ")
+        self.tree_comm.heading("สถานะ", text="สถานะ")
+        
+        self.tree_comm.column("SO Number", width=180)
+        self.tree_comm.column("ลูกค้า", width=500)
+        self.tree_comm.column("ยอดขาย", width=150, anchor="e")
+        self.tree_comm.column("สถานะ", width=150, anchor="center")
+        
+        self.tree_comm.pack(side="left", fill="both", expand=True)
+        vsb_1.pack(side="right", fill="y")
+
+
+        # --- 3. ส่วนรายการที่ถูกเลื่อน (Deferred) (ล่าง) ---
+        bottom_container = CTkFrame(self.comm_status_frame, fg_color="transparent")
+        bottom_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.defer_title_label = CTkLabel(bottom_container, 
+                           text="รายการที่ถูกเลื่อน (Deferred SOs) - กำลังโหลด...", 
+                           font=CTkFont(size=18, weight="bold"))
+        self.defer_title_label.pack(anchor="w", pady=(10, 5))
+
+        tree_frame_2 = CTkFrame(bottom_container, fg_color="transparent")
+        tree_frame_2.pack(fill="both", expand=True)
+
+        columns_defer = ("SO Number", "ลูกค้า", "เลื่อนไปเดือน", "เหตุผล")
+        
+        # [แก้ไข] ลด height จาก 8 เหลือ 5 แถว
+        self.tree_defer = ttk.Treeview(tree_frame_2, columns=columns_defer, show="headings", style="Tracking.Treeview", height=5)
+        
+        vsb_2 = ttk.Scrollbar(tree_frame_2, orient="vertical", command=self.tree_defer.yview)
+        self.tree_defer.configure(yscrollcommand=vsb_2.set)
+        
+        self.tree_defer.heading("SO Number", text="SO Number")
+        self.tree_defer.heading("ลูกค้า", text="ลูกค้า")
+        self.tree_defer.heading("เลื่อนไปเดือน", text="🎯 เลื่อนไปเดือน")
+        self.tree_defer.heading("เหตุผล", text="เหตุผล")
+        
+        self.tree_defer.column("SO Number", width=180)
+        self.tree_defer.column("ลูกค้า", width=400)
+        self.tree_defer.column("เลื่อนไปเดือน", width=180, anchor="center")
+        self.tree_defer.column("เหตุผล", width=350)
+        
+        self.tree_defer.pack(side="left", fill="both", expand=True)
+        vsb_2.pack(side="right", fill="y")
+
+    def _open_deferral_dialog(self, row_data):
+        """เปิดหน้าต่างให้ Sale ตัดสินใจเรื่องการเลื่อนจ่าย (Defer)"""
+        # แปลง row_data เป็น dict ถ้าจำเป็น
+        record_data = row_data.to_dict() if hasattr(row_data, 'to_dict') else row_data
+        
+        # เปิด Dialog โดยส่ง callback เป็น self.load_tasks เพื่อให้รีเฟรชหน้าจอหลังจากปิด
+        DeferralActionDialog(self, self.app_container, record_data, callback=self.load_tasks)
+
     def _load_payment_due_tasks(self):
         """(ฉบับแก้ไข) โหลด SO ที่มียอดโอนขาดเท่านั้น"""
         for widget in self.payment_due_frame.winfo_children():
@@ -234,43 +381,158 @@ class SalesTasksWindow(CTkToplevel):
         self.destroy()
 
     def load_tasks(self):
-        self._load_payment_due_tasks() # <-- เพิ่มบรรทัดนี้
+        self._load_payment_due_tasks()
         self._load_rejected_tasks()
         self._load_draft_tasks()
+        self._load_commission_status()
+
+    # 2. เพิ่มฟังก์ชันโหลดข้อมูล
+    def _load_commission_status(self):
+        """โหลดข้อมูลใส่ตารางติดตามค่าคอมฯ (เวอร์ชันสำหรับตารางที่ไม่มี Margin)"""
+        # ล้างข้อมูลเก่า
+        for item in self.tree_comm.get_children(): self.tree_comm.delete(item)
+        for item in self.tree_defer.get_children(): self.tree_defer.delete(item)
+        
+        try:
+            thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+            selected_month_str = self.track_month_var.get()
+            selected_year_str = self.track_year_var.get()
+
+            target_month = thai_months.index(selected_month_str) + 1
+            target_year = int(selected_year_str) - 543
+        except:
+            target_month = datetime.now().month
+            target_year = datetime.now().year
+            selected_month_str = thai_months[target_month-1]
+            selected_year_str = str(target_year + 543)
+
+        try:
+            # --- 1. ตารางบน: Commissioned SOs ---
+            # ดึง sales_service_amount มาเผื่อไว้แสดงผลกรณีที่ยังไม่มี final
+            query_comm = """
+                SELECT so_number, customer_name, final_sales_amount, sales_service_amount, status 
+                FROM commissions 
+                WHERE sale_key = %s 
+                  AND status NOT IN ('Draft', 'Cancelled', 'Deferred')
+                  AND commission_month = %s 
+                  AND commission_year = %s
+                  AND is_active = 1
+                ORDER BY so_number DESC
+            """
+            df_comm = pd.read_sql_query(query_comm, self.app_container.pg_engine, params=(self.sale_key, target_month, target_year))
+            
+            count_comm = len(df_comm)
+            self.comm_title_label.configure(
+                text=f"รายการค่าคอมมิชชั่น (เดือน {selected_month_str} {selected_year_str})  —  รวม {count_comm} รายการ"
+            )
+            
+            for _, row in df_comm.iterrows():
+                # Logic การแสดงยอดเงิน: ถ้ามี Final ให้ใช้ Final, ถ้าไม่มีให้ใช้ยอดเบื้องต้น
+                if pd.notna(row['final_sales_amount']) and row['final_sales_amount'] > 0:
+                    sales_val = row['final_sales_amount']
+                else:
+                    sales_val = row['sales_service_amount']
+                
+                sales_str = f"{sales_val:,.2f}" if pd.notna(sales_val) else "0.00"
+                
+                # บังคับ Tag เป็นสีดำ (ตามที่คุณต้องการ)
+                tag = 'normal_text'
+                self.tree_comm.tag_configure('normal_text', foreground="black")
+
+                # [สำคัญ] ใส่ข้อมูลแค่ 4 ช่อง (SO, ลูกค้า, ยอดขาย, สถานะ) ไม่ใส่ Margin
+                self.tree_comm.insert("", "end", values=(
+                    row['so_number'], 
+                    row['customer_name'], 
+                    sales_str, 
+                    row['status']
+                ), tags=(tag,))
+
+            # --- 2. ตารางล่าง: Deferred SOs ---
+            query_defer = """
+                SELECT so_number, customer_name, commission_month, commission_year, rejection_reason 
+                FROM commissions 
+                WHERE sale_key = %s 
+                  AND status = 'Deferred'
+                  AND is_active = 1
+                ORDER BY commission_year, commission_month
+            """
+            df_defer = pd.read_sql_query(query_defer, self.app_container.pg_engine, params=(self.sale_key,))
+            
+            count_defer = len(df_defer)
+            self.defer_title_label.configure(
+                text=f"รายการที่ถูกเลื่อน (Deferred SOs - ทั้งหมดที่ค้างอยู่)  —  รวม {count_defer} รายการ"
+            )
+            
+            for _, row in df_defer.iterrows():
+                m = int(row['commission_month'])
+                y = int(row['commission_year']) + 543
+                month_str = thai_months[m-1]
+                target_period = f"{month_str} {y}"
+                reason = row['rejection_reason'] or "-"
+                
+                self.tree_defer.tag_configure('normal_text', foreground="black")
+
+                self.tree_defer.insert("", "end", values=(
+                    row['so_number'], row['customer_name'], target_period, reason
+                ), tags=('normal_text',))
+
+        except Exception as e:
+            print(f"Error loading commission status: {e}")
 
     def _load_rejected_tasks(self):
         for widget in self.rejected_frame.winfo_children(): widget.destroy()
         try:
-            # <<< START: แก้ไข Query ให้รองรับสถานะ Deferred ด้วย >>>
+            # 1. แก้ไข Query: เพิ่ม 'Defer Requested' เข้าไปในรายการสถานะ
             query = """
                 SELECT * FROM commissions 
-                WHERE sale_key = %s AND status IN ('Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR', 'Draft') AND is_active = 1 
+                WHERE sale_key = %s 
+                AND status IN ('Rejected by SM', 'Rejected by HR', 'Deferred by SM', 'Deferred by HR', 'Draft', 'Defer Requested') 
+                AND is_active = 1 
                 ORDER BY timestamp DESC
             """
-            # <<< END >>>
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.sale_key,))
+            
             if df.empty:
-                CTkLabel(self.rejected_frame, text="ไม่มีงานที่ถูกตีกลับหรือถูกเลื่อน").pack(pady=20)
+                CTkLabel(self.rejected_frame, text="ไม่มีงานที่ต้องดำเนินการ").pack(pady=20)
                 return
             
             for _, row in df.iterrows():
-                # <<< START: แก้ไขการแสดงผล Card ให้แยกสีและข้อความ >>>
                 status = row['status']
-                if 'Reject' in status:
-                    card_color = "#FEF2F2" # แดงอ่อน
+                
+                # 2. ตั้งค่าสีและข้อความตามสถานะ
+                if status == 'Defer Requested':
+                    # กรณี HR ขอเลื่อน: สีส้ม, ปุ่มเป็น "ตอบรับ/ปฏิเสธ"
+                    card_color = "#FFF7ED" # สีส้มอ่อน
+                    reason_color = "#C2410C" # สีส้มเข้ม
+                    status_prefix = "HR ขอเลื่อนจ่าย"
+                    button_text = "ตัดสินใจ (Action)"
+                    # เรียกใช้ Dialog ใหม่ที่เราเพิ่งสร้าง
+                    button_cmd = lambda r=row: self._open_deferral_dialog(r)
+                    
+                elif 'Reject' in status:
+                    card_color = "#FEF2F2" # สีแดงอ่อน
                     reason_color = "#B91C1C"
                     status_prefix = "ตีกลับ"
-                elif 'Defer' in status: # Deferred
-                    card_color = "#FEFCE8" # เหลืองอ่อน
+                    button_text = "แก้ไข"
+                    button_cmd = lambda r=row: self._edit_and_close(r)
+                    
+                elif 'Defer' in status: # Deferred (รายการที่เลื่อนไปแล้ว แต่อาจจะค้างอยู่)
+                    card_color = "#FEFCE8" 
                     reason_color = "#A16207"
-                    status_prefix = "เลื่อน"
-                else: # ถ้าไม่ใช่ Reject หรือ Defer ก็ต้องเป็น Draft
-                    card_color = "#FEF2F2" # แดงอ่อน (เหมือนตีกลับ)
-                    reason_color = "#B91C1C"
-                    status_prefix = "ตีกลับ (โดย Manager)"
+                    status_prefix = "ถูกเลื่อน (Deferred)"
+                    button_text = "ดูรายละเอียด"
+                    button_cmd = lambda r=row: self._edit_and_close(r)
+                    
+                else: # Draft
+                    card_color = "#F3F4F6" 
+                    reason_color = "gray"
+                    status_prefix = "ฉบับร่าง"
+                    button_text = "แก้ไข"
+                    button_cmd = lambda r=row: self._edit_and_close(r)
+                
+                # ... (ส่วนการสร้าง Card UI ให้คงเดิม แต่เปลี่ยนการเรียกใช้ตัวแปร) ...
                 
                 card = CTkFrame(self.rejected_frame, border_width=1, fg_color=card_color)
-                # ... (โค้ดสร้าง Card ส่วนที่เหลือเหมือนเดิม) ...
                 card.pack(fill="x", padx=5, pady=4)
                 card.grid_columnconfigure(0, weight=1)
 
@@ -280,17 +542,17 @@ class SalesTasksWindow(CTkToplevel):
                 info = f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']}"
                 CTkLabel(top_frame, text=info, font=CTkFont(size=14, weight="bold")).pack(side="left")
 
-                edit_button = CTkButton(top_frame, text="แก้ไข", width=80, command=lambda r=row: self._edit_and_close(r))
+                # ใช้ button_text และ button_cmd ที่เรากำหนดไว้ข้างบน
+                edit_button = CTkButton(top_frame, text=button_text, width=100, command=button_cmd)
                 edit_button.pack(side="right")
                 
-                rejected_by = "SM" if "SM" in status else "HR"
-                reason_text = row['rejection_reason'] or "ไม่มีเหตุผลระบุ"
-                reason_label = CTkLabel(card, text=f"เหตุผลที่{status_prefix} (จาก {rejected_by}): {reason_text}", text_color=reason_color, wraplength=700, justify="left", anchor="w")
+                # แสดงเหตุผล
+                reason_text = row['rejection_reason'] or "-"
+                reason_label = CTkLabel(card, text=f"{status_prefix}: {reason_text}", text_color=reason_color, wraplength=700, justify="left", anchor="w")
                 reason_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 5))
-                # <<< END >>>
 
         except Exception as e:
-            messagebox.showerror("Error", f"ไม่สามารถโหลดงานที่ถูกตีกลับได้: {e}", parent=self)
+            messagebox.showerror("Error", f"ไม่สามารถโหลดรายการได้: {e}", parent=self)
 
     def _load_draft_tasks(self):
         for widget in self.draft_frame.winfo_children(): widget.destroy()
@@ -335,7 +597,7 @@ class SubmitSODialog(CTkToplevel):
         self.checkbox_list = []
 
         self.title("เลือกรายการ SO ที่จะนำส่ง")
-        self.geometry("700x500")
+        self.geometry("500x500")
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -537,19 +799,28 @@ class CommissionApp(CTkFrame):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) FROM commissions WHERE sale_key = %s AND status = 'Rejected by SM' AND is_active = 1", (self.sale_key,))
-                rejected_count = cursor.fetchone()[0]
+                # --- แก้ไขจุดนี้: เพิ่มสถานะ 'Rejected by HR' และ 'Defer Requested' เข้าไปใน Query ---
+                cursor.execute("""
+                    SELECT COUNT(*) FROM commissions 
+                    WHERE sale_key = %s 
+                    AND status IN ('Rejected by SM', 'Rejected by HR', 'Defer Requested') 
+                    AND is_active = 1
+                """, (self.sale_key,))
+                
+                rejected_and_defer_count = cursor.fetchone()[0]
+                
+                # ส่วนนับ Draft (Original, Edited) เหมือนเดิม
                 cursor.execute("SELECT COUNT(*) FROM commissions WHERE sale_key = %s AND status IN ('Original', 'Edited') AND is_active = 1", (self.sale_key,))
                 draft_count = cursor.fetchone()[0]
             
-            total_tasks = rejected_count + draft_count
+            total_tasks = rejected_and_defer_count + draft_count
             
             if hasattr(self, 'tasks_button') and self.tasks_button and self.tasks_button.winfo_exists():
                 self.tasks_button.configure(text=f"งานของฉัน 🔔 ({total_tasks})")
                 if total_tasks > 0:
-                    self.tasks_button.configure(fg_color="#F59E0B", hover_color="#D97706")
+                    self.tasks_button.configure(fg_color="#F59E0B", hover_color="#D97706") # สีส้มเมื่อมีงาน
                 else:
-                    self.tasks_button.configure(fg_color=("#3B8ED0", "#1F6AA5"), hover_color=("#36719F", "#144870"))
+                    self.tasks_button.configure(fg_color=("#3B8ED0", "#1F6AA5"), hover_color=("#36719F", "#144870")) # สีฟ้าปกติ
         except Exception as e:
             print(f"Error updating tasks badge: {e}")
         finally:
@@ -804,22 +1075,40 @@ class CommissionApp(CTkFrame):
             "relocation_cost_entry"
         ]
 
+        # 1. ผูก Event คำนวณตัวเลข (เมื่อพิมพ์ในช่องกรอก)
         for widget_name in widgets_to_bind_names:
             if hasattr(self, widget_name):
                 widget = getattr(self, widget_name)
                 widget.bind("<KeyRelease>", self._update_final_calculations)
 
+        # 2. ผูก Event คำนวณตัวเลข (เมื่อเปลี่ยน Radio Button)
         for var in [
             self.sales_service_vat_option, self.cutting_drilling_fee_vat_option,
             self.other_service_fee_vat_option, self.shipping_vat_option_var,
-            self.credit_card_fee_vat_option_var,self.relocation_vat_option_var
+            self.credit_card_fee_vat_option_var, self.relocation_vat_option_var
         ]:
             var.trace_add("write", self._update_final_calculations)
 
+        # 3. บังคับ SO Number เป็นตัวพิมพ์ใหญ่เสมอ
         self.so_number_var.trace_add("write", self._force_uppercase_so_number)
         self.so_number_entry.bind("<FocusIn>", lambda e: self.so_number_entry.icursor(tk.END))
 
+        # 4. เรียกฟังก์ชันตรวจสอบการจัดส่งครั้งแรก
         self._on_delivery_type_change()
+
+        # +++ [เพิ่มใหม่] 5. ผูก Event กับ Bill Date เพื่ออัปเดตรอบคอมฯ อัตโนมัติ +++
+        try:
+            # พยายามเข้าถึง Entry ภายใน DateSelector เพื่อ Bind Event
+            # (เมื่อผู้ใช้เลือกวันที่เสร็จ หรือพิมพ์เสร็จแล้วกด Enter/คลิกที่อื่น)
+            if hasattr(self.bill_date_selector, 'entry'):
+                # ทำงานเมื่อเมาส์คลิกออก (FocusOut) หรือกด Enter
+                self.bill_date_selector.entry.bind("<FocusOut>", self._auto_update_commission_period)
+                self.bill_date_selector.entry.bind("<Return>", self._auto_update_commission_period)
+                # ทำงานทันทีเมื่อพิมพ์ (KeyRelease) - แต่อาจจะรอพิมพ์ครบรูปแบบก่อน
+                self.bill_date_selector.entry.bind("<KeyRelease>", self._auto_update_commission_period)
+        except AttributeError:
+            # กรณีที่ DateSelector ไม่มี attribute 'entry' ให้ข้ามไป (ป้องกัน Error)
+            pass
 
     def _show_history(self):
         try:
@@ -1601,6 +1890,33 @@ class CommissionApp(CTkFrame):
         new_value = current_value.upper()
         if new_value != current_value:
             self.so_number_var.set(new_value)
+
+    def _auto_update_commission_period(self, *args):
+        """
+        อัปเดตเดือนและปีของรอบคอมมิชชั่นอัตโนมัติ ตามวันที่เปิดบิล (Bill Date)
+        เพื่อให้ Sale รู้ทันทีว่า SO นี้จะถูกคิดในรอบไหน
+        """
+        try:
+            # ดึงวันที่จาก Bill Date Selector
+            selected_date = self.bill_date_selector.get_date()
+            
+            if selected_date:
+                # แปลงเป็นเดือนไทย และปี พ.ศ.
+                month_idx = selected_date.month - 1
+                year_be = selected_date.year + 543
+                
+                new_month_str = self.thai_months[month_idx]
+                new_year_str = str(year_be)
+                
+                # อัปเดตตัวแปรของ Dropdown
+                if self.commission_month_var.get() != new_month_str:
+                    self.commission_month_var.set(new_month_str)
+                    
+                if self.commission_year_var.get() != new_year_str:
+                    self.commission_year_var.set(new_year_str)
+                    
+        except Exception as e:
+            print(f"Error auto-updating commission period: {e}")
 
     def _create_header(self):
         self.header_frame = CTkFrame(self, fg_color="transparent")
