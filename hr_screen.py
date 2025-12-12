@@ -340,17 +340,17 @@ class HRScreen(CTkFrame):
         self.user_name = user_name
         self.user_role = user_role
 
+        # --- Fonts ---
         self.label_font = CTkFont(size=16, weight="bold", family="Roboto")
         self.entry_font = CTkFont(size=14, family="Roboto")
         self.header_font_table = CTkFont(size=14, weight="bold", family="Roboto")
         self.label_font_bold = CTkFont(size=12, weight="bold", family="Roboto")
         self.small_font = CTkFont(size=12, family="Roboto")
 
-
         self.header_map = app_container.HEADER_MAP
-
         self.sales_keys_list = self._get_sale_keys()
 
+        # --- Variables ---
         self.db_df, self.uploaded_df, self.comparison_df, self.user_df, self.comparison_log_df = None, None, None, None, None
         self.initial_commission_result = None
         self.current_comm_df = None
@@ -358,7 +358,6 @@ class HRScreen(CTkFrame):
         self.uploaded_file_path, self.sales_chart_canvas, self.po_chart_canvas, self.sales_target_chart_canvas = None, None, None, None
         self.selected_payout_ids = set(); self.select_all_var = tk.IntVar(value=0)
         self.theme = self.app_container.THEME["hr"]
-        
         
         self.dropdown_style = {
             "fg_color": "white",
@@ -371,55 +370,96 @@ class HRScreen(CTkFrame):
         self.period_options = ["ปีนี้", "เดือนนี้", "Q1", "Q2", "Q3", "Q4"] + self.thai_months
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
 
+        # Pagination vars
         self.history_current_page, self.history_rows_per_page, self.history_total_rows = 0, 20, 0
         self.user_current_page, self.user_rows_per_page, self.user_total_rows = 0, 20, 0
-
         self.edit_data_current_page = 0
         self.edit_data_rows_per_page = 15
 
-        self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(1, weight=1)
-        header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 0))
+        # --- Layout Setup ---
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # Header
+        header_frame = CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 0))
         CTkLabel(header_frame, text=f"หน้าจอสำหรับฝ่ายบุคคล (HR): {self.user_name}", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
         CTkButton(header_frame, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="right")
 
-        self.tab_view = CTkTabview(self, corner_radius=10, border_width=1, segmented_button_selected_color=self.theme["primary"], segmented_button_unselected_hover_color="#A7F3D0", fg_color=self.cget("fg_color"), command=self._on_tab_selected)
-        self.tab_view.grid(row=1, column=0, pady=10, padx=20, sticky="nsew")
+        # ========================================================================================
+        # [แก้ไขใหม่] สร้าง Main TabView (แท็บแม่) แบ่งหมวดหมู่
+        # ========================================================================================
+        self.main_tab_view = CTkTabview(self, corner_radius=10, border_width=0, width=200, fg_color=self.cget("fg_color"))
+        self.main_tab_view.grid(row=1, column=0, pady=10, padx=20, sticky="nsew")
         
-        self.outstanding_tab = self.tab_view.add("ติดตามยอดค้างชำระ") 
-        # สร้าง instance ของ Dashboard แล้วใส่เข้าไปใน Tab
-        self.outstanding_dashboard = OutstandingDashboardTab(self.outstanding_tab, self.app_container)
-        # --- ส่วนของการสร้าง Tab ที่แก้ไขลำดับแล้ว ---
-        self.dashboard_tab = self.tab_view.add("Dashboard สรุปภาพรวม")
-        self.sales_target_tab = self.tab_view.add("วิเคราะห์เป้าการขาย")
-        self.manage_users_tab = self.tab_view.add("จัดการผู้ใช้งาน")
+        # เพิ่มหมวดหมู่หลัก (Parent Tabs)
+        self.cat_analysis = self.main_tab_view.add("📊 วิเคราะห์ (Analysis)")
+        self.cat_management = self.main_tab_view.add("⚙️ จัดการ (Management)")
+        self.cat_entry = self.main_tab_view.add("⌨️ คีย์แทน (Data Entry)")
+        self.cat_commission = self.main_tab_view.add("💰 ค่าคอมมิชชั่น (Commission)")
 
-        # ✅ สร้าง Tab "Sales Mode" ขึ้นมาก่อน
-        self.sales_mode_tab = self.tab_view.add("ลงข้อมูลแทนเซลส์ (Sales Mode)")
-        # ✅ จากนั้นค่อยตั้งค่า (Configure) ให้กับ Tab ที่เพิ่งสร้าง
-        self.sales_mode_tab.grid_rowconfigure(0, weight=1)
-        self.sales_mode_tab.grid_columnconfigure(0, weight=1)
+        # กำหนด Grid ให้แต่ละหมวดหมู่
+        for tab_name in ["📊 วิเคราะห์ (Analysis)", "⚙️ จัดการ (Management)", "⌨️ คีย์แทน (Data Entry)", "💰 ค่าคอมมิชชั่น (Commission)"]:
+            self.main_tab_view.tab(tab_name).grid_columnconfigure(0, weight=1)
+            self.main_tab_view.tab(tab_name).grid_rowconfigure(0, weight=1)
 
-        self.pu_mode_tab = self.tab_view.add("ลงข้อมูลแทนจัดซื้อ (PU Mode)")
-        self.pu_mode_tab.grid_rowconfigure(0, weight=1); self.pu_mode_tab.grid_columnconfigure(0, weight=1)
-
-        self.edit_data_tab = self.tab_view.add("แก้ไขข้อมูล (SO/PO)")
-        self.compare_commission_tab = self.tab_view.add("เปรียบเทียบ / ดูประวัติ")
-        self.process_commission_tab = self.tab_view.add("ประมวลผลและจ่ายค่าคอม")
-        self.payout_history_tab = self.tab_view.add("ประวัติการจ่ายค่าคอม")
-        self.audit_log_tab = self.tab_view.add("บันทึกกิจกรรม")
+        # ------------------------------------------------------------------
+        # 1. หมวดวิเคราะห์ (Analytics) -> สร้าง Sub-Tabs
+        # ------------------------------------------------------------------
+        self.analysis_tabs = CTkTabview(self.cat_analysis, corner_radius=10, command=self._on_tab_selected)
+        self.analysis_tabs.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         
-        # --- สิ้นสุดส่วนที่แก้ไข ---
-        
+        self.dashboard_tab = self.analysis_tabs.add("ภาพรวม (Dashboard)")
+        self.sales_target_tab = self.analysis_tabs.add("เป้าการขาย")
+        self.outstanding_tab = self.analysis_tabs.add("ยอดค้างชำระ")
+
         self._create_dashboard_tab(self.dashboard_tab)
         self._create_sales_target_tab(self.sales_target_tab)
+        self.outstanding_dashboard = OutstandingDashboardTab(self.outstanding_tab, self.app_container)
+
+        # ------------------------------------------------------------------
+        # 2. หมวดจัดการ (Management) -> สร้าง Sub-Tabs
+        # ------------------------------------------------------------------
+        self.management_tabs = CTkTabview(self.cat_management, corner_radius=10, command=self._on_tab_selected)
+        self.management_tabs.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        
+        self.manage_users_tab = self.management_tabs.add("ผู้ใช้งาน")
+        self.edit_data_tab = self.management_tabs.add("แก้ไขข้อมูล (Master Edit)")
+        self.audit_log_tab = self.management_tabs.add("บันทึกระบบ (Log)")
+
         self._create_manage_users_tab(self.manage_users_tab)
         self._create_edit_data_tab(self.edit_data_tab)
+        self._create_audit_log_tab(self.audit_log_tab)
+
+        # ------------------------------------------------------------------
+        # 3. หมวดคีย์แทน (Data Entry) -> สร้าง Sub-Tabs
+        # ------------------------------------------------------------------
+        self.entry_tabs = CTkTabview(self.cat_entry, corner_radius=10, command=self._on_tab_selected)
+        self.entry_tabs.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        
+        self.sales_mode_tab = self.entry_tabs.add("แทนเซลส์")
+        self.sales_mode_tab.grid_columnconfigure(0, weight=1); self.sales_mode_tab.grid_rowconfigure(0, weight=1)
+        
+        self.pu_mode_tab = self.entry_tabs.add("แทนจัดซื้อ")
+        self.pu_mode_tab.grid_columnconfigure(0, weight=1); self.pu_mode_tab.grid_rowconfigure(0, weight=1)
+
+        # ------------------------------------------------------------------
+        # 4. หมวดค่าคอมมิชชั่น (Commission) -> สร้าง Sub-Tabs
+        # ------------------------------------------------------------------
+        self.commission_tabs = CTkTabview(self.cat_commission, corner_radius=10, command=self._on_tab_selected)
+        self.commission_tabs.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        
+        self.compare_commission_tab = self.commission_tabs.add("1. ตรวจสอบ (Verify)")
+        self.process_commission_tab = self.commission_tabs.add("2. คำนวณ & จ่าย")
+        self.payout_history_tab = self.commission_tabs.add("3. ประวัติการจ่าย")
+
         self._create_compare_commission_tab(self.compare_commission_tab)
         self._create_process_commission_tab(self.process_commission_tab)
         self._create_payout_history_tab(self.payout_history_tab)
-        self._create_audit_log_tab(self.audit_log_tab)
-
-        self.tab_view.set("จัดการผู้ใช้งาน")
+        
+        # ------------------------------------------------------------------
+        
+        # Load Status Flags
         self.after(100, self._initial_load)
         self._sales_mode_loaded = False 
         self._pu_mode_loaded = False 
@@ -700,91 +740,84 @@ class HRScreen(CTkFrame):
         self._on_sale_selected_for_process()
 
     def _on_tab_selected(self):
-        selected_tab_name = self.tab_view.get()
-
-        if selected_tab_name == "ลงข้อมูลแทนเซลส์ (Sales Mode)" and not self._sales_mode_loaded:
-            try:
-                from sales_proxy_screen import SalesProxyScreen
-                self.sales_proxy_screen_instance = SalesProxyScreen(
-                    master=self.sales_mode_tab,
-                    app_container=self.app_container,
-                    proxy_user_key=self.user_key,
-                    proxy_user_name=self.user_name,
-                    user_role=self.user_role, # <--- เพิ่มบรรทัดนี้เข้ามา
-                    role_to_proxy="Sale"
-                )
-                self.sales_proxy_screen_instance.grid(row=0, column=0, sticky="nsew")
-                self._sales_mode_loaded = True
-            except ImportError:
-                messagebox.showerror("ผิดพลาด", "ไม่พบไฟล์ sales_proxy_screen.py")
-            except Exception as e:
-                messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดหน้าจอ Sales Mode ได้: {e}")
+        """
+        ตรวจสอบว่า Tab ไหนถูกเลือก (ทั้ง Tab หลักและ Tab ย่อย) และโหลดข้อมูลตามความเหมาะสม
+        """
+        # 1. เช็คว่าอยู่หมวดหมู่ไหน
+        main_tab = self.main_tab_view.get()
         
-        elif selected_tab_name == "ลงข้อมูลแทนจัดซื้อ (PU Mode)" and not self._pu_mode_loaded:
-            try:
-                from purchasing_proxy_screen import PurchasingProxyScreen
-                self.pu_proxy_screen_instance = PurchasingProxyScreen(
-                    master=self.pu_mode_tab,
-                    app_container=self.app_container,
-                    proxy_user_key=self.user_key,
-                    proxy_user_name=self.user_name,
-                    role_to_proxy="Purchasing Staff"
-                )
-                self.pu_proxy_screen_instance.pack(fill="both", expand=True) # ใช้ .pack() แทน .grid()
-                self._pu_mode_loaded = True
-            except ImportError:
-                messagebox.showerror("ผิดพลาด", "ไม่พบไฟล์ purchasing_proxy_screen.py")
-            except Exception as e:
-                messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดหน้าจอ PU Mode ได้: {e}")
-
-        elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded:
-            self._load_payout_history()
-            self._payout_history_loaded = True
+        selected_sub_tab = ""
         
-        elif selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
-            self._initial_load_dashboard()
-            self._dashboard_loaded = True
+        # 2. เช็ค Tab ย่อยตามหมวดหมู่
+        if main_tab == "📊 วิเคราะห์ (Analysis)":
+            selected_sub_tab = self.analysis_tabs.get()
             
-        elif selected_tab_name == "วิเคราะห์เป้าการขาย" and not self._sales_target_loaded:
-            self._initial_load_sales_target()
-            self._sales_target_loaded = True
+            if selected_sub_tab == "ภาพรวม (Dashboard)" and not self._dashboard_loaded:
+                self._initial_load_dashboard(); self._dashboard_loaded = True
+            elif selected_sub_tab == "เป้าการขาย" and not self._sales_target_loaded:
+                self._initial_load_sales_target(); self._sales_target_loaded = True
             
-        elif selected_tab_name == "จัดการผู้ใช้งาน" and not self._users_loaded:
-            self._populate_user_table()
-            self._users_loaded = True
+            # Refresh เมื่อกลับมาคลิกซ้ำ
+            if selected_sub_tab == "ภาพรวม (Dashboard)": self._update_dashboard()
+            elif selected_sub_tab == "เป้าการขาย": self._update_sales_target_dashboard()
 
-        elif selected_tab_name == "เปรียบเทียบ / ดูประวัติ" and not self._compare_commission_loaded:
-            self._compare_commission_loaded = True
-            self._compare_commission_loaded = True
+        elif main_tab == "⚙️ จัดการ (Management)":
+            selected_sub_tab = self.management_tabs.get()
+            
+            if selected_sub_tab == "ผู้ใช้งาน" and not self._users_loaded:
+                self._populate_users_table(); self._users_loaded = True
+            elif selected_sub_tab == "บันทึกระบบ (Log)" and not self._audit_log_loaded:
+                self._populate_audit_log_table(); self._audit_log_loaded = True
+            
+            # Refresh
+            if selected_sub_tab == "ผู้ใช้งาน": self._populate_users_table()
+            elif selected_sub_tab == "บันทึกระบบ (Log)": self._populate_audit_log_table()
 
-        elif selected_tab_name == "ประมวลผลและจ่ายค่าคอม" and not self._process_commission_loaded:
-            self._initial_load_process_commission()
-            self._process_commission_loaded = True
+        elif main_tab == "⌨️ คีย์แทน (Data Entry)":
+            selected_sub_tab = self.entry_tabs.get()
+            
+            if selected_sub_tab == "แทนเซลส์" and not self._sales_mode_loaded:
+                try:
+                    from sales_proxy_screen import SalesProxyScreen
+                    self.sales_proxy_screen_instance = SalesProxyScreen(
+                        master=self.sales_mode_tab,
+                        app_container=self.app_container,
+                        proxy_user_key=self.user_key,
+                        proxy_user_name=self.user_name,
+                        user_role=self.user_role,
+                        role_to_proxy="Sale"
+                    )
+                    self.sales_proxy_screen_instance.grid(row=0, column=0, sticky="nsew")
+                    self._sales_mode_loaded = True
+                except Exception as e: messagebox.showerror("Error", f"Load Sales Mode failed: {e}")
+            
+            elif selected_sub_tab == "แทนจัดซื้อ" and not self._pu_mode_loaded:
+                try:
+                    from purchasing_proxy_screen import PurchasingProxyScreen
+                    self.pu_proxy_screen_instance = PurchasingProxyScreen(
+                        master=self.pu_mode_tab,
+                        app_container=self.app_container,
+                        proxy_user_key=self.user_key,
+                        proxy_user_name=self.user_name,
+                        role_to_proxy="Purchasing Staff"
+                    )
+                    self.pu_proxy_screen_instance.pack(fill="both", expand=True)
+                    self._pu_mode_loaded = True
+                except Exception as e: messagebox.showerror("Error", f"Load PU Mode failed: {e}")
 
-        elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded:
-            self._populate_audit_log_table()
-            self._audit_log_loaded = True
-
-        if selected_tab_name == "Dashboard สรุปภาพรวม" and not self._dashboard_loaded:
-            self._update_dashboard()
-            self._dashboard_loaded = True
-        elif selected_tab_name == "วิเคราะห์เป้าการขาย" and not self._sales_target_loaded:
-            self._update_sales_target_dashboard()
-            self._sales_target_loaded = True
-        elif selected_tab_name == "จัดการผู้ใช้งาน" and not self._users_loaded:
-            self._populate_users_table()
-            self._users_loaded = True
-        elif selected_tab_name == "เปรียบเทียบ / ดูประวัติ" and not self._compare_commission_loaded:
-            self._compare_commission_loaded = True
-        elif selected_tab_name == "ประมวลผลและจ่ายค่าคอม" and not self._process_commission_loaded:
-            self._on_sale_selected_for_process()
-            self._process_commission_loaded = True
-        elif selected_tab_name == "ประวัติการจ่ายค่าคอม" and not self._payout_history_loaded:
-            self._load_payout_history()
-            self._payout_history_loaded = True
-        elif selected_tab_name == "บันทึกกิจกรรม" and not self._audit_log_loaded:
-            self._populate_audit_log_table()
-            self._audit_log_loaded = True
+        elif main_tab == "💰 ค่าคอมมิชชั่น (Commission)":
+            selected_sub_tab = self.commission_tabs.get()
+            
+            if selected_sub_tab == "1. ตรวจสอบ (Verify)" and not self._compare_commission_loaded:
+                self._compare_commission_loaded = True
+            elif selected_sub_tab == "2. คำนวณ & จ่าย" and not self._process_commission_loaded:
+                self._initial_load_process_commission(); self._process_commission_loaded = True
+            elif selected_sub_tab == "3. ประวัติการจ่าย" and not self._payout_history_loaded:
+                self._load_payout_history(); self._payout_history_loaded = True
+            
+            # Refresh
+            if selected_sub_tab == "2. คำนวณ & จ่าย": self._on_sale_selected_for_process()
+            elif selected_sub_tab == "3. ประวัติการจ่าย": self._load_payout_history()
 
     def _show_calculation_details(self):
         # --- แก้ไข 3 บรรทัดนี้ครับ ---
