@@ -566,6 +566,8 @@ class MyTasksWindow(CTkToplevel):
         finally:
             if conn: self.app_container.release_connection(conn)
 
+# ค้นหา class ProductManagementWindow และวางทับด้วยโค้ดนี้
+
 class ProductManagementWindow(CTkToplevel):
     def __init__(self, master, purchasing_screen_instance):
         super().__init__(master)
@@ -576,7 +578,7 @@ class ProductManagementWindow(CTkToplevel):
         self.entry_font = purchasing_screen_instance.entry_font
 
         self.title("จัดการข้อมูลสินค้าหลัก (Product Management)")
-        self.geometry("800x600")
+        self.geometry("1000x700")
         self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -600,10 +602,20 @@ class ProductManagementWindow(CTkToplevel):
 
         button_frame = CTkFrame(header_frame, fg_color="transparent")
         button_frame.pack(side="right")
-        CTkButton(button_frame, text="เพิ่มสินค้าใหม่", command=self._add_product).pack(side="left", padx=5)
-        CTkButton(button_frame, text="แก้ไขสินค้าที่เลือก", command=self._edit_product).pack(side="left", padx=5)
-        CTkButton(button_frame, text="ลบสินค้าที่เลือก", command=self._delete_product, fg_color="#D32F2F", hover_color="#B71C1C").pack(side="left", padx=5)
-        CTkButton(button_frame, text="Refresh", command=self.load_products).pack(side="left", padx=5)
+        
+        CTkButton(button_frame, text="เพิ่มสินค้าใหม่", width=100, command=self._add_product).pack(side="left", padx=5)
+        CTkButton(button_frame, text="แก้ไข", width=80, command=self._edit_product).pack(side="left", padx=5)
+        CTkButton(button_frame, text="ลบ", width=60, command=self._delete_product, fg_color="#D32F2F", hover_color="#B71C1C").pack(side="left", padx=5)
+        
+        CTkLabel(button_frame, text="|", font=CTkFont(size=20), text_color="gray").pack(side="left", padx=5)
+        
+        CTkButton(button_frame, text="📥 Export Excel", width=100, command=self._export_products, 
+                  fg_color="#107C41", hover_color="#0B532B").pack(side="left", padx=5)
+                  
+        CTkButton(button_frame, text="📤 Import Excel", width=100, command=self._import_products, 
+                  fg_color="#D97706", hover_color="#B45309").pack(side="left", padx=5)
+
+        CTkButton(button_frame, text="🔄", width=40, command=self.load_products).pack(side="left", padx=5)
 
         self.search_entry = CTkEntry(self, placeholder_text="ค้นหาสินค้า (รหัส/ชื่อ)", font=self.entry_font)
         self.search_entry.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
@@ -614,33 +626,30 @@ class ProductManagementWindow(CTkToplevel):
         self.tree_frame.grid_rowconfigure(0, weight=1)
         self.tree_frame.grid_columnconfigure(0, weight=1)
 
-        columns = ("id", "product_code", "product_name", "warehouse")
+        columns = ("id", "product_code", "product_name", "warehouse", "price", "weight")
         self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings", selectmode="browse")
 
         self.tree.heading("id", text="ID", anchor="center")
         self.tree.heading("product_code", text="รหัสสินค้า", anchor="center")
         self.tree.heading("product_name", text="ชื่อสินค้า", anchor="center")
         self.tree.heading("warehouse", text="คลัง", anchor="center")
+        self.tree.heading("price", text="ราคาล่าสุด", anchor="e")
+        self.tree.heading("weight", text="นน.ล่าสุด", anchor="e")
 
         self.tree.column("id", width=50, anchor="center")
         self.tree.column("product_code", width=150, anchor="w")
-        self.tree.column("product_name", width=300, anchor="w")
+        self.tree.column("product_name", width=350, anchor="w")
         self.tree.column("warehouse", width=100, anchor="center")
+        self.tree.column("price", width=100, anchor="e")
+        self.tree.column("weight", width=100, anchor="e")
 
         self.tree.pack(fill="both", expand=True)
 
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Treeview",
-                        background="#F5F5F5",
-                        foreground="black",
-                        rowheight=25,
-                        fieldbackground="#F5F5F5")
+        style.configure("Treeview", background="#F5F5F5", foreground="black", rowheight=25, fieldbackground="#F5F5F5")
         style.map('Treeview', background=[('selected', '#3B82F6')])
-        style.configure("Treeview.Heading",
-                        font=CTkFont(size=12, weight="bold"),
-                        background="#E0E0E0",
-                        foreground="black")
+        style.configure("Treeview.Heading", font=CTkFont(size=12, weight="bold"), background="#E0E0E0", foreground="black")
 
         vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
         vsb.pack(side='right', fill='y')
@@ -652,23 +661,27 @@ class ProductManagementWindow(CTkToplevel):
 
         conn = self.app_container.get_connection()
         try:
-            cursor_query = "SELECT id, product_code, product_name, warehouse FROM products ORDER BY product_code"
+            cursor_query = "SELECT id, product_code, product_name, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute(cursor_query)
                 products = cursor.fetchall()
                 for prod in products:
+                    price = f"{prod['last_unit_price']:,.2f}" if prod['last_unit_price'] else "-"
+                    weight = f"{prod['last_weight_per_unit']:,.2f}" if prod['last_weight_per_unit'] else "-"
+                    
                     self.tree.insert("", "end", values=(
                         prod['id'],
                         prod['product_code'],
                         prod['product_name'],
-                        prod['warehouse']
+                        prod['warehouse'],
+                        price,
+                        weight
                     ))
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถโหลดข้อมูลสินค้าได้: {e}", parent=self)
             traceback.print_exc()
         finally:
-            if conn:
-                self.app_container.release_connection(conn)
+            if conn: self.app_container.release_connection(conn)
 
     def _filter_products(self, event):
         search_term = self.search_entry.get().strip().lower()
@@ -677,24 +690,193 @@ class ProductManagementWindow(CTkToplevel):
 
         conn = self.app_container.get_connection()
         try:
-            query = "SELECT id, product_code, product_name, warehouse FROM products WHERE LOWER(product_code) LIKE %s OR LOWER(product_name) LIKE %s ORDER BY product_code"
+            query = """
+                SELECT id, product_code, product_name, warehouse, last_unit_price, last_weight_per_unit 
+                FROM products 
+                WHERE LOWER(product_code) LIKE %s OR LOWER(product_name) LIKE %s 
+                ORDER BY product_code
+            """
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute(query, (f"%{search_term}%", f"%{search_term}%"))
                 products = cursor.fetchall()
                 for prod in products:
+                    price = f"{prod['last_unit_price']:,.2f}" if prod['last_unit_price'] else "-"
+                    weight = f"{prod['last_weight_per_unit']:,.2f}" if prod['last_weight_per_unit'] else "-"
+                    
                     self.tree.insert("", "end", values=(
                         prod['id'],
                         prod['product_code'],
                         prod['product_name'],
-                        prod['warehouse']
+                        prod['warehouse'],
+                        price,
+                        weight
                     ))
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถค้นหาข้อมูลสินค้าได้: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    # --- ฟังก์ชัน Export ที่แก้ไขแล้ว (เพิ่ม ID) ---
+    def _export_products(self):
+        """Export ข้อมูลสินค้าทั้งหมดเป็น Excel"""
+        try:
+            conn = self.app_container.get_connection()
+            # [แก้ไข] เพิ่ม id ใน Query
+            query = "SELECT id, product_code, product_name, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
+            df = pd.read_sql_query(query, conn)
+            
+            if df.empty:
+                messagebox.showinfo("ไม่มีข้อมูล", "ไม่พบข้อมูลสินค้าที่จะ Export", parent=self)
+                return
+
+            # [แก้ไข] เพิ่ม System_ID ในไฟล์ Excel
+            df.rename(columns={
+                'id': 'System_ID', # คอลัมน์สำคัญ! ห้ามเปลี่ยนชื่อในไฟล์ Excel ถ้าจะใช้อัปเดต
+                'product_code': 'รหัสสินค้า',
+                'product_name': 'ชื่อสินค้า',
+                'warehouse': 'คลัง',
+                'last_unit_price': 'ราคาล่าสุด',
+                'last_weight_per_unit': 'น้ำหนักล่าสุด'
+            }, inplace=True)
+
+            default_filename = f"products_master_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                title="บันทึกไฟล์ข้อมูลสินค้า",
+                initialfile=default_filename,
+                parent=self
+            )
+
+            if save_path:
+                df.to_excel(save_path, index=False)
+                messagebox.showinfo("สำเร็จ", f"Export ข้อมูลสินค้าเรียบร้อยแล้วที่:\n{save_path}\n\n*ห้ามแก้ไขคอลัมน์ System_ID หากต้องการอัปเดตข้อมูลเดิม*", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถ Export ได้: {e}", parent=self)
+        finally:
+             if conn: self.app_container.release_connection(conn)
+
+    # --- ฟังก์ชัน Import ที่แก้ไขแล้ว (เช็ค ID ก่อน) ---
+    def _import_products(self):
+        """Import ข้อมูลสินค้าจาก Excel (Update by ID or Code, or Insert)"""
+        file_path = filedialog.askopenfilename(
+            title="เลือกไฟล์ Excel ข้อมูลสินค้า",
+            filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")],
+            parent=self
+        )
+        
+        if not file_path:
+            return
+
+        conn = None
+        try:
+            # 1. อ่านไฟล์
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            else:
+                df = pd.read_excel(file_path)
+            
+            # 2. Map ชื่อคอลัมน์
+            column_map = {
+                'System_ID': 'id', 'id': 'id', 'ID': 'id', # รองรับชื่อ ID หลายแบบ
+                'รหัสสินค้า': 'product_code', 'product_code': 'product_code', 'code': 'product_code',
+                'ชื่อสินค้า': 'product_name', 'product_name': 'product_name', 'name': 'product_name',
+                'คลัง': 'warehouse', 'warehouse': 'warehouse',
+                'ราคาล่าสุด': 'last_unit_price', 'last_unit_price': 'last_unit_price', 'price': 'last_unit_price',
+                'น้ำหนักล่าสุด': 'last_weight_per_unit', 'last_weight_per_unit': 'last_weight_per_unit', 'weight': 'last_weight_per_unit'
+            }
+            
+            df.columns = [str(c).strip() for c in df.columns]
+            rename_dict = {}
+            for col in df.columns:
+                if col in column_map:
+                    rename_dict[col] = column_map[col]
+            
+            df.rename(columns=rename_dict, inplace=True)
+            
+            # 3. ตรวจสอบคอลัมน์ที่จำเป็น
+            if 'product_code' not in df.columns or 'product_name' not in df.columns:
+                messagebox.showerror("รูปแบบไฟล์ไม่ถูกต้อง", "ไฟล์ต้องมีคอลัมน์ 'รหัสสินค้า' และ 'ชื่อสินค้า' เป็นอย่างน้อย", parent=self)
+                return
+
+            # 4. ทำความสะอาดข้อมูล
+            df['product_code'] = df['product_code'].astype(str).str.strip()
+            df['product_name'] = df['product_name'].astype(str).str.strip()
+            if 'warehouse' in df.columns:
+                df['warehouse'] = df['warehouse'].fillna('').astype(str).str.strip()
+            else:
+                df['warehouse'] = ''
+            
+            if 'last_unit_price' in df.columns:
+                df['last_unit_price'] = pd.to_numeric(df['last_unit_price'], errors='coerce').fillna(0)
+            else: df['last_unit_price'] = 0
+            
+            if 'last_weight_per_unit' in df.columns:
+                df['last_weight_per_unit'] = pd.to_numeric(df['last_weight_per_unit'], errors='coerce').fillna(0)
+            else: df['last_weight_per_unit'] = 0
+
+            # 5. เริ่มกระบวนการ Import
+            if not messagebox.askyesno("ยืนยันการนำเข้า", f"พบข้อมูล {len(df)} รายการ\nต้องการนำเข้าและอัปเดตข้อมูลหรือไม่?", parent=self):
+                return
+
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                updated_count = 0
+                inserted_count = 0
+                
+                for _, row in df.iterrows():
+                    code = row['product_code']
+                    name = row['product_name']
+                    if not code or not name: continue
+                    
+                    wh = row.get('warehouse', '')
+                    price = row.get('last_unit_price', 0)
+                    weight = row.get('last_weight_per_unit', 0)
+                    row_id = row.get('id') # ลองดึง ID มาดู
+
+                    target_id = None
+                    
+                    # [Logic ใหม่]
+                    # 1. ถ้ามี ID มาในไฟล์ ให้ลองหาด้วย ID ก่อน
+                    if pd.notna(row_id):
+                        cursor.execute("SELECT id FROM products WHERE id = %s", (row_id,))
+                        res = cursor.fetchone()
+                        if res:
+                            target_id = res[0]
+                    
+                    # 2. ถ้าไม่มี ID หรือหา ID ไม่เจอ -> ให้ลองหาด้วย Product Code
+                    if not target_id:
+                        cursor.execute("SELECT id FROM products WHERE product_code = %s", (code,))
+                        res = cursor.fetchone()
+                        if res:
+                            target_id = res[0]
+
+                    if target_id:
+                        # Update (รวมถึงกรณีเปลี่ยนรหัสสินค้า ก็จะทำได้ถ้าอิงตาม ID)
+                        cursor.execute("""
+                            UPDATE products 
+                            SET product_code = %s, product_name = %s, warehouse = %s, last_unit_price = %s, last_weight_per_unit = %s, last_updated = NOW()
+                            WHERE id = %s
+                        """, (code, name, wh, price, weight, target_id))
+                        updated_count += 1
+                    else:
+                        # Insert
+                        cursor.execute("""
+                            INSERT INTO products (product_code, product_name, warehouse, last_unit_price, last_weight_per_unit, last_updated)
+                            VALUES (%s, %s, %s, %s, %s, NOW())
+                        """, (code, name, wh, price, weight))
+                        inserted_count += 1
+                
+                conn.commit()
+                messagebox.showinfo("สำเร็จ", f"นำเข้าข้อมูลเรียบร้อยแล้ว\n- เพิ่มใหม่: {inserted_count} รายการ\n- อัปเดต: {updated_count} รายการ", parent=self)
+                self.load_products()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการนำเข้า: {e}", parent=self)
             traceback.print_exc()
         finally:
-            if conn:
-                self.app_container.release_connection(conn)
-
+            if conn: self.app_container.release_connection(conn)
 
     def _add_product(self):
         ProductEditDialog(self, product_data=None, pm_window=self)
@@ -855,7 +1037,7 @@ class ProductEditDialog(CTkToplevel):
 # PurchasingScreen Main Class
 # ==============================================================================
 class PurchasingScreen(CTkFrame):
-    # ให้นำฟังก์ชัน __init__ นี้ไปวางทับของเดิมทั้งหมด
+    
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None, initial_so_number=None):
         self.master = master
         self.app_container = app_container
