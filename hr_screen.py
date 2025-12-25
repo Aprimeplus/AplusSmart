@@ -2485,14 +2485,17 @@ class HRScreen(CTkFrame):
 
         config = config_dialog.result
         selected_salesperson = config["salesperson"]
-        selected_month = config["month"] # <-- รับค่าเดือน
-        selected_year = config["year"]   # <-- รับค่าปี
+        selected_month = config["month"]
+        selected_year = config["year"]
+        
+        # บันทึกค่าไว้ใช้ตอน Refresh
         self.current_comparison_month = selected_month
         self.current_comparison_year = selected_year
         self.current_comparison_salesperson = selected_salesperson
         self.uploaded_df = config["imported_df"]
         self.manual_entry_df = config["manual_df"]
 
+        # จัดการ mapping ชื่อคอลัมน์ของไฟล์ Excel (เหมือนเดิม)
         if self.uploaded_df is not None:
             self.uploaded_df.columns = [str(c).lower().strip() for c in self.uploaded_df.columns]
 
@@ -2521,7 +2524,8 @@ class HRScreen(CTkFrame):
         
         try:
             self.current_comparison_salesperson = selected_salesperson
-            # --- START: จุดที่แก้ไข Query ---
+            
+            # --- แก้ไข Query หลัก: ปรับเงื่อนไข Status และ Time ---
             base_query = """SELECT c.*, 
                        po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
                        u.sale_name,
@@ -2530,12 +2534,9 @@ class HRScreen(CTkFrame):
                 JOIN sales_users u ON c.sale_key = u.sale_key
                 LEFT JOIN sales_users ss ON c.support_user_key = ss.sale_key
                 LEFT JOIN (
-                        /* <<< จุดแก้ไขที่สำคัญที่สุด >>> */
                         SELECT
                             p.so_number,
-                            -- 1. ต้นทุนสินค้า (cogs_db): คือผลรวม total_price จาก items ที่อยู่ใน PO ที่ Approved แล้วเท่านั้น
                             SUM(COALESCE(poi.total_price, 0)) as cogs_db,
-                            -- 2. ค่าขนส่ง: คือผลรวมจากตาราง PO หลักเหมือนเดิม
                             SUM(p.shipping_to_stock_cost) as po_shipping_stock,
                             SUM(p.shipping_to_site_cost) as po_shipping_site,
                             SUM(p.relocation_cost) as po_relocation
@@ -2545,20 +2546,24 @@ class HRScreen(CTkFrame):
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
                 WHERE c.is_active = 1 
-                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled', 'Defer Requested')
-"""
-            # --- END: สิ้นสุดการแก้ไข Query ---
+                  -- ✅ แก้ไขตรงนี้ครับ: เพิ่ม 'HR Verified' เข้าไป
+                  AND c.status NOT IN ('Paid', 'Cancelled', 'HR Verified')
+            """
+            
             params = []
 
-            ### START: แก้ไขส่วนนี้ ###
-            # ตอนนี้ selected_salesperson จะเป็นรหัสของเซลส์เสมอ ไม่ใช่ "ทั้งหมด"
-            # เราจึงสามารถลดรูปเงื่อนไขได้
-            base_query += " AND c.sale_key = %s"
-            params.append(selected_salesperson)
-            ### END ###
+            # --- Filter พนักงานขาย ---
+            if selected_salesperson != "ทั้งหมด":
+                base_query += " AND c.sale_key = %s"
+                params.append(selected_salesperson)
+            else:
+                # กรณีเลือกทั้งหมด
+                base_query += " AND c.sale_key IN (SELECT sale_key FROM sales_users WHERE status = 'Active' AND role = 'Sale')"
             
-            base_query += " AND c.commission_year = %s AND c.commission_month = %s AND c.sale_key = %s"
-            params.extend([selected_year, selected_month, selected_salesperson])
+            # --- ✅ จุดแก้ไขที่ 2: เปลี่ยนเงื่อนไขเวลาเป็น 'ย้อนหลังทั้งหมด' ---
+            # Logic: (ปีก่อนหน้า) OR (ปีเดียวกัน แต่เดือนน้อยกว่าหรือเท่ากับเดือนที่เลือก)
+            base_query += " AND ((c.commission_year < %s) OR (c.commission_year = %s AND c.commission_month <= %s))"
+            params.extend([selected_year, selected_year, selected_month])
 
             data_query = base_query + " ORDER BY c.timestamp DESC"
             
@@ -3071,13 +3076,11 @@ class HRScreen(CTkFrame):
         self.results_frame_label.configure(text=f"กำลังรีเฟรชข้อมูลสำหรับ: {self.current_comparison_salesperson}...")
 
         try:
-            # --- START: โค้ดส่วนที่เพิ่มเข้ามา ---
-            # ดึงค่าเดือนและปีที่เคยเลือกไว้จาก Dialog (ถ้ามี)
-            # เราจะใช้ค่าที่เก็บไว้ในตัวแปรจากฟังก์ชัน _start_new_comparison
+            # ดึงค่าเดือนและปีที่เคยเลือกไว้
             selected_month = getattr(self, 'current_comparison_month', None)
             selected_year = getattr(self, 'current_comparison_year', None)
-            # --- END ---
             
+            # --- แก้ไข Query หลัก (เหมือนข้างบน) ---
             base_query = """SELECT c.*, 
                        po.cogs_db, po.po_shipping_stock, po.po_shipping_site, po.po_relocation, 
                        u.sale_name,
@@ -3098,7 +3101,8 @@ class HRScreen(CTkFrame):
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
                 WHERE c.is_active = 1 
-                  AND c.status NOT IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled', 'Defer Requested')
+                  -- ✅ แก้ไขตรงนี้ครับ: เพิ่ม 'HR Verified' เข้าไป
+                  AND c.status NOT IN ('Paid', 'Cancelled', 'HR Verified')
             """
             params = []
 
@@ -3108,11 +3112,10 @@ class HRScreen(CTkFrame):
             else:
                 base_query += " AND c.sale_key IN (SELECT sale_key FROM sales_users WHERE status = 'Active' AND role = 'Sale')"
 
-            # --- START: เพิ่มเงื่อนไขการกรองเดือนและปี ---
+            # --- ✅ แก้ไขตรงนี้: เปลี่ยนเงื่อนไขเวลาเป็น 'ย้อนหลังทั้งหมด' ---
             if selected_month and selected_year:
-                base_query += " AND c.commission_month = %s AND c.commission_year = %s"
-                params.extend([selected_month, selected_year])
-            # --- END ---
+                base_query += " AND ((c.commission_year < %s) OR (c.commission_year = %s AND c.commission_month <= %s))"
+                params.extend([selected_year, selected_year, selected_month])
 
             data_query = base_query + " ORDER BY c.timestamp DESC"
 
@@ -3599,148 +3602,141 @@ class HRScreen(CTkFrame):
     
     def _confirm_payout_and_save(self):
         """
-        (เวอร์ชันปรับปรุงล่าสุด)
-        ✅ ยืนยันการจ่ายเงิน, อัปเดตสถานะ SO, และบันทึก Log การจ่ายเงิน
-        ✅ คำนวณยอดหักเฉพาะ Decentive (ไม่นับค่าดำเนินการ / หัก ณ ที่จ่าย)
-        ✅ รองรับชื่อ Gross Commission ที่แตกต่างกันในแต่ละ Plan
-        ✅ รองรับชื่อยอดขาย Normal / Below ของทุกแผน (รวม Tier 1/2/3)
+        (เวอร์ชันปรับปรุงล่าสุด - Popup สรุปยอดเงินและรายการตกหล่นก่อนยืนยัน)
+        ✅ โชว์ Gross / WHT 3% / Net ให้ชัดเจน
+        ✅ แยกแยะรายการเดือนปัจจุบัน vs รายการตกหล่น
         """
         try:
-            # --- ตรวจสอบความพร้อมก่อน ---
+            # --- 1. ตรวจสอบความพร้อม ---
             if not hasattr(self, 'latest_commission_result') or not self.latest_commission_result:
                 messagebox.showwarning("ยังไม่พร้อม", "กรุณากด 'คำนวณขั้นสุดท้าย' ก่อนยืนยันการจ่ายเงิน", parent=self)
                 return
 
-            if not messagebox.askyesno(
-                "ยืนยันการจ่ายเงิน",
-                "คุณยืนยันที่จะบันทึกการจ่ายเงินนี้ใช่หรือไม่?\n"
-                "การดำเนินการนี้จะอัปเดตสถานะ SO ทั้งหมดเป็น 'Paid' และไม่สามารถย้อนกลับได้จากหน้านี้",
-                parent=self
-            ):
-                return
+            # ดึงข้อมูลสรุปผลการคำนวณ
+            result_type = self.latest_commission_result.get('type')
+            final_summary_df = None
             
-            # --- 1. ดึงข้อมูลสรุปทั้งหมด ---
+            if result_type == 'summary_plan_a':
+                final_summary_df = self.latest_commission_result.get('summary')
+            elif result_type == 'summary_other':
+                final_summary_df = self.latest_commission_result.get('data')
+
+            if final_summary_df is None:
+                messagebox.showerror("ผิดพลาด", "ไม่พบข้อมูลสรุปผลการคำนวณ", parent=self)
+                return
+
+            # --- 2. เตรียมตัวเลขเพื่อแสดงใน Popup ---
+            
+            # ฟังก์ชันช่วยดึงค่าจากตารางสรุป
+            def get_val(desc_keyword):
+                try:
+                    # ค้นหาแถวที่มีคำที่ระบุ (partial match)
+                    row = final_summary_df[final_summary_df['description'].str.contains(desc_keyword, case=False, na=False)]
+                    if not row.empty:
+                        return float(row['value'].iloc[0])
+                    return 0.0
+                except:
+                    return 0.0
+
+            val_gross = get_val("Gross|ขั้นต้น")
+            val_wht = get_val("หัก ณ ที่จ่าย|3%")
+            val_net = get_val("ยอดสรุปคอมหลังหัก|สุทธิ|Net")
+            
+            # แยกแยะ SO ปัจจุบัน vs ตกหล่น
+            count_current = 0
+            count_old = 0
+            
+            if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
+                # แปลงปี/เดือนใน DF ให้เป็น int เพื่อเทียบกับที่เลือก
+                df_temp = self.current_comm_df.copy()
+                df_temp['commission_year'] = pd.to_numeric(df_temp['commission_year'], errors='coerce').fillna(0)
+                df_temp['commission_month'] = pd.to_numeric(df_temp['commission_month'], errors='coerce').fillna(0)
+                
+                # นับรายการเดือนปัจจุบัน (ที่ตรงกับงวดที่เลือก)
+                current_mask = (df_temp['commission_year'] == self.selected_year) & (df_temp['commission_month'] == self.selected_month)
+                count_current = len(df_temp[current_mask])
+                
+                # นับรายการเก่า (ตกหล่น)
+                count_old = len(df_temp[~current_mask])
+            
+            total_items = count_current + count_old
+
+            # --- 3. สร้างข้อความ Popup ---
+            msg = (
+                f"📌 **สรุปยอดจ่ายคอมมิชชั่น (งวด: {self.current_period_text})**\n"
+                f"--------------------------------------------------\n"
+                f"💰 **ยอดคอมมิชชั่นขั้นต้น (Gross):** {val_gross:,.2f} บาท\n"
+                f"ภาษีหัก ณ ที่จ่าย (3%):  -{val_wht:,.2f} บาท\n"
+                f"--------------------------------------------------\n"
+                f"✅ **ยอดโอนสุทธิ (Net):** {val_net:,.2f} บาท\n"
+                f"--------------------------------------------------\n\n"
+                f"📦 **รายละเอียดรายการ (SO):**\n"
+                f"   - รายการประจำงวดนี้: {count_current} รายการ\n"
+                f"   - ⚠️ รายการตกหล่นจากงวดก่อน: {count_old} รายการ\n"
+                f"   (รวมทั้งหมด {total_items} รายการ)\n\n"
+                f"ยืนยันที่จะบันทึกสถานะ 'Paid' และดำเนินการจ่ายเงินใช่หรือไม่?"
+            )
+
+            # --- 4. แสดง Popup ถามยืนยัน ---
+            if not messagebox.askyesno("ยืนยันการจ่ายเงิน", msg, parent=self):
+                return  # ถ้าตอบ No ก็จบฟังก์ชัน ไม่บันทึก
+
+            # =========================================================
+            # ... (ส่วนบันทึกลงฐานข้อมูล ทำงานเหมือนเดิมต่อจากนี้) ...
+            # =========================================================
+            
+            # เตรียมข้อมูลสำหรับบันทึก Log
             payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
             plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
             
-            final_summary_df = None
-            initial_summary_df = None 
-
-            result_type = self.latest_commission_result.get('type')
-            if result_type == 'summary_plan_a':
-                final_summary_df = self.latest_commission_result.get('summary')
-                initial_summary_df = self.latest_commission_result.get('summary') 
-            elif result_type == 'summary_other':
-                final_summary_df = self.latest_commission_result.get('data') 
-                initial_summary_df = self.latest_commission_result.get('data') 
-
-            if final_summary_df is None or initial_summary_df is None:
-                messagebox.showerror("ผิดพลาด", "ไม่พบข้อมูลสรุปผลการคำนวณ (Summary DF is None)", parent=self)
-                return
-            
-            # --- ฟังก์ชันช่วย ---
-            def get_final_summary_value(key_name, default=0.0):
-                try:
-                    value = final_summary_df.loc[final_summary_df['description'] == key_name, 'value'].values[0]
-                    return float(value)
-                except (IndexError, KeyError):
-                    return default
-
-            def get_initial_summary_value(key_name, default=0.0):
-                if initial_summary_df is None:
-                    return default
-                try:
-                    if 'description' in initial_summary_df.columns:
-                        value = initial_summary_df.loc[initial_summary_df['description'] == key_name, 'value'].values[0]
-                        return float(value)
-                    else:
-                        print("Warning: 'description' column not found in initial_summary_df.")
-                        return default
-                except (IndexError, KeyError):
-                    return default
-
-            # --- ✅ Logic ยืดหยุ่นในการดึงยอดขาย Normal / Below ---
-            try:
-                # Normal (Tier 1)
-                normal_row = initial_summary_df[
-                    initial_summary_df['description'].str.contains("ปกติ|Normal|Tier 1", case=False, na=False)
-                ]
-                total_normal_sales = float(normal_row['value'].iloc[0]) if not normal_row.empty else 0.0
-
-                # Below Tier (Tier 2 หรือ Tier 3)
-                below_row = initial_summary_df[
-                    initial_summary_df['description'].str.contains("Below|นอกเงื่อนไข|Tier 2|Tier 3", case=False, na=False)
-                ]
-                total_below_sales = below_row['value'].sum() if not below_row.empty else 0.0
-
-                total_sales = total_normal_sales + total_below_sales
-
-                print(f"\n💡 ตรวจพบยอดขายจาก Summary:")
-                print(f"   - Normal (Tier 1): {total_normal_sales:,.2f}")
-                print(f"   - Below (Tier 2+3): {total_below_sales:,.2f}")
-                print(f"   - Total Sales: {total_sales:,.2f}")
-
-            except Exception:
-                total_sales = total_normal_sales = total_below_sales = 0.0
-                print("⚠️ ไม่พบข้อมูลยอดขาย Normal/Below ใน summary dataframe")
-
-            # --- ✅ START: ปรับ logic การคำนวณยอดหัก ---
-            # 1. Incentive รวม
-            incentives_df = final_summary_df[
-                final_summary_df['description'].str.startswith('(+) ')
-            ]
+            # คำนวณ Incentive / Deduction รวม (สำหรับเก็บลง DB)
+            incentives_df = final_summary_df[final_summary_df['description'].str.startswith('(+) ')]
             incentives_total = incentives_df['value'].sum()
 
-            # 2. Deduction (เฉพาะรายการจริง)
             deductions_df = final_summary_df[
                 final_summary_df['description'].str.startswith('(-) ')
                 & (~final_summary_df['description'].str.contains('ดำเนินการ', case=False, na=False))
                 & (~final_summary_df['description'].str.contains('หัก ณ ที่จ่าย', case=False, na=False))
             ]
             deductions_total = deductions_df['value'].sum()
+            
+            # ดึงยอดขายรวม (Total Sales)
+            # พยายามหา Normal / Below จาก description
+            val_normal_sales = get_val("ปกติ|Normal|Tier 1")
+            val_below_sales = 0.0
+            
+            # หา Below Sales (อาจมีหลายบรรทัด ต้อง Sum)
+            below_rows = final_summary_df[final_summary_df['description'].str.contains("Below|นอกเงื่อนไข|Tier 2|Tier 3", case=False, na=False)]
+            if not below_rows.empty:
+                val_below_sales = below_rows['value'].sum()
+            
+            val_total_sales = val_normal_sales + val_below_sales
+            if val_total_sales == 0: # ถ้าหาไม่เจอ ให้ใช้ยอดรวมจาก DF ตั้งต้น
+                val_total_sales = getattr(self, 'current_total_sales', 0.0)
 
-            print("\n🟡 รายการที่ถูกนับเป็น (-) Deductions (หลังกรอง):")
-            print(deductions_df[['description', 'value']])
-            print(f"✅ Deductions Total (ไม่รวมค่าดำเนินการ/WHT): {deductions_total:,.2f}")
-            # --- ✅ END ---
-
-            # --- ✅ Logic ตรวจหา Gross Commission แบบยืดหยุ่น ---
-            try:
-                gross_row = final_summary_df[
-                    final_summary_df['description'].str.contains("ขั้นต้น|ก่อนหัก|Gross", case=False, na=False)
-                ]
-                final_commission_val = float(gross_row['value'].iloc[0]) if not gross_row.empty else 0.0
-            except Exception:
-                final_commission_val = 0.0
-
-            # --- 2. เตรียมข้อมูลสำหรับบันทึกลง log ---
+            # Dictionary ข้อมูลที่จะบันทึก
             log_data = {
                 "sale_key": self.selected_sale_for_process.get(),
                 "plan_name": plan_name,
                 "payout_period_text": self.current_period_text,
                 "commission_month": self.selected_month,
                 "commission_year": self.selected_year,
-                "calculated_commission": float(self.latest_commission_result.get('final_commission_pre_deductions', 0.0)),
+                "calculated_commission": float(self.latest_commission_result.get('final_commission_pre_deductions', 0.0)), # Base Commission
                 "incentives_total": float(incentives_total),
                 "deductions_total": float(deductions_total),
-                "final_commission": final_commission_val,  # ✅ ใช้ค่าที่หาได้แบบยืดหยุ่น
-                "withholding_tax": get_final_summary_value("(-) หัก ณ ที่จ่าย 3%"),
-                "net_commission": get_final_summary_value("ยอดสรุปคอมหลังหัก ณ ที่จ่าย"),
+                "final_commission": val_gross,      # เก็บ Gross
+                "withholding_tax": val_wht,         # เก็บ WHT
+                "net_commission": val_net,          # เก็บ Net
                 "notes": payout_notes,
                 "summary_data_json": final_summary_df.to_json(orient='records'),
                 "so_ids_json": json.dumps(self.current_so_ids),
-                "total_sales": float(total_sales),
-                "total_normal_sales": float(total_normal_sales),
-                "total_below_sales": float(total_below_sales)
+                "total_sales": float(val_total_sales),
+                "total_normal_sales": float(val_normal_sales),
+                "total_below_sales": float(val_below_sales)
             }
             log_data = {k: v for k, v in log_data.items() if v is not None}
 
-            # --- Debug: แสดงค่าที่จะบันทึกลงฐานข้อมูล ---
-            print("\n🧾 ข้อมูล log_data ที่จะถูกบันทึก:")
-            for k, v in log_data.items():
-                print(f"  {k}: {v}")
-
-            # --- 3. บันทึกลงฐานข้อมูล ---
+            # บันทึกลง DB
             conn = self.app_container.get_connection()
             try:
                 with conn.cursor() as cursor:
@@ -3771,6 +3767,7 @@ class HRScreen(CTkFrame):
                     parent=self
                 )
                 
+                # รีโหลดหน้าจอ
                 self._on_sale_selected_for_process()
                 self._load_payout_history()
             
