@@ -1392,52 +1392,43 @@ class HRVerificationWindow(CTkToplevel):
             sale_theme=self.sale_theme,
             on_save_callback=self._update_all_calculations_and_ui
         )
-    def _on_cell_double_click(self, event):
-        """จัดการ Event เมื่อมีการดับเบิลคลิกที่เซลล์ในตาราง"""
-        tree = event.widget
-        region = tree.identify_region(event.x, event.y)
-        if region != "cell":
-            return
 
-        column_id = tree.identify_column(event.x)
-        column_index = int(column_id.replace('#', '')) - 1
-        
-        # อนุญาตให้แก้ไขเฉพาะคอลัมน์ "ข้อมูลในระบบ" และ "ข้อมูลจาก Express"
-        if column_index not in [1, 2]:
-            return
+    def _on_payout_history_double_click(self, event, tree):
+        """(เวอร์ชัน Debug) ตรวจสอบตำแหน่งคลิกและเปิด Popup"""
+        print("DEBUG: Double Click Detected!") # เช็คว่า event ทำงานไหม
 
-        item_id = tree.focus()
-        column_box = tree.bbox(item_id, column_id)
+        try:
+            # 1. ตรวจสอบ region
+            region = tree.identify("region", event.x, event.y)
+            print(f"DEBUG: Region = {region}")
+            if region != "cell": 
+                return 
 
-        if not column_box:
-            return # หยุดการทำงานถ้าหาตำแหน่งเซลล์ไม่เจอ
-        
-        # --- START: แก้ไขจุดนี้ ---
-        # ดึงค่าตำแหน่งและขนาดออกมาจาก bbox ก่อน
-        x, y, width, height = column_box
-        
-        # นำ width และ height มาใส่ตอนสร้าง CTkEntry
-        entry_edit = ctk.CTkEntry(tree, width=width, height=height, corner_radius=0)
-        
-        # ส่วน .place() จะใช้แค่กำหนดตำแหน่ง x, y
-        entry_edit.place(x=x, y=y)
-        
-        current_value = tree.item(item_id, "values")[column_index]
-        entry_edit.insert(0, current_value)
-        entry_edit.select_range(0, 'end')
-        entry_edit.focus_set()
+            # 2. ดึง Item ID
+            selected_item_iid = tree.focus()
+            print(f"DEBUG: Selected IID = {selected_item_iid}")
+            if not selected_item_iid:
+                return 
 
-        def on_edit_finished(event, save=True):
-            if save:
-                new_value_str = entry_edit.get()
-                tree.set(item_id, column_id, new_value_str)
-                self._save_cell_edit(tree, item_id, column_index, new_value_str)
-            entry_edit.destroy()
+            # 3. แปลง ID
+            payout_id = int(selected_item_iid)
+            print(f"DEBUG: Payout ID = {payout_id}")
 
-        entry_edit.bind("<Return>", on_edit_finished)
-        entry_edit.bind("<KP_Enter>", on_edit_finished)
-        entry_edit.bind("<FocusOut>", on_edit_finished)
-        entry_edit.bind("<Escape>", lambda e: on_edit_finished(e, save=False))
+            # 4. เปิด Popup
+            from hr_windows import PayoutDetailWindow 
+            PayoutDetailWindow(
+                master=self, 
+                app_container=self.app_container, 
+                payout_id=payout_id
+            )
+            print("DEBUG: Popup Opened Successfully")
+
+        except Exception as e:
+            # ใช้ print ธรรมดาแทน traceback เผื่อลืม import
+            print(f"ERROR in double click: {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"เปิดหน้าต่างไม่ได้: {e}", parent=self)
 
     def _save_cell_edit(self, tree, item_id, column_index, new_value_str):
         """บันทึกค่าที่แก้ไขและคำนวณสรุปใหม่"""
@@ -1982,31 +1973,20 @@ class PayoutDetailWindow(CTkToplevel):
         self.payout_id = payout_id
         self.payout_log_data = None
 
-        # --- START: เพิ่มโค้ดส่วนนี้เข้าไป ---
-        # ดึง Theme มาใช้เพื่อสร้าง Style ที่จำเป็น
+        # เตรียม Theme
         try:
             self.theme = self.app_container.THEME["hr"]
         except (AttributeError, KeyError):
-            # Fallback กรณีหา Theme ไม่เจอ
             self.theme = {"primary": "#3B82F6", "header": "#1E40AF"}
 
-        # สร้าง dropdown_style ที่หน้าต่างลูก (SOPopupWindow) ต้องการ
-        self.dropdown_style = {
-            "fg_color": "white",
-            "text_color": "black",
-            "button_color": self.theme.get("primary", "#3B82F6"),
-            "button_hover_color": self.theme.get("header", "#2563EB")
-        }
-        # --- END ---
-
-        self.geometry("800x600")
+        self.geometry("900x650") # ปรับขนาดให้กว้างขึ้นเล็กน้อย
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
         self._load_data()
         self.title(f"รายละเอียดการจ่ายค่าคอม ID: {self.payout_id}")
 
-        # --- Frame สำหรับข้อมูลสรุปและปุ่ม ---
+        # --- Frame 1: ข้อมูลสรุปและปุ่ม ---
         top_frame = CTkFrame(self, fg_color="transparent")
         top_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         top_frame.grid_columnconfigure(0, weight=1)
@@ -2014,40 +1994,36 @@ class PayoutDetailWindow(CTkToplevel):
         self.info_label = CTkLabel(top_frame, text="กำลังโหลดข้อมูล...", font=('Roboto', 14), anchor="w")
         self.info_label.grid(row=0, column=0, sticky="w")
         
-        # --- START: แก้ไขส่วนนี้ (จัดกลุ่มปุ่ม) ---
-        # สร้าง Frame ใหม่สำหรับจัดกลุ่มปุ่มด้านขวา
         button_container = CTkFrame(top_frame, fg_color="transparent")
         button_container.grid(row=0, column=1, padx=10, sticky="e")
 
         self.show_calc_button = CTkButton(
-            button_container, # <--- เปลี่ยน parent
+            button_container, 
             text="แสดงสรุปการคำนวณ", 
             command=self._show_calculation_summary,
-            state="disabled"
+            state="disabled",
+            fg_color=self.theme["primary"]
         )
-        self.show_calc_button.pack(side="left", padx=(0, 5)) # <--- เปลี่ยนเป็น .pack()
+        self.show_calc_button.pack(side="left", padx=(0, 5))
 
-        # +++ ปุ่ม Export ใหม่ +++
         self.export_button = CTkButton(
-            button_container, # <--- ใช้ parent ใหม่
+            button_container, 
             text="Export SO List (Excel)",
-            command=self._on_export_excel, # <--- ฟังก์ชันใหม่ที่จะสร้าง
-            state="disabled"
+            command=self._on_export_excel, 
+            state="disabled",
+            fg_color="#16A34A", hover_color="#15803D"
         )
-        self.export_button.pack(side="left", padx=(5, 0)) # <--- เปลี่ยนเป็น .pack()
-        # --- END: สิ้นสุดการแก้ไข ---
+        self.export_button.pack(side="left", padx=(5, 0))
 
-        # --- Frame สำหรับ Notes/Remarks ---
+        # --- Frame 2: หมายเหตุ ---
         notes_frame = CTkFrame(self, fg_color="transparent")
         notes_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
         CTkLabel(notes_frame, text="หมายเหตุ:", font=('Roboto', 12, 'bold')).pack(anchor="w")
-        self.notes_text = CTkTextbox(notes_frame, height=80, font=('Roboto', 12), state="disabled", fg_color="gray95")
+        self.notes_text = CTkTextbox(notes_frame, height=60, font=('Roboto', 12), state="disabled", fg_color="#F3F4F6", text_color="#333")
         self.notes_text.pack(fill="x", expand=True)
 
-        
-
-        # --- Frame สำหรับแสดงรายการ SO ---
-        so_list_frame = CTkScrollableFrame(self, label_text="รายการ SO ทั้งหมดในการจ่ายรอบนี้:")
+        # --- Frame 3: ตารางรายการ SO ---
+        so_list_frame = CTkScrollableFrame(self, label_text="รายการ SO ทั้งหมดในการจ่ายรอบนี้ (คำนวณ Margin จากยอดขายสินค้า)")
         so_list_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
 
         if self.payout_log_data:
@@ -2059,45 +2035,42 @@ class PayoutDetailWindow(CTkToplevel):
         self.grab_set()
     
     def _on_export_excel(self):
-        """
-        Callback เมื่อผู้ใช้กดปุ่ม Export Excel
-        """
         if not self.payout_id:
             messagebox.showerror("ผิดพลาด", "ไม่พบ Payout ID ที่จะ Export", parent=self)
             return
-        
-        # เรียกใช้ฟังก์ชัน Export ที่เราสร้างไว้ใน export_utils.py
-        export_payout_so_list_to_excel(
-            parent_window=self,
-            app_container=self.app_container,
-            payout_id=self.payout_id
-        )
+        # เรียกใช้ฟังก์ชัน Export จาก export_utils
+        try:
+            export_payout_so_list_to_excel(
+                parent_window=self,
+                app_container=self.app_container,
+                payout_id=self.payout_id
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถ Export ได้: {e}", parent=self)
 
     def _prepare_so_dataframe(self):
-        """(ฟังก์ชันใหม่) เตรียม DataFrame ของ SOs สำหรับแสดงใน Treeview"""
+        """เตรียมข้อมูล SO และคำนวณ Margin ใหม่ (เน้น Margin จากสินค้าเพียวๆ)"""
         if not self.payout_log_data or not self.payout_log_data.get('so_ids_json'):
             return pd.DataFrame()
         
-        so_id_list = json.loads(self.payout_log_data['so_ids_json'])
-        so_ids_in_log = tuple(so_id_list)
+        try:
+            so_id_list = json.loads(self.payout_log_data['so_ids_json'])
+            so_ids_in_log = tuple(so_id_list)
+        except json.JSONDecodeError:
+            return pd.DataFrame()
 
         if not so_ids_in_log:
-            return pd.DataFrame()
-            
-        plan_name = self.payout_log_data.get('plan_name')
-        if not plan_name:
-            messagebox.showerror("ผิดพลาด", "ไม่พบ Plan Name ใน Payout Log นี้", parent=self)
             return pd.DataFrame()
             
         try:
             placeholders = ', '.join(['%s']*len(so_ids_in_log))
             
-            # +++ 1. Query คอลัมน์ที่จำเป็น (ตัด total_revenue และ total_po_shipping_cost ออก) +++
+            # Query ข้อมูล
             query_cols = [
                 "so_number", 
-                "sales_service_amount",     # <-- ยอดขายดิบ (สำหรับแสดงผล)
-                "final_sales_amount",       # <-- ยอดขายที่ HR ยืนยัน (สำหรับคำนวณ Profit)
-                "final_cost_amount",        
+                "sales_service_amount",     # <--- ยอดขายสินค้า (Base Sales)
+                "final_sales_amount",       # <--- ยอดรายรับรวม (Total Revenue)
+                "final_cost_amount",        # <--- ยอดต้นทุนรวม (Total Cost)
                 "cost_multiplier",          
                 "difference_amount"
             ]
@@ -2105,78 +2078,90 @@ class PayoutDetailWindow(CTkToplevel):
             query = f"""
                 SELECT {', '.join(query_cols)}
                 FROM commissions
-                WHERE id IN ({placeholders}) AND is_active = 1
+                WHERE id IN ({placeholders})
+                ORDER BY so_number DESC
             """
             
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=so_ids_in_log)
 
-            # --- 2. แปลงเป็นตัวเลข ---
-            # ยอดขายดิบ (ตัวหาร Margin)
-            sales_raw = pd.to_numeric(df['sales_service_amount'], errors='coerce').fillna(0)
-            
-            # ยอดขายที่ HR ยืนยัน (ตัวตั้ง Profit)
-            final_sales = pd.to_numeric(df['final_sales_amount'], errors='coerce').fillna(0)
-            
-            po_cost = pd.to_numeric(df['final_cost_amount'], errors='coerce').fillna(0)
-            multiplier = pd.to_numeric(df['cost_multiplier'], errors='coerce').fillna(1.03)
-            difference_amount = pd.to_numeric(df['difference_amount'], errors='coerce').fillna(0)
-            
-            # +++ 3. คำนวณ Profit (ตาม Logic ที่ถูกต้อง) +++
-            # Profit = (ยอดขายที่ HR ยืนยัน - ต้นทุนปรับปรุง) + ส่วนต่าง
-            profit = (final_sales - (po_cost * multiplier)) + difference_amount
-            
-            # (สำหรับ Plan D - เราไม่มี total_po_shipping_cost ที่นี่, 
-            # แต่ profit ข้างบนนี้คำนวณจาก final_sales/cost ซึ่ง HR ตรวจสอบแล้ว)
-            # *** ไม่ต้องเช็ค Plan D อีกต่อไป เพราะเราใช้ค่าที่ HR ยืนยันแล้ว ***
+            if df.empty: return pd.DataFrame()
 
-            # +++ 4. คำนวณ Margin (Profit / ยอดขายดิบ) +++
-            # นี่คือสูตรที่ถูกต้อง: profit (จากยอดที่ HR ยืนยัน) / sales_raw (ยอดขายดิบ)
-            df['calculated_margin'] = (profit / sales_raw.replace(0, np.nan)) * 100
-            df['calculated_margin'] = df['calculated_margin'].fillna(0)
+            # --- เริ่มคำนวณ (แก้ไขสูตรตรงนี้) ---
             
-            # 5. คำนวณ status จาก Margin ใหม่
-            df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
+            # 1. เตรียมตัวแปร
+            # ใช้ sales_service_amount เป็นรายรับหลักในการคิดกำไรสินค้า (เพื่อให้ Margin ติดลบถ้าขายขาดทุน)
+            sales_product_only = pd.to_numeric(df['sales_service_amount'], errors='coerce').fillna(0)
             
-            # 6. เปลี่ยนชื่อคอลัมน์
+            final_cost = pd.to_numeric(df['final_cost_amount'], errors='coerce').fillna(0)
+            multiplier = pd.to_numeric(df['cost_multiplier'], errors='coerce').fillna(1.03)
+            diff_amt = pd.to_numeric(df['difference_amount'], errors='coerce').fillna(0)
+            
+            # 2. คำนวณกำไร (Profit) โดยใช้ยอดขายสินค้าเพียวๆ
+            # สูตร: (ยอดขายสินค้า - (ต้นทุน * ตัวคูณ)) + ส่วนต่าง
+            profit = (sales_product_only - (final_cost * multiplier)) + diff_amt
+
+            # 3. คำนวณ Margin %
+            # สูตร: (Profit / ยอดขายสินค้า) * 100
+            df['calculated_margin'] = (profit / sales_product_only.replace(0, np.nan)) * 100
+            df['calculated_margin'] = df['calculated_margin'].fillna(0.0) 
+            
+            # 4. กำหนดสถานะ
+            df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if x >= 10.0 else 'Below Tier')
+            
+            # 5. จัดรูปแบบ DataFrame สำหรับแสดงผล
             df.rename(columns={
                 'so_number': 'SO Number',
                 'status': 'สถานะ (คำนวณ)',
-                'sales_service_amount': 'ยอดขายสุดท้าย (บาท)', # <-- แสดงยอดขายดิบ
-                'calculated_margin': 'Margin สุดท้าย (%)'      # <-- แสดง Margin ที่คำนวณใหม่
+                'sales_service_amount': 'ยอดขายสินค้า (Base)', 
+                'calculated_margin': 'Margin (%)'
             }, inplace=True)
             
-            # 7. เลือกเฉพาะคอลัมน์ที่จะแสดงผล
-            df_display = df[['SO Number', 'สถานะ (คำนวณ)', 'ยอดขายสุดท้าย (บาท)', 'Margin สุดท้าย (%)']]
-            
-            return df_display
+            return df[['SO Number', 'สถานะ (คำนวณ)', 'ยอดขายสินค้า (Base)', 'Margin (%)']]
 
         except Exception as e:
-            print(f"Error preparing SO DataFrame for PayoutDetailWindow: {e}")
-            traceback.print_exc() # พิมพ์ Error เต็มๆ ออกมา
+            print(f"Error preparing SO DataFrame: {e}")
+            traceback.print_exc()
             return pd.DataFrame()
 
     def _populate_data(self):
-        """(ฟังก์ชันใหม่) เติมข้อมูลลงใน Widgets หลังจากโหลดเสร็จ"""
-        if not self.payout_log_data:
-            return
+        """เติมข้อมูลลงใน Widgets"""
+        if not self.payout_log_data: return
+
+        # ดึงยอด Net จาก JSON summary
+        net_comm = 0.0
+        try:
+            summary_data = self.payout_log_data.get('summary_data_json')
+            if isinstance(summary_data, str):
+                summary_data = json.loads(summary_data)
+            
+            if isinstance(summary_data, list):
+                # พยายามหาบรรทัด 'Net' หรือ 'สุทธิ'
+                for item in summary_data:
+                    if 'Net' in item.get('description', '') or 'สุทธิ' in item.get('description', ''):
+                        net_comm = float(item.get('value', 0.0))
+                        break
+                # ถ้าหาไม่เจอ ให้ใช้ net_commission จากคอลัมน์หลัก
+                if net_comm == 0:
+                    net_comm = float(self.payout_log_data.get('net_commission', 0.0))
+        except:
+            net_comm = float(self.payout_log_data.get('net_commission', 0.0))
 
         info_str = (f"พนักงานขาย: {self.payout_log_data.get('sale_key', 'N/A')} | "
                     f"แผน: {self.payout_log_data.get('plan_name', 'N/A')} | "
                     f"วันที่จ่าย: {pd.to_datetime(self.payout_log_data.get('timestamp')).strftime('%d/%m/%Y %H:%M')} | "
-                    f"ยอดสุทธิ: {self.payout_log_data.get('net_commission', 0.0):,.2f} บาท")
+                    f"ยอดโอนสุทธิ: {net_comm:,.2f} บาท")
         self.info_label.configure(text=info_str)
         
         self.notes_text.configure(state="normal")
         self.notes_text.delete("1.0", "end")
-        self.notes_text.insert("1.0", self.payout_log_data.get('notes', 'ไม่มีหมายเหตุ'))
+        self.notes_text.insert("1.0", self.payout_log_data.get('notes', ''))
         self.notes_text.configure(state="disabled")
 
-        # เปิดใช้งานปุ่ม "แสดงสรุปการคำนวณ"
         self.show_calc_button.configure(state="normal")
         self.export_button.configure(state="normal")
 
     def _load_data(self):
-        """(ฟังก์ชันใหม่) โหลดข้อมูล Log การจ่ายเงินจากฐานข้อมูล"""
+        """โหลด Log Data"""
         conn = None
         try:
             conn = self.app_container.get_connection()
@@ -2185,102 +2170,95 @@ class PayoutDetailWindow(CTkToplevel):
                 self.payout_log_data = cursor.fetchone()
 
                 if not self.payout_log_data:
-                    messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูลการจ่ายเงินสำหรับ ID: {self.payout_id}", parent=self)
-                    # ใช้ self.after เพื่อให้หน้าต่างหลักจัดการตัวเองก่อน แล้วค่อยปิด popup
-                    self.after(100, self.destroy)
+                    messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบ Payout ID: {self.payout_id}", parent=self)
+                    self.destroy()
 
         except Exception as e:
-            messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูล Payout Log ได้: {e}", parent=self)
-            self.after(100, self.destroy)
+            messagebox.showerror("Database Error", f"โหลดข้อมูลไม่สำเร็จ: {e}", parent=self)
+            self.destroy()
         finally:
-            if conn:
-                self.app_container.release_connection(conn)
+            if conn: self.app_container.release_connection(conn)
     
     def _show_calculation_summary(self):
-        """เปิดหน้าต่างใหม่เพื่อแสดงตารางสรุปการคำนวณค่าคอม"""
-        if not self.payout_log_data or not self.payout_log_data.get('summary_data_json'): # <--- แก้ไข
-            messagebox.showinfo("ไม่มีข้อมูล", "ไม่พบข้อมูลสรุปการคำนวณสำหรับรอบนี้", parent=self)
-            return
+        """แสดง Popup ตารางสรุปการคำนวณ"""
+        if not self.payout_log_data: return
 
         try:
-            # --- START: แก้ไข Logic การจัดการ JSON ตรงนี้ ---
-            summary_json_data = self.payout_log_data['summary_data_json'] # <--- แก้ไข
-            summary_data = None
+            summary_json_data = self.payout_log_data.get('summary_data_json')
+            summary_data = []
 
             if isinstance(summary_json_data, str):
-                # ถ้าข้อมูลเป็น String (กรณีข้อมูลเก่า) ให้ใช้ json.loads
                 summary_data = json.loads(summary_json_data)
             elif isinstance(summary_json_data, list):
-                # ถ้าข้อมูลเป็น List อยู่แล้ว (กรณีปัจจุบัน) ให้ใช้ได้เลย
                 summary_data = summary_json_data
             
-            if summary_data is None:
-                raise TypeError("ไม่รองรับประเภทข้อมูลสรุปการคำนวณ")
+            if not summary_data:
+                messagebox.showinfo("ไม่มีข้อมูล", "ไม่มีข้อมูลสรุปการคำนวณ", parent=self)
+                return
 
             summary_df = pd.DataFrame(summary_data)
-            # --- END ---
 
-            # สร้างหน้าต่างใหม่ (Pop-up)
+            # สร้างหน้าต่างใหม่
             popup = CTkToplevel(self)
-            popup.title("สรุปวิธีการคำนวณค่าคอมมิชชั่น")
-            popup.geometry("600x400")
+            popup.title("สรุปวิธีการคำนวณ (Calculation Breakdown)")
+            popup.geometry("650x450")
             popup.transient(self)
             popup.grab_set()
             
-            # เรียกใช้ฟังก์ชันสร้างตารางสรุป (ฟังก์ชันนี้มีอยู่แล้วใน HRScreen)
-            # เราต้องแน่ใจว่า master (HRScreen) มีฟังก์ชันนี้อยู่
+            # เรียกใช้ฟังก์ชันสร้างตาราง (จาก HRScreen ถ้ามี หรือสร้างเอง)
             if hasattr(self.master, '_create_commission_summary_table'):
                 self.master._create_commission_summary_table(summary_df, container=popup)
             else:
-                # Fallback กรณีเรียกจากหน้าอื่นที่ไม่มีฟังก์ชันนี้
-                CTkLabel(popup, text="ไม่สามารถแสดงตารางสรุปได้").pack(pady=20)
+                # Fallback: สร้างตารางง่ายๆ
+                from tkinter import ttk
+                tree = ttk.Treeview(popup, columns=list(summary_df.columns), show="headings")
+                tree.pack(fill="both", expand=True)
+                for col in summary_df.columns:
+                    tree.heading(col, text=col)
+                    tree.column(col, width=150)
+                for _, row in summary_df.iterrows():
+                    tree.insert("", "end", values=list(row))
 
-
-        except (json.JSONDecodeError, TypeError) as e:
-            messagebox.showerror("ข้อมูลผิดพลาด", f"ไม่สามารถอ่านข้อมูลสรุปการคำนวณได้: {e}", parent=self)
         except Exception as e:
-            messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาด: {e}", parent=self)
-            traceback.print_exc()
-
+            messagebox.showerror("Error", f"แสดงข้อมูลสรุปไม่ได้: {e}", parent=self)
 
     def _create_so_list_view(self, parent, so_list_df):
-        """(เวอร์ชันปรับปรุง) สร้าง Treeview พร้อมใส่สีให้แถวตามสถานะ"""
+        """สร้างตารางแสดงรายการ SO"""
         if so_list_df.empty:
-            CTkLabel(parent, text="ไม่พบข้อมูล SO ที่เกี่ยวข้อง").pack(pady=10)
+            CTkLabel(parent, text="ไม่พบข้อมูล SO").pack(pady=10)
             return
 
         style = ttk.Style(parent)
         style.theme_use("clam")
-        style.configure("SOList.Treeview.Heading", font=('Roboto', 12, 'bold'), background="#EBF5FF", foreground="#333")
-        style.configure("SOList.Treeview", rowheight=28, font=('Roboto', 11))
-        style.map("SOList.Treeview", background=[('selected', self.app_container.THEME["hr"]["primary"])])
+        style.configure("SOList.Treeview.Heading", font=('Roboto', 12, 'bold'), background="#E0E7FF", foreground="#333")
+        style.configure("SOList.Treeview", rowheight=30, font=('Roboto', 11))
+        
+        # ปรับสี Selection
+        style.map("SOList.Treeview", background=[('selected', self.theme["primary"])])
 
         tree = ttk.Treeview(parent, columns=list(so_list_df.columns), show='headings', style="SOList.Treeview")
         tree.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # --- START: 1. กำหนด Tag สีสำหรับแต่ละสถานะ ---
-        tree.tag_configure('normal_row', background='#F0FDF4') # สีเขียวอ่อน
-        tree.tag_configure('below_row', background='#FEFCE8')  # สีเหลืองอ่อน
-        # --- END ---
+        # กำหนด Tag สี
+        tree.tag_configure('normal_row', background='#F0FDF4') # เขียวอ่อน
+        tree.tag_configure('below_row', background='#FEF2F2') # แดงอ่อน
 
+        # Config Columns
         for col in so_list_df.columns:
-            anchor = 'e' if 'ยอด' in col or '%' in col else 'w'
-            width = 250 if 'Number' in col else 180
-            tree.heading(col, text=col, anchor='center')
+            anchor = 'e' if any(x in col for x in ['บาท', '%', 'Price', 'Amount']) else 'center'
+            width = 200 if 'Number' in col else 150
+            tree.heading(col, text=col)
             tree.column(col, anchor=anchor, width=width)
 
-        # --- START: 2. แก้ไขการวนลูปเพื่อใส่ Tag สีให้แต่ละแถว ---
+        # Insert Data
         for _, row in so_list_df.iterrows():
-            # กำหนด Tag โดยดูจากค่าในคอลัมน์ 'สถานะ (คำนวณ)'
-            status = row['สถานะ (คำนวณ)']
+            status = row.get('สถานะ (คำนวณ)', 'Below Tier')
             tag = 'normal_row' if status == 'Normal' else 'below_row'
             
-            # จัดรูปแบบข้อมูลเหมือนเดิม
             values = []
             for col_name in so_list_df.columns:
                 val = row[col_name]
-                if isinstance(val, (float, np.floating)):
-                    # จัดรูปแบบ Margin ให้มี % ต่อท้าย
+                if isinstance(val, (float, int, np.floating)):
                     if '%' in col_name:
                         values.append(f"{val:,.2f}%")
                     else:
@@ -2288,57 +2266,25 @@ class PayoutDetailWindow(CTkToplevel):
                 else:
                     values.append(val)
             
-            # เพิ่ม `tags=(tag,)` เข้าไปตอน insert ข้อมูล
             tree.insert("", "end", values=values, tags=(tag,))
-        # --- END ---
 
+        # Bind Double Click
         tree.bind("<Double-1>", self._on_so_double_click)
-        # --- END ---
-    
+
     def _on_so_double_click(self, event):
-        """Callback เมื่อมีการดับเบิลคลิกที่รายการ SO"""
+        """ดูรายละเอียด SO เมื่อ Double Click"""
         try:
             tree = event.widget
-            selected_item = tree.focus()
-            if not selected_item:
-                return
+            item = tree.focus()
+            if not item: return
             
-            # ดึงค่า SO Number จากคอลัมน์แรกของแถวที่เลือก
-            so_number = tree.item(selected_item, "values")[0]
-
-            # Query ข้อมูล SO ทั้งหมดจากฐานข้อมูล
-            so_df = pd.read_sql("SELECT * FROM commissions WHERE so_number = %s AND is_active = 1", 
-                                self.app_container.pg_engine, params=(so_number,))
-            if so_df.empty:
-                messagebox.showwarning("ไม่พบข้อมูล", f"ไม่พบข้อมูล SO: {so_number} ในระบบ", parent=self)
-                return
-
-            # สร้าง StringVars จำลองที่หน้าต่าง Pop-up ต้องการ
-            dummy_vars = {
-                'delivery_type_var': tk.StringVar(), 'sales_service_vat_option': tk.StringVar(),
-                'cutting_drilling_fee_vat_option': tk.StringVar(), 'other_service_fee_vat_option': tk.StringVar(),
-                'shipping_vat_option_var': tk.StringVar(), 'credit_card_fee_vat_option_var': tk.StringVar(),
-                'so_grand_total_var': tk.StringVar(), 'so_vs_payment_result_var': tk.StringVar(),
-                'difference_amount_var': tk.StringVar(), 'cash_required_total_var': tk.StringVar(),
-                'cash_verification_result_var': tk.StringVar(), 'sales_vat_calc_var': tk.StringVar(),
-                'cutting_drilling_vat_calc_var': tk.StringVar(), 'other_service_vat_calc_var': tk.StringVar(),
-                'shipping_vat_calc_var': tk.StringVar(), 'card_fee_vat_calc_var': tk.StringVar(),
-                'relocation_cost_vat_option': tk.StringVar(),'relocation_vat_calc_var': tk.StringVar()
-            }
+            so_number = tree.item(item, "values")[0]
             
-            # เปิดหน้าต่าง SOPopupWindow
-            SOPopupWindow(
-                master=self,
-                app_container=self.app_container,
-                sales_data=so_df.iloc[0].to_dict(),
-                so_shared_vars=dummy_vars,
-                sale_theme=self.app_container.THEME["sale"],
-                on_save_callback=None # ไม่ต้องมี callback เพราะเป็นการดูข้อมูลอย่างเดียว
-            )
-
+            # เปิดหน้าต่าง SODetailViewer (ที่มีอยู่แล้วในไฟล์นี้)
+            SODetailViewer(self, self.app_container, so_number)
+            
         except Exception as e:
-            messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดรายละเอียด SO ได้: {e}", parent=self)
-            traceback.print_exc()
+            print(f"Error opening SO detail: {e}")
 
     def _load_and_display_details(self):
         """โหลดข้อมูลจาก DB และสร้าง UI (เวอร์ชันแก้ไขพร้อม Fallback 2 ชั้น)"""

@@ -467,7 +467,9 @@ class HRScreen(CTkFrame):
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
     
     def _create_payout_history_table(self, df):
-        """(เวอร์ชันปรับปรุง) เพิ่มคอลัมน์ ยอดขาย, Normal, BelowT"""
+        """(เวอร์ชันแก้ไขสมบูรณ์) สร้างตารางประวัติการจ่ายเงิน พร้อมแก้ปัญหาคลิกไม่ติดและค่า 0.00"""
+        
+        # 1. ล้างข้อมูลเก่าใน Frame
         for widget in self.payout_history_frame.winfo_children():
             widget.destroy()
 
@@ -475,6 +477,7 @@ class HRScreen(CTkFrame):
             CTkLabel(self.payout_history_frame, text="ไม่พบข้อมูลตามเงื่อนไขที่เลือก").pack(pady=20)
             return
 
+        # 2. ตั้งค่า Style ของตาราง
         style = ttk.Style(self.payout_history_frame)
         style.theme_use("clam")
         
@@ -494,34 +497,37 @@ class HRScreen(CTkFrame):
                     background=[('selected', self.theme["primary"])], 
                     foreground=[('selected', 'white')])
 
+        # 3. สร้าง Frame สำหรับวาง Treeview
         tree_frame = CTkFrame(self.payout_history_frame, fg_color="transparent")
         tree_frame.pack(fill="both", expand=True)
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        # <<< START: 1. เพิ่มคอลัมน์ใหม่ 3 คอลัมน์ >>>
+        # กำหนดชื่อคอลัมน์และหัวข้อ
         columns = {
-            'payout_period_text': 'รอบค่าคอม',  # <--- ✅ เพิ่ม
+            'payout_period_text': 'รอบค่าคอม',
             'sale_key': 'รหัสพนักงาน', 'sale_name': 'ชื่อพนักงาน', 'plan_name': 'แผน',
             'sales_target': 'เป้าหมาย', 
             'total_sales': 'ยอดขาย',
             'total_normal_sales': 'Normal',
             'total_below_sales': 'BelowT',
-            'timestamp': 'วันที่ทำรายการจ่าย', # <--- ✅ แก้ไขชื่อ
+            'timestamp': 'วันที่ทำรายการจ่าย',
             'final_commission': 'ยอดคอม Gross',
-            'incentives_total': 'Incentive', 'deductions_total': 'ยอดหัก', 'withholding_tax': 'หัก 3%', 'net_commission': 'ยอดโอนสุทธิ'
+            'incentives_total': 'Incentive', 'deductions_total': 'ยอดหัก', 
+            'withholding_tax': 'หัก 3%', 'net_commission': 'ยอดโอนสุทธิ'
         }
-        # <<< END >>>
         
         tree = ttk.Treeview(tree_frame, columns=list(columns.keys()), show='headings', style="Payout.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
 
+        # ตั้งค่าสีสลับแถว
         tree.tag_configure('oddrow', background='#FFFFFF')
         tree.tag_configure('evenrow', background='#F0F9FF')
 
+        # 4. ตั้งค่าความกว้างและการจัดวางคอลัมน์
         for col_id, col_text in columns.items():
             anchor = 'w'
-            width = 120 # Default
+            width = 120 # ค่าเริ่มต้น
 
             if col_id == 'sale_name': 
                 width = 200
@@ -529,47 +535,72 @@ class HRScreen(CTkFrame):
                 width = 110
             elif col_id == 'plan_name': 
                 width = 80
-            elif col_id == 'payout_period_text': # <--- ✅ เพิ่ม
+            elif col_id == 'payout_period_text':
                 width = 130
             
-            # <<< START: 2. ตั้งค่าให้คอลัมน์ใหม่เป็นชิดขวา และกำหนดขนาด >>>
-            if col_id in ['sales_target', 'total_sales', 'final_commission',
-                'incentives_total', 'deductions_total', 
-                'withholding_tax', 'net_commission']: # <--- ✅ เพิ่ม 'withholding_tax' ที่นี่
+            # คอลัมน์ตัวเลขให้ชิดขวา
+            if col_id in ['sales_target', 'total_sales', 'total_normal_sales', 'total_below_sales',
+                'final_commission', 'incentives_total', 'deductions_total', 
+                'withholding_tax', 'net_commission']:
                 anchor = 'e'
                 width = 130
-            elif col_id in ['total_normal_sales', 'total_below_sales']:
-                anchor = 'e'
-                width = 100 
-            # <<< END >>>
+                if col_id in ['total_normal_sales', 'total_below_sales']:
+                    width = 100 
             
             tree.heading(col_id, text=col_text, anchor='center')
             tree.column(col_id, anchor=anchor, width=width, minwidth=60)
 
+        # 5. วนลูปใส่ข้อมูล (Data Population)
         for i, row in df.iterrows():
             tag = 'evenrow' if i % 2 == 0 else 'oddrow'
 
             values = []
             for col_id in columns.keys():
                 value = row[col_id]
-                if pd.notna(value):
+                
+                # รายชื่อคอลัมน์ที่เป็นตัวเลขเงิน (ต้องแปลง Null เป็น 0.00 เสมอ)
+                money_cols = [
+                    'sales_target', 'total_sales', 'total_normal_sales', 'total_below_sales', 
+                    'final_commission', 'incentives_total', 'deductions_total', 
+                    'withholding_tax', 'net_commission'
+                ]
+
+                if col_id in money_cols:
+                    try:
+                        # พยายามแปลงเป็น float (รองรับทั้ง None, "", และ string ที่มี comma)
+                        if pd.isna(value) or str(value).strip() == "":
+                            float_val = 0.0
+                        else:
+                            float_val = float(str(value).replace(',', ''))
+                        values.append(f"{float_val:,.2f}")
+                    except ValueError:
+                        # ถ้าแปลงไม่ได้จริงๆ ให้เป็น 0.00
+                        values.append("0.00")
+                
+                # ถ้าไม่ใช่คอลัมน์เงิน แต่มีค่า (ไม่ว่าง)
+                elif pd.notna(value) and str(value).strip() != "":
                     if isinstance(value, datetime): 
-                        values.append(value.strftime('%d/%m/%Y')) # Format วันที่
-                    elif isinstance(value, (float, np.floating, int)): # <<< 3. เพิ่ม int เข้าไปเผื่อ
+                        values.append(value.strftime('%d/%m/%Y'))
+                    elif isinstance(value, (float, np.floating, int)): 
                         values.append(f"{value:,.2f}")
                     else: 
                         values.append(str(value))
                 else:
+                    # ค่าว่างสำหรับคอลัมน์ทั่วไป
                     values.append("")
             
+            # สำคัญ: iid ต้องเป็น ID ของ record ใน Database เพื่อให้คลิกแล้วดึงข้อมูลถูก
             tree.insert("", "end", values=values, iid=str(row['id']), tags=(tag,))
         
+        # 6. Bind Event (จุดสำคัญที่แก้ไข!)
+        # ใช้แค่ Double-1 เท่านั้น เพื่อเปิด Popup (ห้ามใส่ Button-1 ซ้อน)
         tree.bind("<Double-1>", lambda e: self._on_payout_history_double_click(e, tree))
 
+        # 7. สร้าง Scrollbar
         v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         v_scroll.grid(row=0, column=1, sticky='ns')
         tree.configure(yscrollcommand=v_scroll.set)
-
+        
     def _payout_prev_page(self):
         if self.history_current_page > 0:
             self.history_current_page -= 1
@@ -1042,16 +1073,30 @@ class HRScreen(CTkFrame):
             self._create_payout_history_table(pd.DataFrame())
 
     def _on_payout_history_double_click(self, event, tree):
-        """(เวอร์ชันปรับปรุง) Callback เมื่อดับเบิลคลิกบนตารางประวัติการจ่ายเงิน"""
-        selected_item_iid = tree.focus()
-        if not selected_item_iid:
-            return
-        
+        """(เวอร์ชันแก้ไข) ตรวจสอบการคลิกให้แม่นยำขึ้น"""
         try:
+            # 1. ตรวจสอบว่าคลิกที่ส่วนไหนของตาราง
+            region = tree.identify("region", event.x, event.y)
+            if region != "cell": 
+                return # ถ้าคลิกที่หัวตารางหรือขอบ ให้ข้ามไป
+
+            # 2. ดึง Item ที่ถูกเลือก
+            selected_item_iid = tree.focus()
+            if not selected_item_iid:
+                return # ถ้าไม่มีการเลือก ให้ข้ามไป
+            
+            # 3. แปลง ID เป็นตัวเลข (iid ที่เราใส่ไว้คือ row['id'])
             payout_id = int(selected_item_iid)
+            
+            # 4. เปิดหน้าต่าง Popup
+            # ตรวจสอบว่า Class PayoutDetailWindow ถูก Import มาแล้ว
+            from hr_windows import PayoutDetailWindow 
             PayoutDetailWindow(master=self, app_container=self.app_container, payout_id=payout_id)
-        except (ValueError, TclError) as e:
-            print(f"Invalid item selected: {selected_item_iid}, error: {e}")
+
+        except Exception as e:
+            # ถ้ามี Error ให้แจ้งเตือนออกมา (จะได้รู้ว่าผิดตรงไหน)
+            messagebox.showerror("Error", f"ไม่สามารถเปิดรายละเอียดได้: {e}", parent=self)
+            traceback.print_exc()
 
     ### --- จุดที่แก้ไข --- ###
     # ผมได้รวมฟังก์ชัน _create_plan_a_summary_table และ _create_plan_b_summary_table
@@ -3237,25 +3282,27 @@ class HRScreen(CTkFrame):
         if not selected_period or not sale_key or "-" in selected_period:
             return
 
+        # แยกเดือนและปี
         month_name, year_be_str = selected_period.split()
         month_num = self.thai_month_map[month_name]
         year_ad = int(year_be_str) - 543
 
-        # <<< START: เพิ่ม 3 บรรทัดนี้เพื่อบันทึกค่างวดไว้ใช้ตอน Save >>>
+        # บันทึกค่างวดไว้ใช้ตอน Save
         self.current_period_text = selected_period
         self.selected_month = month_num
         self.selected_year = year_ad
-        # <<< END >>>
 
+        # ดึงข้อมูล Plan และ Target
         plan_info = self.sales_user_info.get(sale_key, {})
         plan = plan_info.get('plan', 'Plan A')
         sales_target = float(plan_info.get('target', 0.0))
 
+        # เคลียร์หน้าจอและแสดง Loading
         for widget in self.process_result_frame.winfo_children(): widget.destroy()
         loading = self._show_loading(self.process_result_frame)
 
         try:
-            # --- [แก้ไข] SQL Query: เปลี่ยนเงื่อนไขเวลาเพื่อดึงยอดตกค้าง ---
+            # --- ดึงข้อมูล Commissions (รวมยอดตกค้าง) ---
             query_comm = """
                 SELECT c.*, COALESCE(po_costs.total_po_shipping_cost, 0) as total_po_shipping_cost
                 FROM commissions c
@@ -3274,14 +3321,12 @@ class HRScreen(CTkFrame):
                     )
             """
             
-            # --- [แก้ไข] Params: ส่งปี 2 ครั้ง และเดือน 1 ครั้ง ตามลำดับใน Query ---
             params = (sale_key, year_ad, year_ad, month_num)
             
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
 
-            # <<< START: บันทึก ID ของ SO ที่จะถูกประมวลผล >>>
+            # บันทึก ID ของ SO ที่จะถูกประมวลผล
             self.current_so_ids = self.current_comm_df['id'].tolist()
-            # <<< END >>>
             
             self.current_total_sales = self.current_comm_df['final_sales_amount'].sum()
             self.current_total_cost = self.current_comm_df['final_cost_amount'].sum()
@@ -3291,137 +3336,113 @@ class HRScreen(CTkFrame):
                 CTkLabel(self.process_result_frame, text="ไม่พบข้อมูลในงวดที่เลือก").pack(pady=20)
                 return
             
-            # --- ส่วนที่ 1: คำนวณค่าหักจาก "ส่วนต่างค่ารถ" ---
+            # ==============================================================================
+            # เริ่มการคำนวณ Auto Deduction (หักค่าใช้จ่ายอื่นๆ อัตโนมัติ)
+            # ==============================================================================
+            print("\n" + "="*25)
+            print("### DEBUG: Auto-Deduction Calculation ###")
+
+            # --- ส่วนที่ 1: ส่วนต่างค่าขนส่ง (Shipping) ---
+            print("-" * 15)
+            print("Part 1: Shipping Cost Difference")
             total_so_shipping = self.current_comm_df['shipping_cost'].sum()
             total_po_shipping = self.current_comm_df['total_po_shipping_cost'].sum()
             shipping_deduction = 0.0
             
-            print("\n" + "="*25)
-            print("### DEBUG: Auto-Deduction Calculation ###")
-            print("-" * 15)
-            print("Part 1: Shipping Cost Difference")
-            print(f"  - Total PO Shipping: {total_po_shipping:,.2f}")
-            print(f"  - Total SO Shipping: {total_so_shipping:,.2f}")
-
             if total_po_shipping > total_so_shipping:
                 shipping_diff = total_po_shipping - total_so_shipping
                 shipping_deduction = (shipping_diff / 0.2) * 0.0175
-                
                 print(f"  - Difference (PO > SO): {shipping_diff:,.2f}")
-                print(f"  - Formula: ({shipping_diff:,.2f} / 0.2) * 0.0175")
                 print(f"  - Shipping Deduction = {shipping_deduction:,.2f}")
             else:
-                print("  - Condition not met (PO Shipping <= SO Shipping)")
-                print(f"  - Shipping Deduction = 0.00")
+                print("  - Condition not met. Shipping Deduction = 0.00")
 
-            # --- ส่วนที่ 2: คำนวณค่าหักจาก "ส่วนต่างนายหน้า" ---
+            # --- ส่วนที่ 2: ส่วนต่างนายหน้า (Brokerage) ---
             print("-" * 15)
             print("Part 2: Brokerage Difference")
-            
-            print("  --- Breakdown of Difference Amount ---")
-            df_with_diff = self.current_comm_df[self.current_comm_df['difference_amount'] != 0]
-            if not df_with_diff.empty:
-                for index, row in df_with_diff.iterrows():
-                    print(f"    -> SO: {row['so_number']}, Difference: {row['difference_amount']:,.2f}")
-            else:
-                print("    -> No SOs with a non-zero difference amount.")
-            print("  ------------------------------------")
-
             total_brokerage = self.current_comm_df['brokerage_fee'].sum()
-            total_difference = self.current_comm_df['difference_amount'].sum()
+            total_difference = self.current_comm_df['difference_amount'].sum() # ยอดโอนขาด/เกิน
             difference_deduction = 0.0
             diff_base = total_brokerage - total_difference
-            
-            print(f"  - Total Brokerage Fee: {total_brokerage:,.2f}")
-            print(f"  - Total Difference Amount: {total_difference:,.2f}")
-            print(f"  - Base Calculation (Brokerage - Difference): {diff_base:,.2f}")
             
             if diff_base < 0:
                 positive_diff = abs(diff_base)
                 difference_deduction = (positive_diff / 0.2) * 0.0175
-                
-                print(f"  - Condition met (Base < 0)")
-                print(f"  - Formula: ({positive_diff:,.2f} / 0.2) * 0.0175")
+                print(f"  - Brokerage ({total_brokerage}) < Difference ({total_difference})")
                 print(f"  - Difference Deduction = {difference_deduction:,.2f}")
             else:
-                print("  - Condition not met (Base >= 0)")
-                print(f"  - Difference Deduction = 0.00")
+                print("  - Condition not met. Difference Deduction = 0.00")
 
-            # --- 3. รวมยอดหักอัตโนมัติทั้งหมด ---
-            final_auto_deduction = shipping_deduction + difference_deduction
+            # --- [เพิ่มใหม่] ส่วนที่ 3: การตลาด (คูปอง + ของแถม) ---
+            print("-" * 15)
+            print("Part 3: Marketing Cost (Coupon + Giveaways)")
+            
+            total_coupon = self.current_comm_df['coupons'].sum()
+            total_giveaways = self.current_comm_df['giveaways'].sum()
+            total_marketing = total_coupon + total_giveaways
+            marketing_deduction = 0.0
+
+            if total_marketing > 0:
+                marketing_deduction = (total_marketing / 0.2) * 0.0175
+                print(f"  - Total Coupon: {total_coupon:,.2f}")
+                print(f"  - Total Giveaways: {total_giveaways:,.2f}")
+                print(f"  - Marketing Sum: {total_marketing:,.2f}")
+                print(f"  - Marketing Deduction = {marketing_deduction:,.2f}")
+            else:
+                print("  - No Coupon or Giveaways found.")
+
+            # --- 4. รวมยอดหักอัตโนมัติทั้งหมด ---
+            final_auto_deduction = shipping_deduction + difference_deduction + marketing_deduction
 
             print("-" * 15)
-            print("Part 3: Final Summary")
-            print(f"  - Total Auto Deduction = (Shipping) {shipping_deduction:,.2f} + (Difference) {difference_deduction:,.2f}")
             print(f"  - FINAL AUTO DEDUCTION: {final_auto_deduction:,.2f}")
             print("="*25 + "\n")
+            # ==============================================================================
 
             df_for_calc = self.current_comm_df.copy()
             
-            # --- แก้ไข: แปลงค่าว่าง (None/NaN) ให้เป็น 0.0 เสมอก่อนส่งไปคำนวณ ---
+            # แปลงค่าว่างเป็น 0.0
             df_for_calc['final_sales_amount'] = pd.to_numeric(df_for_calc['final_sales_amount'], errors='coerce').fillna(0.0)
             df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
             
-            # <<< START: แก้ไข Logic การดึงค่าดำเนินการ (ฉบับแก้ไขปัญหาเปลี่ยนหน้าแล้วเป็น 0) >>>
+            # จัดการค่าดำเนินการ (Operating Fee)
             default_operating_fee = 0.0
-            
-            # 1. เตรียมค่า Default มาตรฐานตาม Plan ไว้ก่อน
             default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
             standard_plan_fee = default_fees.get(plan, 0.0)
 
             try:
-                # 2. ลองดึงค่าจากช่องกรอกเดิม (กรณี User แก้ตัวเลขแล้วกดคำนวณใหม่ในหน้าเดิม)
-                # ต้องเช็ค winfo_exists() เพื่อดูว่าปุ่มยังอยู่จริงไหม
+                # ลองดึงค่าจากช่องกรอกเดิม (ถ้ามี)
                 if hasattr(self, 'operating_fee_entry') and self.operating_fee_entry and self.operating_fee_entry.winfo_exists():
                     fee_str = self.operating_fee_entry.get()
-                    # ถ้า User ลบจนว่าง ให้ถือว่าเป็น 0, ถ้ามีค่าให้ใช้ค่านั้น
                     if fee_str.strip() == "":
                         default_operating_fee = 0.0
                     else:
                         default_operating_fee = utils.convert_to_float(fee_str)
-                    print(f"-> [DEBUG] อ่านค่าจาก Textbox เดิม: {default_operating_fee}")
                 else:
-                    # ถ้าปุ่มไม่อยู่แล้ว (เปลี่ยนหน้ามา) ให้ Raise Error เพื่อเข้า except
-                    raise AttributeError("Widget not found")
+                    # ถ้าเปลี่ยนหน้ามาใหม่ ใช้ค่า Default
+                    default_operating_fee = standard_plan_fee
 
-            except (AttributeError, Exception) as e:
-                # 3. ถ้าหาปุ่มไม่เจอ (เปลี่ยนหน้า) หรือเกิด Error -> ให้ใช้ค่า Default ตาม Plan
-                print(f"-> [DEBUG] โหลดใหม่/เปลี่ยนหน้า -> ใช้ค่า Default ตาม Plan: {standard_plan_fee}")
+            except (AttributeError, Exception):
                 default_operating_fee = standard_plan_fee
-            # <<< END: สิ้นสุดการแก้ไข >>>
             
-            # --- คำนวณค่าคอม ---
-            if plan == 'Plan A':
-                print(f"-> [DEBUG] กำลังส่งค่า Operating Fee: {default_operating_fee} ไปคำนวณ (Plan A)")
-                print("="*30 + "\n")
+            # --- ส่งคำนวณค่าคอมมิชชั่น ---
+            if plan in ['Plan A', 'Plan B', 'Plan C', 'Plan D']:
                 self.initial_commission_result = business_logic.calculate_monthly_commission(
                     plan_name=plan,
-                    comm_df=df_for_calc, # Plan A ใช้ df_for_calc
-                    sales_target=sales_target,
-                    operating_fee=default_operating_fee,
-                    incentives=None, 
-                    additional_deductions=None
-                )
-            
-            elif plan in ["Plan B", "Plan C", "Plan D"]:
-                print(f"-> [DEBUG] กำลังส่งค่า Operating Fee: {default_operating_fee} ไปคำนวณ (Plan {plan})")
-                print("="*30 + "\n")
-                self.initial_commission_result = business_logic.calculate_monthly_commission(
-                    plan_name=plan,
-                    comm_df=df_for_calc, # Plan B,C,D ก็ควรใช้ df_for_calc
+                    comm_df=df_for_calc,
                     sales_target=sales_target,
                     operating_fee=default_operating_fee,
                     incentives=None,
                     additional_deductions=None
                 )
-            
             else:
                 self.initial_commission_result = {'type': 'error', 'message': f'ไม่รู้จัก Plan: {plan}'}
 
             self.latest_commission_result = self.initial_commission_result
 
-            result_type = self.initial_commission_result.get('type')
+            # --- แสดงผลลัพธ์ ---
             loading.destroy()
+            result_type = self.initial_commission_result.get('type')
 
             if result_type in ['no_commission', 'error']:
                 message = self.initial_commission_result.get('message', 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ')
@@ -3432,8 +3453,9 @@ class HRScreen(CTkFrame):
                 else:
                     self.commission_details_df = None
                 
+                # สร้างหน้าจอ Input พร้อมค่าที่คำนวณได้
                 self._create_hr_input_interface(
-                    auto_deduction_value=final_auto_deduction,
+                    auto_deduction_value=final_auto_deduction, # ส่งค่ายอดรวมที่คิดได้ไปแสดง
                     default_operating_fee_to_display=default_operating_fee 
                 )
 
