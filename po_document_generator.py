@@ -13,9 +13,6 @@ from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.lib.pagesizes import A4
 import sys
-import os
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -44,9 +41,11 @@ def register_thai_fonts():
 
 def _build_left_column(header_data, styles, P, PB, format_num, width):
     """
-    สร้างคอลัมน์ซ้าย (SELL AUDITOR) - (เวอร์ชันปรับปรุงความยืดหยุ่น)
+    สร้างคอลัมน์ซ้าย (SELL AUDITOR) - (แก้ไข: เอาวันที่ไปใส่แทนที่จุดไข่ปลาด้านขวาสุด)
     """
     story = []
+    
+    # --- Helper: Register Styles safely ---
     def safe_add_style(styles, style):
         if style.name not in styles.byName: styles.add(style)
 
@@ -56,35 +55,53 @@ def _build_left_column(header_data, styles, P, PB, format_num, width):
     safe_add_style(styles, ParagraphStyle(name='Small_Right_TH', fontName='THSarabunNew', fontSize=10, leading=12, alignment=2))
 
     def PS(text, style='Small_TH'): return Paragraph(str(text) if text is not None else '', styles[style])
-    def PSafe(text, style='Small_TH', max_length=25):
-        text_str = str(text)
+    def PSafe(text, style='Small_TH', max_length=100):
+        text_str = str(text) if text is not None else ''
         if len(text_str) > max_length: text_str = text_str[:max_length-3] + "..."
         return Paragraph(text_str, styles[style])
     
+    # --- Helper: Date Formatter ---
+    from datetime import datetime
+    def fmt_date(d):
+        if not d: return ""
+        try:
+            if isinstance(d, str): 
+                d_obj = datetime.strptime(d[:10], "%Y-%m-%d")
+                return d_obj.strftime("%d/%m/%Y")
+            elif hasattr(d, 'strftime'):
+                return d.strftime("%d/%m/%Y")
+            return ""
+        except:
+            return ""
+
     c1, c3, c4 = 2.2*cm, 1.0*cm, 2.0*cm 
     c2 = width - (c1 + c3 + c4)
 
+    # --- ส่วน Header ---
     combined_header_data = [
         [PB('ขาย', 'Small_TH'), PS('SELL AUDITOR', 'Small_Center_TH'), PB('ผู้ตรวจ..............', 'Small_TH'), None],
         [PB('SO NUMBER', 'Small_TH'), PSafe(header_data.get('so_number', ''), 'Small_TH'), PB('แผนก', 'Small_TH'), PS(header_data.get('department', ''))],
         [PB('Sale Name', 'Small_TH'), PSafe(header_data.get('sale_name', ''), 'Small_TH'), PB('วันที่', 'Small_TH'), PS(str(header_data.get('bill_date', '')))],
-        [PB('Customer Name', 'Small_TH'), PSafe(header_data.get('customer_name', ''), 'Small_TH', 40), None, None],
+        [PB('Customer Name', 'Small_TH'), PSafe(header_data.get('customer_name', ''), 'Small_TH', 50), None, None],
+        [PB('เรื่อง (Subject)', 'Small_TH'), PSafe(header_data.get('subject', '-'), 'Small_TH', 60), None, None]
     ]
     
-    # --- จุดที่แก้ไข: ปล่อยให้ความสูงแถวเป็นอัตโนมัติ ---
     header_table = Table(combined_header_data, colWidths=[c1, c2, c3, c4]) 
     header_table.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
         ('LEFTPADDING', (0,0), (-1,-1), 3),
-        ('SPAN', (2,0), (3,0)), ('SPAN', (1,3), (-1,3)),
-        ('BACKGROUND', (0,1), (0,3), colors.lemonchiffon), ('BACKGROUND', (2,1), (2,2), colors.lemonchiffon)
+        ('SPAN', (2,0), (3,0)), 
+        ('SPAN', (1,3), (-1,3)), 
+        ('SPAN', (1,4), (-1,4)),
+        ('BACKGROUND', (0,1), (0,4), colors.lemonchiffon), 
+        ('BACKGROUND', (2,1), (2,2), colors.lemonchiffon)
     ]))
     story.append(header_table)
 
-    # ... ส่วนที่เหลือของฟังก์ชันนี้เหมือนเดิม ...
     title_style = TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('BACKGROUND', (0,0), (-1,-1), colors.lemonchiffon), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')])
     story.append(Table([[PB('SELLING RECORD', style='Small_Center_TH')]], colWidths=[width], rowHeights=[0.5*cm], style=title_style))
 
+    # --- ส่วน Selling Record ---
     sales_before_vat = utils.convert_to_float(header_data.get('sales_service_amount', 0))
     sales_vat = utils.convert_to_float(header_data.get('product_vat_7', 0))
     shipping_before_vat = utils.convert_to_float(header_data.get('shipping_cost', 0))
@@ -101,40 +118,71 @@ def _build_left_column(header_data, styles, P, PB, format_num, width):
     selling_table = Table(selling_data, colWidths=[width*0.29, width*0.16, width*0.29, width*0.26], rowHeights=[0.5*cm]*6)
     selling_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 3), ('RIGHTPADDING', (0,0), (-1,-1), 3)]))
     story.append(selling_table)
+    
     story.append(Table([[PB('ยอดชำระค่าสินค้า/บริการ', style='Small_Center_TH')]], colWidths=[width], rowHeights=[0.5*cm], style=title_style))
+    
     bank_data = [[PB('บัญชีที่ลูกค้าโอน', 'Small_TH'), PS('☑ ธ.กสิกรไทย', 'Small_TH'), PS('☑ ธ.ทหารไทย(ออมทรัพย์)', 'Small_TH')], [None, PS('☑ ธ.ทหารไทย(กระแสรายวัน)', 'Small_TH'), PS('☑ บัญชีกรรมการ', 'Small_TH')]]
     bank_table = Table(bank_data, colWidths=[width*0.29, width*0.35, width*0.36], rowHeights=[0.5*cm]*2)
     bank_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 3), ('SPAN', (0,0), (0,1))]))
     story.append(bank_table)
+
+    # --- ส่วน Payment ---
+    payment1 = utils.convert_to_float(header_data.get('payment1_amount', 0))
+    payment2 = utils.convert_to_float(header_data.get('payment2_amount', 0))
+    
+    # ดึงวันที่มาแปลง
+    p1_date_str = fmt_date(header_data.get('payment1_date'))
+    p2_date_str = fmt_date(header_data.get('payment2_date'))
+    
+    # [Fallback Logic] ข้อมูลเก่า
+    if payment1 == 0 and payment2 == 0:
+        total_pay_in_db = utils.convert_to_float(header_data.get('total_payment_amount', 0))
+        if total_pay_in_db > 0:
+            payment1 = total_pay_in_db
+            # ถ้าข้อมูลเก่า ให้ใช้วันที่รวมแทน ถ้าวันที่แยกมันว่าง
+            if not p1_date_str:
+                p1_date_str = fmt_date(header_data.get('payment_date'))
+
+    total_deposit = payment1 + payment2
+
+    # --- [แก้ไข] กำหนดข้อความที่จะแสดงในช่องวันที่ขวาสุด ---
+    # ถ้ามียอดและมีวันที่ -> แสดงวันที่
+    # ถ้าไม่มี -> แสดงจุดไข่ปลา
+    date_display_1 = p1_date_str if (payment1 > 0 and p1_date_str) else '....../....../......'
+    date_display_2 = p2_date_str if (payment2 > 0 and p2_date_str) else '....../....../......'
+
     combined_payment_data = [
-        [PS('☑ มัดจำ 1 ชำระเต็ม'), PS(format_num(header_data.get('payment1_amount',0)), 'Small_Right_TH'), PS('☑ ชำระเงินแล้ว'), PS('....../....../......', 'Small_Center_TH')],
-        [PS('☑ มัดจำ 2'), PS(format_num(header_data.get('payment2_amount',0)), 'Small_Right_TH'), PS('☑ ชำระเงินแล้ว'), PS('....../....../......', 'Small_Center_TH')],
+        # Col 4 (ช่องขวาสุด) ใช้ตัวแปร date_display ที่เราเตรียมไว้
+        [PS('☑ มัดจำ 1'), PS(format_num(payment1), 'Small_Right_TH'), PS('☑ ชำระเงินแล้ว'), PS(date_display_1, 'Small_Center_TH')],
+        [PS('☑ มัดจำ 2'), PS(format_num(payment2), 'Small_Right_TH'), PS('☑ ชำระเงินแล้ว'), PS(date_display_2, 'Small_Center_TH')],
+        
+        [PB('รวมมัดจำ', 'Small_TH'), PS(format_num(total_deposit), 'Small_Right_TH'), None, None],
+        
         [PB('ยอดค้างชำระ', 'Small_TH'), PS(format_num(header_data.get('balance_due',0)), 'Small_Right_TH'), PS('☑ ชำระเงินแล้ว'), PS('....../....../......', 'Small_Center_TH')],
         [PB('ยอดชำระรวม VAT', 'Small_TH'), PS(format_num(header_data.get('total_payment_amount',0)), 'Small_Right_TH'), PS('☑ ชำระเงินแล้ว'), PS('....../....../......', 'Small_Center_TH')],
         [PB('เลขที่ใบกำกับภาษี', 'Small_TH'), PS('', 'Small_TH'), PB('วันที่ออกเอกสาร', 'Small_TH'), PS(str(header_data.get('bill_date', '')), 'Small_TH')],
         [PB('Remark*', 'Small_TH'), PSafe(header_data.get('remark', ''), 'Small_TH', 80), None, None]
     ]
-    payment_final_table = Table(combined_payment_data, colWidths=[width*0.29, width*0.19, width*0.25, width*0.27], rowHeights=[0.5*cm]*5 + [1.0*cm])
-    payment_final_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 3), ('RIGHTPADDING', (0,0), (-1,-1), 3), ('VALIGN', (0,-1), (-1,-1), 'TOP'), ('SPAN', (1,-1), (-1,-1))]))
+    
+    payment_final_table = Table(combined_payment_data, colWidths=[width*0.29, width*0.19, width*0.25, width*0.27], 
+                                rowHeights=[0.5*cm]*6 + [1.0*cm])
+    
+    payment_final_table.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black), 
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
+        ('LEFTPADDING', (0,0), (-1,-1), 3), 
+        ('RIGHTPADDING', (0,0), (-1,-1), 3), 
+        ('VALIGN', (0,-1), (-1,-1), 'TOP'), 
+        ('SPAN', (1,-1), (-1,-1)),
+        ('SPAN', (2, 2), (3, 2)), 
+        ('BACKGROUND', (0, 2), (-1, 2), colors.whitesmoke) 
+    ]))
     story.append(payment_final_table)
     return story
 
 def _build_right_column(header_data, items_data, payments_data, styles, P, PB, format_num, width):
     """
-    สร้างคอลัมน์ขวา (เวอร์ชันสุดท้าย ปรับ Header และ Logic จำนวนแถว)
-    [!!!] แก้ไข 3 จุด:
-    1. แก้ไข `header_data_grid` แถวที่ 2 (PO NUMBER) เพื่อเพิ่ม 'Credit Term'
-    2. แก้ไข `header_data_grid` แถวที่ 3 (Supplier Name) เพื่อแก้ Span Bug
-    3. แก้ไข `header_table.setStyle` เพื่อลบ SPAN ที่ผิดพลาดของ 'แผนก' และ 'RR Number'
-       และปรับ SPAN ของแถวที่ 2 และ 3 ให้ถูกต้อง
-    [!!!] แก้ไขครั้งที่ 4 (ตามคำขอ):
-    4. ยุบตาราง 4 ก้อนด้านล่าง (payment_top, payment_mid, shipping, summary)
-       ให้กลายเป็นตารางใหญ่ก้อนเดียว (payment_table_unified) เพื่อให้เส้นตรงกัน
-    [!!!] แก้ไขครั้งที่ 5 (ตามคำขอ):
-    5. ปรับ SPAN ของแถวที่ 3 (Supplier Name) ให้ตรงกับแถว 0, 1, 2 เพื่อให้เส้นแนวตั้งตรงกัน
-    [!!!] แก้ไขครั้งที่ 6 (ตามคำขอ):
-    6. ปรับฟอนต์ "ชื่อบริษัทจัดส่ง" เป็น 9px (Small_Wrapped_TH)
-    7. แก้ไขการดึงข้อมูล 'shipper' และ 'WHT' ในตาราง shipping ให้ถูกต้อง
+    สร้างคอลัมน์ขวา
     """
     story = []
     
@@ -144,10 +192,9 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     safe_add_style(styles, ParagraphStyle(name='Small_TH', fontName='THSarabunNew', fontSize=10, leading=12))
     safe_add_style(styles, ParagraphStyle(name='Small_Center_TH', fontName='THSarabunNew', fontSize=10, leading=12, alignment=1))
     safe_add_style(styles, ParagraphStyle(name='Small_Right_TH', fontName='THSarabunNew', fontSize=10, leading=12, alignment=2))
-    safe_add_style(styles, ParagraphStyle(name='Small_Wrapped_TH', fontName='THSarabunNew', fontSize=9, leading=11, wordWrap='CJK')) # <-- Style ที่เราจะใช้ (9px)
+    safe_add_style(styles, ParagraphStyle(name='Small_Wrapped_TH', fontName='THSarabunNew', fontSize=9, leading=11, wordWrap='CJK'))
     safe_add_style(styles, ParagraphStyle(name='Header_Bold_TH', fontName='THSarabunNew-Bold', fontSize=11, leading=13, alignment=1))
     safe_add_style(styles, ParagraphStyle(name='Product_Name_TH', fontName='THSarabunNew', fontSize=9, leading=11, wordWrap='CJK'))
-    
     safe_add_style(styles, ParagraphStyle(name='Tiny_Center_TH', fontName='THSarabunNew', fontSize=8, leading=10, alignment=1))
 
     def make_para(text, style='Small_TH'):
@@ -217,14 +264,16 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     full_payment_date = None; cn_refund_date = None; display_bank_name = ""; display_account_number = ""
     for payment in payments_data:
         p_type = payment.get('payment_type'); amount = payment.get('amount', 0); p_date = payment.get('payment_date')
-        if p_type in ["Payment 1", "Payment 2"]: deposit_amount += amount
+        if p_type in ["Payment 1", "Payment 2"]: 
+            deposit_amount += amount
+            if p_date: latest_deposit_date = p_date
         elif p_type == "Full Payment": full_payment_amount = amount; full_payment_date = p_date
         elif p_type == "CN Refund": cn_refund_amount = amount; cn_refund_date = p_date
         if not display_bank_name and payment.get('bank_name'):
             display_bank_name = payment.get('bank_name'); display_account_number = payment.get('bank_account_number')
-    grand_total = header_data.get('grand_total', 0) or 0.0; balance_due = grand_total - (deposit_amount + full_payment_amount)
-
-    # --- (ส่วนนี้คือ จุดแก้ไขที่ 4 - ยุบตาราง) ---
+    
+    grand_total = header_data.get('grand_total', 0) or 0.0
+    balance_due = grand_total - (deposit_amount + full_payment_amount)
 
     payment_widths = [2.0*cm, 2.2*cm, 1.8*cm, 3.8*cm] 
     payment_scale = width / sum(payment_widths)
@@ -232,7 +281,7 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
 
     unified_payment_data = []
     
-    # Top (3 rows) - (index 0, 1, 2)
+    # Top (3 rows)
     payment_data_top = [
         [PB('เลขที่บัญชี', 'Small_TH'), make_para(display_account_number), PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(header_data.get('total_cost', 0)), 'Small_Right_TH')], 
         [PB('ธนาคาร', 'Small_TH'), make_para(display_bank_name), PB('Vat 7%', 'Small_TH'), make_para(format_num(header_data.get('vat_7_percent_amount', 0)), 'Small_Right_TH')], 
@@ -240,7 +289,7 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     ]
     unified_payment_data.extend(payment_data_top)
     
-    # Mid (4 rows) - (index 3, 4, 5, 6)
+    # Mid (4 rows) - ส่วนที่แสดงมัดจำ (Deposit)
     payment_data_mid = [
         [PB('มัดจำ', 'Small_TH'), make_para(format_num(deposit_amount), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para(str(latest_deposit_date) if latest_deposit_date else '', 'Small_Center_TH')], 
         [PB('ยอดค้าง', 'Small_TH'), make_para(format_num(balance_due), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para('', 'Small_Center_TH')], 
@@ -249,43 +298,32 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     ]
     unified_payment_data.extend(payment_data_mid)
 
-    # --- START: จุดแก้ไขที่ 6 และ 7 ---
-    # Shipping (4 rows) - (index 7, 8, 9, 10)
+    # Shipping
     shipping_cost = header_data.get('shipping_to_stock_cost', 0) + header_data.get('shipping_to_site_cost', 0)
-    
-    # คำนวณยอด WHT จากข้อมูลที่ถูกต้อง
     stock_wht_type = header_data.get('shipping_to_stock_wht_type', 'ไม่มีหัก')
     stock_wht_1 = header_data.get('shipping_to_stock_cost', 0) * 0.01 if stock_wht_type == '1%' else 0
-    stock_wht_3 = header_data.get('shipping_to_stock_cost', 0) * 0.03 if stock_wht_type == '3%' else 0
-    
     site_wht_type = header_data.get('shipping_to_site_wht_type', 'ไม่มีหัก')
     site_wht_1 = header_data.get('shipping_to_site_cost', 0) * 0.01 if site_wht_type == '1%' else 0
-    site_wht_3 = header_data.get('shipping_to_site_cost', 0) * 0.03 if site_wht_type == '3%' else 0
-    
     total_wht_1 = stock_wht_1 + site_wht_1
+
+    # หัก 3% logic (เผื่อไว้ถ้ามีในอนาคต)
+    stock_wht_3 = header_data.get('shipping_to_stock_cost', 0) * 0.03 if stock_wht_type == '3%' else 0
+    site_wht_3 = header_data.get('shipping_to_site_cost', 0) * 0.03 if site_wht_type == '3%' else 0
     total_wht_3 = stock_wht_3 + site_wht_3
 
-    # แสดงผล shipper โดยเลือกจาก stock ก่อน ถ้าไม่มีให้เอา site มาแสดง
     shipper_display = header_data.get('shipping_to_stock_shipper', '')
     if not shipper_display:
         shipper_display = header_data.get('shipping_to_site_shipper', '')
 
     shipping_data = [
         [PB('ค่าจัดส่งรับจ้าง', 'Small_TH'), make_para(format_num(shipping_cost), 'Small_Right_TH'), PB('วันที่จัดส่ง', 'Small_TH'), make_para('..../../..', 'Small_Center_TH')], 
-        
-        # [!!!] แก้ไขแถวนี้: เปลี่ยน style เป็น 'Small_Wrapped_TH' (9px) และแก้คีย์ข้อมูล
         [PB('ชื่อบริษัทจัดส่ง', 'Small_TH'), make_para(shipper_display, 'Small_Wrapped_TH'), PB('รอบส่ง', 'Small_TH'), make_para('', 'Small_TH')], 
-        
-        # [!!!] แก้ไขแถวนี้: ใช้ total_wht_1
         [PB('ประเภทรถ', 'Small_TH'), make_para(''), PB('หัก 1%', 'Small_TH'), make_para(format_num(total_wht_1), 'Small_Right_TH')], 
-        
-        # [!!!] แก้ไขแถวนี้: ใช้ total_wht_3
         [PB('ค่าจัดส่ง', 'Small_TH'), make_para(''), PB('หัก 3%', 'Small_TH'), make_para(format_num(total_wht_3), 'Small_Right_TH')]
     ]
     unified_payment_data.extend(shipping_data)
-    # --- END: จุดแก้ไขที่ 6 และ 7 ---
 
-    # Summary (2 rows) - (index 11, 12)
+    # Summary
     summary_data = [
         [PB('ยอดชำระจริง', 'Small_TH'), make_para(''), make_para('วัน................เดือน................ปี.......', 'Small_Center_TH'), None], 
         [PB('Remark*', 'Small_TH'), make_para(header_data.get('remark', ''), 'Small_Wrapped_TH'), None, None]
@@ -343,7 +381,6 @@ def generate_multi_po_pdf(so_header_data, all_po_data):
                           leftMargin=1.0*cm, rightMargin=1.0*cm,
                           topMargin=1.2*cm, bottomMargin=1.2*cm)
 
-    # --- จุดที่แก้ไข: สร้าง Page Template ที่มี 2 Frames (2 คอลัมน์) ---
     gap = 0.5 * cm
     col_width = (doc.width - gap) / 2
     
@@ -352,7 +389,6 @@ def generate_multi_po_pdf(so_header_data, all_po_data):
 
     two_column_template = PageTemplate(id='TwoCol', frames=[left_frame, right_frame])
     doc.addPageTemplates([two_column_template])
-    # --- สิ้นสุดการแก้ไข ---
 
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name='Normal_TH', fontName='THSarabunNew', fontSize=10, leading=12))
@@ -384,11 +420,9 @@ def generate_multi_po_pdf(so_header_data, all_po_data):
                 width=frame_width
             )
             
-            # --- จุดที่แก้ไข: เพิ่มเนื้อหาลง story โดยตรง ไม่ใช้ Master Table ---
             story.extend(left_content)
             story.append(FrameBreak())
             story.extend(right_content)
-            # --- สิ้นสุดการแก้ไข ---
         
         doc.build(story)
         messagebox.showinfo("สำเร็จ", f"สร้างเอกสารรวมเรียบร้อย:\n{save_path}")

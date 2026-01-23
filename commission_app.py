@@ -1206,12 +1206,21 @@ class CommissionApp(CTkFrame):
         set_entry_value(self.giveaway_value_entry, data.get('giveaways'))
         set_radio_button(self.relocation_vat_option_var, data.get('relocation_cost_vat_option'))
 
+        # --- [แก้ไข] Payment Logic: จัดการยอดแยกย่อยให้ถูกต้อง ---
+        val_p1 = data.get('payment1_amount', 0.0)
+        val_p2 = data.get('payment2_amount', 0.0)
+        
+        # Fallback: ถ้ายอดแยกเป็น 0 แต่ยอดรวม (total) มีค่า (สำหรับข้อมูลเก่า) ให้เอายอดรวมไปใส่ช่อง 1 แทน
+        total_payment = data.get('total_payment_amount', 0.0) or 0.0
+        if (val_p1 == 0 or val_p1 is None) and (val_p2 == 0 or val_p2 is None) and total_payment > 0:
+            val_p1 = total_payment
 
-        payment1 = data.get('total_payment_amount', 0.0) # Simplified for now
-        set_entry_value(self.payment1_amount_entry, payment1)
+        set_entry_value(self.payment1_amount_entry, val_p1)
         self.payment1_percent_var.set("ระบุยอดเอง")
-        self.payment2_amount_entry.delete(0, tk.END)
+        
+        set_entry_value(self.payment2_amount_entry, val_p2)
         self.payment2_percent_var.set("ระบุยอดเอง")
+        # ---------------------------------------------------
 
         set_date_selector(self.payment1_date_selector, data.get('payment1_date'))
         set_date_selector(self.payment2_date_selector, data.get('payment2_date'))
@@ -1225,7 +1234,6 @@ class CommissionApp(CTkFrame):
         set_date_selector(self.date_to_wh_selector, data.get('date_to_warehouse'))
         set_date_selector(self.date_to_customer_selector, data.get('date_to_customer'))
         set_entry_value(self.pickup_rego_entry, data.get('pickup_registration'))
-
 
         self.payment1_method_var.set(data.get('payment1_method', 'ไม่เลือก'))
         self.payment2_method_var.set(data.get('payment2_method', 'ไม่เลือก'))
@@ -1759,17 +1767,20 @@ class CommissionApp(CTkFrame):
             "coupons": utils.convert_to_float(self.coupon_value_entry.get()),
             "giveaways": utils.convert_to_float(self.giveaway_value_entry.get()),
             "relocation_cost_vat_option": self.relocation_vat_option_var.get(),
-            # <<< START: ADD NEW DATA GATHERING >>>
+            
             "delivery_type": self.delivery_type_var.get(),
             "pickup_location": self.pickup_location_entry.get().strip(),
             "relocation_cost": utils.convert_to_float(self.relocation_cost_entry.get()),
             "date_to_warehouse": self.date_to_wh_selector.get_date(),
             "date_to_customer": self.date_to_customer_selector.get_date(),
             "pickup_registration": self.pickup_rego_entry.get().strip(),
-            # <<< END: ADD NEW DATA GATHERING >>>
 
-            # Payment
+            # --- [แก้ไข] Payment: เพิ่มการเก็บยอดแยกย่อย เพื่อให้ PDF นำไปใช้ได้ถูกต้อง ---
+            "payment1_amount": utils.convert_to_float(self.payment1_amount_entry.get()), 
+            "payment2_amount": utils.convert_to_float(self.payment2_amount_entry.get()),
             "total_payment_amount": utils.convert_to_float(self.payment_total_var.get()),
+            # ------------------------------------------------------------------------
+
             "payment_date": main_payment_date,
             "payment1_date": p1_date,
             "payment2_date": p2_date,

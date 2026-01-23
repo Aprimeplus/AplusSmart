@@ -1,5 +1,3 @@
-# edit_commission_window.py (ฉบับแก้ไข: แยก บันทึก กับ ส่ง)
-
 import tkinter as tk
 from customtkinter import (CTkToplevel, CTkScrollableFrame, CTkLabel, CTkEntry, CTkButton,
                            CTkFont, CTkFrame)
@@ -42,7 +40,8 @@ class EditCommissionWindow(CTkToplevel):
         self.numeric_cols = [
             'sales_service_amount', 'shipping_cost', 'total_payment_amount', 'brokerage_fee',
             'giveaways', 'coupons', 'transfer_fee', 'credit_card_fee', 'wht_3_percent',
-            'relocation_cost', 'cash_product_input', 'cash_actual_payment'
+            'relocation_cost', 'cash_product_input', 'cash_actual_payment',
+            'payment1_amount', 'payment2_amount' # เพิ่มคอลัมน์ใหม่ที่อาจจะเป็นตัวเลข
         ]
         self.integer_cols = ['commission_month', 'commission_year']
         self.so_number = self.data_row.get('so_number')
@@ -88,7 +87,14 @@ class EditCommissionWindow(CTkToplevel):
             for col_name in self.db_column_names:
                 if col_name in excluded_cols: continue
 
+                # ถ้ายังไม่มีใน Map ให้แสดงชื่อ Column เดิมไปก่อน
                 display_name = header_map_thai.get(col_name, col_name)
+                
+                # ปรับแต่งชื่อแสดงผลสำหรับคอลัมน์ใหม่ (ถ้ายังไม่ได้แก้ใน main_app.py)
+                if col_name == 'subject': display_name = 'เรื่อง (Subject)'
+                if col_name == 'payment1_amount': display_name = 'ยอดมัดจำ 1'
+                if col_name == 'payment2_amount': display_name = 'ยอดมัดจำ 2'
+
                 label = CTkLabel(form_frame, text=f"{display_name}:", font=("Roboto", 14))
                 label.grid(row=row_index, column=0, padx=10, pady=5, sticky="w")
 
@@ -105,9 +111,8 @@ class EditCommissionWindow(CTkToplevel):
                     if not isinstance(entry, DateSelector):
                         entry.configure(fg_color="gray85")
             
-            # --- START: 1. เปลี่ยนข้อความบนปุ่ม ---
+            # --- ปุ่มบันทึก ---
             self.save_button = CTkButton(self, text="บันทึกการแก้ไข", command=self._save_changes, font=("Roboto", 16, "bold"))
-            # --- END: 1. เปลี่ยนข้อความบนปุ่ม ---
             self.save_button.pack(pady=(5, 10), padx=10)
 
         except Exception as e:
@@ -120,7 +125,7 @@ class EditCommissionWindow(CTkToplevel):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                # แก้ไขให้ดึงข้อมูลจาก id แทน so_number เพื่อความแม่นยำ
+                # ดึงข้อมูลจาก id แทน so_number เพื่อความแม่นยำ
                 record_id_to_load = self.data_row.get('id')
                 cursor.execute("SELECT * FROM commissions WHERE id = %s AND is_active = 1", (record_id_to_load,))
                 db_data_dict = cursor.fetchone()
@@ -129,6 +134,12 @@ class EditCommissionWindow(CTkToplevel):
                 self.original_record_id = db_data_dict.get('id')
                 for col_name, entry_widget in self.entries.items():
                     value = db_data_dict.get(col_name)
+                    
+                    # แปลงค่า None ให้เป็นค่าว่างหรือ 0 ตามประเภทข้อมูล
+                    if value is None:
+                         if col_name in self.numeric_cols: value = 0.0
+                         elif col_name == 'subject': value = '-'
+                    
                     if isinstance(entry_widget, DateSelector): entry_widget.set_date(value)
                     elif isinstance(entry_widget, CTkEntry):
                         if entry_widget.winfo_exists():
@@ -158,7 +169,7 @@ class EditCommissionWindow(CTkToplevel):
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 if self.original_record_id is not None:
-                    # Deactivate the old record, marking it as corrected
+                    # Deactivate the old record
                     cursor.execute("UPDATE commissions SET is_active = 0, status = 'Corrected by SM' WHERE id = %s", (self.original_record_id,))
 
                 new_data = {}
@@ -170,14 +181,11 @@ class EditCommissionWindow(CTkToplevel):
                     elif col_name in self.numeric_cols: new_data[col_name] = utils.convert_to_float(entry_widget.get())
                     else: new_data[col_name] = entry_widget.get().strip() if entry_widget.get() else None
 
-                # --- START: 2. ปรับ Logic การบันทึก ---
+                # --- Logic สถานะ ---
                 if self.user_role == 'Sales Manager':
-                    # เมื่อ Manager แก้ไข ให้สถานะกลับไปเป็น "รออนุมัติ" จาก Manager อีกครั้ง
-                    # เพื่อให้ Manager เป็นคนกดยืนยัน (Approve) จากหน้าจอหลักเอง
                     new_data["status"] = 'Awaiting SM Approval'
-                else: # กรณี Sale เป็นคนแก้ไขเอง (จากงานที่ถูกตีกลับ)
-                    new_data["status"] = 'Edited' # หรืออาจจะเป็น 'Pending Sale Manager Approval' ก็ได้ ขึ้นอยู่กับ Flow
-                # --- END: 2. ปรับ Logic การบันทึก ---
+                else: 
+                    new_data["status"] = 'Edited'
 
                 new_data["is_active"] = 1
                 new_data["original_id"] = self.original_record_id
@@ -190,16 +198,11 @@ class EditCommissionWindow(CTkToplevel):
                 placeholders_str = ', '.join(['%s'] * len(all_db_columns))
                 cursor.execute(f"INSERT INTO commissions ({cols_str}) VALUES ({placeholders_str}) RETURNING id", tuple(ordered_values))
                 
-                # --- START: 3. เอาส่วนการส่ง Notification ออกจากหน้านี้ ---
-                # การส่ง Notification จะเกิดขึ้นเมื่อ Manager กดปุ่ม "รวบรวมส่ง HR" ที่หน้าจอหลัก
-                # --- END: 3. เอาส่วนการส่ง Notification ออก ---
-
             conn.commit()
-            # --- START: 4. เปลี่ยนข้อความยืนยัน ---
             messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไขเรียบร้อยแล้ว\nกรุณากด 'อนุมัติ' จากหน้าจอหลักอีกครั้งเพื่อยืนยันและส่งต่อ", parent=self)
-            # --- END: 4. เปลี่ยนข้อความยืนยัน ---
             
-            self.refresh_callback() # รีเฟรชหน้าจอ Sale Manager
+            if self.refresh_callback:
+                self.refresh_callback() 
             self.destroy()
 
         except Exception as e:
