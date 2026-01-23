@@ -55,6 +55,51 @@ import utils
 import business_logic
 # --- DIALOG CLASSES ---
 
+# วางไว้ต่อจาก import หรือกลุ่ม Class Dialog อื่นๆ (เช่น ManualEntryDialog)
+
+class DateRangeSelectionDialog(CTkToplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("กำหนดช่วงเวลา")
+        self.geometry("350x250")
+        self.grab_set()
+        self.transient(master)
+        
+        self.start_date = None
+        self.end_date = None
+        self.confirmed = False
+
+        # ใช้ DateSelector ที่มีอยู่ใน custom_widgets
+        CTkLabel(self, text="วันที่เริ่มต้น:", font=master.label_font).pack(pady=(20, 5))
+        self.start_picker = DateSelector(self)
+        self.start_picker.pack(pady=5)
+
+        CTkLabel(self, text="วันที่สิ้นสุด:", font=master.label_font).pack(pady=(10, 5))
+        self.end_picker = DateSelector(self)
+        self.end_picker.pack(pady=5)
+        
+        # ตั้งค่าเริ่มต้นเป็นวันนี้
+        self.start_picker.set_date(datetime.now())
+        self.end_picker.set_date(datetime.now())
+
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        CTkButton(btn_frame, text="ตกลง", command=self._on_confirm, fg_color="#16A34A").pack(side="left", padx=10)
+        CTkButton(btn_frame, text="ยกเลิก", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
+        
+        utils.center_window(self)
+
+    def _on_confirm(self):
+        self.start_date = self.start_picker.get_date()
+        self.end_date = self.end_picker.get_date()
+        
+        if self.start_date > self.end_date:
+            messagebox.showerror("ผิดพลาด", "วันที่เริ่มต้นต้องมาก่อนวันที่สิ้นสุด", parent=self)
+            return
+            
+        self.confirmed = True
+        self.destroy()
+
 class ManualEntryDialog(CTkToplevel):
     def __init__(self, master):
         super().__init__(master)
@@ -367,7 +412,7 @@ class HRScreen(CTkFrame):
         }
         
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-        self.period_options = ["ปีนี้", "เดือนนี้", "Q1", "Q2", "Q3", "Q4"] + self.thai_months
+        self.period_options = ["ปีนี้", "เดือนนี้", "Q1", "Q2", "Q3", "Q4"] + self.thai_months + ["กำหนดช่วงเวลาเอง..."]
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
 
         # Pagination vars
@@ -466,6 +511,66 @@ class HRScreen(CTkFrame):
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
     
+    def _on_target_filter_search(self):
+        """ฟังก์ชันทำงานเมื่อกดปุ่มค้นหาในหน้าเป้าการขาย"""
+        try:
+            # 1. แปลงค่าจาก Dropdown เป็น datetime
+            def get_date_from_vars(d_var, m_var, y_var):
+                d = int(d_var.get())
+                m = self.thai_months.index(m_var.get()) + 1
+                y = int(y_var.get()) - 543 # แปลง พ.ศ. กลับเป็น ค.ศ.
+                return datetime(y, m, d)
+
+            start_date = get_date_from_vars(self.start_d_var, self.start_m_var, self.start_y_var)
+            end_date = get_date_from_vars(self.end_d_var, self.end_m_var, self.end_y_var)
+            
+            # ตั้งเวลาให้ครอบคลุมทั้งวัน (00:00:00 - 23:59:59)
+            start_date = start_date.replace(hour=0, minute=0, second=0)
+            end_date = end_date.replace(hour=23, minute=59, second=59)
+
+            if start_date > end_date:
+                messagebox.showerror("วันที่ไม่ถูกต้อง", "วันที่เริ่มต้นต้องมาก่อนวันที่สิ้นสุด", parent=self)
+                return
+
+            # 2. บันทึกค่าลงตัวแปรที่ _get_sales_vs_target_data รู้จัก
+            self.custom_target_start = start_date
+            self.custom_target_end = end_date
+            
+            # 3. บันทึก Sale ที่เลือก (ถ้าเลือก 'ทั้งหมด' จะเป็น None หรือ handle ใน query)
+            self.custom_target_sale = self.target_sale_var.get()
+
+            # 4. เรียกฟังก์ชันวาดกราฟ (ใช้ Logic เดิมที่มีอยู่แล้ว)
+            # เราส่ง keyword พิเศษไปเพื่อให้มันรู้ว่าต้องใช้ custom date
+            self.sales_target_period_var.set("กำหนดช่วงเวลาเอง...") 
+            self._update_sales_target_dashboard()
+
+        except ValueError:
+            messagebox.showerror("วันที่ผิดพลาด", "วันที่ระบุไม่มีอยู่จริง (เช่น 31 ก.พ.)", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
+
+    def _on_sales_target_period_change(self, selected_period):
+        if selected_period == "กำหนดช่วงเวลาเอง...":
+            # เรียกใช้ Dialog ที่สร้างไว้
+            dialog = DateRangeSelectionDialog(self)
+            self.wait_window(dialog)
+            
+            if dialog.confirmed:
+                # บันทึกวันที่เลือกไว้ในตัวแปร
+                self.custom_target_start = dialog.start_date
+                self.custom_target_end = dialog.end_date
+                # อัปเดตกราฟ
+                self._update_sales_target_dashboard()
+            else:
+                # ถ้ากดยกเลิก ให้กลับไปเป็นค่าเดิม (เช่น เดือนนี้)
+                self.sales_target_period_var.set("เดือนนี้")
+        else:
+            # กรณีเลือกปกติ (Q1, เดือน, ปี)
+            self.custom_target_start = None
+            self.custom_target_end = None
+            self._update_sales_target_dashboard()
+
     def _create_payout_history_table(self, df):
         """(เวอร์ชันแก้ไขสมบูรณ์) สร้างตารางประวัติการจ่ายเงิน พร้อมแก้ปัญหาคลิกไม่ติดและค่า 0.00"""
         
@@ -1485,7 +1590,75 @@ class HRScreen(CTkFrame):
         return start_date, end_date
 
     def _create_sales_target_tab(self, parent_tab):
-        parent_tab.grid_columnconfigure(0, weight=1); parent_tab.grid_rowconfigure(1, weight=1); filter_frame = CTkFrame(parent_tab, fg_color="transparent"); filter_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew"); CTkLabel(filter_frame, text="ช่วงเวลา:", font=self.label_font).pack(side="left", padx=(5,10)); self.sales_target_period_var = tk.StringVar(value="เดือนนี้"); period_menu = CTkOptionMenu(filter_frame, variable=self.sales_target_period_var, values=self.period_options, command=lambda _: self._update_sales_target_dashboard()); period_menu.pack(side="left", padx=5); refresh_button = CTkButton(filter_frame, text="Refresh", width=100, fg_color=self.theme["primary"], command=self._update_sales_target_dashboard); refresh_button.pack(side="left", padx=20); self.sales_target_chart_frame = CTkFrame(parent_tab, border_width=1, corner_radius=10); self.sales_target_chart_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        """
+        สร้าง Tab เป้าการขายแบบใหม่: เลือกวัน/เดือน/ปี เริ่มต้น-สิ้นสุด และเลือกพนักงานได้
+        (แก้ไข: เพิ่มตัวแปร sales_target_period_var เพื่อกัน Error)
+        """
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1)
+        
+        # --- [แก้ไข] สร้างตัวแปรนี้ไว้เสมอ เพื่อไม่ให้ฟังก์ชันอื่น Error ---
+        self.sales_target_period_var = tk.StringVar(value="เดือนนี้") 
+
+        # --- 1. ส่วนตัวกรอง (Filter Toolbar) ---
+        filter_frame = CTkFrame(parent_tab, fg_color="transparent")
+        filter_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        # --- [A] เลือกพนักงาน ---
+        CTkLabel(filter_frame, text="พนักงานขาย:", font=self.label_font).pack(side="left", padx=(5, 5))
+        self.target_sale_var = tk.StringVar(value="ทั้งหมด")
+        # ดึงรายชื่อ Sales มาใส่
+        sale_options = ["ทั้งหมด"] + sorted(self.sales_keys_list) if hasattr(self, 'sales_keys_list') else ["ทั้งหมด"]
+        
+        self.target_sale_menu = CTkOptionMenu(filter_frame, variable=self.target_sale_var, values=sale_options)
+        self.target_sale_menu.pack(side="left", padx=5)
+
+        # --- [B] ตัวช่วยสร้าง Dropdown วันที่ ---
+        days = [str(i) for i in range(1, 32)]
+        months = self.thai_months  # ใช้ list เดือนไทยที่มีใน class
+        current_year = datetime.now().year
+        # แสดงปี พ.ศ. (บวก/ลบ 2 ปี)
+        years = [str(y + 543) for y in range(current_year - 2, current_year + 3)]
+
+        def create_date_picker(label_text):
+            frame = CTkFrame(filter_frame, fg_color="transparent")
+            frame.pack(side="left", padx=10)
+            
+            CTkLabel(frame, text=label_text, font=self.label_font_bold).pack(side="left", padx=(0, 5))
+            
+            # วัน
+            d_var = tk.StringVar(value=str(datetime.now().day))
+            d_menu = CTkOptionMenu(frame, variable=d_var, values=days, width=60)
+            d_menu.pack(side="left", padx=2)
+            
+            # เดือน
+            m_idx = datetime.now().month - 1
+            m_var = tk.StringVar(value=months[m_idx])
+            m_menu = CTkOptionMenu(frame, variable=m_var, values=months, width=110)
+            m_menu.pack(side="left", padx=2)
+            
+            # ปี
+            y_var = tk.StringVar(value=str(current_year + 543))
+            y_menu = CTkOptionMenu(frame, variable=y_var, values=years, width=80)
+            y_menu.pack(side="left", padx=2)
+            
+            return d_var, m_var, y_var
+
+        # --- สร้างชุดเลือก "จากวันที่" ---
+        self.start_d_var, self.start_m_var, self.start_y_var = create_date_picker("จาก:")
+
+        # --- สร้างชุดเลือก "ถึงวันที่" ---
+        self.end_d_var, self.end_m_var, self.end_y_var = create_date_picker("ถึง:")
+
+        # --- [C] ปุ่มค้นหา ---
+        search_btn = CTkButton(filter_frame, text="🔍 ค้นหา", width=100, 
+                               fg_color=self.theme["primary"], 
+                               command=self._on_target_filter_search) # ผูกกับฟังก์ชันคำนวณใหม่
+        search_btn.pack(side="left", padx=20)
+        
+        # --- 2. พื้นที่แสดงกราฟ ---
+        self.sales_target_chart_frame = CTkFrame(parent_tab, border_width=1, corner_radius=10)
+        self.sales_target_chart_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
     def _update_sales_target_dashboard(self):
         loading = self._show_loading(self.sales_target_chart_frame)
@@ -1517,48 +1690,73 @@ class HRScreen(CTkFrame):
         try:
             today = datetime.now()
             current_year = today.year
+            
+            # params จะเก็บค่าที่จะเอาไปแทนใน %s (ต้องเรียงลำดับให้ถูก: Date มาก่อน Sale Key)
             params = []
             
             date_filter_clauses = []
-            target_multiplier = 1 # ค่าเริ่มต้น (สำหรับรายเดือน)
+            target_multiplier = 1.0 
             
-            # --- กำหนดเงื่อนไขเวลา และ ตัวคูณเป้าหมาย ---
+            # =========================================================
+            # 1. จัดการเรื่องวันที่ (Date Filter)
+            # =========================================================
+            if period == "กำหนดช่วงเวลาเอง...":
+                if hasattr(self, 'custom_target_start') and self.custom_target_start:
+                    
+                    s_date = self.custom_target_start
+                    e_date = self.custom_target_end
+                    
+                    # แปลงเป็น datetime ให้ชัวร์ (รองรับทั้ง Object และ String)
+                    if isinstance(s_date, str):
+                        try:
+                            s_date = datetime.strptime(s_date, "%d/%m/%Y")
+                        except ValueError:
+                            s_date = datetime.strptime(s_date, "%Y-%m-%d") # fallback
+                    
+                    if isinstance(e_date, str):
+                        try:
+                            e_date = datetime.strptime(e_date, "%d/%m/%Y")
+                        except ValueError:
+                            e_date = datetime.strptime(e_date, "%Y-%m-%d") # fallback
+
+                    # บังคับเวลา Start/End ให้ครอบคลุมทั้งวัน
+                    start_str = s_date.strftime("%Y-%m-%d 00:00:00")
+                    end_str = e_date.strftime("%Y-%m-%d 23:59:59")
+                    
+                    # ใส่เงื่อนไข SQL และ Params
+                    date_filter_clauses.append("c.bill_date BETWEEN %s AND %s")
+                    params.append(start_str)
+                    params.append(end_str)
+                    
+                    # คำนวณตัวคูณเป้าหมาย (Pro-rate ตามจำนวนวัน)
+                    days_diff = (e_date - s_date).days + 1
+                    target_multiplier = max(0.03, days_diff / 30.0) # กันค่าเป็น 0 หรือติดลบ
+                else:
+                    # กรณี Error ไม่มีค่า ให้ Default เป็นเดือนปัจจุบัน
+                    date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
+                    params.append(today.month)
+                    date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                    params.append(current_year)
             
-            if period == "เดือนนี้":
+            elif period == "เดือนนี้":
                 date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
                 params.append(today.month)
                 date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
-                target_multiplier = 1
-                
+                target_multiplier = 1.0
+
             elif period == "ปีนี้":
                 date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
-                target_multiplier = 12 # เป้าปี = เป้าเดือน * 12
+                target_multiplier = 12.0 
                 
-            elif period == "Q1":
-                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (1, 2, 3)")
+            elif period in ["Q1", "Q2", "Q3", "Q4"]:
+                quarters = {"Q1": (1,2,3), "Q2": (4,5,6), "Q3": (7,8,9), "Q4": (10,11,12)}
+                months = quarters.get(period)
+                date_filter_clauses.append(f"EXTRACT(MONTH FROM c.bill_date) IN ({','.join(map(str, months))})")
                 date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
-                target_multiplier = 3 # เป้าไตรมาส = เป้าเดือน * 3
-                
-            elif period == "Q2":
-                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (4, 5, 6)")
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
-                params.append(current_year)
-                target_multiplier = 3
-                
-            elif period == "Q3":
-                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (7, 8, 9)")
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
-                params.append(current_year)
-                target_multiplier = 3
-                
-            elif period == "Q4":
-                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) IN (10, 11, 12)")
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
-                params.append(current_year)
-                target_multiplier = 3
+                target_multiplier = 3.0 
                 
             elif period in self.thai_month_map:
                 month_num = self.thai_month_map[period]
@@ -1566,22 +1764,30 @@ class HRScreen(CTkFrame):
                 params.append(month_num)
                 date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
-                target_multiplier = 1
+                target_multiplier = 1.0
                 
-            else: # Fallback (กรณีไม่เข้าเงื่อนไขใดเลย ให้คิดเป็นเดือนปัจจุบัน)
+            else: # Fallback
                 date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
                 params.append(today.month)
                 date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
                 params.append(current_year)
-                target_multiplier = 1
                 
             date_filter_sql = " AND ".join(date_filter_clauses)
-            
-            # --- เงื่อนไขสถานะ (Active) ---
             status_condition = "c.status NOT IN ('Draft', 'Cancelled', 'Rejected by SM', 'Rejected by HR', 'Original', 'Edited')"
             
-            # --- Query ---
-            # สังเกตตรง: COALESCE(su.sales_target, 0) * {target_multiplier}
+            # =========================================================
+            # 2. [เพิ่มใหม่] จัดการกรองพนักงาน (Sales Filter)
+            # =========================================================
+            sale_filter_clause = ""
+            
+            # ตรวจสอบว่ามีการเลือกพนักงานหรือไม่ (ตัวแปร custom_target_sale มาจาก _on_target_filter_search)
+            if hasattr(self, 'custom_target_sale') and self.custom_target_sale != "ทั้งหมด":
+                sale_filter_clause = " AND su.sale_key = %s"
+                params.append(self.custom_target_sale) # เพิ่ม sale_key ต่อท้าย params ของวันที่
+
+            # =========================================================
+            # 3. Query
+            # =========================================================
             query = f"""
                 SELECT 
                     su.sale_name, 
@@ -1593,20 +1799,23 @@ class HRScreen(CTkFrame):
                 LEFT JOIN commissions c ON su.sale_key = c.sale_key
                                      AND c.is_active = 1
                                      AND {status_condition}
-                                     AND {date_filter_sql}
-                WHERE su.role = 'Sale' AND su.status = 'Active'
+                                     AND {date_filter_sql}  -- Parameter วันที่ ถูกใช้นี่ (ลำดับแรก)
+                WHERE su.role = 'Sale' 
+                  AND su.status = 'Active' 
+                  {sale_filter_clause} -- Parameter พนักงาน ถูกใช้ที่นี่ (ลำดับหลัง)
                 GROUP BY su.sale_name, su.sale_key, su.sales_target
                 ORDER BY su.sale_name ASC;
             """
             
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
             
-            # เติม 0 กัน Error
+            # Clean data
             df['sales_target'] = df['sales_target'].fillna(0)
             df['total_sales'] = df['total_sales'].fillna(0)
             df['total_outstanding'] = df['total_outstanding'].fillna(0)
             
             return df
+            
         except Exception as e: 
             print(f"Error getting sales vs target data: {e}") 
             messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self)
@@ -3627,6 +3836,7 @@ class HRScreen(CTkFrame):
         (เวอร์ชันปรับปรุงล่าสุด - Popup สรุปยอดเงินและรายการตกหล่นก่อนยืนยัน)
         ✅ โชว์ Gross / WHT 3% / Net ให้ชัดเจน
         ✅ แยกแยะรายการเดือนปัจจุบัน vs รายการตกหล่น
+        ✅ แก้ไข: คำนวณยอดขายรวม (Real Total Sales) จากข้อมูลดิบเพื่อความแม่นยำ 100%
         """
         try:
             # --- 1. ตรวจสอบความพร้อม ---
@@ -3704,14 +3914,13 @@ class HRScreen(CTkFrame):
                 return  # ถ้าตอบ No ก็จบฟังก์ชัน ไม่บันทึก
 
             # =========================================================
-            # ... (ส่วนบันทึกลงฐานข้อมูล ทำงานเหมือนเดิมต่อจากนี้) ...
+            # [แก้ไข] ส่วนเตรียมข้อมูลสำหรับบันทึก Log (คำนวณใหม่ให้แม่นยำ)
             # =========================================================
             
-            # เตรียมข้อมูลสำหรับบันทึก Log
             payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
             plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
             
-            # คำนวณ Incentive / Deduction รวม (สำหรับเก็บลง DB)
+            # 1. ดึงยอด Incentive/Deduction
             incentives_df = final_summary_df[final_summary_df['description'].str.startswith('(+) ')]
             incentives_total = incentives_df['value'].sum()
 
@@ -3722,19 +3931,29 @@ class HRScreen(CTkFrame):
             ]
             deductions_total = deductions_df['value'].sum()
             
-            # ดึงยอดขายรวม (Total Sales)
-            # พยายามหา Normal / Below จาก description
+            # 2. [สำคัญ!] คำนวณยอดขายรวมจาก DataFrame โดยตรง (ไม่ใช้ get_val จากข้อความ)
+            # เพื่อป้องกันปัญหายอดขายใน Log ไม่ครบถ้วน
+            real_total_sales = 0.0
+            if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
+                # แปลงเป็นตัวเลขให้ชัวร์ก่อนรวม
+                s_amount = pd.to_numeric(self.current_comm_df['final_sales_amount'], errors='coerce').fillna(0.0)
+                real_total_sales = s_amount.sum()
+            
+            # 3. พยายามแยกยอด Normal/Below (ถ้าทำได้)
             val_normal_sales = get_val("ปกติ|Normal|Tier 1")
-            val_below_sales = 0.0
             
             # หา Below Sales (อาจมีหลายบรรทัด ต้อง Sum)
             below_rows = final_summary_df[final_summary_df['description'].str.contains("Below|นอกเงื่อนไข|Tier 2|Tier 3", case=False, na=False)]
+            val_below_sales = 0.0
             if not below_rows.empty:
                 val_below_sales = below_rows['value'].sum()
             
-            val_total_sales = val_normal_sales + val_below_sales
-            if val_total_sales == 0: # ถ้าหาไม่เจอ ให้ใช้ยอดรวมจาก DF ตั้งต้น
-                val_total_sales = getattr(self, 'current_total_sales', 0.0)
+            # 4. ตรวจสอบความสมเหตุสมผล (Reconciliation)
+            # ถ้ายอดแยกย่อยรวมกันแล้ว ไม่เท่ายอดจริง (ต่างกันเกิน 1 บาท)
+            # ให้ยึด Real Total Sales เป็นหลัก แล้วปรับยอด Normal ให้เท่ากับยอดรวม เพื่อให้บัญชีลงตัว
+            if abs((val_normal_sales + val_below_sales) - real_total_sales) > 1.0:
+                val_normal_sales = real_total_sales 
+                val_below_sales = 0.0
 
             # Dictionary ข้อมูลที่จะบันทึก
             log_data = {
@@ -3746,16 +3965,22 @@ class HRScreen(CTkFrame):
                 "calculated_commission": float(self.latest_commission_result.get('final_commission_pre_deductions', 0.0)), # Base Commission
                 "incentives_total": float(incentives_total),
                 "deductions_total": float(deductions_total),
-                "final_commission": val_gross,      # เก็บ Gross
-                "withholding_tax": val_wht,         # เก็บ WHT
-                "net_commission": val_net,          # เก็บ Net
+                
+                # ใช้ตัวแปรที่คำนวณไว้ตอน Popup (ถูกต้องตามสูตรบัญชี)
+                "final_commission": float(val_gross),       
+                "withholding_tax": float(val_wht),         
+                "net_commission": float(val_net),          
+                
                 "notes": payout_notes,
                 "summary_data_json": final_summary_df.to_json(orient='records'),
                 "so_ids_json": json.dumps(self.current_so_ids),
-                "total_sales": float(val_total_sales),
+                
+                # ใช้ยอดที่คำนวณใหม่
+                "total_sales": float(real_total_sales),
                 "total_normal_sales": float(val_normal_sales),
                 "total_below_sales": float(val_below_sales)
             }
+            # กรองค่า None ออก
             log_data = {k: v for k, v in log_data.items() if v is not None}
 
             # บันทึกลง DB

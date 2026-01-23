@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from tkinter import messagebox, filedialog
+import numpy as np
 import pandas as pd
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
@@ -260,13 +261,14 @@ import psycopg2.extras # <--- อาจจะต้องเพิ่ม import 
 
 def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
     """
-    Export รายการ SO ทั้งหมดที่อยู่ใน Payout ID ที่กำหนด ออกเป็นไฟล์ Excel
+    (แก้ไขใหม่) Export รายการ SO โดยคำนวณ Margin และ Status 
+    ให้ตรงกับหน้าจอ PayoutDetailWindow 100%
     """
     conn = None
     try:
         conn = app_container.get_connection()
         
-        # 1. ดึงข้อมูล Log เพื่อเอา so_ids_json และ sale_key
+        # 1. ดึงข้อมูล Log
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
             cursor.execute("SELECT so_ids_json, sale_key FROM commission_payout_logs WHERE id = %s", (payout_id,))
             log_data = cursor.fetchone()
@@ -276,41 +278,83 @@ def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
             return
             
         sale_key = log_data['sale_key']
-        so_id_list = json.loads(log_data['so_ids_json'])
-        so_ids_in_log = tuple(so_id_list)
+        try:
+            so_id_list = json.loads(log_data['so_ids_json'])
+            so_ids_in_log = tuple(so_id_list)
+        except:
+            so_ids_in_log = ()
 
         if not so_ids_in_log:
             messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบรายการ SO ในรอบการจ่ายนี้", parent=parent_window)
             return
 
-        # 2. Query ข้อมูล SO ทั้งหมดจาก List ID ที่ได้มา
-        # (ใช้ Query เดียวกันกับที่ PayoutDetailWindow ใช้สร้างตาราง)
+        # 2. [แก้ไข Query] ดึงตัวแปรที่ต้องใช้คำนวณมาให้ครบ
         placeholders = ', '.join(['%s'] * len(so_ids_in_log))
         query = f"""
-            SELECT so_number, final_sales_amount, final_margin
+            SELECT 
+                so_number, 
+                sales_service_amount,   -- ยอดขายสินค้า (ตัวตั้ง)
+                final_sales_amount,     -- ยอดขายสุทธิ
+                final_cost_amount,      -- ต้นทุน
+                cost_multiplier,        -- ตัวคูณต้นทุน
+                difference_amount       -- ส่วนต่าง
             FROM commissions
-            WHERE id IN ({placeholders}) AND is_active = 1
+            WHERE id IN ({placeholders})
         """
         df = pd.read_sql_query(query, app_container.pg_engine, params=so_ids_in_log)
         
-        # 3. เตรียม DataFrame (เพิ่มคอลัมน์ Status)
-        df['status'] = df['final_margin'].apply(lambda x: 'Normal' if pd.notna(x) and x >= 10.0 else 'Below Tier')
+        if df.empty:
+            messagebox.showwarning("เตือน", "ไม่พบข้อมูล SO ในฐานข้อมูล", parent=parent_window)
+            return
+
+        # 3. [เพิ่ม Logic การคำนวณ] แบบเดียวกับ PayoutDetailWindow เป๊ะๆ
         
-        # 4. แปลงชื่อคอลัมน์ (ใช้ HEADER_MAP จาก AppContainer ถ้ามี)
+        # เตรียมตัวแปร (กันค่าว่าง)
+        sales_product_only = pd.to_numeric(df['sales_service_amount'], errors='coerce').fillna(0)
+        final_cost = pd.to_numeric(df['final_cost_amount'], errors='coerce').fillna(0)
+        multiplier = pd.to_numeric(df['cost_multiplier'], errors='coerce').fillna(1.03)
+        diff_amt = pd.to_numeric(df['difference_amount'], errors='coerce').fillna(0)
+        
+        # คำนวณกำไร (Profit) สูตร: (ยอดขายสินค้า - (ต้นทุน * ตัวคูณ)) + ส่วนต่าง
+        profit = (sales_product_only - (final_cost * multiplier)) + diff_amt
+
+        # คำนวณ Margin %
+        # สูตร: (Profit / ยอดขายสินค้า) * 100
+        df['calculated_margin'] = (profit / sales_product_only.replace(0, np.nan)) * 100
+        df['calculated_margin'] = df['calculated_margin'].fillna(0.0) 
+        
+        # กำหนดสถานะ (Status)
+        df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if x >= 10.0 else 'Below Tier')
+        
+        # 4. จัดเตรียมคอลัมน์สำหรับ Export
         header_map = {}
         if hasattr(app_container, 'HEADER_MAP'):
              header_map = app_container.HEADER_MAP
         
+        # Rename ให้สวยงาม
         df.rename(columns={
             'so_number': header_map.get('so_number', 'SO Number'),
-            'final_sales_amount': header_map.get('final_sales_amount', 'ยอดขายสุดท้าย (บาท)'),
-            'final_margin': header_map.get('final_margin', 'Margin สุดท้าย (%)'),
-            'status': 'สถานะ (คำนวณ)'
+            'sales_service_amount': 'ยอดขายสินค้า (Base)',
+            'final_sales_amount': 'ยอดขายรวมสุทธิ (Final)',
+            'calculated_margin': 'Margin ที่คำนวณ (%)',
+            'status': 'สถานะ (Status)'
         }, inplace=True)
+
+        # เลือกเฉพาะคอลัมน์ที่จำเป็น
+        export_cols = [
+            header_map.get('so_number', 'SO Number'), 
+            'สถานะ (Status)', 
+            'ยอดขายสินค้า (Base)', 
+            'Margin ที่คำนวณ (%)',
+            'ยอดขายรวมสุทธิ (Final)'
+        ]
+        
+        # กรองเอาเฉพาะที่มีอยู่จริงใน df
+        final_cols = [c for c in export_cols if c in df.columns]
+        df_export = df[final_cols]
 
         # 5. ถามที่บันทึกไฟล์
         default_filename = f"Payout_{payout_id}_{sale_key}_SOs_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        
         save_path = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
             filetypes=[("Excel files", "*.xlsx")],
@@ -319,10 +363,10 @@ def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
             parent=parent_window
         )
 
-        # 6. บันทึกไฟล์ Excel
+        # 6. บันทึก
         if save_path:
-            df.to_excel(save_path, index=False)
-            messagebox.showinfo("สำเร็จ", f"Export รายการ SO สำเร็จ!\nบันทึกที่: {save_path}", parent=parent_window)
+            df_export.to_excel(save_path, index=False)
+            messagebox.showinfo("สำเร็จ", f"Export รายการ SO สำเร็จ! (ตรงกับหน้าจอ)\nบันทึกที่: {save_path}", parent=parent_window)
 
     except Exception as e:
         messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)

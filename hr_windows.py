@@ -2138,23 +2138,31 @@ class PayoutDetailWindow(CTkToplevel):
                 # พยายามหาบรรทัด 'Net' หรือ 'สุทธิ'
                 for item in summary_data:
                     if 'Net' in item.get('description', '') or 'สุทธิ' in item.get('description', ''):
-                        net_comm = float(item.get('value', 0.0))
+                        net_comm = float(item.get('value') or 0.0) # ใส่ or 0.0 เผื่อไว้ด้วย
                         break
+                
                 # ถ้าหาไม่เจอ ให้ใช้ net_commission จากคอลัมน์หลัก
                 if net_comm == 0:
-                    net_comm = float(self.payout_log_data.get('net_commission', 0.0))
+                    # [แก้จุดที่ 1] เพิ่ม or 0.0 ดัก None
+                    net_comm = float(self.payout_log_data.get('net_commission') or 0.0)
         except:
-            net_comm = float(self.payout_log_data.get('net_commission', 0.0))
+            # [แก้จุดที่ 2] เพิ่ม or 0.0 ดัก None
+            net_comm = float(self.payout_log_data.get('net_commission') or 0.0)
+
+        # ส่วนแสดงผล (เหมือนเดิม แต่เพิ่มดัก timestamp กัน error ด้วย)
+        ts = self.payout_log_data.get('timestamp')
+        date_str = pd.to_datetime(ts).strftime('%d/%m/%Y %H:%M') if ts else "N/A"
 
         info_str = (f"พนักงานขาย: {self.payout_log_data.get('sale_key', 'N/A')} | "
                     f"แผน: {self.payout_log_data.get('plan_name', 'N/A')} | "
-                    f"วันที่จ่าย: {pd.to_datetime(self.payout_log_data.get('timestamp')).strftime('%d/%m/%Y %H:%M')} | "
+                    f"วันที่จ่าย: {date_str} | "
                     f"ยอดโอนสุทธิ: {net_comm:,.2f} บาท")
         self.info_label.configure(text=info_str)
         
         self.notes_text.configure(state="normal")
         self.notes_text.delete("1.0", "end")
-        self.notes_text.insert("1.0", self.payout_log_data.get('notes', ''))
+        # ใช้ 'or ""' กันเหนียวเผื่อ notes เป็น None
+        self.notes_text.insert("1.0", self.payout_log_data.get('notes') or "")
         self.notes_text.configure(state="disabled")
 
         self.show_calc_button.configure(state="normal")
