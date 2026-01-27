@@ -1466,28 +1466,27 @@ class PurchaseHistoryWindow(CTkToplevel):
 
     def _debounce_search(self, event=None):
         """ยกเลิกการค้นหาเก่าและตั้งเวลาใหม่ทุกครั้งที่พิมพ์"""
-        # หากมี job ที่ตั้งเวลาไว้ก่อนหน้า ให้ยกเลิกไป
         if self._debounce_job:
             self.after_cancel(self._debounce_job)
-
-        # ตั้งเวลาเพื่อเรียกฟังก์ชันค้นหาจริงในอีก 500 มิลลิวินาที (0.5 วินาที)
         self._debounce_job = self.after(500, self._apply_filters)
 
     def __init__(self, master, app_container, on_save_callback=None, **kwargs):
         super().__init__(master)
-        self.title("ประวัติใบสั่งซื้อ (PO History)")
+        self.title("ประวัติใบสั่งซื้อ (Approved PO History)")
         self.geometry("1200x700")
         
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
         self.on_save_callback = on_save_callback
         self.user_role = self.app_container.current_user_role
+        self.theme = self.app_container.THEME.get("purchasing", {"primary": "#3B82F6"}) # กำหนด Theme
         
         # --- ตัวแปรสำหรับ Pagination และ Filter ---
         self.all_po_df = None
         self.filtered_df = None
         self.current_page = 0
         self.rows_per_page = 50
+        self._debounce_job = None
         
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
@@ -1521,8 +1520,15 @@ class PurchaseHistoryWindow(CTkToplevel):
         year_options = ["ทุกปี"] + [str(y) for y in range(current_year, current_year - 5, -1)]
         CTkOptionMenu(filter_frame, variable=self.year_var, values=year_options).pack(side="left", padx=5)
         
-        CTkButton(filter_frame, text="ค้นหา", command=self._populate_history_table, width=80).pack(side="left", padx=10)
+        # [แก้ไข] สร้างช่องค้นหาที่ขาดหายไป
+        self.search_entry = CTkEntry(filter_frame, placeholder_text="ค้นหา SO / PO / Supplier...", width=200)
+        self.search_entry.pack(side="left", padx=5)
+        self.search_entry.bind("<Return>", lambda event: self._apply_filters())
+        
+        # [แก้ไข] เปลี่ยน command ให้ถูกต้อง (เป็น _apply_filters)
+        CTkButton(filter_frame, text="ค้นหา", command=self._apply_filters, width=80).pack(side="left", padx=10)
 
+        # Pagination Controls
         pagination_frame = CTkFrame(top_frame, fg_color="transparent")
         pagination_frame.pack(side="right")
         
@@ -1533,41 +1539,24 @@ class PurchaseHistoryWindow(CTkToplevel):
         self.next_button = CTkButton(pagination_frame, text=">>", command=self._next_page, width=50, state="disabled")
         self.next_button.pack(side="left", padx=5)
 
-        # --- Tab View ---
-        self.tab_view = CTkTabview(self, command=self._on_tab_change)
-        self.tab_view.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        # --- Main Content Frame (ปรับปรุง Layout ให้เรียบง่าย) ---
+        # ใช้ Frame เดียวแทน TabView เพราะหน้านี้แสดงแค่ประวัติที่ Approved แล้ว
+        self.history_frame = CTkFrame(self, fg_color="transparent")
+        self.history_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.history_frame.grid_rowconfigure(0, weight=1)
+        self.history_frame.grid_columnconfigure(0, weight=1)
         
-        # แท็บ 1: ฉบับร่าง
-        self.draft_tab = self.tab_view.add("ฉบับร่าง / ตีกลับ")
-        self.draft_tab.grid_columnconfigure(0, weight=1); self.draft_tab.grid_rowconfigure(0, weight=1)
-        self.draft_frame = CTkFrame(self.draft_tab, fg_color="transparent")
-        self.draft_frame.grid(row=0, column=0, sticky="nsew")
-        
-        # แท็บ 2: รายการที่ส่งแล้ว
-        self.submitted_tab = self.tab_view.add("รายการที่ส่งแล้ว")
-        self.submitted_tab.grid_columnconfigure(0, weight=1); self.submitted_tab.grid_rowconfigure(0, weight=1)
-        self.submitted_frame = CTkFrame(self.submitted_tab, fg_color="transparent")
-        self.submitted_frame.grid(row=0, column=0, sticky="nsew")
-
-        # --- [ส่วนสำคัญ] เพิ่มแท็บที่ 3 ตรงนี้ ---
-        self.calculated_tab = self.tab_view.add("SO ที่คิดค่าคอมแล้ว")
-        self.calculated_tab.grid_columnconfigure(0, weight=1); self.calculated_tab.grid_rowconfigure(0, weight=1)
-        self.calculated_frame = CTkFrame(self.calculated_tab, fg_color="transparent")
-        self.calculated_frame.grid(row=0, column=0, sticky="nsew")
-        
+        # Bottom Frame (ปุ่ม Export)
         self.button_frame = CTkFrame(self, fg_color="transparent")
         self.button_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
-        
-        self.cancel_button = CTkButton(self.button_frame, text="ยกเลิกรายการที่เลือก", command=self._cancel_selected_record, fg_color="#DC2626", hover_color="#B91C1C")
-        self.cancel_button.pack(side="left", padx=10)
-        
-        self.export_button = CTkButton(self.button_frame, text="Export to Excel", command=self._export_history, fg_color=self.theme["primary"])
+
+        self.export_button = CTkButton(self.button_frame, text="Export to Excel", command=self._export_history, fg_color=self.theme.get("primary", "#3B82F6"))
         self.export_button.pack(side="left")
 
         self.loading_label = CTkLabel(self, text="กำลังโหลดข้อมูล...", font=CTkFont(size=18, slant="italic"), text_color="gray50")
 
     def _next_page(self):
-        total_pages = (len(self.filtered_df) + self.rows_per_page - 1) // self.rows_per_page if hasattr(self, 'filtered_df') else 0
+        total_pages = (len(self.filtered_df) + self.rows_per_page - 1) // self.rows_per_page if self.filtered_df is not None else 0
         if self.current_page < total_pages - 1:
             self.current_page += 1
             self._update_treeview_display()
@@ -1588,8 +1577,7 @@ class PurchaseHistoryWindow(CTkToplevel):
         for widget in self.history_frame.winfo_children(): widget.destroy()
         self._show_loading()
         try:
-            # --- START: แก้ไข Query ตรงนี้ ---
-            # เพิ่ม WHERE po.status = 'Approved' เพื่อกรองเฉพาะ PO ที่อนุมัติแล้ว
+            # ดึงเฉพาะ PO ที่ Approved แล้ว
             query = """
                 SELECT 
                     po.id, 
@@ -1599,15 +1587,13 @@ class PurchaseHistoryWindow(CTkToplevel):
                     po.supplier_name,
                     owner.sale_name as owner_name,
                     proxy.sale_name as proxy_name,
-                    po.status -- เพิ่มคอลัมน์ status มาด้วยเพื่อความชัดเจน
+                    po.status
                 FROM purchase_orders po
                 LEFT JOIN sales_users owner ON po.user_key = owner.sale_key
                 LEFT JOIN sales_users proxy ON po.proxy_user_key = proxy.sale_key
                 WHERE po.status = 'Approved'
                 ORDER BY po.timestamp DESC
             """
-            # --- END: สิ้นสุดการแก้ไข ---
-
             self.all_po_df = pd.read_sql_query(query, self.pg_engine)
             self.all_po_df['timestamp'] = pd.to_datetime(self.all_po_df['timestamp'])
             self._hide_loading()
@@ -1624,23 +1610,27 @@ class PurchaseHistoryWindow(CTkToplevel):
         self.current_page = 0
         df = self.all_po_df.copy()
 
+        # Filter by Month
         selected_month_str = self.month_var.get()
         if selected_month_str != "ทุกเดือน":
             month_num = self.thai_month_map[selected_month_str]
             df = df[df['timestamp'].dt.month == month_num]
 
+        # Filter by Year
         selected_year_str = self.year_var.get()
         if selected_year_str != "ทุกปี":
             year_num = int(selected_year_str)
             df = df[df['timestamp'].dt.year == year_num]
 
-        search_term = self.search_entry.get().strip().lower()
-        if search_term:
-            df = df[
-                df['so_number'].str.lower().str.contains(search_term, na=False) |
-                df['po_number'].str.lower().str.contains(search_term, na=False) |
-                df['supplier_name'].str.lower().str.contains(search_term, na=False)
-            ]
+        # Filter by Search Term
+        if hasattr(self, 'search_entry'):
+            search_term = self.search_entry.get().strip().lower()
+            if search_term:
+                df = df[
+                    df['so_number'].str.lower().str.contains(search_term, na=False) |
+                    df['po_number'].str.lower().str.contains(search_term, na=False) |
+                    df['supplier_name'].str.lower().str.contains(search_term, na=False)
+                ]
 
         self.filtered_df = df
         self._update_treeview_display()
@@ -1649,7 +1639,7 @@ class PurchaseHistoryWindow(CTkToplevel):
         for widget in self.history_frame.winfo_children():
             widget.destroy()
 
-        if self.filtered_df.empty:
+        if self.filtered_df is None or self.filtered_df.empty:
             CTkLabel(self.history_frame, text="ไม่พบข้อมูลตามเงื่อนไขที่เลือก").pack(pady=20)
             self.page_label.configure(text="Page 0 / 0")
             self.prev_button.configure(state="disabled")
@@ -1671,67 +1661,59 @@ class PurchaseHistoryWindow(CTkToplevel):
 
     def _on_row_double_click(self, event, tree, use_iid=False):
         try:
-            # ใช้ iid ที่เราเก็บไว้ ซึ่งก็คือ ID ที่แท้จริงของ PO
             purchase_id_to_view = tree.focus()
             if not purchase_id_to_view: 
                 return
             
-            # แปลงค่า ID ที่ได้มาเป็นตัวเลขที่ถูกต้อง
             purchase_id = int(purchase_id_to_view)
             
-            # เรียกหน้าต่างรายละเอียดด้วย ID ที่ถูกต้อง
+            # เปิดหน้าต่างรายละเอียด PO
             self.app_container.show_purchase_detail_window(
                 purchase_id=purchase_id,
-                on_save_callback=self._load_initial_data # เพิ่ม Callback เพื่อให้ Refresh หลังแก้ไข
+                on_save_callback=self._load_initial_data
             )
-        except (ValueError, TypeError) as e:
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ID ของรายการไม่ถูกต้อง: {e}", parent=self)
         except Exception as e:
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดดูรายละเอียดได้: {e}", parent=self)
 
     def _create_styled_dataframe_table(self, parent, df):
         df = df.copy()
-        # สร้างคอลัมน์ใหม่สำหรับแสดงผล
         df['display_owner'] = df.apply(
             lambda row: f"{row['owner_name']}" if pd.isna(row['proxy_name']) else f"{row['owner_name']} (โดย {row['proxy_name']})",
             axis=1
         )
         
-        # <<< START: เพิ่ม 'status' เข้าไปในคอลัมน์ที่จะแสดง >>>
         display_columns = {
             'timestamp': 'เวลาบันทึก',
             'so_number': 'SO Number',
             'po_number': 'PO Number',
             'supplier_name': 'Supplier',
             'display_owner': 'เจ้าของ PO (ผู้สร้าง)',
-            'status': 'สถานะ'  # <-- เพิ่มบรรทัดนี้
+            'status': 'สถานะ'
         }
-        # <<< END >>>
         
         columns_to_show = list(display_columns.keys())
-        df_display = df[columns_to_show]
-
+        
         tree = ttk.Treeview(parent, columns=columns_to_show, show='headings')
         style = ttk.Style()
         style.theme_use("default")
         style.configure("Treeview.Heading", font=('Roboto', 14, 'bold'))
         style.configure("Treeview", rowheight=25, font=('Roboto', 12))
         
-        # ตั้งค่าหัวตารางและขนาด
         for col_id, col_text in display_columns.items():
             tree.heading(col_id, text=col_text)
-            width = 200 # default
+            width = 200
             if col_id == 'timestamp': width = 180
             if col_id == 'display_owner': width = 250
-            if col_id == 'status': width = 120 # <-- เพิ่มขนาดสำหรับคอลัมน์ใหม่
+            if col_id == 'status': width = 120
             tree.column(col_id, width=width, anchor='w')
 
-        # ใส่ข้อมูลลงในตาราง (ใช้ df_display)
-        for index, row in df_display.iterrows():
-            original_id = df.loc[index, 'id']
-            values = list(row)
-            values[0] = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-            tree.insert("", "end", values=values, iid=original_id)
+        for index, row in df.iterrows():
+            original_id = row['id']
+            values = [row[col] for col in columns_to_show]
+            if isinstance(values[0], pd.Timestamp):
+                 values[0] = values[0].strftime('%Y-%m-%d %H:%M:%S')
+            
+            tree.insert("", "end", values=values, iid=str(original_id))
 
         v_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
         h_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
@@ -1740,7 +1722,49 @@ class PurchaseHistoryWindow(CTkToplevel):
         v_scroll.grid(row=0, column=1, sticky='ns')
         h_scroll.grid(row=1, column=0, sticky='ew')
         
+        # ผูก Event Double Click
         tree.bind("<Double-1>", lambda e: self._on_row_double_click(e, tree, use_iid=True))
+        
+    def _export_history(self):
+        """Export ข้อมูลในตารางปัจจุบันเป็น Excel"""
+        if self.filtered_df is None or self.filtered_df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูลที่จะ Export", parent=self)
+            return
+
+        try:
+            default_filename = f"approved_po_history_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                title="บันทึกประวัติ PO",
+                initialfile=default_filename,
+                parent=self
+            )
+
+            if save_path:
+                df_to_export = self.filtered_df.copy()
+                # เปลี่ยนชื่อคอลัมน์ให้สวยงาม
+                rename_map = {
+                    'timestamp': 'เวลาบันทึก',
+                    'so_number': 'SO Number',
+                    'po_number': 'PO Number',
+                    'supplier_name': 'Supplier',
+                    'owner_name': 'เจ้าของ PO',
+                    'proxy_name': 'ผู้สร้างแทน',
+                    'status': 'สถานะ'
+                }
+                df_to_export.rename(columns=rename_map, inplace=True)
+                
+                # เลือกเฉพาะคอลัมน์ที่ต้องการ
+                cols_to_keep = [c for c in rename_map.values() if c in df_to_export.columns]
+                df_to_export = df_to_export[cols_to_keep]
+
+                df_to_export.to_excel(save_path, index=False)
+                messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้วที่:\n{save_path}", parent=self)
+        
+        except Exception as e:
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=self)
+            traceback.print_exc()
 
 
 class CommissionHistoryWindow(CTkToplevel):

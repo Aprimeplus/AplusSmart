@@ -2138,35 +2138,45 @@ class PurchasingScreen(CTkFrame):
             
             # เคลียร์ข้อมูลเก่า
             self.supplier_completion_data = []
+            self.supplier_data_map = {} 
             
             # วนลูปเพื่อเตรียมข้อมูล
             for _, row in df.iterrows():
-                # <<< START: จุดที่แก้ไข >>>
-                # 1. แปลงเป็น string และจัดการกรณีเป็นค่าว่าง (None) พร้อมกับใช้ .strip()
                 name = str(row['supplier_name'] or '').strip()
+                code = str(row['supplier_code'] or '').strip()
                 
-                # 2. ถ้าหลังจากตัดช่องว่างแล้วชื่อไม่มีเหลือ ก็ข้ามไป ไม่ต้องเพิ่มลง list
                 if not name:
                     continue
-                # <<< END: สิ้นสุดการแก้ไข >>>
 
-                self.supplier_completion_data.append({
+                # สร้างข้อความสำหรับค้นหา (Display Text) รวมชื่อและรหัส
+                if code:
+                    display_text = f"{name} ({code})" 
+                else:
+                    display_text = name
+
+                item_data = {
                     "id": row['id'],
-                    "name": name, # <<< ใช้ชื่อที่ผ่านการทำความสะอาดแล้ว
-                    "code": row.get('supplier_code', ''),
-                    "term": row.get('credit_term', 'เงินสด')
-                })
+                    "name": name,
+                    "code": code,
+                    "term": row.get('credit_term', 'เงินสด'),
+                    "display": display_text # ใช้ field นี้สำหรับค้นหา
+                }
 
-            # สร้าง map สำหรับการใช้งานส่วนอื่น (ส่วนนี้ถูกต้องแล้ว)
-            self.supplier_data_map = {item['name']: item for item in self.supplier_completion_data}
-            
-            # อัปเดตข้อมูลใน widget AutoCompleteEntry (ส่วนนี้ถูกต้องแล้ว)
+                self.supplier_completion_data.append(item_data)
+                self.supplier_data_map[name] = item_data
+
+            # อัปเดตข้อมูลใน widget AutoCompleteEntry
             if hasattr(self, 'supplier_name_combo') and self.supplier_name_combo.winfo_exists():
+                
+                # ---------------------------------------------------------
+                # [✅ จุดที่แก้ไข] กำหนดค่าตัวแปร display_key โดยตรง (ห้ามใช้ .configure)
+                # ---------------------------------------------------------
+                self.supplier_name_combo.display_key = 'display'  
+                
+                # อัปเดตรายการข้อมูลใหม่
                 self.supplier_name_combo.update_completion_list(self.supplier_completion_data)
 
             print(f"✅ โหลดข้อมูลซัพพลายเออร์สำเร็จ {len(self.supplier_completion_data)} รายการ")
-            if self.supplier_completion_data:
-                print(f"   -> ตัวอย่างข้อมูลที่ผ่านการทำความสะอาด: {self.supplier_completion_data[0]}")
 
         except Exception as e: 
             print(f"❌ ERROR: เกิดข้อผิดพลาดในการโหลดข้อมูลซัพพลายเออร์: {e}")

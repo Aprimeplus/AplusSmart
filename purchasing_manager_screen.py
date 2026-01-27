@@ -215,7 +215,7 @@ class SOPendingDetailWindow(CTkToplevel):
     def __init__(self, master, so_number):
         super().__init__(master)
         self.app_container = master.app_container; self.so_number = so_number; self.df = None
-        self.title(f"สรุปรายการสินค้าทั้งหมดสำหรับ SO: {self.so_number} (ดับเบิลคลิกเพื่อดู PO ต้นทาง)"); self.geometry("1200x600")
+        self.title(f"สรุปรายการสินค้าทั้งหมดสำหรับ SO: {self.so_number} (ดับเบิลคลิกเพื่อดู PO ต้นทาง)"); self.geometry("1200x800")
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(1, weight=1)
         header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(10,5))
         CTkLabel(header_frame, text=f"รายการสินค้าทั้งหมดของ SO: {self.so_number} (ดับเบิลคลิกเพื่อดู PO ต้นทาง)", font=CTkFont(size=16, weight="bold")).pack(side="left")
@@ -227,7 +227,19 @@ class SOPendingDetailWindow(CTkToplevel):
     def _load_and_display_table(self):
         for widget in self.tree_frame.winfo_children(): widget.destroy()
         try:
-            query = "SELECT po.id as po_id, item.id as item_id, po.po_number, po.supplier_name, item.product_name, item.quantity, item.unit_price, item.total_price FROM purchase_orders po JOIN purchase_order_items item ON po.id = item.purchase_order_id WHERE po.so_number = %s AND po.approval_status IN ('Pending Mgr 1', 'Pending Mgr 2', 'Pending Director') ORDER BY po.id, item.id;"
+            # [แก้ไข] เพิ่ม item.product_code และ item.warehouse ใน SELECT
+            query = """
+                SELECT 
+                    po.id as po_id, item.id as item_id, 
+                    po.po_number, po.supplier_name, 
+                    item.product_code, item.product_name, item.warehouse, 
+                    item.quantity, item.unit_price, item.total_price 
+                FROM purchase_orders po 
+                JOIN purchase_order_items item ON po.id = item.purchase_order_id 
+                WHERE po.so_number = %s 
+                  AND po.approval_status IN ('Pending Mgr 1', 'Pending Mgr 2', 'Pending Director') 
+                ORDER BY po.id, item.id;
+            """
             self.df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.so_number,))
             if self.df.empty:
                 CTkLabel(self.tree_frame, text="ไม่พบรายการสินค้าที่รออนุมัติสำหรับ SO นี้", text_color="gray50").pack(pady=20)
@@ -237,16 +249,41 @@ class SOPendingDetailWindow(CTkToplevel):
             
     def _create_table_view(self):
         style = ttk.Style(self); style.theme_use("default"); style.configure("Treeview.Heading", font=('Roboto', 14, 'bold')); style.configure("Treeview", rowheight=28, font=('Roboto', 12))
-        columns = ['PO Number', 'Supplier', 'Product Name', 'Quantity', 'Unit Price', 'Total Price']
+        
+        # [แก้ไข 1] เพิ่มชื่อคอลัมน์ 'Code' และ 'Warehouse'
+        columns = ['PO Number', 'Supplier', 'Code', 'Product Name', 'Warehouse', 'Quantity', 'Unit Price', 'Total Price']
+        
         tree = ttk.Treeview(self.tree_frame, columns=columns, show='headings')
+        
+        # [แก้ไข 2] กำหนดความกว้างและตำแหน่ง (Anchor)
         for col in columns:
-            width = 300 if col == 'Product Name' else 200 if col == 'Supplier' else 150 if col == 'PO Number' else 120
-            anchor = 'e' if 'Price' in col or 'Quantity' in col else 'w'
+            width = 120 # Default width
+            anchor = 'w'
+            
+            if col == 'Product Name': width = 250
+            elif col == 'Supplier': width = 180
+            elif col == 'PO Number': width = 130
+            elif col == 'Code': width = 100
+            elif col == 'Warehouse': width = 80; anchor = 'center'
+            elif col in ['Quantity', 'Unit Price', 'Total Price']: anchor = 'e'
+            
             tree.heading(col, text=col); tree.column(col, width=width, anchor=anchor)
+            
         for _, row in self.df.iterrows():
-            values = (row['po_number'], row['supplier_name'], row['product_name'], f"{row['quantity']:,.2f}", f"{row['unit_price']:,.2f}", f"{row['total_price']:,.2f}")
+            # [แก้ไข 3] เพิ่มข้อมูล product_code และ warehouse ลงใน values
+            values = (
+                row['po_number'], 
+                row['supplier_name'], 
+                row['product_code'],      # <--- เพิ่ม
+                row['product_name'], 
+                row['warehouse'],         # <--- เพิ่ม
+                f"{row['quantity']:,.2f}", 
+                f"{row['unit_price']:,.2f}", 
+                f"{row['total_price']:,.2f}"
+            )
             unique_iid = f"{row['po_id']}-{row['item_id']}"
             tree.insert('', 'end', values=values, iid=unique_iid)
+            
         v_scroll = ttk.Scrollbar(self.tree_frame, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=v_scroll.set)
         tree.grid(row=0, column=0, sticky="nsew"); v_scroll.grid(row=0, column=1, sticky="ns")
         tree.bind("<Double-1>", self._on_po_double_click)

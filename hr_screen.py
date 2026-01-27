@@ -100,6 +100,61 @@ class DateRangeSelectionDialog(CTkToplevel):
         self.confirmed = True
         self.destroy()
 
+class SalesFilterDialog(CTkToplevel):
+    def __init__(self, master, sales_list, current_selection, on_confirm):
+        super().__init__(master)
+        self.title("กรองพนักงานขาย")
+        self.geometry("350x500")
+        self.sales_list = sales_list  # [('SALE01', 'Name'), ...]
+        self.on_confirm = on_confirm
+        self.checkbox_vars = {}
+        
+        # แปลง current_selection (list) เป็น set เพื่อค้นหาเร็ว
+        selected_set = set(current_selection) if current_selection else set([s[0] for s in sales_list])
+
+        # --- Header & Buttons ---
+        top_frame = CTkFrame(self, fg_color="transparent")
+        top_frame.pack(fill="x", padx=10, pady=10)
+        
+        CTkButton(top_frame, text="เลือกทั้งหมด", width=100, 
+                  command=self.select_all, fg_color="#3B82F6").pack(side="left", padx=5)
+        CTkButton(top_frame, text="ล้างทั้งหมด", width=100, 
+                  command=self.deselect_all, fg_color="gray").pack(side="left", padx=5)
+
+        # --- Checkbox List ---
+        self.scroll_frame = CTkScrollableFrame(self, label_text="รายชื่อพนักงาน")
+        self.scroll_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        for sale_key, sale_name in sales_list:
+            var = tk.IntVar(value=1 if sale_key in selected_set else 0)
+            self.checkbox_vars[sale_key] = var
+            text_label = f"{sale_key} : {sale_name}"
+            cb = CTkCheckBox(self.scroll_frame, text=text_label, variable=var)
+            cb.pack(anchor="w", padx=10, pady=5)
+
+        # --- Confirm Button ---
+        CTkButton(self, text="ตกลง", command=self._confirm_selection, 
+                  fg_color="#16A34A", font=("Arial", 16, "bold")).pack(fill="x", padx=20, pady=20)
+        
+        # Center Window
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - self.winfo_width()) // 2
+        y = (self.winfo_screenheight() - self.winfo_height()) // 2
+        self.geometry(f"+{x}+{y}")
+        self.transient(master)
+        self.grab_set()
+
+    def select_all(self):
+        for var in self.checkbox_vars.values(): var.set(1)
+
+    def deselect_all(self):
+        for var in self.checkbox_vars.values(): var.set(0)
+
+    def _confirm_selection(self):
+        selected_keys = [k for k, v in self.checkbox_vars.items() if v.get() == 1]
+        self.on_confirm(selected_keys)
+        self.destroy()
+
 class ManualEntryDialog(CTkToplevel):
     def __init__(self, master):
         super().__init__(master)
@@ -511,10 +566,41 @@ class HRScreen(CTkFrame):
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
     
+    def _open_sales_filter_dialog(self):
+        # เตรียมรายชื่อ (Key, Name)
+        sales_list = []
+        if hasattr(self, 'sales_user_info'):
+            for key, info in self.sales_user_info.items():
+                sales_list.append((key, info.get('name', key)))
+        else:
+            # Fallback ถ้ายังไม่มีข้อมูล
+            sales_list = [(k, k) for k in self.sales_keys_list]
+        
+        # เรียงตามชื่อ
+        sales_list.sort(key=lambda x: x[1])
+
+        # เปิด Dialog
+        SalesFilterDialog(self, sales_list, self.selected_sales_filter, self._on_filter_confirmed)
+
+    def _on_filter_confirmed(self, selected_keys):
+        self.selected_sales_filter = selected_keys
+        
+        # อัปเดตข้อความบนปุ่ม
+        count = len(selected_keys)
+        total = len(self.sales_keys_list) if hasattr(self, 'sales_keys_list') else 0
+        if count == total or total == 0:
+            self.filter_btn.configure(text="👤 กรองพนักงาน (ทั้งหมด)")
+            self.selected_sales_filter = None # Reset เป็น None เพื่อความง่าย
+        else:
+            self.filter_btn.configure(text=f"👤 กรองพนักงาน ({count} คน)")
+        
+        # รีเฟรชกราฟทันที
+        self._on_target_filter_search()
+
     def _on_target_filter_search(self):
-        """ฟังก์ชันทำงานเมื่อกดปุ่มค้นหาในหน้าเป้าการขาย"""
+        """ฟังก์ชันทำงานเมื่อกดปุ่มค้นหาในหน้าเป้าการขาย (แก้ไขใหม่)"""
         try:
-            # 1. แปลงค่าจาก Dropdown เป็น datetime
+            # 1. แปลงค่าจาก Dropdown วันที่ เป็น datetime
             def get_date_from_vars(d_var, m_var, y_var):
                 d = int(d_var.get())
                 m = self.thai_months.index(m_var.get()) + 1
@@ -536,11 +622,12 @@ class HRScreen(CTkFrame):
             self.custom_target_start = start_date
             self.custom_target_end = end_date
             
-            # 3. บันทึก Sale ที่เลือก (ถ้าเลือก 'ทั้งหมด' จะเป็น None หรือ handle ใน query)
-            self.custom_target_sale = self.target_sale_var.get()
+            # [✅ แก้ไข] ลบบรรทัดเดิมที่ Error ทิ้งไปเลย 
+            # เพราะตอนนี้เราใช้ self.selected_sales_filter (ที่มาจาก Dialog) แทนแล้ว
+            # self.custom_target_sale = self.target_sale_var.get()  <-- ลบออก
 
-            # 4. เรียกฟังก์ชันวาดกราฟ (ใช้ Logic เดิมที่มีอยู่แล้ว)
-            # เราส่ง keyword พิเศษไปเพื่อให้มันรู้ว่าต้องใช้ custom date
+            # 3. เรียกฟังก์ชันวาดกราฟ
+            # ส่ง keyword พิเศษไปเพื่อให้มันรู้ว่าต้องใช้ custom date
             self.sales_target_period_var.set("กำหนดช่วงเวลาเอง...") 
             self._update_sales_target_dashboard()
 
@@ -1589,74 +1676,56 @@ class HRScreen(CTkFrame):
         else: start_date, end_date = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0), today
         return start_date, end_date
 
+    # ในไฟล์ hr_screen.py ค้นหาฟังก์ชันเดิมแล้วแทนที่ด้วยอันนี้
     def _create_sales_target_tab(self, parent_tab):
-        """
-        สร้าง Tab เป้าการขายแบบใหม่: เลือกวัน/เดือน/ปี เริ่มต้น-สิ้นสุด และเลือกพนักงานได้
-        (แก้ไข: เพิ่มตัวแปร sales_target_period_var เพื่อกัน Error)
-        """
         parent_tab.grid_columnconfigure(0, weight=1)
         parent_tab.grid_rowconfigure(1, weight=1)
         
-        # --- [แก้ไข] สร้างตัวแปรนี้ไว้เสมอ เพื่อไม่ให้ฟังก์ชันอื่น Error ---
+        # ตัวแปรเก็บช่วงเวลา
         self.sales_target_period_var = tk.StringVar(value="เดือนนี้") 
 
-        # --- 1. ส่วนตัวกรอง (Filter Toolbar) ---
+        # ตัวแปรเก็บรายชื่อคนที่เลือก (เริ่มต้น = None แปลว่าเอาทุกคน)
+        self.selected_sales_filter = None 
+
+        # --- 1. Filter Toolbar ---
         filter_frame = CTkFrame(parent_tab, fg_color="transparent")
         filter_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         
-        # --- [A] เลือกพนักงาน ---
-        CTkLabel(filter_frame, text="พนักงานขาย:", font=self.label_font).pack(side="left", padx=(5, 5))
-        self.target_sale_var = tk.StringVar(value="ทั้งหมด")
-        # ดึงรายชื่อ Sales มาใส่
-        sale_options = ["ทั้งหมด"] + sorted(self.sales_keys_list) if hasattr(self, 'sales_keys_list') else ["ทั้งหมด"]
-        
-        self.target_sale_menu = CTkOptionMenu(filter_frame, variable=self.target_sale_var, values=sale_options)
-        self.target_sale_menu.pack(side="left", padx=5)
+        # [ปุ่มกรองพนักงาน]
+        self.filter_btn = CTkButton(filter_frame, text="👤 กรองพนักงาน (ทั้งหมด)", 
+                                    command=self._open_sales_filter_dialog,
+                                    fg_color="#6366F1") # สีม่วง
+        self.filter_btn.pack(side="left", padx=(5, 15))
 
-        # --- [B] ตัวช่วยสร้าง Dropdown วันที่ ---
+        # [ส่วนเลือกวันที่ - เหมือนเดิม]
         days = [str(i) for i in range(1, 32)]
-        months = self.thai_months  # ใช้ list เดือนไทยที่มีใน class
+        months = self.thai_months
         current_year = datetime.now().year
-        # แสดงปี พ.ศ. (บวก/ลบ 2 ปี)
         years = [str(y + 543) for y in range(current_year - 2, current_year + 3)]
 
         def create_date_picker(label_text):
             frame = CTkFrame(filter_frame, fg_color="transparent")
             frame.pack(side="left", padx=10)
-            
             CTkLabel(frame, text=label_text, font=self.label_font_bold).pack(side="left", padx=(0, 5))
-            
-            # วัน
             d_var = tk.StringVar(value=str(datetime.now().day))
-            d_menu = CTkOptionMenu(frame, variable=d_var, values=days, width=60)
-            d_menu.pack(side="left", padx=2)
-            
-            # เดือน
+            CTkOptionMenu(frame, variable=d_var, values=days, width=60).pack(side="left", padx=2)
             m_idx = datetime.now().month - 1
             m_var = tk.StringVar(value=months[m_idx])
-            m_menu = CTkOptionMenu(frame, variable=m_var, values=months, width=110)
-            m_menu.pack(side="left", padx=2)
-            
-            # ปี
+            CTkOptionMenu(frame, variable=m_var, values=months, width=110).pack(side="left", padx=2)
             y_var = tk.StringVar(value=str(current_year + 543))
-            y_menu = CTkOptionMenu(frame, variable=y_var, values=years, width=80)
-            y_menu.pack(side="left", padx=2)
-            
+            CTkOptionMenu(frame, variable=y_var, values=years, width=80).pack(side="left", padx=2)
             return d_var, m_var, y_var
 
-        # --- สร้างชุดเลือก "จากวันที่" ---
         self.start_d_var, self.start_m_var, self.start_y_var = create_date_picker("จาก:")
-
-        # --- สร้างชุดเลือก "ถึงวันที่" ---
         self.end_d_var, self.end_m_var, self.end_y_var = create_date_picker("ถึง:")
 
-        # --- [C] ปุ่มค้นหา ---
+        # [ปุ่มค้นหา]
         search_btn = CTkButton(filter_frame, text="🔍 ค้นหา", width=100, 
                                fg_color=self.theme["primary"], 
-                               command=self._on_target_filter_search) # ผูกกับฟังก์ชันคำนวณใหม่
+                               command=self._on_target_filter_search)
         search_btn.pack(side="left", padx=20)
         
-        # --- 2. พื้นที่แสดงกราฟ ---
+        # --- 2. Chart Area ---
         self.sales_target_chart_frame = CTkFrame(parent_tab, border_width=1, corner_radius=10)
         self.sales_target_chart_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
@@ -1706,18 +1775,14 @@ class HRScreen(CTkFrame):
                     s_date = self.custom_target_start
                     e_date = self.custom_target_end
                     
-                    # แปลงเป็น datetime ให้ชัวร์ (รองรับทั้ง Object และ String)
+                    # ตรวจสอบและแปลง String -> Datetime
                     if isinstance(s_date, str):
-                        try:
-                            s_date = datetime.strptime(s_date, "%d/%m/%Y")
-                        except ValueError:
-                            s_date = datetime.strptime(s_date, "%Y-%m-%d") # fallback
+                        try: s_date = datetime.strptime(s_date, "%d/%m/%Y")
+                        except ValueError: s_date = datetime.strptime(s_date, "%Y-%m-%d")
                     
                     if isinstance(e_date, str):
-                        try:
-                            e_date = datetime.strptime(e_date, "%d/%m/%Y")
-                        except ValueError:
-                            e_date = datetime.strptime(e_date, "%Y-%m-%d") # fallback
+                        try: e_date = datetime.strptime(e_date, "%d/%m/%Y")
+                        except ValueError: e_date = datetime.strptime(e_date, "%Y-%m-%d")
 
                     # บังคับเวลา Start/End ให้ครอบคลุมทั้งวัน
                     start_str = s_date.strftime("%Y-%m-%d 00:00:00")
@@ -1728,11 +1793,11 @@ class HRScreen(CTkFrame):
                     params.append(start_str)
                     params.append(end_str)
                     
-                    # คำนวณตัวคูณเป้าหมาย (Pro-rate ตามจำนวนวัน)
+                    # คำนวณตัวคูณเป้าหมาย
                     days_diff = (e_date - s_date).days + 1
-                    target_multiplier = max(0.03, days_diff / 30.0) # กันค่าเป็น 0 หรือติดลบ
+                    target_multiplier = max(0.03, days_diff / 30.0)
                 else:
-                    # กรณี Error ไม่มีค่า ให้ Default เป็นเดือนปัจจุบัน
+                    # Fallback
                     date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
                     params.append(today.month)
                     date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
@@ -1776,14 +1841,23 @@ class HRScreen(CTkFrame):
             status_condition = "c.status NOT IN ('Draft', 'Cancelled', 'Rejected by SM', 'Rejected by HR', 'Original', 'Edited')"
             
             # =========================================================
-            # 2. [เพิ่มใหม่] จัดการกรองพนักงาน (Sales Filter)
+            # 2. [แก้ไข] จัดการกรองพนักงาน (Multi-select Support)
             # =========================================================
             sale_filter_clause = ""
             
-            # ตรวจสอบว่ามีการเลือกพนักงานหรือไม่ (ตัวแปร custom_target_sale มาจาก _on_target_filter_search)
-            if hasattr(self, 'custom_target_sale') and self.custom_target_sale != "ทั้งหมด":
-                sale_filter_clause = " AND su.sale_key = %s"
-                params.append(self.custom_target_sale) # เพิ่ม sale_key ต่อท้าย params ของวันที่
+            # ตรวจสอบตัวแปร selected_sales_filter (List) ที่มาจาก Dialog
+            if hasattr(self, 'selected_sales_filter') and self.selected_sales_filter:
+                # สร้าง Placeholder ตามจำนวนคน เช่น %s, %s, %s
+                placeholders = ','.join(['%s'] * len(self.selected_sales_filter))
+                sale_filter_clause = f" AND su.sale_key IN ({placeholders})"
+                
+                # เพิ่ม sale_key ของทุกคนลงใน params (ต่อท้ายวันที่)
+                params.extend(self.selected_sales_filter) 
+                
+            # (Fallback) รองรับตัวแปรเดิม custom_target_sale เผื่อกรณีเลือกแบบเก่า
+            elif hasattr(self, 'custom_target_sale') and self.custom_target_sale != "ทั้งหมด":
+                 sale_filter_clause = " AND su.sale_key = %s"
+                 params.append(self.custom_target_sale)
 
             # =========================================================
             # 3. Query
@@ -1799,10 +1873,10 @@ class HRScreen(CTkFrame):
                 LEFT JOIN commissions c ON su.sale_key = c.sale_key
                                      AND c.is_active = 1
                                      AND {status_condition}
-                                     AND {date_filter_sql}  -- Parameter วันที่ ถูกใช้นี่ (ลำดับแรก)
+                                     AND {date_filter_sql} 
                 WHERE su.role = 'Sale' 
                   AND su.status = 'Active' 
-                  {sale_filter_clause} -- Parameter พนักงาน ถูกใช้ที่นี่ (ลำดับหลัง)
+                  {sale_filter_clause}
                 GROUP BY su.sale_name, su.sale_key, su.sales_target
                 ORDER BY su.sale_name ASC;
             """
@@ -2637,6 +2711,14 @@ class HRScreen(CTkFrame):
         CTkButton(control_frame, text="🚀 เริ่มต้นการเปรียบเทียบใหม่", command=self._start_new_comparison, font=CTkFont(size=16, weight="bold")).pack(side="left", padx=10, pady=10)
         CTkButton(control_frame, text="📖 แสดงประวัติการเปรียบเทียบ", command=self._open_comparison_history_window, fg_color="#64748B").pack(side="left", padx=10, pady=10)
 
+        # --- [✨ ส่วนที่เพิ่มใหม่] Label แสดงชื่อ Sale ---
+        self.active_sale_label = CTkLabel(control_frame, 
+                                          text="สถานะ: ยังไม่ได้เลือกพนักงาน", 
+                                          font=CTkFont(size=16, weight="bold"), 
+                                          text_color="gray")
+        self.active_sale_label.pack(side="left", padx=20)
+        # -----------------------------------------------
+
         self.verify_passed_button = CTkButton(control_frame, text="ยืนยัน SO ที่ผ่านเกณฑ์ (Verify Passed SOs)", fg_color="#16A34A", hover_color="#15803D", command=self._verify_passed_sos)
         self.verify_passed_button.pack(side="right", padx=10, pady=10)
         self.verify_passed_button.pack_forget()
@@ -2739,6 +2821,12 @@ class HRScreen(CTkFrame):
 
         config = config_dialog.result
         selected_salesperson = config["salesperson"]
+
+        if hasattr(self, 'active_sale_label'):
+             self.active_sale_label.configure(
+                 text=f"กำลังตรวจสอบข้อมูลของ: {selected_salesperson}", 
+                 text_color="#2563EB" # สีน้ำเงินให้เด่น
+             )
         selected_month = config["month"]
         selected_year = config["year"]
         
@@ -3325,6 +3413,12 @@ class HRScreen(CTkFrame):
     def _refresh_comparison_view(self):
         if not hasattr(self, 'current_comparison_salesperson'):
             return
+
+        if hasattr(self, 'active_sale_label'):
+             self.active_sale_label.configure(
+                 text=f"กำลังตรวจสอบข้อมูลของ: {self.current_comparison_salesperson}", 
+                 text_color="#2563EB"
+             )
 
         loading = self._show_loading(self.results_frame)
         self.results_frame_label.configure(text=f"กำลังรีเฟรชข้อมูลสำหรับ: {self.current_comparison_salesperson}...")
