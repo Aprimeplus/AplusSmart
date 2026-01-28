@@ -3,6 +3,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
 from customtkinter import (CTkToplevel, CTkTextbox, CTkScrollableFrame, CTkLabel, CTkFont, CTkFrame, CTkButton, CTkEntry, CTkRadioButton, CTkOptionMenu, CTkTabview)
+from customtkinter import CTkToplevel, CTkLabel, CTkFrame, CTkEntry, CTkButton
 from tkinter import messagebox
 import json
 import customtkinter
@@ -13,6 +14,7 @@ import traceback
 import psycopg2.errors
 import psycopg2.extras
 import numpy as np
+
 
 # --- ตรวจสอบว่า import ถูกต้องตามนี้ ---
 import utils
@@ -2977,3 +2979,130 @@ class SOReassignmentDialog(CTkToplevel):
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึก: {e}", parent=self)
         finally:
             if conn: self.app_container.release_connection(conn)
+
+
+class CancelledHistoryWindow(CTkToplevel): # <-- แก้จาก ctk.CTkToplevel เป็น CTkToplevel
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.title("ประวัติ SO ที่ถูกยกเลิก (Cancelled History)")
+        self.geometry("1100x600")
+        
+        self.user_role = self.app_container.current_user_role
+        self.user_key = self.app_container.current_user_key
+
+        # Header
+        # แก้จาก ctk.CTkLabel เป็น CTkLabel และ ctk.CTkFont เป็น CTkFont
+        CTkLabel(self, text="รายการ SO ที่ถูกยกเลิก (ไม่นำมาคิดค่าคอมมิชชั่น)", font=CTkFont(size=20, weight="bold")).pack(pady=10)
+        
+        # Filter Frame
+        filter_frame = CTkFrame(self)
+        filter_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.search_entry = CTkEntry(filter_frame, placeholder_text="ค้นหา SO Number...")
+        self.search_entry.pack(side="left", padx=10)
+        
+        CTkButton(filter_frame, text="ค้นหา", command=self.load_data).pack(side="left")
+        CTkButton(filter_frame, text="Refresh", command=self.load_data, fg_color="gray").pack(side="left", padx=5)
+
+        # Table Frame
+        self.tree_frame = CTkFrame(self)
+        self.tree_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.create_table()
+        self.load_data()
+
+    def create_table(self):
+        columns = ["SO Number", "Sale Key", "Customer", "สาเหตุการยกเลิก", "วันที่ยกเลิก", "สถานะ"]
+        self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings", height=20)
+        
+        # Config columns
+        self.tree.heading("SO Number", text="SO Number")
+        self.tree.column("SO Number", width=120)
+        
+        self.tree.heading("Sale Key", text="พนักงานขาย")
+        self.tree.column("Sale Key", width=100)
+        
+        self.tree.heading("Customer", text="ลูกค้า")
+        self.tree.column("Customer", width=200)
+        
+        self.tree.heading("สาเหตุการยกเลิก", text="สาเหตุการยกเลิก")
+        self.tree.column("สาเหตุการยกเลิก", width=300)
+
+        self.tree.heading("วันที่ยกเลิก", text="วันที่อัปเดต")
+        self.tree.column("วันที่ยกเลิก", width=150)
+
+        self.tree.heading("สถานะ", text="สถานะ")
+        self.tree.column("สถานะ", width=100)
+
+        # Scrollbar
+        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        
+        self.tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+    def load_data(self):
+        # Clear table
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
+        search_txt = self.search_entry.get().strip()
+        
+        # Base Query
+        query = """
+            SELECT so_number, sale_key, customer_name, rejection_reason, timestamp, status 
+            FROM commissions 
+            WHERE status = 'Cancelled'
+        """
+        params = []
+
+        # Role Based Filtering
+        if self.user_role == 'Sale':
+            query += " AND sale_key = %s"
+            params.append(self.user_key)
+        
+        # Search Logic
+        if search_txt:
+            query += " AND so_number ILIKE %s"
+            params.append(f"%{search_txt}%")
+            
+        query += " ORDER BY timestamp DESC"
+
+        try:
+            df = pd.read_sql_query(query, self.app_container.pg_engine, params=tuple(params))
+            
+            if df.empty:
+                return
+
+            # +++ [แก้ไขตรงนี้] แปลงข้อมูล timestamp ให้เป็น datetime object ให้ชัวร์ก่อน +++
+            df['timestamp'] = pd.to_datetime(df['timestamp']) 
+            # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+            for _, row in df.iterrows():
+                # Format Date
+                ts = row['timestamp']
+                
+                # ตรวจสอบว่าเป็นวันเวลาที่ถูกต้องหรือไม่
+                if pd.notna(ts):
+                    try:
+                        date_str = ts.strftime('%d/%m/%Y %H:%M')
+                    except:
+                        date_str = str(ts) # ถ้าแปลงไม่ได้จริงๆ ให้แสดงตามเดิม
+                else:
+                    date_str = "-"
+                
+                values = (
+                    row['so_number'],
+                    row['sale_key'],
+                    row['customer_name'],
+                    row['rejection_reason'], 
+                    date_str,
+                    row['status']
+                )
+                self.tree.insert("", "end", values=values)
+                
+        except Exception as e:
+            print(f"Error loading cancelled history: {e}")
+            import traceback
+            traceback.print_exc()

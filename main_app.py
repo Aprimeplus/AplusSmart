@@ -143,7 +143,14 @@ class AppContainer(CTk):
             print("ไม่พบไฟล์ไอคอน app_icon.ico หรือไฟล์ไม่ใช่รูปแบบที่ถูกต้อง")
         self.geometry("1600x900")
         set_appearance_mode("Light")
-        self.THEME = {"sale": {"primary": "#3B82F6", "header": "#1D4ED8", "bg": "#EFF6FF", "row": "#EFF6FF"}, "hr": {"primary": "#16A34A", "header": "#15803D", "bg": "#F0FDF4"}, "purchasing": {"primary": "#7C3AED", "header": "#6D28D9", "bg": "#F5F3FF", "row": "#F5F3FF"}}
+        # ค้นหาบรรทัดนี้ใน __init__
+        self.THEME = {
+            "sale": {"primary": "#3B82F6", "header": "#1D4ED8", "bg": "#EFF6FF", "row": "#EFF6FF"}, 
+            "hr": {"primary": "#16A34A", "header": "#15803D", "bg": "#F0FDF4"}, 
+            "purchasing": {"primary": "#7C3AED", "header": "#6D28D9", "bg": "#F5F3FF", "row": "#F5F3FF"},
+            # +++ [เพิ่มใหม่] ธีมสำหรับ Transport Admin (สีส้ม) +++
+            "transport": {"primary": "#F59E0B", "header": "#B45309", "bg": "#FFFBEB"} 
+        }
         self.db_pool = None
         self.HEADER_MAP = { 
                 'id': 'ID', 'timestamp': 'เวลาบันทึก', 'status': 'สถานะ', 'is_active': 'Active', 'original_id': 'Original ID', 'so_number': 'เลขที่ SO', 'bill_date': 'วันที่บิล', 'customer_id': 'รหัสลูกค้า', 'customer_name': 'ชื่อลูกค้า', 'customer_type': 'ประเภทลูกค้า', 'credit_term': 'เครดิต', 'sales_service_amount': 'ยอดขาย/บริการ','payment_date': 'วันที่ชำระหลัก', 'total_payment_amount': 'ยอดชำระรวม', 'payment_before_vat': 'ยอดชำระก่อน VAT','payment_no_vat': 'ยอดชำระไม่มี VAT', 'difference_amount': 'ผลต่าง', 'vat_deduction': 'หัก ณ ที่จ่าย (VAT)','no_vat_deduction': 'หัก ณ ที่จ่าย (ไม่มี VAT)', 'shipping_cost': 'ค่าขนส่ง', 'delivery_date': 'วันที่จัดส่ง','separate_shipping_charge': 'ค่ารถเก็บเงินแยก', 'brokerage_fee': 'ค่านายหน้า', 'giveaways': 'ของแถม','coupons': 'คูปอง', 'transfer_fee': 'ค่าธรรมเนียมโอน', 'credit_card_fee': 'ค่าธรรมเนียมบัตร','wht_3_percent': 'ภาษีหัก ณ ที่จ่าย 3%', 'commission_month': 'เดือนคอมมิชชั่น', 'commission_year': 'ปีคอมมิชชั่น','final_commission': 'คอมมิชชั่นสุดท้าย', 'product_vat_7': 'VAT สินค้า 7%', 'shipping_vat_7': 'VAT ขนส่ง 7%', 'sales_uploaded': 'ยอดขาย (Express)', 'margin_db': 'Margin (ระบบ) %', 'margin_uploaded': 'Margin (Express) %', 'cogs_db': 'ต้นทุน (PU)','cost_db': 'ต้นทุน (PU)', 'cost_uploaded': 'ต้นทุน (Express)','cutting_drilling_fee': 'ค่าบริการตัด/เจาะ','cutting_drilling_fee_vat_option': 'ประเภท VAT ตัด/เจาะ', 'other_service_fee': 'ค่าบริการอื่นๆ','other_service_fee_vat_option': 'ประเภท VAT อื่นๆ', 'sales_service_vat_option': 'ประเภท VAT ยอดขาย','shipping_vat_option': 'ประเภท VAT ค่าส่ง', 'credit_card_fee_vat_option': 'ประเภท VAT บัตร','cash_product_input': 'ยอดสินค้าเงินสด', 'cash_service_total': 'ยอดบริการเงินสด','cash_required_total': 'ยอดต้องชำระเงินสด', 'cash_actual_payment': 'ยอดชำระเงินสดจริง','payment1_date': 'วันที่ชำระ1', 'payment1_method': 'วิธีชำระ1', 'payment2_date': 'วันที่ชำระ2','payment2_method': 'วิธีชำระ2', 'delivery_type': 'ประเภทการจัดส่ง', 'pickup_location': 'สถานที่รับ','relocation_cost': 'ค่าย้าย', 'date_to_warehouse': 'วันที่เข้าคลัง', 'date_to_customer': 'วันที่ส่งลูกค้า','pickup_registration': 'ทะเบียนเข้ารับ', 'department': 'แผนก', 'pur_order': 'PUR Order', 'supplier_name': 'ชื่อซัพพลายเออร์', 'po_number': 'เลขที่ PO', 'rr_number': 'เลขที่ RR', 'po_date': 'วันที่สร้าง PO','po_total_payable': 'ยอดชำระ PO', 'po_creator_key': 'ผู้สร้าง PO', 'sale_name': 'พนักงานขาย','commission_plan': 'แผนค่าคอมฯ', 'sales_target': 'ยอดเป้าหมาย', 'status_db': 'สถานะ (DB)','status_file': 'สถานะ (ไฟล์)', 'user_key': 'รหัสผู้ใช้',
@@ -660,6 +667,25 @@ class AppContainer(CTk):
         for widget in self.container.winfo_children():
             widget.destroy()
     
+    # ในไฟล์ main_app.py (Class AppContainer)
+
+    def show_transport_admin_screen(self, user_key, user_name, user_role):
+        """ฟังก์ชันสำหรับเปิดหน้าจอ Transport Admin"""
+        try:
+            # Import ไฟล์หน้าจอที่เราเพิ่งสร้าง
+            from transport_admin_screen import TransportAdminScreen
+            
+            # เรียกใช้ show_screen ตามมาตรฐานเดิม
+            self.show_screen(
+                TransportAdminScreen, 
+                app_container=self, 
+                user_key=user_key
+            )
+        except ImportError:
+            messagebox.showerror("Error", "ไม่พบไฟล์ transport_admin_screen.py\nกรุณาตรวจสอบว่าไฟล์ถูกสร้างแล้ว")
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าจอ Transport ได้: {e}")
+    
     def show_sale_support_screen(self, user_key, user_name, user_role):
         """เปิดหน้าจอสำหรับ Sale Support (ฉบับแก้จอลอยซ้อนกัน)"""
         
@@ -686,8 +712,48 @@ class AppContainer(CTk):
             show_logout_button=True
         )
         self.current_screen.pack(fill="both", expand=True)
+    
+    def sync_transport_cost_to_po(self, po_number):
+        """
+        ฟังก์ชันสำหรับเช็คค่ารถจากระบบขนส่ง (PX) ตามเลข PO
+        """
+        po_number = po_number.strip().upper()
+        conn = self.get_connection()
+        transport_cost = 0.0
+        
+        try:
+            with conn.cursor() as cursor:
+                # ค้นหา PX ที่อ้างถึง PO นี้ (ดึง transport_cost ที่เป็นยอดเต็มก่อนหัก)
+                sql = """
+                    SELECT id, transport_cost FROM transport_orders 
+                    WHERE ref_po_number = %s AND status != 'Cancelled'
+                    ORDER BY id DESC LIMIT 1
+                """
+                cursor.execute(sql, (po_number,))
+                result = cursor.fetchone()
+                
+                if result:
+                    px_id, cost = result
+                    transport_cost = cost
+                    
+                    # ถ้าเจอ -> อัปเดตสถานะ PX เป็น 'Matched'
+                    cursor.execute("UPDATE transport_orders SET status = 'Matched' WHERE id = %s", (px_id,))
+                    conn.commit()
+                    print(f"✅ Found Transport Cost: {transport_cost} for {po_number}")
+                else:
+                    print(f"ℹ️ Not found transport info for {po_number}")
+                    
+        except Exception as e:
+            print(f"Error syncing transport: {e}")
+            if conn: conn.rollback()
+        finally:
+            self.release_connection(conn)
+            
+        return transport_cost
         
 if __name__ == "__main__":
     app = AppContainer()
     app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.mainloop()
+
+    

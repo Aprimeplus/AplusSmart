@@ -170,11 +170,32 @@ class PurchaseOrderWindow(ctk.CTkToplevel):
                 return
             po_data = po_df.iloc[0]
 
+            # Set ข้อมูลพื้นฐาน
             utils.set_entry_text(self.po_entries['supplier_name'], po_data.get('supplier_name', ''))
             utils.set_entry_text(self.po_entries['po_number'], po_data.get('po_number', ''))
             utils.set_entry_text(self.po_entries['so_number'], po_data.get('so_number', ''))
             
-            self.po_entries['shipping_to_stock_cost'].set(po_data.get('shipping_to_stock_cost', 0))
+            # ==============================================================================
+            # [LOGIC ใหม่] ดึงค่ารถจากระบบขนส่ง (PX) มาใส่ถ้ามี
+            # ==============================================================================
+            current_po_num = po_data.get('po_number', '')
+            stock_cost_val = po_data.get('shipping_to_stock_cost', 0) or 0
+            
+            if current_po_num:
+                # เรียกฟังก์ชันใน AppContainer เพื่อเช็คและดึงค่ารถ
+                # (ฟังก์ชันนี้จะคืนค่า > 0 ถ้าเจอ PX ที่สถานะ Pending Match)
+                px_cost = self.app_container.sync_transport_cost_to_po(current_po_num)
+                
+                if px_cost > 0:
+                    # ถ้าเจอค่ารถ และใน PO ปัจจุบันยังเป็น 0 (หรืออยากให้ทับ)
+                    if stock_cost_val == 0:
+                        stock_cost_val = px_cost
+                        messagebox.showinfo("Auto Sync", f"🚚 พบค่ารถจากฝ่ายขนส่ง: {px_cost:,.2f} บาท\nระบบนำมาใส่ใน 'ค่าส่งเข้าสต๊อก' ให้แล้ว", parent=self)
+            # ==============================================================================
+
+            # นำค่าที่ได้ (เดิม หรือ ใหม่จาก PX) มาใส่ในช่อง
+            self.po_entries['shipping_to_stock_cost'].set(stock_cost_val)
+            
             self.po_entries['shipping_to_stock_date'].set_date(po_data.get('shipping_to_stock_date'))
             self.po_entries['shipping_to_site_cost'].set(po_data.get('shipping_to_site_cost', 0))
             self.po_entries['shipping_to_site_date'].set_date(po_data.get('shipping_to_site_date'))

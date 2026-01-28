@@ -22,7 +22,7 @@ from export_utils import export_approved_pos_to_excel
 from pdf_utils import export_approved_pos_to_pdf
 from po_selection_dialog import POSelectionDialog
 from hr_windows import SOPopupWindow
-from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow
+from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow , CancelledHistoryWindow
 from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
 from reject_history import RejectionHistoryWindow
 
@@ -364,6 +364,72 @@ class PurchasingManagerScreen(CTkFrame):
     
     # --- START: เพิ่ม 6 ฟังก์ชันใหม่สำหรับแท็บ Master Edit ---
     
+    def _cancel_so_logic(self, so_number, reason):
+        """Logic การยกเลิก SO + PO + Noti + Log"""
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 1. ดึงข้อมูล SO เพื่อหาเจ้าของ (Sale Key)
+                cursor.execute("SELECT id, sale_key FROM commissions WHERE so_number = %s", (so_number,))
+                result = cursor.fetchone()
+                if not result:
+                    messagebox.showerror("Error", "ไม่พบ SO นี้ในระบบ")
+                    return
+                so_id, sale_key = result
+
+                # 2. อัปเดต SO เป็น Cancelled (และปิด Active ไม่ให้คำนวณคอมฯ)
+                # เพิ่ม rejection_reason เพื่อเก็บสาเหตุ
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET status = 'Cancelled', 
+                        is_active = 0, 
+                        rejection_reason = %s 
+                    WHERE so_number = %s
+                """, (f"ยกเลิกโดย {self.user_role}: {reason}", so_number))
+
+                # 3. อัปเดต PO ที่เกี่ยวข้องทั้งหมดเป็น Cancelled
+                cursor.execute("""
+                    UPDATE purchase_orders 
+                    SET status = 'Cancelled', 
+                        approval_status = 'Cancelled' 
+                    WHERE so_number = %s
+                """, (so_number,))
+
+                # 4. ส่ง Notification หาเจ้าของ SO
+                noti_msg = f"SO: {so_number} ถูกยกเลิกโดย {self.user_role}\nสาเหตุ: {reason}\n(รายการนี้จะไม่ถูกนำไปคิดค่าคอมมิชชั่น)"
+                cursor.execute("""
+                    INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id, timestamp)
+                    VALUES (%s, %s, FALSE, %s, NOW())
+                """, (sale_key, noti_msg, so_id))
+
+                # 5. บันทึก Audit Log
+                import json
+                log_data = json.dumps({"reason": reason, "cancelled_by": self.user_role})
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                """, ('Cancel SO', 'commissions', so_id, self.user_name, log_data))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ยกเลิก SO: {so_number} เรียบร้อยแล้ว")
+            
+            # TODO: Refresh หน้าจอหลังจากทำเสร็จ
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    # วิธีเรียกใช้ (ผูกกับปุ่ม)
+    def on_click_cancel_button(self):
+        # สมมติได้ so_number มาจากการเลือกในตาราง
+        selected_so = "SO-xxxx" 
+        
+        # เปิด Dialog
+        from cancellation_dialog import CancellationReasonDialog
+        CancellationReasonDialog(self, lambda reason: self._cancel_so_logic(selected_so, reason))
+
     def _create_master_edit_tab(self, parent_tab):
         """สร้าง UI สำหรับแท็บ Master Edit (คล้ายของ HR)"""
         parent_tab.grid_columnconfigure(0, weight=1)
@@ -1011,25 +1077,164 @@ class PurchasingManagerScreen(CTkFrame):
             messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างประวัติได้: {e}", parent=self)    
 
     def _create_header(self):
-        header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
-        CTkLabel(header_frame, text=f"หน้าจอหัวหน้าฝ่ายจัดซื้อ: {self.user_name}", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
-        button_container = CTkFrame(header_frame, fg_color="transparent"); button_container.pack(side="right")
+        header_frame = CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
+        
+        # ส่วนแสดงชื่อ
+        CTkLabel(header_frame, text=f"หน้าจอหัวหน้าฝ่ายจัดซื้อ: {self.user_name}", 
+                 font=CTkFont(size=22, weight="bold"), 
+                 text_color=self.theme["header"]).pack(side="left")
+        
+        # Container สำหรับปุ่มด้านขวา
+        button_container = CTkFrame(header_frame, fg_color="transparent")
+        button_container.pack(side="right")
+        
+        # 1. ปุ่มอนุมัติ
         self.approve_all_button = CTkButton(button_container, 
                                             text="อนุมัติทุกรายการที่ค้างอยู่ (0)", 
                                             command=self._approve_all_pending_pos,
                                             fg_color="#84CC16", # สีเขียวมะนาว
                                             hover_color="#65A30D",
                                             state="disabled") # เริ่มต้นที่ปิดใช้งาน
-        self.approve_all_button.pack(side="left", padx=10)
-        CTkButton(button_container, text="📄 พิมพ์ใบสั่งซื้อ PO", command=self._open_po_print_dialog, fg_color="#7C3AED", hover_color="#6D28D9").pack(side="left", padx=10)
-        CTkButton(button_container, text="ดึงงาน PO กลับมาแก้ไข", command=self._open_reopen_po_window, fg_color="#F97316", hover_color="#EA580C").pack(side="left", padx=10)
-        CTkButton(button_container, text="ประวัติการตีกลับ", command=self._open_rejection_history, fg_color="#EF4444", hover_color="#B91C1C").pack(side="left", padx=10)
-        CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=self._open_approved_po_history).pack(side="left", padx=(0, 10))
-        CTkButton(button_container, text="Refresh All", command=self._load_data).pack(side="left", padx=10)
-        CTkButton(button_container, text="Export PDF (PO อนุมัติ)", command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
-        CTkButton(button_container, text="Export Excel (PO อนุมัติ)", command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B").pack(side="left", padx=5)   
-        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="left")
-       
+        self.approve_all_button.pack(side="left", padx=5)
+
+        # 2. ปุ่มจัดการ PO
+        CTkButton(button_container, text="📄 พิมพ์ใบสั่งซื้อ PO", command=self._open_po_print_dialog, fg_color="#7C3AED", hover_color="#6D28D9").pack(side="left", padx=5)
+        CTkButton(button_container, text="ดึงงาน PO กลับมาแก้ไข", command=self._open_reopen_po_window, fg_color="#F97316", hover_color="#EA580C").pack(side="left", padx=5)
+        
+        # 3. ปุ่มดูประวัติ
+        CTkButton(button_container, text="ประวัติการตีกลับ", command=self._open_rejection_history, fg_color="#EF4444", hover_color="#B91C1C").pack(side="left", padx=5)
+        CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=self._open_approved_po_history).pack(side="left", padx=5)
+        
+        # +++ [เพิ่มใหม่] ปุ่มประวัติการยกเลิก +++
+        CTkButton(button_container, text="ประวัติการยกเลิก", 
+                  command=self._open_cancelled_history, 
+                  fg_color="#B91C1C", # สีแดงเข้ม เพื่อให้แตกต่างจากปุ่มตีกลับเล็กน้อย
+                  hover_color="#991B1B").pack(side="left", padx=5)
+        # +++++++++++++++++++++++++++++++++++++
+
+        CTkButton(button_container, text="⚠️ ยกเลิก SO", 
+                  command=self._manual_cancel_so_process, 
+                  fg_color="#991B1B", # สีแดงเลือดหมู
+                  hover_color="#7F1D1D",
+                  width=100).pack(side="left", padx=5)
+
+        # 4. ปุ่ม System / Export
+        CTkButton(button_container, text="Refresh", width=80, command=self._load_data).pack(side="left", padx=5)
+        CTkButton(button_container, text="PDF (อนุมัติ)", width=100, command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
+        CTkButton(button_container, text="Excel (อนุมัติ)", width=100, command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B").pack(side="left", padx=5)   
+        
+        # 5. ปุ่ม Logout
+        CTkButton(button_container, text="ออก", width=60, command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="left", padx=5)
+
+    # -------------------------------------------------------------------------
+    #  ฟังก์ชันสำหรับระบบยกเลิก SO (Manual Cancel)
+    # -------------------------------------------------------------------------
+    def _manual_cancel_so_process(self):
+        """เริ่มกระบวนการยกเลิก SO โดยการถามเลขที่ SO ก่อน"""
+        # 1. ถามเลขที่ SO
+        dialog = CTkInputDialog(text="ระบุเลขที่ SO ที่ต้องการยกเลิก :", title="ยกเลิก SO")
+        so_number = dialog.get_input()
+        
+        if not so_number: return
+        so_number = so_number.strip().upper()
+
+        # 2. ตรวจสอบว่า SO นี้มีอยู่จริงและสถานะยกเลิกได้หรือไม่
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, customer_name, status, sale_key FROM commissions WHERE so_number = %s", (so_number,))
+                result = cursor.fetchone()
+                
+                if not result:
+                    messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบ SO หมายเลข: {so_number} ในระบบ")
+                    return
+                
+                so_id, customer, status, sale_key = result
+
+                # เช็คสถานะ (ป้องกันการยกเลิกรายการที่จ่ายเงินไปแล้ว)
+                if status in ['Paid', 'HR Verified']:
+                    messagebox.showerror("ไม่สามารถยกเลิกได้", 
+                                         f"SO นี้สถานะคือ '{status}' (จ่ายเงิน/ยืนยันแล้ว)\nไม่สามารถยกเลิกผ่านเมนูนี้ได้ ต้องติดต่อ Admin เท่านั้น")
+                    return
+                
+                if status == 'Cancelled':
+                    messagebox.showinfo("แจ้งเตือน", "SO นี้ถูกยกเลิกไปแล้ว")
+                    return
+
+                # 3. แสดงข้อมูลยืนยันความถูกต้อง
+                msg = (f"พบข้อมูล SO: {so_number}\n"
+                       f"ลูกค้า: {customer}\n"
+                       f"เซลส์: {sale_key}\n"
+                       f"สถานะปัจจุบัน: {status}\n\n"
+                       f"คุณต้องการ 'ยกเลิก' รายการนี้ และไม่นำไปคิดค่าคอมมิชชั่น ใช่หรือไม่?")
+                
+                if not messagebox.askyesno("ยืนยัน SO", msg, icon="warning"):
+                    return
+
+                # 4. เรียก Dialog ถามเหตุผล (ใช้ไฟล์ cancellation_dialog.py ที่ทำไว้)
+                from cancellation_dialog import CancellationReasonDialog
+                CancellationReasonDialog(self, lambda reason: self._execute_cancel_so(so_number, so_id, sale_key, reason))
+
+        except Exception as e:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _execute_cancel_so(self, so_number, so_id, sale_key, reason):
+        """บันทึกการยกเลิกลง Database"""
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # A. อัปเดตตาราง commissions
+                # is_active = 0 เพื่อซ่อนจากหน้าคำนวณ
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET status = 'Cancelled', is_active = 0, rejection_reason = %s 
+                    WHERE id = %s
+                """, (f"Cancelled by MP: {reason}", so_id))
+
+                # B. อัปเดต PO ทั้งหมดของ SO นี้ให้เป็น Cancelled
+                cursor.execute("""
+                    UPDATE purchase_orders 
+                    SET status = 'Cancelled', approval_status = 'Cancelled' 
+                    WHERE so_number = %s
+                """, (so_number,))
+
+                # C. แจ้งเตือนเซลส์
+                msg = f"SO: {so_number} ถูกยกเลิกโดยฝ่ายจัดซื้อ (MP)\nสาเหตุ: {reason}\n(รายการนี้จะไม่ถูกนำไปคำนวณค่าคอมมิชชั่น)"
+                cursor.execute("""
+                    INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id, timestamp)
+                    VALUES (%s, %s, FALSE, %s, NOW())
+                """, (sale_key, msg, so_id))
+
+                # D. Audit Log
+                log_detail = json.dumps({"action": "Manual Cancel", "reason": reason, "by": self.user_name})
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                """, ('Cancel SO', 'commissions', so_id, self.app_container.current_user_key, log_detail))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ยกเลิก SO: {so_number} เรียบร้อยแล้ว")
+            
+            # Refresh หน้าจอ (เผื่อ SO นั้นค้างอยู่ในลิสต์อนุมัติ)
+            self._load_data()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"บันทึกไม่สำเร็จ: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
+     
+    def _open_cancelled_history(self):
+        """เปิดหน้าต่างดูประวัติ SO ที่ถูกยกเลิก"""
+        from history_windows import CancelledHistoryWindow
+        try:
+            CancelledHistoryWindow(self, self.app_container)
+        except Exception as e:
+            tk.messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างได้: {e}")
+    
     def _open_so_detail_window(self, so_number):
         if self.so_detail_window is None or not self.so_detail_window.winfo_exists():
             self.so_detail_window = SOPendingDetailWindow(self, so_number)

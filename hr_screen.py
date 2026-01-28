@@ -27,6 +27,7 @@ matplotlib.use('TkAgg')
 from matplotlib.font_manager import fontManager
 from export_utils import export_commission_details_to_excel
 import matplotlib
+from cancellation_dialog import CancellationReasonDialog
 
 try:
     # ใช้ os.path.join เพื่อให้ทำงานได้ทุกระบบปฏิบัติการ
@@ -49,7 +50,7 @@ from sqlalchemy import create_engine
 
 # (import ส่วนที่เหลือของโปรแกรม)
 from hr_windows import HRVerificationWindow, PayoutDetailWindow, PayoutCalculationViewer, SOPopupWindow, CalculationDetailViewer
-from history_windows import PurchaseDetailWindow
+from history_windows import PurchaseDetailWindow , CancelledHistoryWindow
 from custom_widgets import NumericEntry, DateSelector
 import utils
 import business_logic
@@ -526,6 +527,8 @@ class HRScreen(CTkFrame):
         self.manage_users_tab = self.management_tabs.add("ผู้ใช้งาน")
         self.edit_data_tab = self.management_tabs.add("แก้ไขข้อมูล (Master Edit)")
         self.audit_log_tab = self.management_tabs.add("บันทึกระบบ (Log)")
+        self.cancelled_so_tab = self.management_tabs.add("จัดการ SO ยกเลิก")
+        self._create_cancelled_so_tab(self.cancelled_so_tab)
 
         self._create_manage_users_tab(self.manage_users_tab)
         self._create_edit_data_tab(self.edit_data_tab)
@@ -566,6 +569,72 @@ class HRScreen(CTkFrame):
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
     
+    def _cancel_so_logic(self, so_number, reason):
+        """Logic การยกเลิก SO + PO + Noti + Log"""
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 1. ดึงข้อมูล SO เพื่อหาเจ้าของ (Sale Key)
+                cursor.execute("SELECT id, sale_key FROM commissions WHERE so_number = %s", (so_number,))
+                result = cursor.fetchone()
+                if not result:
+                    messagebox.showerror("Error", "ไม่พบ SO นี้ในระบบ")
+                    return
+                so_id, sale_key = result
+
+                # 2. อัปเดต SO เป็น Cancelled (และปิด Active ไม่ให้คำนวณคอมฯ)
+                # เพิ่ม rejection_reason เพื่อเก็บสาเหตุ
+                cursor.execute("""
+                    UPDATE commissions 
+                    SET status = 'Cancelled', 
+                        is_active = 0, 
+                        rejection_reason = %s 
+                    WHERE so_number = %s
+                """, (f"ยกเลิกโดย {self.user_role}: {reason}", so_number))
+
+                # 3. อัปเดต PO ที่เกี่ยวข้องทั้งหมดเป็น Cancelled
+                cursor.execute("""
+                    UPDATE purchase_orders 
+                    SET status = 'Cancelled', 
+                        approval_status = 'Cancelled' 
+                    WHERE so_number = %s
+                """, (so_number,))
+
+                # 4. ส่ง Notification หาเจ้าของ SO
+                noti_msg = f"SO: {so_number} ถูกยกเลิกโดย {self.user_role}\nสาเหตุ: {reason}\n(รายการนี้จะไม่ถูกนำไปคิดค่าคอมมิชชั่น)"
+                cursor.execute("""
+                    INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id, timestamp)
+                    VALUES (%s, %s, FALSE, %s, NOW())
+                """, (sale_key, noti_msg, so_id))
+
+                # 5. บันทึก Audit Log
+                import json
+                log_data = json.dumps({"reason": reason, "cancelled_by": self.user_role})
+                cursor.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                """, ('Cancel SO', 'commissions', so_id, self.user_name, log_data))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ยกเลิก SO: {so_number} เรียบร้อยแล้ว")
+            
+            # TODO: Refresh หน้าจอหลังจากทำเสร็จ
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    # วิธีเรียกใช้ (ผูกกับปุ่ม)
+    def on_click_cancel_button(self):
+        # สมมติได้ so_number มาจากการเลือกในตาราง
+        selected_so = "SO-xxxx" 
+        
+        # เปิด Dialog
+        from cancellation_dialog import CancellationReasonDialog
+        CancellationReasonDialog(self, lambda reason: self._cancel_so_logic(selected_so, reason))
+
     def _open_sales_filter_dialog(self):
         # เตรียมรายชื่อ (Key, Name)
         sales_list = []
@@ -992,9 +1061,12 @@ class HRScreen(CTkFrame):
             elif selected_sub_tab == "บันทึกระบบ (Log)" and not self._audit_log_loaded:
                 self._populate_audit_log_table(); self._audit_log_loaded = True
             
+            elif selected_sub_tab == "จัดการ SO ยกเลิก":
+                self._load_cancelled_so_history()
             # Refresh
             if selected_sub_tab == "ผู้ใช้งาน": self._populate_users_table()
             elif selected_sub_tab == "บันทึกระบบ (Log)": self._populate_audit_log_table()
+            elif selected_sub_tab == "จัดการ SO ยกเลิก": self._load_cancelled_so_history()
 
         elif main_tab == "⌨️ คีย์แทน (Data Entry)":
             selected_sub_tab = self.entry_tabs.get()
@@ -1606,12 +1678,17 @@ class HRScreen(CTkFrame):
         so_id = int(so_data['id'])
         so_number = so_data['so_number']
         
-        # --- START: เพิ่ม Logic การตรวจสอบยอดค้างชำระเพื่อเปลี่ยนสี ---
-        difference_amount = so_data.get('difference_amount', 0.0) or 0.0
+        # --- START: แก้ไข Logic ตรวจสอบยอดค้างชำระ ---
+        raw_diff = so_data.get('difference_amount', 0.0) or 0.0
+        difference_amount = float(raw_diff) # แปลงเป็น float ให้ชัวร์
+
+        # กำหนด Threshold (ค่าความคลาดเคลื่อนที่ยอมรับได้) เป็น -0.01
+        # ถ้าน้อยกว่า -0.01 แปลว่าขาดจริง (เช่น -0.02, -100)
+        is_short_payment = difference_amount < -0.01 
         
-        # ถ้า difference_amount > 0 (โอนขาด) ให้ใช้สีส้มอ่อน, ถ้าไม่ ให้ใช้สีฟ้าอ่อนปกติ
-        card_color = "#FEF3C7" if difference_amount > 0 else "#F0F9FF"
-        info_text_color = "#92400E" if difference_amount > 0 else "gray"
+        # ถ้าโอนขาด ให้ใช้สีส้มอ่อน/แดง, ถ้าปกติ ให้ใช้สีฟ้าอ่อน
+        card_color = "#FEF3C7" if is_short_payment else "#F0F9FF"
+        info_text_color = "#92400E" if is_short_payment else "gray"
         
         so_card = CTkFrame(parent, border_width=1, fg_color=card_color)
         # --- END ---
@@ -1623,12 +1700,12 @@ class HRScreen(CTkFrame):
         header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         header_frame.grid_columnconfigure(0, weight=1)
         
-        # --- START: ปรับปรุงการแสดงข้อความให้มีข้อมูลยอดค้างชำระด้วย ---
+        # --- START: ปรับปรุงการแสดงข้อความ ---
         main_info_text = f"SO: {so_number}  |  ลูกค้า: {so_data.get('customer_name','N/A')}  |  เซลส์: {so_data.get('sale_key','N/A')}"
         CTkLabel(header_frame, text=main_info_text, font=self.entry_font).grid(row=0, column=0, sticky="w")
 
-        # แสดงข้อความยอดค้างชำระ ถ้ามี
-        if difference_amount < 0:
+        # แสดงข้อความยอดค้างชำระ เฉพาะเมื่อขาดจริง (เกิน 0.01)
+        if is_short_payment:
             due_text = f"⚠️ ยอดโอนขาด: {abs(difference_amount):,.2f} บาท"
             CTkLabel(so_card, text=due_text, text_color=info_text_color, font=CTkFont(size=12, weight="bold")).grid(row=1, column=0, sticky="w", padx=10, pady=(0,5))
         # --- END ---
@@ -2710,6 +2787,8 @@ class HRScreen(CTkFrame):
         
         CTkButton(control_frame, text="🚀 เริ่มต้นการเปรียบเทียบใหม่", command=self._start_new_comparison, font=CTkFont(size=16, weight="bold")).pack(side="left", padx=10, pady=10)
         CTkButton(control_frame, text="📖 แสดงประวัติการเปรียบเทียบ", command=self._open_comparison_history_window, fg_color="#64748B").pack(side="left", padx=10, pady=10)
+        
+        
 
         # --- [✨ ส่วนที่เพิ่มใหม่] Label แสดงชื่อ Sale ---
         self.active_sale_label = CTkLabel(control_frame, 
@@ -2736,6 +2815,14 @@ class HRScreen(CTkFrame):
         self.results_frame.grid_rowconfigure(0, weight=1)
         self.results_frame.grid_columnconfigure(0, weight=1)
     
+    def _open_cancelled_history(self):
+        """เปิดหน้าต่างดูประวัติ SO ที่ถูกยกเลิก"""
+        from history_windows import CancelledHistoryWindow
+        try:
+            CancelledHistoryWindow(self, self.app_container)
+        except Exception as e:
+            tk.messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างได้: {e}")
+
     def _update_summary_pane(self):
         # +++ START: เพิ่ม Safety Check ตรงนี้ +++
         # ตรวจสอบก่อนว่า self.summary_pane ถูกสร้างขึ้นแล้วหรือยัง
@@ -3179,6 +3266,7 @@ class HRScreen(CTkFrame):
 
     def _compare_data(self):
         try:
+            # 1. รวบรวมข้อมูล
             comparison_sources = []
             if self.uploaded_df is not None and not self.uploaded_df.empty:
                 comparison_sources.append(self.uploaded_df)
@@ -3197,40 +3285,47 @@ class HRScreen(CTkFrame):
             
             if not processed_so_df.empty:
                 processed_so_list = processed_so_df['so_number'].tolist()
-                initial_count = len(uploaded_compare_df)
                 uploaded_compare_df['so_number'] = uploaded_compare_df['so_number'].astype(str).str.strip()
                 uploaded_compare_df = uploaded_compare_df[~uploaded_compare_df['so_number'].isin(processed_so_list)]
-                if initial_count > len(uploaded_compare_df):
-                    print(f"Filtered out {initial_count - len(uploaded_compare_df)} already processed SO(s) from the uploaded data.")
 
             db_compare_df = self.db_df.copy()
             db_compare_df['so_number'] = db_compare_df['so_number'].astype(str).str.strip()
             
+            # --- [Logic 1] คำนวณ Grand Total (ยอดบิล) สำรองไว้ กรณีใน DB เป็น 0 ---
+            # รวม: สินค้า + บริการ + ขนส่ง + ค่าย้าย + บัตรเครดิต
+            cols_to_sum = ['sales_service_amount', 'cutting_drilling_fee', 'other_service_fee', 
+                           'shipping_cost', 'relocation_cost', 'credit_card_fee']
+            
+            db_compare_df['calc_base_total'] = 0.0
+            for col in cols_to_sum:
+                if col in db_compare_df.columns:
+                    db_compare_df['calc_base_total'] += pd.to_numeric(db_compare_df[col], errors='coerce').fillna(0)
+            
+            # คูณ VAT 7% เพื่อหา "ยอดที่ต้องชำระจริง"
+            db_compare_df['calc_grand_total'] = db_compare_df['calc_base_total'] * 1.07
+            # ----------------------------------------------------------------
+
+            # เตรียมข้อมูลเปรียบเทียบยอดขาย/ต้นทุน
             sales_revenue_keys = ['sales_service_amount', 'cutting_drilling_fee', 'other_service_fee']
             db_compare_df['sales_for_comparison'] = 0
             for key in sales_revenue_keys:
                 if key in db_compare_df.columns:
                     db_compare_df['sales_for_comparison'] += pd.to_numeric(db_compare_df[key], errors='coerce').fillna(0)
 
-            brokerage = pd.to_numeric(db_compare_df['brokerage_fee'], errors='coerce').fillna(0)
-            transfer = pd.to_numeric(db_compare_df['transfer_fee'], errors='coerce').fillna(0)
-            giveaways = pd.to_numeric(db_compare_df['giveaways'], errors='coerce').fillna(0)
             cogs = pd.to_numeric(db_compare_df['cogs_db'], errors='coerce').fillna(0)
             db_compare_df['cost_db'] = cogs
 
-            db_compare_df['gp_db'] = db_compare_df['sales_service_amount'] - db_compare_df['cost_db']
-            db_compare_df['margin_db'] = (db_compare_df['gp_db'] / db_compare_df['sales_service_amount'].replace(0, np.nan)) * 100
-
-            uploaded_compare_df['so_number'] = uploaded_compare_df['so_number'].astype(str).str.strip()
+            # เตรียมข้อมูลไฟล์อัปโหลด
             uploaded_compare_df['sales_uploaded'] = pd.to_numeric(uploaded_compare_df.get('sales_uploaded'), errors='coerce').fillna(0)
             uploaded_compare_df['cost_uploaded'] = pd.to_numeric(uploaded_compare_df.get('cost_uploaded'), errors='coerce').fillna(0)
-            uploaded_compare_df['gp_uploaded'] = uploaded_compare_df['sales_uploaded'] - uploaded_compare_df['cost_uploaded']
-            uploaded_compare_df['margin_uploaded'] = (uploaded_compare_df['gp_uploaded'] / uploaded_compare_df['sales_uploaded'].replace(0, np.nan)) * 100
 
+            # Merge
             merged_df = pd.merge(db_compare_df, uploaded_compare_df, on='so_number', how='outer', suffixes=('_db', '_uploaded'), indicator=True)
             
+            # Adjust Sales Uploaded (หักค่าขนส่งออกเพื่อให้เทียบกับ Base System ได้)
             merged_df['sales_uploaded'] = pd.to_numeric(merged_df['sales_uploaded'], errors='coerce').fillna(0) - pd.to_numeric(merged_df['shipping_cost'], errors='coerce').fillna(0)
 
+            # [Restore Layout] คืนค่าคอลัมน์แหล่งที่มา
             merged_df['แหล่งยอดขาย'] = merged_df['hr_sale_source'].apply(
                 lambda x: 'ระบบ' if x == 'system' else ('Express' if x == 'express' else 'ยังไม่เลือก')
             )
@@ -3238,76 +3333,80 @@ class HRScreen(CTkFrame):
                 lambda x: 'ระบบ' if x == 'system' else ('Express' if x == 'express' else 'ยังไม่เลือก')
             )
 
+            # ==============================================================================
+            # ฟังก์ชันตัดสินสถานะ (Logic ใหม่: ลบกันตรงๆ ตามที่คุณต้องการ)
+            # ==============================================================================
             def determine_status_and_color(row):
-                difference_amount = row.get('difference_amount', 0.0) or 0.0
+                so_num = str(row.get('so_number', ''))
                 
-                # --- START: แก้ไข Logic การตรวจสอบสถานะทั้งหมด ---
+                # 1. หา "ยอดบิลสุทธิ" (Grand Total)
+                grand_total = float(row.get('so_grand_total', 0) or 0)
+                calc_grand = float(row.get('calc_grand_total', 0) or 0)
                 
-                # 1. ตรวจสอบยอดโอนขาดก่อน (เป็นปัญหาสำคัญสุด)
-                if difference_amount < -0.01:
-                    return f"⚠️ ยอดโอนขาด ({abs(difference_amount):,.2f})"
+                # ถ้าใน DB เป็น 0 ให้ใช้ค่าที่คำนวณเองเมื่อกี้
+                if grand_total <= 1.0: 
+                    grand_total = calc_grand
 
-                # 2. ตรวจสอบสถานะอื่นๆ ที่ควรแสดงผลทันที
-                if row['status'] == 'HR Verified':
-                    final_margin = row['final_margin']
-                    if pd.isna(final_margin): return 'ยืนยันแล้ว (รอผล)'
-                    if final_margin < 0: return 'ขาดทุน'
-                    elif final_margin < 10: return 'กำไรน้อย'
-                    else: return 'กำไรดี'
+                # 2. หา "ยอดที่จ่ายมาจริง" (Total Payment)
+                pay_uploaded = float(row.get('total_payment_amount', 0) or 0)
+                pay_db = float(row.get('total_payment_amount_db', 0) or 0)
+                total_pay = pay_uploaded if pay_uploaded > 0 else pay_db
+                
+                # 3. หา "ภาษีหัก ณ ที่จ่าย" (WHT)
+                wht = float(row.get('wht_3_percent', 0) or 0)
 
+                # 4. คำนวณผลต่าง: (ยอดโอน + หักภาษี) - ยอดบิล
+                real_difference = (total_pay + wht) - grand_total
+
+                # --- DEBUG LOG ---
+                if abs(real_difference) > 1.0:
+                    print(f"DEBUG {so_num}: Pay({total_pay}) + WHT({wht}) - Bill({grand_total}) = Diff({real_difference})")
+
+                # ================= ตัดสินสถานะ =================
+                
+                # A. ตรวจสอบการโอนเงิน (สำคัญสุด)
+                if real_difference < -0.05: # ติดลบ = โอนขาด
+                    return f"⚠️ ยอดโอนขาด ({abs(real_difference):,.2f})"
+                
+                # B. ตรวจสอบสถานะ Data (มีในระบบ/ไม่มี)
                 if row['_merge'] == 'right_only': return 'มีใน Express, ไม่มีในระบบ'
                 if row['_merge'] == 'left_only': return 'มีในระบบ, ไม่มีใน Express'
 
-                # 3. ตรวจสอบปัญหาข้อมูลอื่นๆ
-                final_system_sale = row['sales_for_comparison']
-                final_system_cost = row['cost_db']
-                cost_uploaded = row['cost_uploaded']
+                # C. ตรวจสอบ Sales/Cost Mismatch
+                sys_sale = float(row.get('sales_for_comparison', 0) or 0)
+                exp_sale = float(row.get('sales_uploaded', 0) or 0)
+                sys_cost = float(row.get('cost_db', 0) or 0)
+                exp_cost = float(row.get('cost_uploaded', 0) or 0)
 
-                if pd.notna(final_system_sale) and pd.notna(final_system_cost) and final_system_cost > final_system_sale:
-                    return "‼️ ขายขาดทุน (ตรวจสอบด่วน)"
-                if pd.notna(final_system_cost) and final_system_cost > 0 and pd.notna(cost_uploaded) and cost_uploaded < (final_system_cost * 0.5):
-                    return "‼️ ต้นทุน Express ผิดปกติ (<50%)"
-                
-                # 4. ตรวจสอบข้อมูล Sales/Cost ระหว่างระบบกับ Express
-                sale_system_rounded = round(float(final_system_sale) if pd.notna(final_system_sale) else 0.0, 2)
-                sale_express_rounded = round(float(row['sales_uploaded']) if pd.notna(row['sales_uploaded']) else 0.0, 2)
-                cost_system_rounded = round(float(final_system_cost) if pd.notna(final_system_cost) else 0.0, 2)
-                cost_express_rounded = round(float(row['cost_uploaded']) if pd.notna(row['cost_uploaded']) else 0.0, 2)
+                if exp_sale > (sys_sale + 1.0): return "ยอดขายต่ำกว่า Express"
+                if exp_cost > (sys_cost + 1.0): return "ต้นทุนต่ำกว่า Express"
 
-                sale_ok = sale_system_rounded >= sale_express_rounded
-                cost_ok = cost_system_rounded >= cost_express_rounded
-                
-                # 5. ถ้าทุกอย่างถูกต้อง (รวมถึงยอดโอนไม่ขาด) ให้ถือว่า "ผ่านเกณฑ์"
-                if sale_ok and cost_ok:
-                    # ถ้ามียอดโอนเกิน ให้แสดงข้อความบอก แต่ยังคงสถานะให้ผ่านได้
-                    if difference_amount > 0.01:
-                        return f"ผ่านเกณฑ์ (โอนเกิน {difference_amount:,.2f})"
-                    else:
-                        return "ผ่านเกณฑ์"
-                
-                # 6. ถ้าข้อมูลไม่ตรงกัน ให้แสดงตามปกติ
-                elif not sale_ok: return "ยอดขายต่ำกว่า Express"
-                elif not cost_ok: return "ต้นทุนต่ำกว่า Express"
-                else: return "ข้อมูลไม่ตรงกัน"
+                # D. ถ้าผ่านหมด
+                if real_difference > 0.05: # บวก = โอนเกิน
+                    return f"ผ่านเกณฑ์ (โอนเกิน {real_difference:,.2f})"
+                else:
+                    return "ผ่านเกณฑ์" # พอดีเป๊ะ (ผลต่างเป็น 0)
 
+            # Apply Logic
             merged_df['สถานะ'] = merged_df.apply(determine_status_and_color, axis=1)
             
             merged_df['ผลต่างยอดขาย'] = merged_df['sales_for_comparison'].fillna(0) - merged_df['sales_uploaded'].fillna(0)
             merged_df['ผลต่างต้นทุน'] = merged_df['cost_db'].fillna(0) - merged_df['cost_uploaded'].fillna(0)
             
+            # [Restore Layout] ใส่คอลัมน์กลับมาให้ครบ 100%
             display_order_map = {
                 'so_number': 'เลขที่ SO',
                 'sales_service_amount': 'ยอดขาย/บริการ (ระบบ)',
                 'shipping_cost': 'ค่าขนส่ง (ระบบ)',
-                'relocation_cost': 'ค่าย้าย (ระบบ)',
+                'relocation_cost': 'ค่าย้าย (ระบบ)',        # <--- ใส่กลับมาแล้ว
                 'sales_for_comparison': 'ยอดขายรวม (ระบบ)',
                 'sales_uploaded': 'ยอดขาย (Express)',
                 'cost_db': 'ต้นทุน (ระบบ)',
                 'cost_uploaded': 'ต้นทุน (Express)',
                 'ผลต่างยอดขาย': 'ผลต่างยอดขาย',
                 'ผลต่างต้นทุน': 'ผลต่างต้นทุน',
-                'แหล่งยอดขาย': 'แหล่งยอดขาย',
-                'แหล่งต้นทุน': 'แหล่งต้นทุน',
+                'แหล่งยอดขาย': 'แหล่งยอดขาย',              # <--- ใส่กลับมาแล้ว
+                'แหล่งต้นทุน': 'แหล่งต้นทุน',              # <--- ใส่กลับมาแล้ว
                 'สถานะ': 'สถานะ'
             }
 
@@ -3318,39 +3417,27 @@ class HRScreen(CTkFrame):
             self.comparison_df = merged_df[list(display_order_map.keys())].copy()
             self.comparison_df.rename(columns=display_order_map, inplace=True)
 
-            # --- START: แก้ไขส่วนสรุปยอดตรงนี้ ---
-            # 1. นับจำนวน SO ก่อนที่จะเพิ่มแถวสรุป
+            # เพิ่มแถวสรุปยอดรวม (Total)
             so_count = len(self.comparison_df)
-
-            # 2. คำนวณผลรวม (เหมือนเดิม)
             numeric_cols = ['ยอดขายรวม (ระบบ)', 'ยอดขาย (Express)', 'ต้นทุน (ระบบ)', 'ต้นทุน (Express)', 'ผลต่างยอดขาย', 'ผลต่างต้นทุน']
             summary_data = self.comparison_df[numeric_cols].sum().to_dict()
-            
             summary_row = pd.Series(summary_data)
             summary_row['เลขที่ SO'] = 'ยอดรวม (Total)'
-            
-            # 3. นำจำนวน SO ที่นับได้มาใส่ในคอลัมน์ 'สถานะ' ของแถวสรุป
             summary_row['สถานะ'] = f"รวม {so_count} รายการ"
-            # --- END ---
-            
             self.comparison_df = pd.concat([self.comparison_df, summary_row.to_frame().T], ignore_index=True)
-                
+            
             status_colors = {
-                "ผ่านเกณฑ์": "#D1FAE5",                 # สีเขียวอ่อน
-                "ยอดขายต่ำกว่า Express": "#FEF2F2",      # สีแดงอ่อน
-                "ต้นทุนต่ำกว่า Express": "#FEFCE8",       # สีเหลืองอ่อน
-                "ข้อมูลไม่ตรงกัน": "#FFF7ED",          # สีส้มอ่อน
-                
-                # ใช้ Key แบบง่ายๆ และกำหนดสีที่ต้องการ
-                "ยอดโอนเกิน": "#D1FAE5",              # สีเขียวอ่อน
-                "ยอดโอนขาด": "#FEF3C7",              # สีเหลืองเข้ม
-
-                # สถานะอื่นๆ
+                "ผ่านเกณฑ์": "#D1FAE5", 
+                "ยอดขายต่ำกว่า Express": "#FEF2F2", 
+                "ต้นทุนต่ำกว่า Express": "#FEFCE8", 
+                "ข้อมูลไม่ตรงกัน": "#FFF7ED", 
+                "ยอดโอนเกิน": "#D1FAE5", 
+                "ยอดโอนขาด": "#FEF3C7", 
                 "มีใน Express, ไม่มีในระบบ": "#FEF2F2", 
                 "มีในระบบ, ไม่มีใน Express": "#FEFCE8",
                 "กำไรดี": "#D1FAE5", "กำไรน้อย": "#FEFCE8", "ขาดทุน": "#FEF2F2", 
                 "ยืนยันแล้ว (รอผล)": "#E5E7EB", 
-                "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171",
+                "‼️ ขายขาดทุน (ตรวจสอบด่วน)": "#F87171", 
                 "‼️ ต้นทุน Express ผิดปกติ (<50%)": "#F97316",
             }
             
@@ -4493,4 +4580,179 @@ class HRScreen(CTkFrame):
             if 'loading_popup' in locals() and loading_popup.winfo_exists():
                 loading_popup.destroy()
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดระหว่างการ Export: {e}", parent=self)
+            traceback.print_exc()
+
+    def _create_cancelled_so_tab(self, parent_tab):
+        # --- Grid Setup: แบ่งหน้าจอเป็น 2 ส่วน (บน-เล็ก / ล่าง-ใหญ่) ---
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(0, weight=0) # ส่วนค้นหา (ความสูงคงที่)
+        parent_tab.grid_rowconfigure(1, weight=1) # ส่วนตาราง (ขยายเต็มที่)
+
+        # =========================================================
+        #  SECTION 1: Professional Action Bar (แถบเครื่องมือด้านบน)
+        # =========================================================
+        # ใช้ Frame ที่มีสีพื้นหลัง (เช่น สีเทาอ่อน) เพื่อให้ดูเป็นสัดส่วนเหมือน Toolbar
+        action_bar = CTkFrame(parent_tab, height=60, fg_color=("gray90", "gray16"), corner_radius=6)
+        action_bar.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="ew")
+        
+        # ใช้ Grid ภายใน Action Bar เพื่อจัดกึ่งกลางแนวตั้ง (Vertical Center) ได้ง่ายกว่า Pack
+        action_bar.grid_columnconfigure(3, weight=1) # ช่องว่างตรงกลางให้ยืดได้
+        
+        # [1] Label
+        CTkLabel(action_bar, text="🔎 ค้นหา SO:", font=self.label_font_bold).grid(row=0, column=0, padx=(20, 5), pady=10, sticky="w")
+        
+        # [2] Search Input (ยาวขึ้นและสูงขึ้นเล็กน้อยให้กดง่าย)
+        self.cancel_search_entry = CTkEntry(action_bar, placeholder_text="ระบุเลข SO... (เช่น SO6701-001)", width=250, height=34)
+        self.cancel_search_entry.grid(row=0, column=1, padx=5, pady=10, sticky="w")
+        self.cancel_search_entry.bind("<Return>", lambda e: self._search_so_to_cancel())
+        
+        # [3] Search Button (สีฟ้าเด่น)
+        CTkButton(action_bar, text="ค้นหา", command=self._search_so_to_cancel, 
+                  width=100, height=34, fg_color="#3B82F6", hover_color="#2563EB", font=self.label_font_bold).grid(row=0, column=2, padx=10, pady=10, sticky="w")
+
+        # [4] Inline Result Area (แสดงผลลัพธ์ต่อท้ายปุ่มค้นหาเลย)
+        self.inline_result_frame = CTkFrame(action_bar, fg_color="transparent", height=34)
+        self.inline_result_frame.grid(row=0, column=3, padx=10, pady=10, sticky="ew")
+
+        # [5] Refresh Button (ขวาสุด)
+        CTkButton(action_bar, text="⟳ รีเฟรช", command=self._load_cancelled_so_history, 
+                  width=90, height=34, fg_color="transparent", border_width=1, text_color=("gray10", "gray90")).grid(row=0, column=4, padx=20, pady=10, sticky="e")
+
+        # =========================================================
+        #  SECTION 2: Full-Width History Table (ตารางเต็มจอ)
+        # =========================================================
+        # Container สำหรับตาราง
+        table_container = CTkFrame(parent_tab, fg_color="transparent")
+        table_container.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
+        
+        # Header เล็กๆ เหนือตาราง
+        header_row = CTkFrame(table_container, fg_color="transparent", height=30)
+        header_row.pack(fill="x", pady=(0, 5))
+        CTkLabel(header_row, text="📜 ประวัติรายการที่ถูกยกเลิก (Cancelled History)", font=self.header_font_table, text_color="#EF4444").pack(side="left")
+
+        # Frame สำหรับวาง Treeview (ใช้ CTkFrame ธรรมดา + pack fill both เพื่อแก้ปัญหา Layout เพี้ยน)
+        self.cancelled_history_frame = CTkFrame(table_container, fg_color="transparent")
+        self.cancelled_history_frame.pack(fill="both", expand=True)
+
+        # โหลดข้อมูลเริ่มต้น
+        self.after(100, self._load_cancelled_so_history)
+
+    # -------------------------------------------------------------------------
+    #  ฟังก์ชันค้นหา (ปรับปรุงให้แสดงผลใน Inline Frame)
+    # -------------------------------------------------------------------------
+    def _search_so_to_cancel(self):
+        so_number = self.cancel_search_entry.get().strip().upper()
+        
+        # ล้างผลเก่า
+        for w in self.inline_result_frame.winfo_children(): w.destroy()
+        
+        if not so_number: return
+
+        try:
+            # ดึงข้อมูลเพื่อแสดงผล
+            query = "SELECT id, customer_name, sale_key, status, sales_service_amount FROM commissions WHERE so_number = %s"
+            df = pd.read_sql_query(query, self.pg_engine, params=(so_number,))
+            
+            if df.empty:
+                CTkLabel(self.inline_result_frame, text=f"❌ ไม่พบ SO: {so_number}", text_color="#EF4444", font=self.label_font_bold).pack(side="left")
+                return
+
+            row = df.iloc[0]
+            status = row['status']
+            
+            # การ์ดแสดงผลง่ายๆ แนวนอน (Compact Info)
+            info_text = f"พบข้อมูล: {row['customer_name']} (ยอด: {row['sales_service_amount']:,.2f})  |  สถานะ: {status}"
+            CTkLabel(self.inline_result_frame, text=info_text, font=self.small_font).pack(side="left", padx=(0, 15))
+
+            # ปุ่ม Action (แสดงเฉพาะเมื่อยกเลิกได้)
+            if status not in ['Paid', 'HR Verified', 'Cancelled']:
+                CTkButton(self.inline_result_frame, text="⚠️ ยกเลิกรายการนี้", 
+                          fg_color="#DC2626", hover_color="#B91C1C", height=32,
+                          command=lambda: self._confirm_cancel_so(so_number)).pack(side="left")
+            else:
+                reason_msg = "(ยกเลิกไม่ได้: จ่ายแล้ว/ยืนยันแล้ว)" if status != 'Cancelled' else "(ยกเลิกไปแล้ว)"
+                CTkLabel(self.inline_result_frame, text=reason_msg, text_color="gray").pack(side="left")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"{e}")
+
+    def _confirm_cancel_so(self, so_number):
+        """เรียก Dialog ถามเหตุผลและบันทึก"""
+        CancellationReasonDialog(self, lambda reason: self._process_cancellation_callback(so_number, reason))
+
+    def _process_cancellation_callback(self, so_number, reason):
+        """Callback หลังจากกดตกลงใน Dialog"""
+        # เรียกใช้ Logic เดิมที่มีอยู่แล้ว (Reuse Code)
+        self._cancel_so_logic(so_number, reason)
+        
+        # ล้างช่องค้นหาและรีเฟรชตาราง
+        self.cancel_search_entry.delete(0, "end")
+        for widget in self.cancel_result_frame.winfo_children(): widget.destroy()
+        self._load_cancelled_so_history()
+
+    def _load_cancelled_so_history(self):
+        """โหลดตารางประวัติ พร้อมบังคับขยายคอลัมน์ให้เต็มจอ"""
+        # ล้างตารางเก่า
+        for widget in self.cancelled_history_frame.winfo_children(): widget.destroy()
+        
+        try:
+            # 1. Query ข้อมูล
+            query = """
+                SELECT so_number, sale_key, customer_name, rejection_reason, timestamp 
+                FROM commissions 
+                WHERE status = 'Cancelled' 
+                ORDER BY timestamp DESC 
+                LIMIT 100
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+            
+            if df.empty:
+                CTkLabel(self.cancelled_history_frame, text="ยังไม่มีประวัติการยกเลิก", font=self.entry_font, text_color="gray").pack(pady=40)
+                return
+            
+            # เปลี่ยนชื่อคอลัมน์ให้สื่อความหมาย
+            df.rename(columns={
+                'so_number': 'เลขที่ SO',
+                'sale_key': 'รหัสพนักงาน',
+                'customer_name': 'ชื่อลูกค้า',
+                'rejection_reason': 'สาเหตุการยกเลิก',
+                'timestamp': 'วันที่ยกเลิก'
+            }, inplace=True)
+
+            # 2. สร้างตารางด้วย Helper Function เดิม
+            self._create_styled_dataframe_table(
+                self.cancelled_history_frame, 
+                df, 
+                title="" # ไม่ต้องใส่ Title ซ้ำ เพราะเราทำ Header ข้างนอกแล้ว
+            )
+            
+            # =============================================================
+            # [🔥 HERO FIX] เทคนิคแก้พื้นที่ขาว: เจาะเข้าไปแก้ Treeview ให้ยืดคอลัมน์
+            # =============================================================
+            # หาตัว Treeview widget ที่ถูกสร้างโดย _create_styled_dataframe_table
+            tree = None
+            for widget in self.cancelled_history_frame.winfo_children():
+                # ปกติ Helper จะสร้าง Frame ครอบ Treeview อีกที
+                for child in widget.winfo_children():
+                    if isinstance(child, ttk.Treeview):
+                        tree = child
+                        break
+                if tree: break
+            
+            if tree:
+                # กำหนดความกว้างและการยืดตัว (Stretch) ใหม่ให้สวยงาม
+                # เลขที่ SO (Fixed)
+                tree.column('เลขที่ SO', width=120, stretch=False, anchor="center")
+                # รหัสพนักงาน (Fixed)
+                tree.column('รหัสพนักงาน', width=100, stretch=False, anchor="center")
+                # วันที่ (Fixed)
+                tree.column('วันที่ยกเลิก', width=150, stretch=False, anchor="center")
+                
+                # *** คอลัมน์พระเอก: ให้ยืดกินพื้นที่ที่เหลือทั้งหมด ***
+                tree.column('ชื่อลูกค้า', width=200, stretch=True) 
+                tree.column('สาเหตุการยกเลิก', width=300, stretch=True)
+            # =============================================================
+            
+        except Exception as e:
+            CTkLabel(self.cancelled_history_frame, text=f"โหลดข้อมูลล้มเหลว: {e}", text_color="red").pack(pady=20)
             traceback.print_exc()

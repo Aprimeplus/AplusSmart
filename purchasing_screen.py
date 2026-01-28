@@ -1971,6 +1971,8 @@ class PurchasingScreen(CTkFrame):
         self.po_number_entry = CTkEntry(po_st_frame, font=self.entry_font, textvariable=self.po_number_input_var)
         self.po_number_entry.grid(row=0, column=1, sticky="ew")
         self.po_number_entry.bind("<FocusIn>", self._on_po_focus_in)
+        self.po_number_entry.bind("<FocusOut>", self._check_px_on_po_entry)
+        self.po_number_entry.bind("<Return>", self._check_px_on_po_entry)
         CTkLabel(top_frame, text="RR Number:").grid(row=1, column=2, sticky="w", padx=10, pady=5)
         self.rr_number_var.trace_add("write", self._force_uppercase_rr)
         self.rr_number_entry = CTkEntry(top_frame, font=self.entry_font, textvariable=self.rr_number_var)
@@ -2013,7 +2015,60 @@ class PurchasingScreen(CTkFrame):
         current_text = self.po_number_input_var.get(); selected_type = self.po_number_type_var.get()
         if not current_text.startswith(selected_type): self.po_number_input_var.set(selected_type + current_text)
         self.po_number_entry.icursor(tk.END)
+    
+    # ในไฟล์ purchasing_screen.py
 
+    def _check_px_on_po_entry(self, event=None):
+        """
+        ฟังก์ชันตรวจสอบค่ารถ (เวอร์ชัน Debug: มี Popup แจ้งเตือนทุกขั้นตอน)
+        """
+        try:
+            # 1. ดึงเลข PO
+            po_num = self.po_number_input_var.get().strip().upper()
+            print(f"DEBUG: Checking PO Number: '{po_num}'") # เช็คใน Terminal
+
+            if not po_num:
+                return
+
+            # 2. ตรวจสอบยอดเงินเดิม
+            try:
+                current_val = self.shipping_to_stock_cost_entry.get()
+                current_stock_cost = utils.convert_to_float(current_val)
+            except Exception as e:
+                print(f"DEBUG: Error converting stock cost: {e}")
+                current_stock_cost = 0.0
+
+            # 3. เช็คเงื่อนไข: ต้องเป็นยอด 0 เท่านั้นถึงจะดึงใหม่
+            if current_stock_cost != 0:
+                print(f"DEBUG: Skipped because cost is not 0 (Current: {current_stock_cost})")
+                return
+
+            # 4. ตรวจสอบว่ามีฟังก์ชันปลายทางไหม
+            if not hasattr(self.app_container, 'sync_transport_cost_to_po'):
+                messagebox.showerror("System Error", "ไม่พบฟังก์ชัน 'sync_transport_cost_to_po' ใน main_app.py\nกรุณาตรวจสอบไฟล์ main_app.py")
+                return
+
+            # 5. เรียกใช้ฟังก์ชันดึงข้อมูล
+            print("DEBUG: Calling sync_transport_cost_to_po...")
+            px_cost = self.app_container.sync_transport_cost_to_po(po_num)
+            print(f"DEBUG: Received Cost = {px_cost}")
+
+            if px_cost > 0:
+                # 6. พบข้อมูล -> อัปเดตหน้าจอ
+                utils.set_entry_text(self.shipping_to_stock_cost_entry, f"{px_cost:.2f}")
+                self._update_summary()
+                
+                # แจ้งเตือนความสำเร็จ
+                messagebox.showinfo("✅ สำเร็จ!", f"ดึงค่ารถจำนวน {px_cost:,.2f} บาท\nจากเลขที่ PO: {po_num} เรียบร้อยแล้ว")
+            else:
+                # กรณีไม่พบข้อมูล (ให้ Print บอกเฉยๆ ไม่ต้องเด้งกวน)
+                print(f"DEBUG: No transport cost found for {po_num}")
+
+        except Exception as e:
+            # ดักจับ Error ทั้งหมดแล้วแสดงออกมา
+            error_msg = f"เกิดข้อผิดพลาดใน _check_px_on_po_entry:\n{str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            messagebox.showerror("Debug Error", error_msg)
             
     def _on_supplier_selected(self, selection_dict):
         # <<< แก้ไข: ตอนนี้ฟังก์ชันจะได้รับ Dictionary ทั้งก้อนมาเลย >>>
@@ -3051,21 +3106,32 @@ class PurchasingScreen(CTkFrame):
                     self.so_entry.set(matching_so_string)
                     self._on_so_selected(matching_so_string, is_editing=True)
 
-            # --- START: แก้ไข Logic การโหลดข้อมูล Supplier ---
             supplier_name_from_db = str(po_data.get("supplier_name") or "")
-            
-            # 1. ค้นหา Dictionary ของ Supplier จากชื่อ โดยใช้ Key 'name'
             supplier_dict_to_load = next((item for item in self.supplier_completion_data if item.get('name') == supplier_name_from_db), None)
             
             self.supplier_name_combo.delete(0, 'end')
             self.supplier_name_combo.insert(0, supplier_name_from_db)
 
-            # 2. ถ้าเจอ Dictionary ให้ส่งทั้งก้อนไปให้ _on_supplier_selected
             if supplier_dict_to_load:
                 self._on_supplier_selected(supplier_dict_to_load)
-            # --- END: สิ้นสุดการแก้ไข ---
 
-            utils.set_entry_text(self.shipping_to_stock_cost_entry, f"{po_data.get('shipping_to_stock_cost', 0):.2f}")
+            # ==============================================================================
+            # [LOGIC ใหม่] ดึงค่ารถจากระบบขนส่ง (PX) มาใส่ถ้ามี
+            # ==============================================================================
+            current_po_num = po_data.get("po_number", "")
+            stock_cost_val = po_data.get('shipping_to_stock_cost', 0) or 0
+            
+            if current_po_num:
+                # เรียกฟังก์ชันใน AppContainer
+                px_cost = self.app_container.sync_transport_cost_to_po(current_po_num)
+                
+                if px_cost > 0:
+                    if stock_cost_val == 0:
+                        stock_cost_val = px_cost
+                        messagebox.showinfo("Auto Sync", f"🚚 พบค่ารถจากฝ่ายขนส่ง: {px_cost:,.2f} บาท\nระบบนำมาใส่ใน 'ค่าส่งเข้าสต๊อก' ให้แล้ว", parent=self)
+            # ==============================================================================
+
+            utils.set_entry_text(self.shipping_to_stock_cost_entry, f"{stock_cost_val:.2f}")
             self.shipping_to_stock_vat_var.set(po_data.get("shipping_to_stock_vat_type", "VAT"))
             self.shipping_to_stock_wht_var.set(po_data.get("shipping_to_stock_wht_type", "ไม่มีหัก"))
             self.shipping_to_stock_date_selector.set_date(po_data.get("shipping_to_stock_date"))

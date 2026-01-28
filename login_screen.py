@@ -144,6 +144,8 @@ class LoginScreen(CTkFrame):
                             self.app_container.show_sale_support_screen(user_key=user_key, user_name=user_name, user_role=user_role)
                         elif user_role == 'HR':
                             self.app_container.show_hr_screen(user_key=user_key, user_name=user_name, user_role=user_role)
+                        elif user_role == 'Transport Admin':
+                            self.app_container.show_transport_admin_screen(user_key=user_key, user_name=user_name, user_role=user_role)
                         else:
                             messagebox.showerror("ข้อผิดพลาด", f"ไม่รู้จักประเภทผู้ใช้: {user_role}", parent=self)
                     else:

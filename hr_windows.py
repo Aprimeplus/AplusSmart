@@ -754,9 +754,11 @@ class HRVerificationWindow(CTkToplevel):
 
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         """
-        [แก้ไข] รวบรวมข้อมูลจาก Popup, บันทึกลงฐานข้อมูลโดยตรง, และรีเฟรชหน้าจอหลัก
+        [แก้ไข] คำนวณยอด Difference ใหม่สดๆ ก่อนบันทึก เพื่อแก้ปัญหาสถานะไม่อัปเดต
         """
         updated_data = {}
+        
+        # 1. Mapping ชื่อ Entry กับชื่อคอลัมน์ใน DB
         key_map = {
             'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
             'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
@@ -772,58 +774,95 @@ class HRVerificationWindow(CTkToplevel):
             'pickup_rego_entry': 'pickup_registration'
         }
 
-        # 1. รวบรวมข้อมูลจาก Widgets
+        # 2. รวบรวมข้อมูลจาก Widgets
         for widget_key, data_key in key_map.items():
             value = None
             if widget_key in current_popup_widgets_ref:
                 widget = current_popup_widgets_ref[widget_key]
-                if not (widget and widget.winfo_exists()): continue
+                # เช็คว่า widget ยังมีตัวตนอยู่หรือไม่
+                try:
+                    if not widget.winfo_exists(): continue
+                except: continue
 
                 if isinstance(widget, (NumericEntry, CTkEntry)):
                     value = widget.get()
-                    if 'amount' in data_key or 'cost' in data_key or 'fee' in data_key or 'wht' in data_key:
+                    if any(x in data_key for x in ['amount', 'cost', 'fee', 'wht']):
                         value = utils.convert_to_float(value)
                 
-                # <<< START: เพิ่มโค้ดส่วนนี้เพื่อดึงข้อมูลวันที่ >>>
                 elif isinstance(widget, DateSelector):
                     value = widget.get_date()
-                # <<< END >>>
 
             if value is not None:
                 updated_data[data_key] = value
 
+        # 3. คำนวณยอดโอนรวม (Total Payment)
         p1_entry = current_popup_widgets_ref.get('payment1_amount_entry')
         p2_entry = current_popup_widgets_ref.get('payment2_amount_entry')
         p1 = utils.convert_to_float(p1_entry.get()) if p1_entry else 0.0
         p2 = utils.convert_to_float(p2_entry.get()) if p2_entry else 0.0
-        updated_data['total_payment_amount'] = p1 + p2
+        
+        total_payment = p1 + p2
+        updated_data['total_payment_amount'] = total_payment
 
-        # 2. บันทึกข้อมูลลงฐานข้อมูล
+        # ====================================================================
+        # [🔥 HERO FIX] คำนวณ Difference Amount ใหม่เดี๋ยวนั้นเลย (Force Recalculate)
+        # สูตร: ยอดโอนรวม - ยอดที่ต้องชำระ (Grand Total)
+        # ====================================================================
+        try:
+            # ดึงยอด Grand Total จากหน้าจอ (ยอดนี้รวมสินค้า+บริการ+VAT-หัก ณ ที่จ่าย แล้ว)
+            grand_total = utils.convert_to_float(so_shared_vars_data['so_grand_total_var'].get())
+            
+            # คำนวณผลต่างสดๆ: (จ่ายจริง - ต้องจ่าย)
+            # ถ้าเป็นลบ แปลว่า ขาด (Short) -> สถานะจะขึ้นเตือน
+            # ถ้าเป็น 0 หรือ บวก แปลว่า ครบ (Complete)
+            new_difference = total_payment - grand_total
+            
+            updated_data['difference_amount'] = new_difference
+            # print(f"DEBUG RECALC: Paid={total_payment}, Grand={grand_total}, Diff={new_difference}")
+
+        except Exception as e:
+            print(f"Error recalculating difference: {e}")
+            # ถ้าคำนวณไม่ได้ ให้ใช้ค่าเดิมจากหน้าจอ (Fallback)
+            if 'difference_amount_var' in so_shared_vars_data:
+                updated_data['difference_amount'] = utils.convert_to_float(so_shared_vars_data['difference_amount_var'].get())
+        # ====================================================================
+
+        # 4. บันทึกลงฐานข้อมูล
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
-                set_clauses = [f"{col} = %s" for col in updated_data.keys()]
-                params = list(updated_data.values())
+                # ดึงรายชื่อคอลัมน์จริงเพื่อความปลอดภัย
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'commissions'")
+                db_columns = {row[0] for row in cursor.fetchall()}
+                
+                final_data_to_save = {k: v for k, v in updated_data.items() if k in db_columns}
+
+                if not final_data_to_save:
+                    return
+
+                set_clauses = [f'"{k}" = %s' for k in final_data_to_save.keys()]
+                params = list(final_data_to_save.values())
                 params.append(so_id)
                 
                 update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
                 cursor.execute(update_query, tuple(params))
 
-                log_details = {"message": f"SO edited by HR ({self.app_container.current_user_key})"}
+                # บันทึก Audit Log
+                log_details = {"message": f"SO edited by HR ({self.app_container.current_user_key}) - Diff updated"}
                 cursor.execute("""
                     INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, ('SO Edited by HR', 'commissions', so_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข SO ลงฐานข้อมูลเรียบร้อยแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไขและอัปเดตยอดคงเหลือเรียบร้อยแล้ว", parent=self)
             
-            # 3. รีเฟรชหน้าจอหลักของ HR
+            # 5. รีเฟรชหน้าจอ (สำคัญมาก: เพื่อให้หน้า Verify ดึงค่าใหม่ที่คำนวณแล้วมาโชว์)
             self._update_all_calculations_and_ui()
 
         except Exception as e:
             if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึกข้อมูล: {e}", parent=self)
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึก: {e}", parent=self)
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
