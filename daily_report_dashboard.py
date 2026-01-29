@@ -123,12 +123,11 @@ class DailyDashboard(CTkFrame):
         TargetSettingsDialog(self, self.app_container, year, on_save_callback=self._update_chart)
 
     def _update_chart(self, event=None):
-        # 1. ดึงข้อมูลพื้นฐาน
         month_idx = self.thai_months.index(self.dash_month_var.get()) + 1
         year = int(self.dash_year_var.get())
         _, num_days = calendar.monthrange(year, month_idx)
         
-        # 2. ดึงยอดขายจาก Database
+        # 1. ดึงยอดขายรายวัน
         try:
             query = """
                 SELECT EXTRACT(DAY FROM bill_date) as day, SUM(sales_service_amount) as amount
@@ -136,161 +135,90 @@ class DailyDashboard(CTkFrame):
                 WHERE EXTRACT(MONTH FROM bill_date) = %s 
                   AND EXTRACT(YEAR FROM bill_date) = %s
                   AND is_active = 1
-                GROUP BY day
-                ORDER BY day
+                GROUP BY day ORDER BY day
             """
             sales_df = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year))
         except Exception as e:
-            print(f"Sales Data Error: {e}")
-            return
+            print(f"Error: {e}"); return
 
-        # 3. ดึงเป้าหมายปี
-        target_annual = 0
+        # 2. คำนวณวันและเป้าหมาย (ตัดวันอาทิตย์ออก)
+        days_list = []
+        for d in range(1, num_days + 1):
+            if datetime(year, month_idx, d).weekday() != 6: # 6 คือวันอาทิตย์
+                days_list.append(d)
+        
+        all_days = pd.DataFrame({'day': days_list})
+        
+        # คำนวณ Weighted Target (จ-ศ x1.5, ส x1.0)
+        def get_day_weight(d):
+            wd = datetime(year, month_idx, d).weekday()
+            return 1.5 if wd < 5 else 1.0
+
+        all_days['weight'] = all_days['day'].apply(get_day_weight)
+        
+        # ดึงเป้าหมายปี
+        target_annual = 120000000
         try:
             t_query = "SELECT target_amount FROM sales_yearly_targets WHERE year = %s"
             targets = pd.read_sql_query(t_query, self.pg_engine, params=(year,))
-            target_annual = targets.iloc[0]['target_amount'] if not targets.empty else 120000000
-        except Exception: pass
+            if not targets.empty: target_annual = targets.iloc[0]['target_amount']
+        except: pass
 
-        # 4. สร้าง DataFrame (ต้องสร้างก่อนใช้งาน apply)
-        all_days = pd.DataFrame({'day': range(1, num_days + 1)})
+        unit_value = (target_annual / 12) / all_days['weight'].sum()
+        all_days['daily_target'] = all_days['weight'] * unit_value
         
-        # 5. คำนวณ Weighted Target
-        def get_day_weight(d):
-            dt = datetime(year, month_idx, d)
-            weekday = dt.weekday()
-            if weekday < 5: return 1.5   # จ-ศ
-            if weekday == 5: return 1.0  # ส
-            return 0                     # อา
-
-        all_days['weight'] = all_days['day'].apply(get_day_weight)
-        target_monthly = target_annual / 12
-        total_month_weights = all_days['weight'].sum()
-        
-        if total_month_weights > 0:
-            unit_value = target_monthly / total_month_weights
-            all_days['daily_target'] = all_days['weight'] * unit_value
-        else:
-            all_days['daily_target'] = 0
-
-        # 6. รวมข้อมูลและคำนวณยอดสะสม
-        merged = pd.merge(all_days, sales_df, on='day', how='left').fillna(0).infer_objects(copy=False)
+        # 3. รวมข้อมูลและคำนวณสะสม
+        merged = pd.merge(all_days, sales_df, on='day', how='left').fillna(0)
         merged['cumulative_sales'] = merged['amount'].cumsum()
         merged['cumulative_target'] = merged['daily_target'].cumsum()
         
-        # 7. สรุปค่าสำหรับ Gauge
         total_actual = merged['amount'].sum()
         total_target_month = merged['daily_target'].sum()
-        
-        # 8. ตัดยอดสะสมวันที่ยังไม่มีการขายจริง (แก้ปัญหายอดพุ่งทะลุ)
+
+        # หยุดวาดวันในอนาคตที่ยังไม่มี SO
         last_sale_day = merged[merged['amount'] > 0]['day'].max()
         if pd.isna(last_sale_day): last_sale_day = 0
         merged.loc[merged['day'] > last_sale_day, 'cumulative_sales'] = None
 
-        # 9. สั่งวาดกราฟทั้ง 2 ส่วน
-        # วาดกราฟแท่งหลักก่อน
-        self._draw_matplotlib_chart(merged, year, self.dash_month_var.get(), 0)
-        
-        # ยกแผง info_panel ขึ้นมาด้านหน้าสุดเพื่อให้ Gauge แสดงผล
+        # 4. วาดกราฟ
+        self._draw_matplotlib_chart(merged, year, self.dash_month_var.get())
         self.info_panel.lift()
-        
-        # วาด Gauge ลงใน container
         self._draw_gauge_chart(self.gauge_container, total_actual, total_target_month)
 
-    def _draw_matplotlib_chart(self, df, year, month_name, daily_target):
-        # ล้างกราฟเก่าออกก่อนวาดใหม่
-        if self.canvas: 
-            self.canvas.get_tk_widget().destroy()
+    def _draw_matplotlib_chart(self, df, year, month_name):
+        if self.canvas: self.canvas.get_tk_widget().destroy()
         
-        # ตั้งค่า Font ให้รองรับภาษาไทย
         plt.rcParams['font.family'] = 'Tahoma' 
-        # ปรับขนาด figsize ให้เหมาะสมกับหน้าจอ Full Screen
         fig, ax = plt.subplots(figsize=(14, 7), dpi=100)
         
-        # --- 1. เตรียมข้อมูลสำหรับ Stacked Bar ---
-        days = df['day']
-        actual = df['cumulative_sales']
-        target = df['cumulative_target']
+        # --- วาดกราฟแท่งยอดขายจริง (Actual) ---
+        ax.bar(df['day'], df['cumulative_sales'], color='#F59E0B', alpha=0.8, 
+               label='ยอดขายสะสม (Actual)', width=0.6)
         
-        # ใช้ .fillna(0) สำหรับการคำนวณพื้นที่แท่ง เพื่อให้วันที่ไม่มีข้อมูล (None) แสดงเป็นแท่งเป้าหมายว่างๆ
-        actual_for_calc = actual.fillna(0)
-        
-        # ส่วนต่างของเป้าหมายที่ยังเหลืออยู่ (เพื่อให้แท่งรวมสูงเท่ากับเป้าหมายเสมอ)
-        remaining_target = (target - actual_for_calc).clip(lower=0)
-        
-        # ส่วนที่ยอดขายเกินเป้าหมาย (Over Target)
-        over_target = (actual_for_calc - target).clip(lower=0)
-        
-        # ยอดขายจริงในส่วนที่ไม่เกินเส้นเป้าหมาย
-        actual_in_target = actual_for_calc.where(actual_for_calc <= target, target)
+        # --- วาดเส้นเป้าหมาย (Target Line) ---
+        ax.plot(df['day'], df['cumulative_target'], color='#DC2626', marker='o', 
+                markersize=4, linewidth=2, label='เป้าหมายสะสม (Weighted Target)')
 
-        width = 0.6 # ความกว้างของแท่งกราฟ
-
-        # --- 2. วาดกราฟแท่งซ้อน (Stacked) ---
-        # ชั้นที่ 1: ยอดขายสะสมจริง (สีส้ม) - วาดเฉพาะวันที่มีข้อมูลจริง (ไม่เป็น None)
-        ax.bar(days, actual_in_target.where(actual.notna()), width, 
-               label='ยอดขายสะสม (Actual)', color='#F59E0B', alpha=0.9)
-        
-        # ชั้นที่ 2: เป้าหมายส่วนที่เหลือ (สีฟ้าใส)
-        # หากวันนั้น Actual เป็น None แท่งนี้จะสูงเท่ากับ Target พอดี (เป็นแท่งว่างๆ รอการเติม)
-        ax.bar(days, remaining_target, width, bottom=actual_in_target.where(actual.notna(), 0), 
-               label='เป้าหมายที่รอการเติม (Target)', color='#3B82F6', alpha=0.2, 
-               edgecolor='#3B82F6', linestyle='--', linewidth=0.5)
-        
-        # ชั้นที่ 3: ส่วนที่ทำยอดเกินเป้าหมาย (สีส้มเข้ม)
-        ax.bar(days, over_target.where(actual.notna()), width, bottom=target, 
-               label='ยอดขายส่วนเกินเป้าหมาย', color='#D97706', alpha=1.0)
-
-        # --- 3. จัดการแกน X (วันที่และชื่อวันภาษาไทย) ---
-        thai_day_names = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."]
+        # จัดการแกน X (ไม่มีวันอาทิตย์)
+        thai_days = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."]
         month_idx = self.thai_months.index(self.dash_month_var.get()) + 1
+        x_labels = [f"{int(d)}\n{thai_days[datetime(year, month_idx, int(d)).weekday()]}" for d in df['day']]
         
-        # สร้าง Label เช่น "1\nพฤ."
-        x_labels = []
-        for d in days:
-            weekday_idx = datetime(year, month_idx, int(d)).weekday()
-            x_labels.append(f"{int(d)}\n{thai_day_names[weekday_idx]}")
-        
-        ax.set_xticks(days)
+        ax.set_xticks(df['day'])
         ax.set_xticklabels(x_labels, fontsize=7)
         
-        # ไฮไลท์ชื่อวันเสาร์-อาทิตย์ให้เป็นสีแดง
-        for i, label in enumerate(ax.get_xticklabels()):
-            weekday_idx = datetime(year, month_idx, int(df['day'][i])).weekday()
-            if weekday_idx >= 5: # 5=Sat, 6=Sun
-                label.set_color('#DC2626')
-                label.set_weight('bold')
+        # แสดงตัวเลขล้านบนหัวแท่ง
+        for i, val in enumerate(df['cumulative_sales']):
+            if pd.notna(val) and val > 0:
+                ax.text(df['day'][i], val, f'{val/1000000:.1f}M', ha='center', va='bottom', 
+                        fontsize=7, color='#B45309', weight='bold')
 
-        # --- 4. แสดงตัวเลขยอดขายบนหัวแท่ง (เอียง 45 องศา) ---
-        for i, val in enumerate(actual):
-            # แสดงตัวเลขเฉพาะวันที่มีการขายจริง และยอดมากกว่า 0
-            if pd.notna(val) and val > 0 and df.get('amount', pd.Series([0]*len(df)))[i] > 0:
-                ax.text(days[i], val, f'{val/1000000:.1f}M', ha='center', va='bottom', 
-                        fontsize=7, color='#B45309', weight='bold', rotation=45)
-
-        # --- 5. ตกแต่งแกน Y และสัญลักษณ์ (Legend) ---
-        # ฟอร์แมตแกน Y ให้แสดงเป็นหน่วยล้าน (M)
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, pos: f'{x/1000000:.1f}M'))
-        
-        ax.set_title(f"สัดส่วนยอดขายสะสมเทียบเป้าหมาย (Weighted Stacked) - {month_name} {year}", 
-                     fontsize=15, weight='bold', pad=25)
-        
-        # สร้าง Legend แบบกำหนดเอง (จะไปปรากฏอยู่เหนือ Gauge ในแผงข้อมูลฝั่งซ้าย)
-        from matplotlib.lines import Line2D
-        custom_legend = [
-            Line2D([0], [0], color='#F59E0B', lw=8, label='ยอดขายสะสม (Actual)'),
-            Line2D([0], [0], color='#3B82F6', alpha=0.2, lw=8, label='เป้าหมายที่รอการเติม (Target)'),
-            Line2D([0], [0], color='#D97706', lw=8, label='ทำยอดได้เกินเป้า (Over Target)')
-        ]
-        # วาง Legend ไว้มุมซ้ายบนให้สัมพันธ์กับตำแหน่งของ info_panel
-        ax.legend(handles=custom_legend, loc='upper left', fontsize=9, frameon=False)
-        
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1000000:.1f}M'))
+        ax.set_title(f"Dashboard ยอดขายสะสมรายวัน - {month_name} {year}", fontsize=15, weight='bold', pad=20)
+        ax.legend(loc='upper left', fontsize=9, frameon=False)
         ax.grid(axis='y', linestyle='--', alpha=0.3)
         
-        # ปรับขอบกราฟให้พอดี
         fig.tight_layout()
-        
-        # นำกราฟไปแสดงผลในพื้นที่หลัก (main_chart_area)
         self.canvas = FigureCanvasTkAgg(fig, master=self.main_chart_area)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill="both", expand=True)

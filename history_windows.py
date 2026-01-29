@@ -2547,12 +2547,18 @@ class SOPopupWindow(CTkToplevel):
         # --- 2. แยกรายการที่ต้องคิด VAT ---
         total_vatable_revenue = 0.0
         total_cashable_services_and_fees = 0.0
+        
+        # รายการที่จะนำมาคำนวณ (ขาด relocation_cost_entry ไป)
         items_to_process = [
             (get_float_from_entry('sales_amount_entry'), w_vars['sales_service_vat_option'].get(), w_vars['sales_vat_calc_var']),
             (get_float_from_entry('cutting_drilling_fee_entry'), w_vars['cutting_drilling_fee_vat_option'].get(), w_vars['cutting_drilling_vat_calc_var']),
             (get_float_from_entry('other_service_fee_entry'), w_vars['other_service_fee_vat_option'].get(), w_vars['other_service_vat_calc_var']),
             (get_float_from_entry('shipping_cost_entry'), w_vars['shipping_vat_option_var'].get(), w_vars['shipping_vat_calc_var']),
-            (get_float_from_entry('credit_card_fee_entry'), w_vars['credit_card_fee_vat_option_var'].get(), w_vars['card_fee_vat_calc_var'])
+            (get_float_from_entry('credit_card_fee_entry'), w_vars['credit_card_fee_vat_option_var'].get(), w_vars['card_fee_vat_calc_var']),
+            
+            # ### [เพิ่มตรงนี้] ### 
+            # เพิ่ม "ค่าย้าย" (Delivery Note) เข้ามารวมในยอดด้วย
+            (get_float_from_entry('relocation_cost_entry'), w_vars['relocation_cost_vat_option'].get(), w_vars['relocation_vat_calc_var'])
         ]
 
         for amount, option, vat_display_var in items_to_process:
@@ -2565,8 +2571,11 @@ class SOPopupWindow(CTkToplevel):
             
             vat_display_var.set(f"VAT: {item_vat:,.2f}")
                 
-        # --- 3. คำนวณยอดที่ต้องชำระ ---
-        final_grand_total = (total_vatable_revenue * 1.07) - wht
+        # --- 3. คำนวณยอดที่ต้องชำระ (Grand Total) ---
+        # สูตร: (ยอดที่คิด VAT * 1.07) + ยอดที่ไม่คิด VAT - หัก ณ ที่จ่าย
+        # (หมายเหตุ: total_cashable_services_and_fees คือยอดที่ไม่คิด VAT)
+        
+        final_grand_total = (total_vatable_revenue * 1.07) + total_cashable_services_and_fees - wht
         w_vars['so_grand_total_var'].set(f"{final_grand_total:,.2f}")
 
         # --- 4. คำนวณส่วนต่างการชำระ ---

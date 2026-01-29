@@ -969,12 +969,12 @@ class HRVerificationWindow(CTkToplevel):
 
     def _recalculate_summaries(self):
         """
-        (เวอร์ชันแก้ไขถาวร) คำนวณค่าสรุปทั้งหมดโดยดึงต้นทุนจาก purchase_order_items โดยตรง
+        (เวอร์ชันแก้ไขสมบูรณ์) คำนวณค่าสรุปโดยรวมค่าสินค้า (Items) + ค่ารถ (Delivery Note)
         """
         
-        # --- START: Logic การคำนวณต้นทุน (ส่วนนี้เหมือนเดิม) ---
-        po_cost = 0.0
-        approved_po_df = self.po_data[self.po_data['status'] == 'Approved']
+        # 1. คำนวณค่าสินค้า (Product Cost) จาก Items (โค้ดเดิม)
+        product_cost = 0.0
+        approved_po_df = self.po_data[self.po_data['status'] == 'Approved'].copy()
         
         if not approved_po_df.empty:
             approved_po_ids = tuple(approved_po_df['id'].tolist())
@@ -988,33 +988,49 @@ class HRVerificationWindow(CTkToplevel):
                     """
                     result_df = pd.read_sql(query, self.pg_engine, params=(approved_po_ids,))
                     if not result_df.empty and pd.notna(result_df.iloc[0, 0]):
-                        po_cost = float(result_df.iloc[0, 0])
+                        product_cost = float(result_df.iloc[0, 0])
                 except Exception as e:
-                    print(f"Error querying PO item costs for recalculation: {e}")
-                    messagebox.showerror("DB Error", "ไม่สามารถคำนวณต้นทุนจากรายการสินค้าได้", parent=self)
-                    po_cost = 0.0
+                    print(f"Error querying PO item costs: {e}")
+                    product_cost = 0.0
         
-        print("\n--- DEBUG: Inside _recalculate_summaries (Definitive Fix) ---")
-        print(f"Sum of PO Items 'total_price' (po_cost): {po_cost:,.2f}")
+        # -------------------------------------------------------------------------
+        # 2. ### [NEW] คำนวณค่ารถ/Delivery Note (Shipping Cost) ###
+        # -------------------------------------------------------------------------
+        # เราดึงจาก approved_po_df ที่มีอยู่แล้วได้เลย ไม่ต้อง Query ใหม่
+        shipping_cost_total = 0.0
         
-        total_cost_from_system = po_cost
-        # --- END: Logic การคำนวณต้นทุน ---
+        if not approved_po_df.empty:
+            # แปลงคอลัมน์ให้เป็นตัวเลขก่อน (กัน Error กรณีเป็น None/String)
+            cols_to_sum = ['shipping_to_stock_cost', 'shipping_to_site_cost', 'relocation_cost']
+            
+            for col in cols_to_sum:
+                if col in approved_po_df.columns:
+                    # แปลงเป็นตัวเลข, แทนค่า Null ด้วย 0, แล้วรวมยอด
+                    val = pd.to_numeric(approved_po_df[col], errors='coerce').fillna(0).sum()
+                    shipping_cost_total += float(val)
 
+        print("\n--- DEBUG: Recalculate Logic ---")
+        print(f"Product Cost (Items): {product_cost:,.2f}")
+        print(f"Delivery/Shipping Cost: {shipping_cost_total:,.2f}")
+        
+        # 3. รวมต้นทุนทั้งหมด
+        total_cost_from_system = product_cost + shipping_cost_total
+        print(f"Total System Cost: {total_cost_from_system:,.2f}")
+        # -------------------------------------------------------------------------
+
+        # ส่วนที่เหลือเหมือนเดิม...
         total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
         total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
 
-        # --- START: แก้ไขการคำนวณยอดขายฝั่งระบบ ---
-        # 1. กำหนดรายการรายได้ที่ต้องนำมารวม
+        # --- START: คำนวณยอดขายฝั่งระบบ ---
         sales_revenue_keys = [
             'sales_service_amount',
             'cutting_drilling_fee',
             'other_service_fee'
         ]
-        
-        # 2. รวมยอดจากทุกรายการที่กำหนดไว้
         total_sale_system = sum(float(self.system_data.get(key, 0) or 0) for key in sales_revenue_keys)
-        # --- END: สิ้นสุดการแก้ไข ---
+        # --- END ---
 
         self.calculated_values = {
             'total_sale_system': total_sale_system,
@@ -1023,6 +1039,7 @@ class HRVerificationWindow(CTkToplevel):
             'total_cost_express': total_cost_express
         }
 
+        # Update Radio Buttons logic
         if self.system_data.get('hr_sale_source') in ['system', 'express']:
             self.final_sale_source.set(self.system_data['hr_sale_source'])
         else:
@@ -1032,7 +1049,6 @@ class HRVerificationWindow(CTkToplevel):
             self.final_cost_source.set(self.system_data['hr_cost_source'])
         else:
             self.final_cost_source.set("system")
-
             
     def _create_so_info_section(self):
         frame = CTkFrame(self, fg_color="#F0F0F0")
