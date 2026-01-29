@@ -754,11 +754,11 @@ class HRVerificationWindow(CTkToplevel):
 
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         """
-        [แก้ไข] คำนวณยอด Difference ใหม่สดๆ ก่อนบันทึก เพื่อแก้ปัญหาสถานะไม่อัปเดต
+        [ฉบับแก้ไขสมบูรณ์] อัปเดตทุกคอลัมน์ยอดเงิน (Total Payment, Cash Actual, Difference) เพื่อแก้ปัญหาสถานะค้าง
         """
         updated_data = {}
         
-        # 1. Mapping ชื่อ Entry กับชื่อคอลัมน์ใน DB
+        # 1. Mapping ชื่อ Widget -> ชื่อคอลัมน์ DB
         key_map = {
             'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
             'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
@@ -766,7 +766,8 @@ class HRVerificationWindow(CTkToplevel):
             'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
             'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
             'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
-            'cash_actual_payment_entry': 'cash_actual_payment', 'bill_date_selector': 'bill_date',
+            # 'cash_actual_payment_entry': 'cash_actual_payment', # <--- ตัดออก เดี๋ยวเราคำนวณเอง
+            'bill_date_selector': 'bill_date',
             'delivery_date_selector': 'delivery_date', 'payment_date_selector': 'payment_date',
             'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
             'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id',
@@ -779,55 +780,53 @@ class HRVerificationWindow(CTkToplevel):
             value = None
             if widget_key in current_popup_widgets_ref:
                 widget = current_popup_widgets_ref[widget_key]
-                # เช็คว่า widget ยังมีตัวตนอยู่หรือไม่
                 try:
                     if not widget.winfo_exists(): continue
                 except: continue
 
                 if isinstance(widget, (NumericEntry, CTkEntry)):
                     value = widget.get()
-                    if any(x in data_key for x in ['amount', 'cost', 'fee', 'wht']):
+                    if any(x in data_key for x in ['amount', 'cost', 'fee', 'wht', 'coupons', 'giveaways']):
                         value = utils.convert_to_float(value)
-                
                 elif isinstance(widget, DateSelector):
                     value = widget.get_date()
 
             if value is not None:
                 updated_data[data_key] = value
 
-        # 3. คำนวณยอดโอนรวม (Total Payment)
+        # 3. คำนวณยอดโอนรวม (Payment 1 + Payment 2)
         p1_entry = current_popup_widgets_ref.get('payment1_amount_entry')
         p2_entry = current_popup_widgets_ref.get('payment2_amount_entry')
         p1 = utils.convert_to_float(p1_entry.get()) if p1_entry else 0.0
         p2 = utils.convert_to_float(p2_entry.get()) if p2_entry else 0.0
         
-        total_payment = p1 + p2
-        updated_data['total_payment_amount'] = total_payment
+        total_paid = p1 + p2
+        
+        # [🔥 จุดสำคัญ] อัปเดตทั้ง 2 คอลัมน์ให้ค่าตรงกัน
+        updated_data['total_payment_amount'] = total_paid
+        updated_data['cash_actual_payment'] = total_paid  # บังคับอัปเดตตัวนี้ด้วย เพราะหน้า Verify ใช้ตัวนี้คิดสถานะ
 
-        # ====================================================================
-        # [🔥 HERO FIX] คำนวณ Difference Amount ใหม่เดี๋ยวนั้นเลย (Force Recalculate)
-        # สูตร: ยอดโอนรวม - ยอดที่ต้องชำระ (Grand Total)
-        # ====================================================================
+        # 4. คำนวณยอดผลต่าง (Difference)
         try:
-            # ดึงยอด Grand Total จากหน้าจอ (ยอดนี้รวมสินค้า+บริการ+VAT-หัก ณ ที่จ่าย แล้ว)
+            # ดึงยอด Grand Total (ยอดสุทธิของบิล)
             grand_total = utils.convert_to_float(so_shared_vars_data['so_grand_total_var'].get())
             
-            # คำนวณผลต่างสดๆ: (จ่ายจริง - ต้องจ่าย)
-            # ถ้าเป็นลบ แปลว่า ขาด (Short) -> สถานะจะขึ้นเตือน
-            # ถ้าเป็น 0 หรือ บวก แปลว่า ครบ (Complete)
-            new_difference = total_payment - grand_total
+            # อัปเดต cash_required_total ด้วย เพื่อให้หน้า Verify เทียบถูกคู่
+            updated_data['cash_required_total'] = grand_total
             
+            # คำนวณผลต่าง: จ่ายจริง - ต้องจ่าย
+            new_difference = total_paid - grand_total
             updated_data['difference_amount'] = new_difference
-            # print(f"DEBUG RECALC: Paid={total_payment}, Grand={grand_total}, Diff={new_difference}")
+            
+            print(f"DEBUG FIX: Paid={total_paid}, Grand={grand_total}, Diff={new_difference}")
 
         except Exception as e:
-            print(f"Error recalculating difference: {e}")
-            # ถ้าคำนวณไม่ได้ ให้ใช้ค่าเดิมจากหน้าจอ (Fallback)
+            print(f"Error calculating values: {e}")
+            # Fallback (ถ้าคำนวณไม่ได้ ให้ใช้ค่าจากหน้าจอ)
             if 'difference_amount_var' in so_shared_vars_data:
                 updated_data['difference_amount'] = utils.convert_to_float(so_shared_vars_data['difference_amount_var'].get())
-        # ====================================================================
 
-        # 4. บันทึกลงฐานข้อมูล
+        # 5. บันทึกลงฐานข้อมูล
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
@@ -837,27 +836,25 @@ class HRVerificationWindow(CTkToplevel):
                 
                 final_data_to_save = {k: v for k, v in updated_data.items() if k in db_columns}
 
-                if not final_data_to_save:
-                    return
+                if final_data_to_save:
+                    set_clauses = [f'"{k}" = %s' for k in final_data_to_save.keys()]
+                    params = list(final_data_to_save.values())
+                    params.append(so_id)
+                    
+                    update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
+                    cursor.execute(update_query, tuple(params))
 
-                set_clauses = [f'"{k}" = %s' for k in final_data_to_save.keys()]
-                params = list(final_data_to_save.values())
-                params.append(so_id)
-                
-                update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
-                cursor.execute(update_query, tuple(params))
-
-                # บันทึก Audit Log
-                log_details = {"message": f"SO edited by HR ({self.app_container.current_user_key}) - Diff updated"}
-                cursor.execute("""
-                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, ('SO Edited by HR', 'commissions', so_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
+                    # Log
+                    log_details = {"message": f"SO edited by HR (Fix Verify Status) ID:{so_id}"}
+                    cursor.execute("""
+                        INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, ('SO Edited by HR', 'commissions', so_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไขและอัปเดตยอดคงเหลือเรียบร้อยแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลและอัปเดตสถานะเรียบร้อยแล้ว", parent=self)
             
-            # 5. รีเฟรชหน้าจอ (สำคัญมาก: เพื่อให้หน้า Verify ดึงค่าใหม่ที่คำนวณแล้วมาโชว์)
+            # 6. รีเฟรชหน้าจอทันที
             self._update_all_calculations_and_ui()
 
         except Exception as e:

@@ -1,10 +1,11 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from customtkinter import CTkFrame, CTkLabel, CTkButton, CTkEntry, CTkFont, CTkScrollableFrame
+from customtkinter import CTkFrame, CTkLabel, CTkButton, CTkEntry, CTkFont, CTkScrollableFrame , CTkTabview
 import pandas as pd
 from datetime import datetime
 import psycopg2
 from custom_widgets import DateSelector
+from daily_report_dashboard import DailyDashboard
 
 class DailyReportWidget(CTkFrame):
     def __init__(self, master, app_container, **kwargs):
@@ -13,8 +14,21 @@ class DailyReportWidget(CTkFrame):
         self.pg_engine = app_container.pg_engine
         self.current_df = None
         
-        # --- 1. Top Bar (Filter) ---
-        self.top_frame = CTkFrame(self, fg_color="transparent")
+        # --- 1. สร้าง Tabview เพื่อแยกหน้า Report และ Dashboard ---
+        # ใช้สีฟ้า (#3B82F6) เป็นสีหลักของปุ่มแท็บที่เลือก
+        self.tabs = CTkTabview(self, segmented_button_selected_color="#3B82F6")
+        self.tabs.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # เพิ่มแท็บ 2 หน้าจอ
+        self.tab_report = self.tabs.add("📋 รายงานประจำวัน")
+        self.tab_dashboard = self.tabs.add("📊 Dashboard ยอดขาย")
+
+        # =================================================================
+        # ส่วนที่ 2: หน้ารายงานประจำวัน (Tab: 📋 รายงานประจำวัน)
+        # =================================================================
+        
+        # --- 2.1 Top Bar (Filter) ---
+        self.top_frame = CTkFrame(self.tab_report, fg_color="transparent")
         self.top_frame.pack(fill="x", padx=15, pady=(15, 10))
         
         CTkLabel(self.top_frame, text="รายงานประจำวัน:", font=CTkFont(size=16, weight="bold"), text_color="#374151").pack(side="left", padx=(0, 10))
@@ -29,8 +43,8 @@ class DailyReportWidget(CTkFrame):
         self.btn_export = CTkButton(self.top_frame, text="📂 Export Excel", width=100, fg_color="#10B981", hover_color="#059669", command=self.export_to_excel)
         self.btn_export.pack(side="left", padx=10)
 
-        # --- 2. Table Area (Treeview) ---
-        self.table_frame = CTkFrame(self, fg_color="white", corner_radius=0)
+        # --- 2.2 Table Area (Treeview) ---
+        self.table_frame = CTkFrame(self.tab_report, fg_color="white", corner_radius=0)
         self.table_frame.pack(fill="both", expand=True, padx=15, pady=5)
         
         style = ttk.Style()
@@ -46,7 +60,7 @@ class DailyReportWidget(CTkFrame):
         
         self.columns = [
             "so_number", "po_number", "customer_name", "sales_booking", 
-            "total_paid", "credit_balance", "payment_status", "delivery_date", "location",  # ย้าย status มาใกล้ๆ ยอดเงิน
+            "total_paid", "credit_balance", "payment_status", "delivery_date", "location", 
             "services", "prepared_by", "pu_prepared_by", "status"
         ]
         self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", 
@@ -83,8 +97,8 @@ class DailyReportWidget(CTkFrame):
         
         self.tree.pack(fill="both", expand=True)
         
-        # --- 3. Summary Footer ---
-        self.footer_frame = CTkFrame(self, height=50, fg_color="white", border_width=1, border_color="#E5E7EB")
+        # --- 2.3 Summary Footer ---
+        self.footer_frame = CTkFrame(self.tab_report, height=50, fg_color="white", border_width=1, border_color="#E5E7EB")
         self.footer_frame.pack(fill="x", padx=15, pady=10)
         
         self.lbl_total_so = CTkLabel(self.footer_frame, text="จำนวน SO: 0", font=CTkFont(size=14, weight="bold"), text_color="#64748B")
@@ -99,6 +113,15 @@ class DailyReportWidget(CTkFrame):
         self.lbl_total_booking = CTkLabel(self.footer_frame, text="ยอดจองรวม: 0.00", font=CTkFont(size=14, weight="bold"), text_color="#2563EB")
         self.lbl_total_booking.pack(side="right", padx=15)
 
+        # =================================================================
+        # ส่วนที่ 3: หน้าแดชบอร์ดกราฟ (Tab: 📊 Dashboard ยอดขาย)
+        # =================================================================
+        
+        # สร้าง Instance ของ DailyDashboard และวางลงใน tab_dashboard
+        # โดยส่ง self.app_container เพื่อให้ dashboard เข้าถึงฐานข้อมูลได้
+        self.dashboard_view = DailyDashboard(self.tab_dashboard, self.app_container)
+        self.dashboard_view.pack(fill="both", expand=True)
+        
     def load_report_data(self):
         selected_date = self.date_selector.get_date()
         if not selected_date: return
