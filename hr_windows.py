@@ -697,29 +697,53 @@ class HRVerificationWindow(CTkToplevel):
     # อยู่ในไฟล์ hr_windows.py ภายในคลาส HRVerificationWindow
 
     def _update_selection_display(self, *args):
-        # ดึงค่าที่คำนวณไว้แล้ว
+        """
+        อัปเดตตัวเลขในหน้าจอสรุป (ฉบับแก้ไข: แสดงผลรวม Multiplier แต่เก็บค่าดิบไว้ข้างหลัง)
+        """
+        # 1. ดึงค่าจากตัวแปรกลางที่คำนวณไว้ (ซึ่งตอนนี้เก็บเป็น 'ทุนดิบ' ตามฟังก์ชัน _recalculate_summaries ใหม่)
         total_sale_system = self.calculated_values.get('total_sale_system', 0.0)
         total_sale_express = self.calculated_values.get('total_sale_express', 0.0)
-        total_cost_system = self.calculated_values.get('total_cost_system', 0.0)
+        
+        # ดึงทุนดิบมาเตรียมคำนวณเพื่อการแสดงผล
+        raw_cost_system = self.calculated_values.get('total_cost_system', 0.0)
         total_cost_express = self.calculated_values.get('total_cost_express', 0.0)
         
-        # อัปเดตข้อความบน Radio Buttons
+        # ดึงตัวคูณปัจจุบัน (เช่น 1.03)
+        multiplier = float(self.cost_multiplier_var.get())
+        
+        # คำนวณยอดที่รวมตัวคูณแล้ว "เพื่อใช้แสดงผลบนหน้าจอเท่านั้น"
+        display_cost_system = raw_cost_system * multiplier
+
+        # 2. อัปเดตข้อความบน Radio Buttons (โชว์ยอดที่รวม 1.03 ให้ HR สบายใจ)
         self.sales_system_radio.configure(text=f"จากระบบ (System): {total_sale_system:,.2f} บาท")
         self.sales_express_radio.configure(text=f"จากไฟล์ (Express): {total_sale_express:,.2f} บาท")
-        self.cost_system_radio.configure(text=f"จากระบบ (System): {total_cost_system:,.2f} บาท")
+        self.cost_system_radio.configure(text=f"จากระบบ (System): {display_cost_system:,.2f} บาท")
         self.cost_express_radio.configure(text=f"จากไฟล์ (Express): {total_cost_express:,.2f} บาท")
 
-        # อัปเดตการ์ดสรุปยอดขาย
+        # 3. อัปเดตการ์ดสรุปยอดขาย (Big Card)
         source_sales = self.final_sale_source.get()
         final_sales_val = total_sale_system if source_sales == "system" else total_sale_express
-        self.final_sales_label.configure(text=f"{final_sales_val:,.2f}")
-        self.final_sales_source_label.configure(text=f"ที่มา: {'System' if source_sales == 'system' else 'Express'}")
+        
+        if hasattr(self, 'final_sales_label'):
+            self.final_sales_label.configure(text=f"{final_sales_val:,.2f}")
+            self.final_sales_source_label.configure(text=f"ที่มา: {'System' if source_sales == 'system' else 'Express'}")
 
-        # อัปเดตการ์ดสรุปต้นทุน
+        # 4. อัปเดตการ์ดสรุปต้นทุน (Big Card)
         source_cost = self.final_cost_source.get()
-        final_cost_val = total_cost_system if source_cost == "system" else total_cost_express
-        self.final_cost_label.configure(text=f"{final_cost_val:,.2f}")
-        self.final_cost_source_label.configure(text=f"ที่มา: {'System' if source_cost == 'system' else 'Express'}")
+        
+        # หากเลือก System ให้แสดงยอดที่คูณ 1.03 แล้วบนหน้าจอ
+        if source_cost == "system":
+            final_cost_display_val = display_cost_system
+        else:
+            final_cost_display_val = total_cost_express
+            
+        if hasattr(self, 'final_cost_label'):
+            self.final_cost_label.configure(text=f"{final_cost_display_val:,.2f}")
+            self.final_cost_source_label.configure(text=f"ที่มา: {'System' if source_cost == 'system' else 'Express'}")
+            
+        # (Optional) คำนวณ Profit/Margin ชั่วคราวเพื่อแสดงผลการตรวจสอบ
+        final_profit = final_sales_val - final_cost_display_val
+        final_margin = (final_profit / final_sales_val * 100) if final_sales_val else 0.0
 
     def _so_create_string_vars(self):
         """สร้าง StringVars ที่จำเป็นสำหรับ SOPopupWindow"""
@@ -754,7 +778,8 @@ class HRVerificationWindow(CTkToplevel):
 
     def _save_so_changes_from_popup(self, so_id, so_shared_vars_data, current_popup_widgets_ref):
         """
-        [ฉบับแก้ไขสมบูรณ์] อัปเดตทุกคอลัมน์ยอดเงิน (Total Payment, Cash Actual, Difference) เพื่อแก้ปัญหาสถานะค้าง
+        [ฉบับแก้ไขสมบูรณ์: แยกยอดเงินโอนและเงินสดออกจากกันเด็ดขาด] 
+        เพื่อให้ยอด 'ผลต่าง' ในส่วน VAT คิดเฉพาะยอดที่โอนผ่านธนาคารเท่านั้น
         """
         updated_data = {}
         
@@ -766,7 +791,6 @@ class HRVerificationWindow(CTkToplevel):
             'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
             'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
             'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
-            # 'cash_actual_payment_entry': 'cash_actual_payment', # <--- ตัดออก เดี๋ยวเราคำนวณเอง
             'bill_date_selector': 'bill_date',
             'delivery_date_selector': 'delivery_date', 'payment_date_selector': 'payment_date',
             'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
@@ -775,65 +799,58 @@ class HRVerificationWindow(CTkToplevel):
             'pickup_rego_entry': 'pickup_registration'
         }
 
-        # 2. รวบรวมข้อมูลจาก Widgets
+        # 2. รวบรวมข้อมูลพื้นฐานจาก Widgets
         for widget_key, data_key in key_map.items():
-            value = None
             if widget_key in current_popup_widgets_ref:
                 widget = current_popup_widgets_ref[widget_key]
                 try:
                     if not widget.winfo_exists(): continue
+                    if isinstance(widget, (NumericEntry, CTkEntry)):
+                        raw_value = widget.get()
+                        is_numeric = any(x in data_key for x in ['amount', 'cost', 'fee', 'wht', 'coupons', 'giveaways', 'input'])
+                        updated_data[data_key] = utils.convert_to_float(raw_value) if is_numeric else raw_value
+                    elif isinstance(widget, DateSelector):
+                        updated_data[data_key] = widget.get_date()
                 except: continue
 
-                if isinstance(widget, (NumericEntry, CTkEntry)):
-                    value = widget.get()
-                    if any(x in data_key for x in ['amount', 'cost', 'fee', 'wht', 'coupons', 'giveaways']):
-                        value = utils.convert_to_float(value)
-                elif isinstance(widget, DateSelector):
-                    value = widget.get_date()
+        # 3. [🔥 จุดแก้ไขหลัก] แยกยอดเงินโอน และ ยอดเงินสด
+        # ดึงยอดโอน 1 และ 2 (ฝั่งที่ต้องเทียบกับยอดรวม VAT)
+        p1 = utils.convert_to_float(current_popup_widgets_ref.get('payment1_amount_entry').get()) if current_popup_widgets_ref.get('payment1_amount_entry') else 0.0
+        p2 = utils.convert_to_float(current_popup_widgets_ref.get('payment2_amount_entry').get()) if current_popup_widgets_ref.get('payment2_amount_entry') else 0.0
+        total_transfer = p1 + p2 # ยอดโอนรวม
 
-            if value is not None:
-                updated_data[data_key] = value
+        # ดึงยอดเงินสด (ฝั่ง Cash)
+        cash_paid = 0.0
+        if 'cash_actual_payment_entry' in current_popup_widgets_ref:
+            cash_paid = utils.convert_to_float(current_popup_widgets_ref['cash_actual_payment_entry'].get())
 
-        # 3. คำนวณยอดโอนรวม (Payment 1 + Payment 2)
-        p1_entry = current_popup_widgets_ref.get('payment1_amount_entry')
-        p2_entry = current_popup_widgets_ref.get('payment2_amount_entry')
-        p1 = utils.convert_to_float(p1_entry.get()) if p1_entry else 0.0
-        p2 = utils.convert_to_float(p2_entry.get()) if p2_entry else 0.0
-        
-        total_paid = p1 + p2
-        
-        # [🔥 จุดสำคัญ] อัปเดตทั้ง 2 คอลัมน์ให้ค่าตรงกัน
-        updated_data['total_payment_amount'] = total_paid
-        updated_data['cash_actual_payment'] = total_paid  # บังคับอัปเดตตัวนี้ด้วย เพราะหน้า Verify ใช้ตัวนี้คิดสถานะ
+        # บันทึกลงคอลัมน์ที่แยกกัน
+        updated_data['total_payment_amount'] = total_transfer  # ยอดโอนชำระ (VAT)
+        updated_data['cash_actual_payment'] = cash_paid       # ยอดชำระเงินสดจริง (CASH)
 
-        # 4. คำนวณยอดผลต่าง (Difference)
+        # 4. [🔥 แก้ไข Logic ส่วนต่าง] คำนวณเฉพาะส่วนต่างของยอดโอน (ไม่เอาเงินสดมาเกี่ยว)
         try:
-            # ดึงยอด Grand Total (ยอดสุทธิของบิล)
-            grand_total = utils.convert_to_float(so_shared_vars_data['so_grand_total_var'].get())
+            # ยอดที่ระบบคำนวณว่าควรจะโอน (Grand Total ของสินค้าฝั่ง VAT)
+            grand_total_vat = utils.convert_to_float(so_shared_vars_data['so_grand_total_var'].get())
             
-            # อัปเดต cash_required_total ด้วย เพื่อให้หน้า Verify เทียบถูกคู่
-            updated_data['cash_required_total'] = grand_total
-            
-            # คำนวณผลต่าง: จ่ายจริง - ต้องจ่าย
-            new_difference = total_paid - grand_total
+            # ผลต่าง VAT = ยอดโอนรวม - ยอดเต็มบิลที่ต้องออก VAT
+            # บรรทัดนี้สำคัญ: ต้องไม่มีการบวก cash_paid เข้าไปเด็ดขาด
+            new_difference = total_transfer - grand_total_vat
             updated_data['difference_amount'] = new_difference
             
-            print(f"DEBUG FIX: Paid={total_paid}, Grand={grand_total}, Diff={new_difference}")
-
-        except Exception as e:
-            print(f"Error calculating values: {e}")
-            # Fallback (ถ้าคำนวณไม่ได้ ให้ใช้ค่าจากหน้าจอ)
+            # อัปเดตยอดโชว์บนหน้าจอทันที
             if 'difference_amount_var' in so_shared_vars_data:
-                updated_data['difference_amount'] = utils.convert_to_float(so_shared_vars_data['difference_amount_var'].get())
+                so_shared_vars_data['difference_amount_var'].set(f"{new_difference:,.2f}")
+                
+        except Exception as e:
+            print(f"Error calculating VAT difference: {e}")
 
         # 5. บันทึกลงฐานข้อมูล
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
-                # ดึงรายชื่อคอลัมน์จริงเพื่อความปลอดภัย
                 cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'commissions'")
                 db_columns = {row[0] for row in cursor.fetchall()}
-                
                 final_data_to_save = {k: v for k, v in updated_data.items() if k in db_columns}
 
                 if final_data_to_save:
@@ -841,26 +858,18 @@ class HRVerificationWindow(CTkToplevel):
                     params = list(final_data_to_save.values())
                     params.append(so_id)
                     
-                    update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
+                    update_query = f'UPDATE commissions SET {", ".join(set_clauses)} WHERE id = %s'
                     cursor.execute(update_query, tuple(params))
 
-                    # Log
-                    log_details = {"message": f"SO edited by HR (Fix Verify Status) ID:{so_id}"}
-                    cursor.execute("""
-                        INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, ('SO Edited by HR', 'commissions', so_id, self.app_container.current_user_key, json.dumps(log_details), datetime.now()))
-
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลและอัปเดตสถานะเรียบร้อยแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", "บันทึกและแยกยอดเงินสด/โอนเรียบร้อย", parent=self)
             
-            # 6. รีเฟรชหน้าจอทันที
+            # รีเฟรชข้อมูลในหน้า Verification หลังบันทึก
             self._update_all_calculations_and_ui()
 
         except Exception as e:
             if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึก: {e}", parent=self)
-            traceback.print_exc()
+            messagebox.showerror("Error", f"บันทึกไม่สำเร็จ: {e}", parent=self)
         finally:
             if conn: self.app_container.release_connection(conn)
             
@@ -969,87 +978,46 @@ class HRVerificationWindow(CTkToplevel):
 
     def _recalculate_summaries(self):
         """
-        (เวอร์ชันแก้ไขสมบูรณ์) คำนวณค่าสรุปโดยรวมค่าสินค้า (Items) + ค่ารถ (Delivery Note)
+        คำนวณต้นทุนและยอดขาย (แก้ไขเพื่อป้องกันการคูณค่าบริหารจัดการเบิ้ล)
         """
-        
-        # 1. คำนวณค่าสินค้า (Product Cost) จาก Items (โค้ดเดิม)
-        product_cost = 0.0
-        approved_po_df = self.po_data[self.po_data['status'] == 'Approved'].copy()
+        po_product_cost_raw = 0.0
+        approved_po_df = self.po_data[self.po_data['status'] == 'Approved']
         
         if not approved_po_df.empty:
             approved_po_ids = tuple(approved_po_df['id'].tolist())
-            
-            if approved_po_ids:
-                try:
-                    query = """
-                        SELECT SUM(COALESCE(total_price, 0))
-                        FROM purchase_order_items
-                        WHERE purchase_order_id IN %s
-                    """
-                    result_df = pd.read_sql(query, self.pg_engine, params=(approved_po_ids,))
-                    if not result_df.empty and pd.notna(result_df.iloc[0, 0]):
-                        product_cost = float(result_df.iloc[0, 0])
-                except Exception as e:
-                    print(f"Error querying PO item costs: {e}")
-                    product_cost = 0.0
-        
-        # -------------------------------------------------------------------------
-        # 2. ### [NEW] คำนวณค่ารถ/Delivery Note (Shipping Cost) ###
-        # -------------------------------------------------------------------------
-        # เราดึงจาก approved_po_df ที่มีอยู่แล้วได้เลย ไม่ต้อง Query ใหม่
-        shipping_cost_total = 0.0
-        
-        if not approved_po_df.empty:
-            # แปลงคอลัมน์ให้เป็นตัวเลขก่อน (กัน Error กรณีเป็น None/String)
-            cols_to_sum = ['shipping_to_stock_cost', 'shipping_to_site_cost', 'relocation_cost']
-            
-            for col in cols_to_sum:
-                if col in approved_po_df.columns:
-                    # แปลงเป็นตัวเลข, แทนค่า Null ด้วย 0, แล้วรวมยอด
-                    val = pd.to_numeric(approved_po_df[col], errors='coerce').fillna(0).sum()
-                    shipping_cost_total += float(val)
+            try:
+                query = "SELECT product_name, total_price FROM purchase_order_items WHERE purchase_order_id IN %s"
+                items_df = pd.read_sql(query, self.pg_engine, params=(approved_po_ids,))
+                shipping_keywords = ['ค่ารถ', 'shipping', 'delivery', 'ขนส่ง', 'ค่าขนย้าย', 'relocation', 'ค่าส่ง']
+                
+                for _, row in items_df.iterrows():
+                    p_name = str(row['product_name']).lower()
+                    price = float(row['total_price'] or 0)
+                    if not any(k in p_name for k in shipping_keywords):
+                        po_product_cost_raw += price
+            except: pass
 
-        print("\n--- DEBUG: Recalculate Logic ---")
-        print(f"Product Cost (Items): {product_cost:,.2f}")
-        print(f"Delivery/Shipping Cost: {shipping_cost_total:,.2f}")
-        
-        # 3. รวมต้นทุนทั้งหมด
-        total_cost_from_system = product_cost + shipping_cost_total
-        print(f"Total System Cost: {total_cost_from_system:,.2f}")
-        # -------------------------------------------------------------------------
-
-        # ส่วนที่เหลือเหมือนเดิม...
-        total_cost_system = float(self.cost_overrides.get('ต้นทุนรวม', total_cost_from_system))
+        # 1. เก็บ "ทุนดิบ" ลงในระบบเพื่อรอการ Save (Business Logic จะไปคูณ 1.03 เอง)
         total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
-
-        # --- START: คำนวณยอดขายฝั่งระบบ ---
-        sales_revenue_keys = [
-            'sales_service_amount',
-            'cutting_drilling_fee',
-            'other_service_fee'
-        ]
-        total_sale_system = sum(float(self.system_data.get(key, 0) or 0) for key in sales_revenue_keys)
-        # --- END ---
+        sales_keys = ['sales_service_amount', 'cutting_drilling_fee', 'other_service_fee']
+        total_sale_system = sum(float(self.system_data.get(key, 0) or 0) for key in sales_keys)
 
         self.calculated_values = {
             'total_sale_system': total_sale_system,
             'total_sale_express': total_sale_express,
-            'total_cost_system': total_cost_system,
+            'total_cost_system': po_product_cost_raw,  # ส่ง 23,336.00 (ทุนดิบ)
             'total_cost_express': total_cost_express
         }
 
-        # Update Radio Buttons logic
-        if self.system_data.get('hr_sale_source') in ['system', 'express']:
-            self.final_sale_source.set(self.system_data['hr_sale_source'])
-        else:
-            self.final_sale_source.set("system")
-
-        if self.system_data.get('hr_cost_source') in ['system', 'express']:
-            self.final_cost_source.set(self.system_data['hr_cost_source'])
-        else:
-            self.final_cost_source.set("system")
+        # 2. ปรับการตั้งค่าเริ่มต้น (ถ้ามี)
+        for key, source in [('hr_sale_source', self.final_sale_source), ('hr_cost_source', self.final_cost_source)]:
+            val = self.system_data.get(key)
+            source.set(val if val in ['system', 'express'] else "system")
             
+        # 3. สั่ง Update หน้าจอ (ฟังก์ชันนี้จะทำหน้าที่แสดงผลเป็น 24,036.08 ให้เอง)
+        self._update_selection_display()
+
     def _create_so_info_section(self):
         frame = CTkFrame(self, fg_color="#F0F0F0")
         frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
@@ -1772,33 +1740,47 @@ class PayoutDetailWindow(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
 
     def _prepare_so_dataframe(self):
-        # โค้ดเดิม (ตัดมาเฉพาะส่วนสำคัญเพื่อความกระชับ แต่ต้องมี logic เหมือนเดิม)
-        if not self.payout_log_data or not self.payout_log_data.get('so_ids_json'): return pd.DataFrame()
+        """เตรียมข้อมูลสำหรับแสดงในตาราง (ฉบับแก้ไข: ไม่คูณ 1.03 ซ้ำ)"""
+        if not self.payout_log_data or not self.payout_log_data.get('so_ids_json'): 
+            return pd.DataFrame()
+            
         try:
             so_id_list = json.loads(self.payout_log_data['so_ids_json'])
+            if not so_id_list: return pd.DataFrame()
+
             placeholders = ', '.join(['%s']*len(so_id_list))
             query = f"SELECT so_number, sales_service_amount, final_sales_amount, final_cost_amount, cost_multiplier, difference_amount FROM commissions WHERE id IN ({placeholders}) ORDER BY so_number DESC"
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=tuple(so_id_list))
             
             if df.empty: return pd.DataFrame()
             
+            # แปลงข้อมูลเป็นตัวเลข
             sales = pd.to_numeric(df['sales_service_amount'], errors='coerce').fillna(0)
             cost = pd.to_numeric(df['final_cost_amount'], errors='coerce').fillna(0)
-            mult = pd.to_numeric(df['cost_multiplier'], errors='coerce').fillna(1.03)
             diff = pd.to_numeric(df['difference_amount'], errors='coerce').fillna(0)
             
-            profit = (sales - (cost * mult)) + diff
+            # [🔥 FIX] ลบการคูณ mult ออก เพราะ cost ใน DB (final_cost_amount) คือยอดที่คูณมาแล้ว
+            # เดิม: profit = (sales - (cost * mult)) + diff  <-- ผิด (คูณซ้ำ)
+            profit = (sales - cost) + diff                # <-- ถูกต้อง
+            
+            # คำนวณ Margin
             df['calculated_margin'] = (profit / sales.replace(0, np.nan)) * 100
             df['calculated_margin'] = df['calculated_margin'].fillna(0.0)
+            
+            # กำหนดสถานะ
             df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if x >= 10.0 else 'Below Tier')
             
             return df[['so_number', 'status', 'sales_service_amount', 'calculated_margin']].rename(columns={
-                'so_number': 'SO Number', 'status': 'สถานะ', 'sales_service_amount': 'ยอดขายสินค้า', 'calculated_margin': 'Margin (%)'
+                'so_number': 'SO Number', 
+                'status': 'สถานะ', 
+                'sales_service_amount': 'ยอดขายสินค้า', 
+                'calculated_margin': 'Margin (%)'
             })
+
         except Exception as e:
             print(f"Prepare DF Error: {e}")
             return pd.DataFrame()
-
+            
     def _create_so_list_view(self, parent, df):
         if df.empty: 
             CTkLabel(parent, text="ไม่มีข้อมูล").pack(pady=10)
@@ -1825,8 +1807,19 @@ class PayoutDetailWindow(CTkToplevel):
         tree.bind("<Double-1>", lambda e: SODetailViewer(self, self.app_container, tree.item(tree.focus(), "values")[0]))
 
     def _show_calculation_summary(self):
-        # โค้ดเดิมสำหรับเปิด popup calculation summary
-        pass 
+        """เปิดหน้าต่างสรุปการคำนวณ (PayoutCalculationViewer)"""
+        try:
+            # เรียกใช้ Class PayoutCalculationViewer
+            PayoutCalculationViewer(
+                master=self, 
+                app_container=self.app_container, 
+                payout_id=self.payout_id
+            )
+        except NameError:
+            # กันเหนียวเผื่อยังไม่ได้ประกาศ Class หรือ Import
+            messagebox.showerror("Error", "ไม่พบ Class PayoutCalculationViewer กรุณาตรวจสอบว่ามีโค้ดส่วนนี้ในไฟล์แล้ว", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างสรุปได้: {e}", parent=self)
 
     def _on_export_excel(self):
         # โค้ดเดิมสำหรับ export
@@ -2642,125 +2635,220 @@ class CalculationDetailViewer(CTkToplevel):
 
     def _populate_so_breakdown_tab(self, tab, df):
         """
-        (ฉบับแก้ไขสมบูรณ์ Final: ตัดโค้ดซ้ำซ้อนออกทั้งหมด)
+        ฉบับแก้ไข: แก้ปัญหาคอลัมน์ซ้ำ กำไร และ Margin
         """
         # 1. ล้างหน้าจอเก่า
-        for widget in tab.winfo_children(): widget.destroy()
+        for widget in tab.winfo_children(): 
+            widget.destroy()
         
+        # ตั้งค่า Grid
         tab.grid_rowconfigure(0, weight=1)
         tab.grid_columnconfigure(0, weight=1)
-        tree_frame = CTkFrame(tab, fg_color="transparent")
+        tree_frame = ctk.CTkFrame(tab, fg_color="transparent")
         tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
         if df is None or df.empty:
-            CTkLabel(tree_frame, text="ไม่พบข้อมูลรายละเอียด SO").pack(pady=20)
+            ctk.CTkLabel(tree_frame, text="ไม่พบข้อมูลรายละเอียด SO").pack(pady=20)
             return
 
-        # 2. หารูปแบบชื่อคอลัมน์ SO Number
-        so_col_name = next((col for col in df.columns if 'SO Number' in col), 'SO Number')
-
-        # 3. กำจัด SO ซ้ำ
-        df = df.drop_duplicates(subset=[so_col_name]).copy()
+        # 2. เตรียมข้อมูล
+        df_display = df.copy()
         
-        # 4. สร้าง Treeview
+        # --- [Logic การคูณ 1.03] ---
+        cost_multiplier = 1.03
+        
+        # หาชื่อคอลัมน์ที่ถูกต้อง
+        cost_col_name = 'final_cost_amount' if 'final_cost_amount' in df_display.columns else 'ต้นทุน'
+        sales_col_name = 'sales_service_amount' if 'sales_service_amount' in df_display.columns else 'ยอดขาย'
+        
+        # คูณต้นทุน 1.03
+        if cost_col_name in df_display.columns:
+            df_display[cost_col_name] = pd.to_numeric(df_display[cost_col_name], errors='coerce').fillna(0)
+            df_display[cost_col_name] = df_display[cost_col_name] * cost_multiplier
+
+        # 🔥 ลบคอลัมน์เก่าที่อาจซ้ำออกก่อน
+        cols_to_drop = []
+        for col in df_display.columns:
+            col_lower = str(col).lower()
+            if 'profit' in col_lower or 'กำไร' in str(col) or 'margin' in col_lower:
+                cols_to_drop.append(col)
+        
+        df_display.drop(columns=cols_to_drop, errors='ignore', inplace=True)
+
+        # 🔥 คำนวณกำไรและ Margin ใหม่
+        if sales_col_name in df_display.columns and cost_col_name in df_display.columns:
+            sales_val = pd.to_numeric(df_display[sales_col_name], errors='coerce').fillna(0)
+            cost_new = df_display[cost_col_name]
+            
+            # สร้างคอลัมน์ใหม่
+            df_display['profit_calculated'] = sales_val - cost_new
+            df_display['margin_calculated'] = df_display.apply(
+                lambda row: ((row['profit_calculated'] / sales_val[row.name]) * 100) 
+                            if sales_val[row.name] != 0 else 0, 
+                axis=1
+            )
+
+        # เปลี่ยนชื่อหัวข้อเป็นภาษาไทย
+        rename_map = {
+            'PO Number': 'เลขที่ PO',
+            'sales_service_amount': 'ยอดขาย (Base)',
+            'final_cost_amount': 'ต้นทุน (Net)',
+            'commission_amount': 'ค่าคอมฯ',
+            'Status': 'สถานะ',
+            'shipping_cost': 'ค่ารถ (SO)',
+            'ยอดขาย': 'ยอดขาย (Base)',
+            'ต้นทุน': 'ต้นทุน (Net)',
+            'ค่าส่ง': 'ค่ารถ (SO)',
+            
+            # ใช้ชื่อที่เพิ่งสร้างใหม่เท่านั้น
+            'profit_calculated': 'กำไร (Profit)',
+            'margin_calculated': 'Margin %'
+        }
+        df_display.rename(columns=rename_map, inplace=True)
+
+        # ค้นหาคอลัมน์ SO Number
+        so_col_name = next((c for c in df_display.columns if 'SO Number' in str(c) or 'so_number' in str(c).lower()), 'SO Number')
+        
+        # กำจัดรายการซ้ำ
+        try:
+            df_display = df_display.drop_duplicates(subset=[so_col_name])
+        except KeyError: 
+            pass
+
+        # เลือกคอลัมน์ที่จะแสดง (ไม่ซ้ำ)
+        desired_columns = [
+            so_col_name,  # ใช้ชื่อที่หาเจอจริง
+            'ยอดขาย (Base)', 
+            'ค่ารถ (SO)',    
+            'ต้นทุน (Net)', 
+            'กำไร (Profit)', 
+            'Margin %', 
+            'สถานะ'
+        ]
+        
+        # กรองเอาเฉพาะคอลัมน์ที่มีอยู่จริง
+        final_columns = [c for c in desired_columns if c in df_display.columns]
+
+        # 3. สร้าง Treeview
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("Breakdown.Treeview.Heading", font=CTkFont(size=12, weight="bold"), background="#F1F5F9", relief="flat")
-        style.configure("Breakdown.Treeview", rowheight=28, font=CTkFont(size=12))
+        thai_font = ("Tahoma", 11)
+        header_font = ("Tahoma", 11, "bold")
+
+        style.configure("Breakdown.Treeview.Heading", 
+                        font=header_font, 
+                        background="#3B82F6", 
+                        foreground="white", 
+                        relief="flat")
+                        
+        style.configure("Breakdown.Treeview", 
+                        rowheight=30, 
+                        font=thai_font)
         
-        columns = list(df.columns)
-        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", style="Breakdown.Treeview")
+        tree = ttk.Treeview(tree_frame, columns=final_columns, show="headings", style="Breakdown.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
         
-        # กำหนด Tag สี
-        tree.tag_configure('Normal (>=10%)', background='#F0FDF4')
-        tree.tag_configure('Below Tier (<10%)', background='#FEF2F2')
-        tree.tag_configure('Below Tier (7.99-10%)', background='#FEFCE8')
-        tree.tag_configure('Below Tier (<7.99%)', background='#FEF2F2')
-        tree.tag_configure('total_row', font=CTkFont(size=12, weight="bold"), background='#EBF5FF', foreground="#1E40AF")
+        # Tag สีสถานะ
+        tree.tag_configure('Normal (>=10%)', background='#D1FAE5')
+        tree.tag_configure('Below Tier (<10%)', background='#FEE2E2')
+        tree.tag_configure('Below Tier (7.99-10%)', background='#FEF3C7')
+        tree.tag_configure('Below Tier (<7.99%)', background='#FEE2E2')
+        tree.tag_configure('total_row', font=ctk.CTkFont(size=12, weight="bold"), background='#DBEAFE', foreground="#1E3A8A")
 
-        # 5. สร้าง Headings
-        for col_id in columns:
-            anchor = 'w'
-            width = 150
-            if col_id not in ['PO Number', 'SO Number (Grouped)', 'Status']:
-                anchor = 'e'
-            if col_id == 'Status':
-                width = 200
-            tree.heading(col_id, text=col_id)
-            tree.column(col_id, width=width, anchor=anchor)
+        # 4. สร้าง Headings
+        for col in final_columns:
+            anchor = 'e' if any(x in col for x in ['ยอด', 'ต้นทุน', 'กำไร', 'ค่า', '%']) else 'center'
+            width = 120
+            if 'สถานะ' in col or 'Status' in col: 
+                width = 180
+            if 'SO' in col: 
+                width = 150
+            tree.heading(col, text=col)
+            tree.column(col, width=width, anchor=anchor)
 
-        # 6. คำนวณยอดรวม (Total)
-        cost_multiplier = 1.03 if self.plan_name in ['Plan A', 'Plan C', 'Plan D'] else 1.0
-        
-        def safe_sum_col(col_name):
-            if col_name in df.columns:
-                return pd.to_numeric(df[col_name], errors='coerce').fillna(0).sum()
-            return 0.0
-
-        total_so_count = len(df)
-        total_sales = safe_sum_col('ยอดขาย')
-        total_profit = safe_sum_col('กำไร')
-        total_commission = safe_sum_col('ค่าคอมที่ได้รับ')
-        
-        # รวมค่าส่ง (เช็คทั้ง 2 ชื่อที่เป็นไปได้)
-        total_shipping = safe_sum_col('ค่าส่ง') + safe_sum_col('ค่าขนส่ง')
-
-        # คำนวณต้นทุนรวม
-        raw_costs = pd.to_numeric(df.get('ต้นทุน', 0), errors='coerce').fillna(0)
-        if isinstance(raw_costs, (int, float)) and raw_costs == 0:
-             adjusted_costs_series = pd.Series([0] * len(df), index=df.index)
-        else:
-             adjusted_costs_series = raw_costs * cost_multiplier
-        
-        total_cost = adjusted_costs_series.sum()
-        total_margin_percent = (total_profit / total_sales) * 100 if total_sales != 0 else 0
-
-        # 7. ใส่ข้อมูลแต่ละแถวลงตาราง
-        df_display = df.copy()
-        if 'ต้นทุน' in df_display.columns:
-            df_display['ต้นทุน'] = adjusted_costs_series
-
+        # 5. ใส่ข้อมูล
         for _, row in df_display.iterrows():
-            tag = row.get('Status', '')
-            values = [f"{v:,.2f}" if isinstance(v, (int, float)) else v for v in row]
+            tag = row.get('สถานะ', row.get('Status', ''))
+            values = []
+            for col in final_columns:
+                val = row.get(col, 0)
+                if isinstance(val, (int, float)):
+                    suffix = "%" if "Margin" in col or "%" in col else ""
+                    values.append(f"{val:,.2f}{suffix}")
+                else:
+                    values.append(str(val))
             tree.insert("", "end", values=tuple(values), tags=(tag,))
 
-        # 8. เพิ่มแถวสรุป (Total Row) แบบปลอดภัย
+        # 6. แถวสรุป (Total)
         try:
-            col_indices = {col: i for i, col in enumerate(columns)}
-            total_values_list = [''] * len(columns)
-            
-            # Helper function
-            def set_val(key, val):
-                if key in col_indices:
-                    total_values_list[col_indices[key]] = val
+            total_values = [''] * len(final_columns)
+            for i, col in enumerate(final_columns):
+                if i == 0:
+                    total_values[i] = "รวมทั้งหมด"
+                elif any(x in col for x in ['ยอด', 'ต้นทุน', 'กำไร', 'ค่า']): 
+                    try:
+                        sum_val = pd.to_numeric(df_display[col], errors='coerce').fillna(0).sum()
+                        total_values[i] = f"{sum_val:,.2f}"
+                    except: 
+                        pass
+                elif '%' in col: 
+                    try:
+                        p_col = 'กำไร (Profit)'
+                        s_col = 'ยอดขาย (Base)'
+                        
+                        if p_col in df_display.columns and s_col in df_display.columns:
+                            sum_p = pd.to_numeric(df_display[p_col], errors='coerce').fillna(0).sum()
+                            sum_s = pd.to_numeric(df_display[s_col], errors='coerce').fillna(0).sum()
+                            avg_m = (sum_p / sum_s * 100) if sum_s != 0 else 0
+                            total_values[i] = f"{avg_m:.2f}%"
+                    except: 
+                        pass
 
-            set_val(so_col_name, f"รวม {total_so_count} รายการ")
-            set_val('ยอดขาย', f"{total_sales:,.2f}")
-            
-            # เช็คทั้ง 2 ชื่อที่เป็นไปได้ของค่าส่ง
-            set_val('ค่าส่ง', f"{total_shipping:,.2f}")
-            set_val('ค่าขนส่ง', f"{total_shipping:,.2f}")
-
-            set_val('ต้นทุน', f"{total_cost:,.2f}")
-            set_val('กำไร', f"{total_profit:,.2f}")
-            set_val('Margin (%)', f"{total_margin_percent:,.2f}%")
-            set_val('ค่าคอมที่ได้รับ', f"{total_commission:,.2f}")
-            set_val('Status', "Total")
-
-            tree.insert("", "end", values=tuple(total_values_list), tags=('total_row',))
-            
+            tree.insert("", "end", values=tuple(total_values), tags=('total_row',))
         except Exception as e:
-            print(f"Warning: Could not create total row: {e}")
+            print(f"Total row error: {e}")
 
-        # 9. ผูก Event และ Scrollbar
-        tree.bind("<Double-1>", self._on_so_row_double_click)
+        # 7. Scrollbar & Event
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
-        tree.configure(yscrollcommand=vsb.set)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        hsb.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        
+        def on_double_click(event):
+            item_id = tree.focus()
+            if not item_id: 
+                return
+            vals = tree.item(item_id, "values")
+            so_num = vals[0]
+            if so_num and "SO" in str(so_num):
+                SODetailViewer(self, self.app_container, so_num)
+
+        tree.bind("<Double-1>", on_double_click)
+        
+        def on_double_click(event):
+            item_id = tree.focus()
+            if not item_id: return
+            vals = tree.item(item_id, "values")
+            so_num = vals[0] # คอลัมน์แรกคือ SO
+            if so_num and "SO" in str(so_num):
+                SODetailViewer(self, self.app_container, so_num)
+
+        tree.bind("<Double-1>", on_double_click)
+        
+        # ผูก Event Double Click (ต้องแก้ให้หา SO Number จากคอลัมน์ภาษาไทย)
+        def on_double_click(event):
+            item_id = tree.focus()
+            if not item_id: return
+            vals = tree.item(item_id, "values")
+            # สมมติว่าเลข SO อยู่คอลัมน์แรก (index 0) ตามที่เราจัดเรียง
+            so_num = vals[0]
+            if so_num and "SO" in str(so_num):
+                SODetailViewer(self, self.app_container, so_num)
+
+        tree.bind("<Double-1>", on_double_click)
 
 class SODetailViewer(CTkToplevel):
     def __init__(self, master, app_container, so_number):

@@ -1115,25 +1115,32 @@ class HRScreen(CTkFrame):
             elif selected_sub_tab == "3. ประวัติการจ่าย": self._load_payout_history()
 
     def _show_calculation_details(self):
-        # --- แก้ไข 3 บรรทัดนี้ครับ ---
-        if self.latest_commission_result: # <-- ✅ แก้ไขจาก initial_commission_result
-            debug_df = self.latest_commission_result.get('debug_df') # <-- ✅ แก้ไข
-            so_breakdown_df = self.latest_commission_result.get('so_breakdown_df') # <-- ✅ แก้ไข
-            
-            sale_key = self.selected_sale_for_process.get()
-        # --- สิ้นสุดจุดแก้ไข ---
+        """แสดงรายละเอียดการคำนวณในหน้าต่างใหม่"""
         
-            plan_name = self.sales_user_info.get(sale_key, {}).get('plan', 'Unknown Plan')
-            
-            # ส่ง DataFrame ทั้งสองตัวไปที่หน้าต่าง Viewer
-            CalculationDetailViewer(
-                master=self, 
-                debug_df=debug_df, 
-                so_breakdown_df=so_breakdown_df, 
-                plan_name=plan_name
-            )
-        else:
-            messagebox.showinfo("ไม่มีข้อมูล", "ไม่พบข้อมูลการคำนวณ", parent=self)
+        # ตรวจสอบว่ามีผลลัพธ์หรือไม่
+        if not hasattr(self, 'latest_commission_result') or not self.latest_commission_result:
+            messagebox.showinfo("ไม่มีข้อมูล", "กรุณากด 'คำนวณขั้นสุดท้าย' ก่อนดูรายละเอียด", parent=self)
+            return
+
+        # ดึง DataFrame จากผลลัพธ์
+        debug_df = self.latest_commission_result.get('debug_df')
+        so_breakdown_df = self.latest_commission_result.get('so_breakdown_df')
+        
+        # ถ้าไม่มีข้อมูลใน DataFrame แสดงว่าการคำนวณอาจมีปัญหา
+        if debug_df is None or debug_df.empty:
+             messagebox.showwarning("ไม่พบข้อมูล", "ไม่พบรายละเอียดการคำนวณ (อาจเกิดจากเงื่อนไขไม่ผ่าน หรือ Error)", parent=self)
+             return
+
+        sale_key = self.selected_sale_for_process.get()
+        plan_name = self.sales_user_info.get(sale_key, {}).get('plan', 'Unknown Plan')
+        
+        # เปิดหน้าต่างแสดงผล
+        CalculationDetailViewer(
+            master=self, 
+            debug_df=debug_df, 
+            so_breakdown_df=so_breakdown_df, 
+            plan_name=plan_name
+        )
 
     def _trial_export_data(self):
         """
@@ -3856,8 +3863,7 @@ class HRScreen(CTkFrame):
 
     def _create_hr_input_interface(self, auto_deduction_value=0.0, default_operating_fee_to_display=None):
         """
-        สร้างหน้าจอสำหรับกรอก Incentive/Deduction และแสดงผลสรุปค่าคอม
-        (ฉบับแก้ไข: รองรับจอเล็กด้วย ScrollableFrame)
+        สร้างหน้าจอสำหรับกรอกข้อมูลค่าคอมมิชชั่น (เพิ่มช่องยอดขายขั้นต่ำ และจัด Row ใหม่)
         """
         for widget in self.process_result_frame.winfo_children():
             widget.destroy()
@@ -3868,34 +3874,37 @@ class HRScreen(CTkFrame):
              self.initial_commission_result = {}
              
         calculated_commission = (
-        self.initial_commission_result.get('final_commission_pre_deductions') or 
-        self.initial_commission_result.get('final_commission', 0.0)
+            self.initial_commission_result.get('final_commission_pre_deductions') or 
+            self.initial_commission_result.get('final_commission', 0.0)
         )   
 
         input_frame = CTkFrame(self.process_result_frame)
         input_frame.grid(row=0, column=0, pady=(10, 0), padx=10, sticky="ew")
 
+        # Row 0: แผน
         plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
         self.plan_display_label = CTkLabel(input_frame, text=f"แผนค่าคอมมิชชั่น: {plan_name}", font=self.header_font_table, text_color=self.theme["primary"])
         self.plan_display_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 5), sticky="w")
 
+        # Row 1: ยอดคอมมิชชั่นที่คำนวณได้
         CTkLabel(input_frame, text="ยอดคอมมิชชั่นที่คำนวณได้:", font=self.label_font).grid(row=1, column=0, padx=10, pady=5, sticky="w")
         self.calculated_commission_label = CTkLabel(input_frame, text=f"{calculated_commission:,.2f} บาท", font=self.header_font_table)
         self.calculated_commission_label.grid(row=1, column=1, padx=10, pady=5, sticky="w")
 
+        # Row 2: สถิติยอดขาย/ต้นทุน
         stats_frame = CTkFrame(input_frame, fg_color="transparent")
         stats_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(5,0))
         stats_frame.grid_columnconfigure((1, 3), weight=1)
-
+        
         total_sales_display = getattr(self, 'current_total_sales', 0.0)
         total_cost_display = getattr(self, 'current_total_cost', 0.0)
+        
+        CTkLabel(stats_frame, text="ยอดขายรวม:", font=self.label_font, text_color="#2563EB").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        CTkLabel(stats_frame, text=f"{total_sales_display:,.2f}", font=self.entry_font).grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        CTkLabel(stats_frame, text="ต้นทุนรวม:", font=self.label_font, text_color="#D97706").grid(row=0, column=2, padx=(20, 10), pady=5, sticky="w")
+        CTkLabel(stats_frame, text=f"{total_cost_display:,.2f}", font=self.entry_font).grid(row=0, column=3, padx=10, pady=5, sticky="w")
 
-        CTkLabel(stats_frame, text="ยอดขายรวม (ที่ใช้คำนวณ):", font=self.label_font, text_color="#2563EB").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        CTkLabel(stats_frame, text=f"{total_sales_display:,.2f} บาท", font=self.entry_font).grid(row=0, column=1, padx=10, pady=5, sticky="w")
-
-        CTkLabel(stats_frame, text="ต้นทุนรวม (ที่ใช้คำนวณ):", font=self.label_font, text_color="#D97706").grid(row=0, column=2, padx=(20, 10), pady=5, sticky="w")
-        CTkLabel(stats_frame, text=f"{total_cost_display:,.2f} บาท", font=self.entry_font).grid(row=0, column=3, padx=10, pady=5, sticky="w")
-
+        # --- Row 3: (-) ค่าดำเนินการ ---
         CTkLabel(input_frame, text="(-) ค่าดำเนินการ:", font=self.label_font).grid(row=3, column=0, padx=10, pady=10, sticky="w")
         self.operating_fee_entry = NumericEntry(input_frame, placeholder_text="0.00")
         self.operating_fee_entry.grid(row=3, column=1, padx=10, pady=10, sticky="ew")
@@ -3904,25 +3913,38 @@ class HRScreen(CTkFrame):
             self.operating_fee_entry.insert(0, f"{default_operating_fee_to_display:,.2f}")
         else:
             default_fees = {'Plan A': 25000, 'Plan B': 100000, 'Plan C': 100000, 'Plan D': 750000}
-            default_fee = default_fees.get(plan_name, 0.0)
-            self.operating_fee_entry.insert(0, f"{default_fee:,.2f}")
-        
-        CTkLabel(input_frame, text="(+) Incentive:", font=self.label_font).grid(row=4, column=0, padx=10, pady=10, sticky="w")
-        self.incentive_entry = NumericEntry(input_frame, placeholder_text="0.00")
-        self.incentive_entry.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
+            val = default_fees.get(plan_name, 0.0)
+            self.operating_fee_entry.insert(0, f"{val:,.2f}")
 
-        CTkLabel(input_frame, text="(-) หัก ค่าใช้จ่ายอื่นๆ:", font=self.label_font).grid(row=5, column=0, padx=10, pady=10, sticky="w")
+        # --- Row 4: ยอดขายขั้นต่ำ (เพิ่มใหม่ตรงนี้) ---
+        CTkLabel(input_frame, text="ยอดขายขั้นต่ำ:", font=self.label_font).grid(row=4, column=0, padx=10, pady=10, sticky="w")
+        self.min_sales_entry = NumericEntry(input_frame, placeholder_text="500,000")
+        self.min_sales_entry.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
+        
+        # ตั้งค่า Default (Plan D = 750,000, อื่นๆ = 500,000)
+        default_min_sales = 750000 if plan_name == 'Plan D' else 500000
+        self.min_sales_entry.insert(0, f"{default_min_sales:,.0f}")
+
+        # --- Row 5: (+) Incentive (ขยับลงมา) ---
+        CTkLabel(input_frame, text="(+) Incentive:", font=self.label_font).grid(row=5, column=0, padx=10, pady=10, sticky="w")
+        self.incentive_entry = NumericEntry(input_frame, placeholder_text="0.00")
+        self.incentive_entry.grid(row=5, column=1, padx=10, pady=10, sticky="ew")
+
+        # --- Row 6: (-) หัก ค่าใช้จ่ายอื่นๆ (ขยับลงมา) ---
+        CTkLabel(input_frame, text="(-) หัก ค่าใช้จ่ายอื่นๆ:", font=self.label_font).grid(row=6, column=0, padx=10, pady=10, sticky="w")
         self.deduction_entry = NumericEntry(input_frame, placeholder_text="0.00")
-        self.deduction_entry.grid(row=5, column=1, padx=10, pady=10, sticky="ew")
+        self.deduction_entry.grid(row=6, column=1, padx=10, pady=10, sticky="ew")
         if auto_deduction_value > 0:
             self.deduction_entry.insert(0, f"{auto_deduction_value:,.2f}")
 
-        CTkLabel(input_frame, text="หมายเหตุ/Incentive อื่นๆ:", font=self.label_font).grid(row=6, column=0, padx=10, pady=10, sticky="w")
+        # --- Row 7: หมายเหตุ (ขยับลงมา) ---
+        CTkLabel(input_frame, text="หมายเหตุ/Incentive อื่นๆ:", font=self.label_font).grid(row=7, column=0, padx=10, pady=10, sticky="w")
         self.payout_notes_entry = CTkTextbox(input_frame, height=80)
-        self.payout_notes_entry.grid(row=6, column=1, padx=10, pady=10, sticky="ew")
+        self.payout_notes_entry.grid(row=7, column=1, padx=10, pady=10, sticky="ew")
         
+        # --- Row 8: ปุ่มกด (ขยับลงมา) ---
         calc_button_frame = CTkFrame(input_frame, fg_color="transparent")
-        calc_button_frame.grid(row=7, column=0, columnspan=2, pady=10, padx=10, sticky="ew")
+        calc_button_frame.grid(row=8, column=0, columnspan=2, pady=10, padx=10, sticky="ew")
         calc_button_frame.grid_columnconfigure((0, 1), weight=1)
         
         CTkButton(calc_button_frame, text="คำนวณขั้นสุดท้ายและแสดงสรุป", command=self._perform_final_calculation, fg_color=self.theme["primary"]).grid(row=0, column=0, padx=(0, 5), pady=10, sticky="ew")
@@ -3935,10 +3957,11 @@ class HRScreen(CTkFrame):
         else:
             self.detail_button.configure(state="disabled")
 
-        # [แก้ไข] ใช้ CTkFrame ธรรมดา เพราะ Parent (process_result_frame) เลื่อนได้แล้ว
+        # พื้นที่แสดงตารางสรุป
         self.final_summary_frame = CTkFrame(self.process_result_frame, fg_color="transparent")
         self.final_summary_frame.grid(row=1, column=0, pady=10, padx=10, sticky="ew")
         
+        # พื้นที่ปุ่มยืนยัน
         bottom_action_frame = CTkFrame(self.process_result_frame, fg_color="transparent")
         bottom_action_frame.grid(row=2, column=0, pady=(0, 10), padx=10, sticky="ew")
         
@@ -3946,78 +3969,102 @@ class HRScreen(CTkFrame):
                                 command=self._confirm_payout_and_save,
                                 fg_color="#16A34A", hover_color="#15803D",
                                 font=CTkFont(size=16, weight="bold"))
+        self.confirm_payout_button.pack(fill="x", padx=10, pady=5)
+
+    def _get_incentives_data(self):
+        try:
+            val = float(self.incentive_entry.get().replace(",", "") or 0.0)
+            return {"Incentive พิเศษ": val} if val > 0 else {}
+        except: return {}
+
+    def _get_deductions_data(self):
+        try:
+            val = float(self.deduction_entry.get().replace(",", "") or 0.0)
+            return {"ค่าใช้จ่าย/ดำเนินการ": val} if val > 0 else {}
+        except: return {}
 
     def _perform_final_calculation(self):
+        """
+        อ่านค่าจากหน้าจอและเรียก business_logic เพื่อคำนวณยอดสุทธิ
+        """
         try:
+            # --- 1. ระบุตัวตนพนักงานและแผน ---
+            sale_key = self.selected_sale_for_process.get()
+            plan = self.sales_user_info.get(sale_key, {}).get('plan', 'Plan A') 
+
+            # --- 2. ดึงข้อมูลตัวเลขจากหน้าจอ ---
+            sales_target_val = float(self.sales_target_entry.get().replace(",", "") or 0.0)
             operating_fee_val = float(self.operating_fee_entry.get().replace(",", "") or 0.0)
-            incentive_val = float(self.incentive_entry.get().replace(",", "") or 0.0)
-            deduction_val = float(self.deduction_entry.get().replace(",", "") or 0.0)
-        except ValueError:
-            messagebox.showerror("ข้อมูลผิดพลาด", "กรุณากรอก Incentive และ Deduction เป็นตัวเลข", parent=self)
-            return
+            min_sales_val = float(self.min_sales_entry.get().replace(",", "") or 500000.0)
 
-        incentives_dict = {"Incentive พิเศษ": incentive_val} if incentive_val > 0 else None
-        deductions_dict = {"ค่าใช้จ่าย/ดำเนินการ": deduction_val} if deduction_val > 0 else None
-        
-        sale_key = self.selected_sale_for_process.get()
-        plan = self.sales_user_info.get(sale_key, {}).get('plan', 'Plan A')
+            # --- 3. รวบรวมข้อมูล Incentive และ Deduction ---
+            incentives_dict = self._get_incentives_data()
+            deductions_dict = self._get_deductions_data()
 
-        df_for_final_calc = self.current_comm_df.copy()
-        df_for_final_calc['final_sales_amount'] = pd.to_numeric(df_for_final_calc['final_sales_amount'], errors='coerce').fillna(0.0)
-        df_for_final_calc['total_revenue'] = df_for_final_calc['final_sales_amount']
-        # -----------------------------------------------------------------
+            # ตรวจสอบข้อมูลพนักงาน
+            if self.current_comm_df is None or self.current_comm_df.empty:
+                messagebox.showwarning("คำเตือน", "ไม่พบข้อมูลพนักงานสำหรับคำนวณขั้นสุดท้าย")
+                return
 
-        final_result = business_logic.calculate_monthly_commission(
-            plan_name=plan,
-            comm_df=df_for_final_calc,
-            operating_fee=operating_fee_val, # <-- ส่งค่าจากช่องกรอก
-            incentives=incentives_dict,
-            additional_deductions=deductions_dict
-        )
-        self.latest_commission_result = final_result
+            # --- 4. เรียกใช้ Logic การคำนวณ ---
+            final_result = business_logic.calculate_monthly_commission(
+                plan_name=plan,
+                comm_df=self.current_comm_df,
+                sales_target=sales_target_val,
+                operating_fee=operating_fee_val,
+                incentives=incentives_dict,
+                additional_deductions=deductions_dict,
+                min_sales_target=min_sales_val
+            )
 
-        self.final_summary_data = None 
-        self.confirm_payout_button.pack_forget()
+            # [สำคัญ] บันทึกผลลัพธ์เก็บไว้ให้ปุ่ม Detail เรียกใช้
+            self.latest_commission_result = final_result
 
-        result_type = final_result.get('type')
-        summary_df = None
-        details_df = None
+            # --- 5. แสดงผลลัพธ์บนหน้าจอ ---
+            self.final_summary_data = None 
+            self.confirm_payout_button.pack_forget()
 
-        if result_type == 'summary_plan_a':
-            summary_df = final_result.get('summary')
-            details_df = final_result.get('details') 
-        elif result_type == 'summary_other':
-            summary_df = final_result.get('data')
+            for widget in self.final_summary_frame.winfo_children():
+                widget.destroy()
 
-        if summary_df is not None:
-            # แสดงตารางสรุปบนหน้าจอ (GUI)
-            self._create_commission_summary_table(summary_df, container=self.final_summary_frame)
+            # ตรวจสอบว่าคำนวณสำเร็จหรือไม่
+            if final_result.get('type') == 'error':
+                 messagebox.showerror("คำนวณล้มเหลว", final_result.get('message', 'เกิดข้อผิดพลาดไม่ทราบสาเหตุ'))
+                 # ปิดปุ่ม Detail ถ้าคำนวณพัง
+                 self.detail_button.configure(state="disabled")
+                 return
+
+            # แยกประเภทผลลัพธ์เพื่อเลือก key ให้ถูก
+            result_type = final_result.get('type')
+            summary_df = None
             
-            # --- START: ส่วนที่แก้ไข ---
-            # ถ้ามีตารางรายละเอียด (เป็น Plan A) ให้ print ออกทาง Terminal
-            if details_df is not None:
-                print("\n" + "="*40)
-                print("  DEBUG: Commission Calculation Details (Plan A)")
-                print("="*40)
-                # ใช้ .to_string() เพื่อให้แสดงผลสวยงามใน Terminal
-                print(details_df.to_string())
-                print("="*40 + "\n")
-            # --- END: สิ้นสุดส่วนที่แก้ไข ---
+            if result_type == 'summary_plan_a':
+                summary_df = final_result.get('summary')
+            else:
+                # Plan B, C, D จะส่งมาใน key 'data'
+                summary_df = final_result.get('data')
 
-            self.final_summary_data = summary_df 
-            self.confirm_payout_button.pack(pady=(10, 20), padx=20, ipady=10, side="bottom", anchor="se")
-            self.confirm_payout_button.tkraise()
-        else:
-            for widget in self.final_summary_frame.winfo_children(): widget.destroy()
-            message = final_result.get('message', 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ')
-            CTkLabel(self.final_summary_frame, text=message).pack(pady=20)
+            if summary_df is not None:
+                self._create_commission_summary_table(summary_df, container=self.final_summary_frame)
+                
+                # เปิดปุ่ม Detail ให้กดได้ เพราะมีข้อมูลแล้ว
+                self.detail_button.configure(state="normal")
+
+                # แสดงปุ่มยืนยัน
+                self.final_summary_data = summary_df 
+                self.confirm_payout_button.pack(pady=(10, 20), padx=20, ipady=10, side="bottom", anchor="se")
+            else:
+                messagebox.showerror("ผิดพลาด", "ไม่สามารถสร้างตารางสรุปได้ (ข้อมูลว่างเปล่า)")
+
+        except ValueError:
+            messagebox.showerror("ข้อผิดพลาด", "กรุณากรอกตัวเลขให้ถูกต้อง")
+        except Exception as e:
+            messagebox.showerror("ข้อผิดพลาด", f"เกิดข้อผิดพลาด: {str(e)}")
+            traceback.print_exc()
     
     def _confirm_payout_and_save(self):
         """
-        (เวอร์ชันปรับปรุงล่าสุด - Popup สรุปยอดเงินและรายการตกหล่นก่อนยืนยัน)
-        ✅ โชว์ Gross / WHT 3% / Net ให้ชัดเจน
-        ✅ แยกแยะรายการเดือนปัจจุบัน vs รายการตกหล่น
-        ✅ แก้ไข: คำนวณยอดขายรวม (Real Total Sales) จากข้อมูลดิบเพื่อความแม่นยำ 100%
+        (เวอร์ชันแก้ไข: บันทึก detail_json ลงฐานข้อมูลด้วย เพื่อให้กดดูย้อนหลังได้)
         """
         try:
             # --- 1. ตรวจสอบความพร้อม ---
@@ -4039,11 +4086,8 @@ class HRScreen(CTkFrame):
                 return
 
             # --- 2. เตรียมตัวเลขเพื่อแสดงใน Popup ---
-            
-            # ฟังก์ชันช่วยดึงค่าจากตารางสรุป
             def get_val(desc_keyword):
                 try:
-                    # ค้นหาแถวที่มีคำที่ระบุ (partial match)
                     row = final_summary_df[final_summary_df['description'].str.contains(desc_keyword, case=False, na=False)]
                     if not row.empty:
                         return float(row['value'].iloc[0])
@@ -4055,21 +4099,17 @@ class HRScreen(CTkFrame):
             val_wht = get_val("หัก ณ ที่จ่าย|3%")
             val_net = get_val("ยอดสรุปคอมหลังหัก|สุทธิ|Net")
             
-            # แยกแยะ SO ปัจจุบัน vs ตกหล่น
+            # นับจำนวน SO
             count_current = 0
             count_old = 0
             
             if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
-                # แปลงปี/เดือนใน DF ให้เป็น int เพื่อเทียบกับที่เลือก
                 df_temp = self.current_comm_df.copy()
                 df_temp['commission_year'] = pd.to_numeric(df_temp['commission_year'], errors='coerce').fillna(0)
                 df_temp['commission_month'] = pd.to_numeric(df_temp['commission_month'], errors='coerce').fillna(0)
                 
-                # นับรายการเดือนปัจจุบัน (ที่ตรงกับงวดที่เลือก)
                 current_mask = (df_temp['commission_year'] == self.selected_year) & (df_temp['commission_month'] == self.selected_month)
                 count_current = len(df_temp[current_mask])
-                
-                # นับรายการเก่า (ตกหล่น)
                 count_old = len(df_temp[~current_mask])
             
             total_items = count_current + count_old
@@ -4092,16 +4132,16 @@ class HRScreen(CTkFrame):
 
             # --- 4. แสดง Popup ถามยืนยัน ---
             if not messagebox.askyesno("ยืนยันการจ่ายเงิน", msg, parent=self):
-                return  # ถ้าตอบ No ก็จบฟังก์ชัน ไม่บันทึก
+                return
 
             # =========================================================
-            # [แก้ไข] ส่วนเตรียมข้อมูลสำหรับบันทึก Log (คำนวณใหม่ให้แม่นยำ)
+            # [แก้ไข] เตรียมข้อมูลสำหรับบันทึก Log (รวมถึง detail_json)
             # =========================================================
             
             payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
             plan_name = self.sales_user_info.get(self.selected_sale_for_process.get(), {}).get('plan', 'N/A')
             
-            # 1. ดึงยอด Incentive/Deduction
+            # ดึง Incentive/Deduction
             incentives_df = final_summary_df[final_summary_df['description'].str.startswith('(+) ')]
             incentives_total = incentives_df['value'].sum()
 
@@ -4112,29 +4152,33 @@ class HRScreen(CTkFrame):
             ]
             deductions_total = deductions_df['value'].sum()
             
-            # 2. [สำคัญ!] คำนวณยอดขายรวมจาก DataFrame โดยตรง (ไม่ใช้ get_val จากข้อความ)
-            # เพื่อป้องกันปัญหายอดขายใน Log ไม่ครบถ้วน
+            # คำนวณยอดขายรวม
             real_total_sales = 0.0
             if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
-                # แปลงเป็นตัวเลขให้ชัวร์ก่อนรวม
                 s_amount = pd.to_numeric(self.current_comm_df['final_sales_amount'], errors='coerce').fillna(0.0)
                 real_total_sales = s_amount.sum()
             
-            # 3. พยายามแยกยอด Normal/Below (ถ้าทำได้)
+            # แยกยอด Normal/Below
             val_normal_sales = get_val("ปกติ|Normal|Tier 1")
             
-            # หา Below Sales (อาจมีหลายบรรทัด ต้อง Sum)
             below_rows = final_summary_df[final_summary_df['description'].str.contains("Below|นอกเงื่อนไข|Tier 2|Tier 3", case=False, na=False)]
             val_below_sales = 0.0
             if not below_rows.empty:
                 val_below_sales = below_rows['value'].sum()
             
-            # 4. ตรวจสอบความสมเหตุสมผล (Reconciliation)
-            # ถ้ายอดแยกย่อยรวมกันแล้ว ไม่เท่ายอดจริง (ต่างกันเกิน 1 บาท)
-            # ให้ยึด Real Total Sales เป็นหลัก แล้วปรับยอด Normal ให้เท่ากับยอดรวม เพื่อให้บัญชีลงตัว
+            # Reconciliation
             if abs((val_normal_sales + val_below_sales) - real_total_sales) > 1.0:
                 val_normal_sales = real_total_sales 
                 val_below_sales = 0.0
+
+            # --- [สำคัญ] เตรียมข้อมูล detail_json เพื่อบันทึก ---
+            debug_df = self.latest_commission_result.get('debug_df')
+            breakdown_df = self.latest_commission_result.get('so_breakdown_df')
+            
+            details_pack = {
+                "debug": debug_df.to_dict(orient='records') if debug_df is not None else [],
+                "breakdown": breakdown_df.to_dict(orient='records') if breakdown_df is not None else []
+            }
 
             # Dictionary ข้อมูลที่จะบันทึก
             log_data = {
@@ -4143,25 +4187,23 @@ class HRScreen(CTkFrame):
                 "payout_period_text": self.current_period_text,
                 "commission_month": self.selected_month,
                 "commission_year": self.selected_year,
-                "calculated_commission": float(self.latest_commission_result.get('final_commission_pre_deductions', 0.0)), # Base Commission
+                "calculated_commission": float(self.latest_commission_result.get('final_commission_pre_deductions', 0.0)),
                 "incentives_total": float(incentives_total),
                 "deductions_total": float(deductions_total),
-                
-                # ใช้ตัวแปรที่คำนวณไว้ตอน Popup (ถูกต้องตามสูตรบัญชี)
-                "final_commission": float(val_gross),       
-                "withholding_tax": float(val_wht),         
-                "net_commission": float(val_net),          
-                
+                "final_commission": float(val_gross),        
+                "withholding_tax": float(val_wht),          
+                "net_commission": float(val_net),           
                 "notes": payout_notes,
                 "summary_data_json": final_summary_df.to_json(orient='records'),
                 "so_ids_json": json.dumps(self.current_so_ids),
-                
-                # ใช้ยอดที่คำนวณใหม่
                 "total_sales": float(real_total_sales),
                 "total_normal_sales": float(val_normal_sales),
-                "total_below_sales": float(val_below_sales)
+                "total_below_sales": float(val_below_sales),
+                
+                # ✅ บันทึก detail_json ลงไปด้วย (นี่คือจุดที่ทำให้กดดูได้ทีหลัง)
+                "detail_json": json.dumps(details_pack, default=str)
             }
-            # กรองค่า None ออก
+            
             log_data = {k: v for k, v in log_data.items() if v is not None}
 
             # บันทึกลง DB
@@ -4195,7 +4237,6 @@ class HRScreen(CTkFrame):
                     parent=self
                 )
                 
-                # รีโหลดหน้าจอ
                 self._on_sale_selected_for_process()
                 self._load_payout_history()
             

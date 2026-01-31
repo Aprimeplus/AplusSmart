@@ -2536,28 +2536,19 @@ class SOPopupWindow(CTkToplevel):
                 except (tk.TclError, ValueError): return 0.0
             return 0.0
 
-        # --- 1. ดึงข้อมูลตัวเลขจากฟอร์มทั้งหมด ---
-        sales = get_float_from_entry('sales_amount_entry')
-        shipping = get_float_from_entry('shipping_cost_entry')
-        card_fee = get_float_from_entry('credit_card_fee_entry')
-        cutting_drilling = get_float_from_entry('cutting_drilling_fee_entry')
-        other_service = get_float_from_entry('other_service_fee_entry')
+        # --- 1. ดึงข้อมูลตัวเลขจากฟอร์ม ---
         wht = get_float_from_entry('wht_fee_entry')
         
         # --- 2. แยกรายการที่ต้องคิด VAT ---
         total_vatable_revenue = 0.0
         total_cashable_services_and_fees = 0.0
         
-        # รายการที่จะนำมาคำนวณ (ขาด relocation_cost_entry ไป)
         items_to_process = [
             (get_float_from_entry('sales_amount_entry'), w_vars['sales_service_vat_option'].get(), w_vars['sales_vat_calc_var']),
             (get_float_from_entry('cutting_drilling_fee_entry'), w_vars['cutting_drilling_fee_vat_option'].get(), w_vars['cutting_drilling_vat_calc_var']),
             (get_float_from_entry('other_service_fee_entry'), w_vars['other_service_fee_vat_option'].get(), w_vars['other_service_vat_calc_var']),
             (get_float_from_entry('shipping_cost_entry'), w_vars['shipping_vat_option_var'].get(), w_vars['shipping_vat_calc_var']),
             (get_float_from_entry('credit_card_fee_entry'), w_vars['credit_card_fee_vat_option_var'].get(), w_vars['card_fee_vat_calc_var']),
-            
-            # ### [เพิ่มตรงนี้] ### 
-            # เพิ่ม "ค่าย้าย" (Delivery Note) เข้ามารวมในยอดด้วย
             (get_float_from_entry('relocation_cost_entry'), w_vars['relocation_cost_vat_option'].get(), w_vars['relocation_vat_calc_var'])
         ]
 
@@ -2571,20 +2562,20 @@ class SOPopupWindow(CTkToplevel):
             
             vat_display_var.set(f"VAT: {item_vat:,.2f}")
                 
-        # --- 3. คำนวณยอดที่ต้องชำระ (Grand Total) ---
-        # สูตร: (ยอดที่คิด VAT * 1.07) + ยอดที่ไม่คิด VAT - หัก ณ ที่จ่าย
-        # (หมายเหตุ: total_cashable_services_and_fees คือยอดที่ไม่คิด VAT)
-        
-        final_grand_total = (total_vatable_revenue * 1.07) + total_cashable_services_and_fees - wht
+        # --- 3. คำนวณยอดที่ต้องชำระฝั่งโอน (Final Grand Total VAT) ---
+        # สูตร: (ยอดที่คิด VAT * 1.07) - หัก ณ ที่จ่าย
+        final_grand_total = (total_vatable_revenue * 1.07) - wht
         w_vars['so_grand_total_var'].set(f"{final_grand_total:,.2f}")
 
-        # --- 4. คำนวณส่วนต่างการชำระ ---
+        # --- 4. [🔥 จุดแก้ไขหลัก] คำนวณส่วนต่างการโอน (ไม่เอาเงินสดมาบวก) ---
         payment1 = get_float_from_entry('payment1_amount_entry')
         payment2 = get_float_from_entry('payment2_amount_entry')
+        
+        # ผลต่าง = ยอดที่โอนจริง - ยอดเต็มบิลที่ต้องออก VAT
         so_vs_payment_diff = (payment1 + payment2) - final_grand_total
         w_vars['difference_amount_var'].set(f"{so_vs_payment_diff:,.2f}")
 
-        # --- 5. อัปเดต UI แสดงผล ---
+        # --- 5. อัปเดต UI แสดงผลส่วนต่าง VAT ---
         def set_check_result(label_widget_key, var, diff_val, plus_text, minus_text):
             label_widget_ref = w_widgets.get(label_widget_key)
             if not (label_widget_ref and label_widget_ref.winfo_exists()): return
@@ -2597,8 +2588,10 @@ class SOPopupWindow(CTkToplevel):
 
         set_check_result('so_check_display', w_vars.get('so_vs_payment_result_var'), so_vs_payment_diff, "ยอดโอนเกิน", "ยอดโอนขาด")
 
-        # --- 6. คำนวณยอดเงินสด ---
+        # --- 6. คำนวณยอดเงินสด (แยกต่างหาก) ---
         cash_product_val = get_float_from_entry('cash_product_input_entry')
+        
+        # ยอดที่ต้องชำระเงินสด = ยอดสินค้าหน้างาน + ยอดบริการที่เลือกเป็น CASH
         cash_required_total = cash_product_val + total_cashable_services_and_fees
         w_vars['cash_required_total_var'].set(f"{cash_required_total:,.2f}")
         
@@ -2701,6 +2694,9 @@ class SOPopupWindow(CTkToplevel):
         self._so_update_final_calculations()
 
     def _save_so_changes(self):
+        """
+        บันทึกข้อมูล SO (ฉบับแก้ไข: ป้องกันยอดโอนเขียนทับยอดเงินสด)
+        """
         if self.sales_data is None: 
             messagebox.showerror("ข้อผิดพลาด", "ไม่มีข้อมูล SO ให้บันทึก", parent=self)
             return
@@ -2708,86 +2704,153 @@ class SOPopupWindow(CTkToplevel):
         so_id = self.sales_data.get('id')
         updated_data = {}
         
-        # --- Logic การรวบรวมข้อมูลจากฟอร์ม ---
+        # 1. Mapping ชื่อ Widget -> ชื่อคอลัมน์ DB
         key_map = {
             'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id', 'credit_term_entry': 'credit_term',
             'pickup_location_entry': 'pickup_location', 'pickup_rego_entry': 'pickup_registration',
             'bill_date_selector': 'bill_date', 'delivery_date_selector': 'delivery_date', 
             
-            # [แก้ไข 5] บันทึกวันที่แยก
-            'payment1_date_selector': 'payment1_date', 
-            'payment2_date_selector': 'payment2_date',
-            'payment1_amount_entry': 'payment1_amount', 
-            'payment2_amount_entry': 'payment2_amount',
+            'payment1_date_selector': 'payment1_date', 'payment2_date_selector': 'payment2_date',
+            'payment1_amount_entry': 'payment1_amount', 'payment2_amount_entry': 'payment2_amount',
             
             'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
             'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
             'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
-            'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
+            'relocation_cost_entry': 'relocation_cost', 
+            'credit_card_fee_entry': 'credit_card_fee',
             'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
             'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
             'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
             'cash_actual_payment_entry': 'cash_actual_payment'
         }
 
+        # 2. Loop เก็บข้อมูลและจัดการค่าตัวเลข
         for widget_key, data_key in key_map.items():
             value = None
             if widget_key in self.popup_widgets:
                 widget = self.popup_widgets[widget_key]
-                if widget and widget.winfo_exists():
-                    if isinstance(widget, DateSelector): value = widget.get_date()
-                    elif isinstance(widget, (NumericEntry, CTkEntry)):
-                        value = widget.get()
-                        if any(k in data_key for k in ['amount', 'cost', 'fee', 'wht', 'percent', 'coupons', 'giveaways']):
-                            value = utils.convert_to_float(value)
-            if value is not None: updated_data[data_key] = value
+                try:
+                    if not widget.winfo_exists(): continue
+                except: continue
 
+                if isinstance(widget, DateSelector): 
+                    value = widget.get_date()
+                elif isinstance(widget, (NumericEntry, CTkEntry)):
+                    raw_val = widget.get()
+                    numeric_keywords = ['amount', 'cost', 'fee', 'wht', 'percent', 'coupons', 'giveaways', 'input', 'payment']
+                    is_numeric = any(k in data_key for k in numeric_keywords)
+
+                    if is_numeric:
+                        if raw_val is None or str(raw_val).strip() == "":
+                            value = 0.0 
+                        else:
+                            try:
+                                value = float(str(raw_val).replace(",", ""))
+                            except ValueError:
+                                value = 0.0
+                    else:
+                        value = raw_val
+            
+            if value is not None: 
+                updated_data[data_key] = value
+
+        # 3. จัดการ Dropdown (VAT Options)
         shared_vars_map = {
-            'delivery_type_var': 'delivery_type', 'sales_service_vat_option': 'sales_service_vat_option',
-            'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option', 'other_service_fee_vat_option': 'other_service_fee_vat_option',
-            'shipping_vat_option_var': 'shipping_vat_option', 'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option',
-            'relocation_cost_vat_option': 'relocation_cost_vat_option' # <-- เพิ่ม
+            'delivery_type_var': 'delivery_type', 
+            'sales_service_vat_option': 'sales_service_vat_option',
+            'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option', 
+            'other_service_fee_vat_option': 'other_service_fee_vat_option',
+            'shipping_vat_option_var': 'shipping_vat_option', 
+            'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option',
+            'relocation_cost_vat_option': 'relocation_cost_vat_option'
         }
         for var_key, data_key in shared_vars_map.items():
-            if var_key in self.so_shared_vars: updated_data[data_key] = self.so_shared_vars[var_key].get()
+            if var_key in self.so_shared_vars: 
+                updated_data[data_key] = self.so_shared_vars[var_key].get()
 
-        # คำนวณยอดรวม (Total Payment)
-        p1 = utils.convert_to_float(self.popup_widgets.get('payment1_amount_entry').get())
-        p2 = utils.convert_to_float(self.popup_widgets.get('payment2_amount_entry').get())
-        updated_data['total_payment_amount'] = p1 + p2
+        # 4. คำนวณ Grand Total ใหม่เดี๋ยวนั้น
+        def calc_vat(amount, option_key):
+            opt = updated_data.get(option_key, 'No VAT')
+            return (amount * 0.07) if opt == 'VAT' else 0.0
 
-        # คำนวณ payment_date หลัก (ใช้วันที่ล่าสุดจากยอด 1 หรือ 2)
+        sales = updated_data.get('sales_service_amount', 0.0)
+        cutting = updated_data.get('cutting_drilling_fee', 0.0)
+        other = updated_data.get('other_service_fee', 0.0)
+        shipping = updated_data.get('shipping_cost', 0.0)
+        relocation = updated_data.get('relocation_cost', 0.0) 
+        card_fee = updated_data.get('credit_card_fee', 0.0)
+        transfer_fee = updated_data.get('transfer_fee', 0.0)
+        coupons = updated_data.get('coupons', 0.0)
+        wht = updated_data.get('wht_3_percent', 0.0)
+
+        vat_sum = (calc_vat(sales, 'sales_service_vat_option') + 
+                   calc_vat(cutting, 'cutting_drilling_fee_vat_option') + 
+                   calc_vat(other, 'other_service_fee_vat_option') + 
+                   calc_vat(shipping, 'shipping_vat_option') + 
+                   calc_vat(card_fee, 'credit_card_fee_vat_option'))
+
+        grand_total_calc = (sales + cutting + other + shipping + relocation + card_fee + transfer_fee + vat_sum) - coupons - wht
+        updated_data['cash_required_total'] = grand_total_calc
+
+        # 5. คำนวณยอดชำระโอน (Total Paid)
+        p1 = updated_data.get('payment1_amount', 0.0)
+        p2 = updated_data.get('payment2_amount', 0.0)
+        total_paid = p1 + p2
+        updated_data['total_payment_amount'] = total_paid
+        
+        # --- [แก้ไข] ลบบรรทัดที่เคยทับค่าเงินสดออก เพื่อใช้ค่าจาก entry โดยตรง ---
+        # ยอด 'cash_actual_payment' จะถูกดึงมาจาก widget ในขั้นตอนที่ 2 แล้ว
+
+        # 6. คำนวณส่วนต่างโอน
+        updated_data['difference_amount'] = total_paid - grand_total_calc
+
+        # 7. จัดการวันที่จ่าย (Payment Date)
         p1_date = updated_data.get('payment1_date')
         p2_date = updated_data.get('payment2_date')
-        
         main_payment_date = None
         if p1_date and p2_date:
             try: main_payment_date = max(p1_date, p2_date)
             except: main_payment_date = p1_date
         elif p1_date: main_payment_date = p1_date
         elif p2_date: main_payment_date = p2_date
-            
         updated_data['payment_date'] = main_payment_date
 
-        # --- Logic การบันทึกลงฐานข้อมูล ---
+        # --- บันทึกลงฐานข้อมูล ---
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
-                set_clauses = [f'"{k}" = %s' for k in updated_data.keys()]
-                params = list(updated_data.values()) + [so_id]
-                sql_update = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
-                cursor.execute(sql_update, tuple(params))
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'commissions'")
+                valid_columns = {row[0] for row in cursor.fetchall()}
+
+                final_data = {k: v for k, v in updated_data.items() if k in valid_columns}
+
+                if final_data:
+                    set_clauses = [f'"{k}" = %s' for k in final_data.keys()]
+                    params = list(final_data.values()) + [so_id]
+                    
+                    sql_update = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
+                    cursor.execute(sql_update, tuple(params))
+
+                    cursor.execute("""
+                        INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                        VALUES (%s, %s, %s, %s, %s, NOW())
+                    """, ('Edit SO (Fix Cash Calc)', 'commissions', so_id, self.app_container.current_user_key, "Saved with correct cash payment value"))
+
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกการแก้ไข SO เรียบร้อยแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูล SO และการชำระเงินเรียบร้อยแล้ว", parent=self)
+            
             if self.on_save_callback:
-                self.on_save_callback() # เรียก callback เพื่อ refresh หน้าจอหลัก
+                self.on_save_callback()
+            
+            self.destroy()
+
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
-
+            
 class SOReassignmentDialog(CTkToplevel):
     """
     หน้าต่างสำหรับ Sale Support ใช้ย้ายความเป็นเจ้าของ SO (Reassign Sale Key)
