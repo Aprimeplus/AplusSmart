@@ -4064,7 +4064,7 @@ class HRScreen(CTkFrame):
     
     def _confirm_payout_and_save(self):
         """
-        (เวอร์ชันแก้ไข: บันทึก detail_json ลงฐานข้อมูลด้วย เพื่อให้กดดูย้อนหลังได้)
+        (ฉบับแก้ไข: คำนวณ Normal/Below Sales จาก DataFrame โดยตรง แก้ปัญหา Below T เป็น 0)
         """
         try:
             # --- 1. ตรวจสอบความพร้อม ---
@@ -4135,7 +4135,7 @@ class HRScreen(CTkFrame):
                 return
 
             # =========================================================
-            # [แก้ไข] เตรียมข้อมูลสำหรับบันทึก Log (รวมถึง detail_json)
+            # เตรียมข้อมูลสำหรับบันทึก Log
             # =========================================================
             
             payout_notes = self.payout_notes_entry.get("1.0", "end-1c").strip()
@@ -4158,22 +4158,18 @@ class HRScreen(CTkFrame):
                 s_amount = pd.to_numeric(self.current_comm_df['final_sales_amount'], errors='coerce').fillna(0.0)
                 real_total_sales = s_amount.sum()
             
-            # แยกยอด Normal/Below
-            val_normal_sales = get_val("ปกติ|Normal|Tier 1")
-            
-            below_rows = final_summary_df[final_summary_df['description'].str.contains("Below|นอกเงื่อนไข|Tier 2|Tier 3", case=False, na=False)]
+            # [🔥 แก้ไข] คำนวณยอด Normal/Below จาก DataFrame โดยตรง
+            val_normal_sales = 0.0
             val_below_sales = 0.0
-            if not below_rows.empty:
-                val_below_sales = below_rows['value'].sum()
-            
-            # Reconciliation
-            if abs((val_normal_sales + val_below_sales) - real_total_sales) > 1.0:
-                val_normal_sales = real_total_sales 
-                val_below_sales = 0.0
+            if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
+                margin_col = pd.to_numeric(self.current_comm_df['margin'], errors='coerce').fillna(0)
+                sales_col = pd.to_numeric(self.current_comm_df['final_sales_amount'], errors='coerce').fillna(0)
+                val_normal_sales = sales_col[margin_col >= 10].sum()
+                val_below_sales = sales_col[margin_col < 10].sum()
 
             # --- [สำคัญ] เตรียมข้อมูล detail_json เพื่อบันทึก ---
-            debug_df = self.latest_commission_result.get('debug_df')
-            breakdown_df = self.latest_commission_result.get('so_breakdown_df')
+            debug_df = self.latest_commission_result.get('debug_df')     
+            breakdown_df = self.latest_commission_result.get('so_breakdown_df') 
             
             details_pack = {
                 "debug": debug_df.to_dict(orient='records') if debug_df is not None else [],
@@ -4190,17 +4186,15 @@ class HRScreen(CTkFrame):
                 "calculated_commission": float(self.latest_commission_result.get('final_commission_pre_deductions', 0.0)),
                 "incentives_total": float(incentives_total),
                 "deductions_total": float(deductions_total),
-                "final_commission": float(val_gross),        
-                "withholding_tax": float(val_wht),          
-                "net_commission": float(val_net),           
+                "final_commission": float(val_gross),         
+                "withholding_tax": float(val_wht),           
+                "net_commission": float(val_net),            
                 "notes": payout_notes,
                 "summary_data_json": final_summary_df.to_json(orient='records'),
                 "so_ids_json": json.dumps(self.current_so_ids),
                 "total_sales": float(real_total_sales),
                 "total_normal_sales": float(val_normal_sales),
                 "total_below_sales": float(val_below_sales),
-                
-                # ✅ บันทึก detail_json ลงไปด้วย (นี่คือจุดที่ทำให้กดดูได้ทีหลัง)
                 "detail_json": json.dumps(details_pack, default=str)
             }
             
@@ -4229,24 +4223,24 @@ class HRScreen(CTkFrame):
                             WHERE id IN %s
                         """, (payout_id, so_ids_tuple))
                 
+                    audit_msg = json.dumps({'payout_id': payout_id, 'net_amount': val_net})
+                    cursor.execute("""
+                        INSERT INTO audit_log (action, table_name, record_id, user_info, new_value, timestamp) 
+                        VALUES (%s, %s, %s, %s, %s, NOW())
+                    """, ('Confirm Payout', 'commission_payout_logs', payout_id, self.user_key, audit_msg))
+
                 conn.commit()
-                messagebox.showinfo(
-                    "สำเร็จ",
-                    f"บันทึกการจ่ายเงิน (Payout ID: {payout_id}) เรียบร้อยแล้ว!\n"
-                    f"อัปเดตสถานะ SO จำนวน {len(self.current_so_ids)} รายการเป็น 'Paid'",
-                    parent=self
-                )
+                messagebox.showinfo("สำเร็จ", f"บันทึกการจ่ายเงิน (Payout ID: {payout_id}) เรียบร้อยแล้ว!", parent=self)
                 
                 self._on_sale_selected_for_process()
                 self._load_payout_history()
             
             except Exception as e:
                 if conn: conn.rollback()
-                messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดระหว่างบันทึกข้อมูล: {e}", parent=self)
+                messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
                 traceback.print_exc()
             finally:
-                if conn:
-                    self.app_container.release_connection(conn)
+                if conn: self.app_container.release_connection(conn)
 
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูล: {e}", parent=self)

@@ -1740,7 +1740,9 @@ class PayoutDetailWindow(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
 
     def _prepare_so_dataframe(self):
-        """เตรียมข้อมูลสำหรับแสดงในตาราง (ฉบับแก้ไข: ไม่คูณ 1.03 ซ้ำ)"""
+        """
+        เตรียมข้อมูลสำหรับแสดงในตาราง (ฉบับแก้ไข: บังคับคำนวณ Margin ใหม่โดยคูณ 1.03 เสมอ เพื่อให้ตรงกับ Popup)
+        """
         if not self.payout_log_data or not self.payout_log_data.get('so_ids_json'): 
             return pd.DataFrame()
             
@@ -1749,25 +1751,41 @@ class PayoutDetailWindow(CTkToplevel):
             if not so_id_list: return pd.DataFrame()
 
             placeholders = ', '.join(['%s']*len(so_id_list))
-            query = f"SELECT so_number, sales_service_amount, final_sales_amount, final_cost_amount, cost_multiplier, difference_amount FROM commissions WHERE id IN ({placeholders}) ORDER BY so_number DESC"
+            
+            # [🔥 แก้ไข Query] ตัด total_po_shipping_cost ออกเพื่อแก้ Error
+            query = f"""
+                SELECT so_number, sales_service_amount, final_cost_amount, cost_multiplier, 
+                       difference_amount 
+                FROM commissions 
+                WHERE id IN ({placeholders}) 
+                ORDER BY so_number DESC
+            """
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=tuple(so_id_list))
             
             if df.empty: return pd.DataFrame()
             
-            # แปลงข้อมูลเป็นตัวเลข
+            # 1. แปลงข้อมูลเป็นตัวเลข
             sales = pd.to_numeric(df['sales_service_amount'], errors='coerce').fillna(0)
             cost = pd.to_numeric(df['final_cost_amount'], errors='coerce').fillna(0)
             diff = pd.to_numeric(df['difference_amount'], errors='coerce').fillna(0)
             
-            # [🔥 FIX] ลบการคูณ mult ออก เพราะ cost ใน DB (final_cost_amount) คือยอดที่คูณมาแล้ว
-            # เดิม: profit = (sales - (cost * mult)) + diff  <-- ผิด (คูณซ้ำ)
-            profit = (sales - cost) + diff                # <-- ถูกต้อง
+            # 2. ดึงตัวคูณ (ถ้าไม่มีใน DB ให้ใช้ 1.03)
+            if 'cost_multiplier' in df.columns:
+                mult = pd.to_numeric(df['cost_multiplier'], errors='coerce').fillna(1.03)
+                # ถ้าตัวคูณเป็น 0 หรือ 1 (หลุดมา) ให้บังคับเป็น 1.03 ไว้ก่อนเพื่อความปลอดภัยในมุมมอง HR
+                mult = mult.apply(lambda x: 1.03 if x < 1.01 else x)
+            else:
+                mult = 1.03
+
+            # 3. [🔥 สำคัญ] คำนวณกำไรใหม่สดๆ (เหมือนใน Popup)
+            # Profit = Sales - (Cost * Multiplier) + Diff
+            profit = (sales - (cost * mult)) + diff
             
-            # คำนวณ Margin
+            # 4. คำนวณ Margin (%)
             df['calculated_margin'] = (profit / sales.replace(0, np.nan)) * 100
             df['calculated_margin'] = df['calculated_margin'].fillna(0.0)
             
-            # กำหนดสถานะ
+            # 5. กำหนดสถานะ (Normal / Below Tier)
             df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if x >= 10.0 else 'Below Tier')
             
             return df[['so_number', 'status', 'sales_service_amount', 'calculated_margin']].rename(columns={
@@ -2349,301 +2367,156 @@ class PayoutCalculationViewer(CTkToplevel):
         super().__init__(master)
         self.app_container = app_container
         self.payout_id = payout_id
-        self.so_numbers = []
-
-        # เตรียม Theme และ Font สำหรับฟังก์ชันสร้างตาราง
+        
         self.theme = self.app_container.THEME["hr"]
-        self.header_font_table = CTkFont(size=14, weight="bold")
-        self.entry_font = CTkFont(size=14)
+        self.header_font_table = CTkFont(size=12, weight="bold")
+        self.entry_font = CTkFont(size=12)
 
-        self.title(f"รายละเอียดการคำนวณค่าคอม (Payout ID: {payout_id})")
-        self.geometry("800x600")
+        self.title(f"ที่มาการคำนวณค่าคอม (Payout ID: {payout_id})")
+        self.geometry("1100x750") 
         
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
         
+        # --- Header ---
         top_frame = CTkFrame(self, fg_color="transparent")
         top_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         
-        self.summary_label = CTkLabel(top_frame, text="สรุปการคำนวณ", font=self.header_font_table)
+        self.summary_label = CTkLabel(top_frame, text="กำลังโหลดข้อมูล...", font=CTkFont(size=16, weight="bold"))
         self.summary_label.pack(side="left")
 
-        # เพิ่มปุ่มสำหรับกดดูรายชื่อ SO
-        CTkButton(top_frame, text="ดูรายชื่อ SO ที่เกี่ยวข้อง", command=self._open_so_list_viewer).pack(side="right")
+        # --- Tab View ---
+        self.tab_view = ctk.CTkTabview(self)
+        self.tab_view.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
         
-        self.table_container = CTkFrame(self)
-        self.table_container.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        self.tab_steps = self.tab_view.add("ขั้นตอนการคำนวณ")  
+        self.tab_so = self.tab_view.add("รายละเอียดตาม SO")    
 
-        self.after(50, self._load_and_display_data)
+        self.after(100, self._load_and_display_data) 
         
         self.transient(master)
         self.grab_set()
-
-    def _open_so_list_viewer(self):
-        # เปิดหน้าต่างแสดงรายชื่อ SO (PayoutDetailWindow เดิม)
-        PayoutDetailWindow(master=self, app_container=self.app_container, payout_id=self.payout_id)
 
     def _load_and_display_data(self):
         try:
-            query = "SELECT summary_json, so_numbers_json, sale_key, plan_name, timestamp FROM commission_payout_logs WHERE id = %s"
+            # 1. ดึงข้อมูลจาก Log
+            query = """
+                SELECT summary_json, so_numbers_json, sale_key, plan_name, timestamp, detail_json 
+                FROM commission_payout_logs 
+                WHERE id = %s
+            """
             log_data = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.payout_id,)).iloc[0]
 
-            summary_df = pd.DataFrame(log_data['summary_json'])
-            self.so_numbers = log_data['so_numbers_json']
-            
-            # อัปเดต Label ด้านบน
-            info_text = f"สรุปการคำนวณสำหรับ: {log_data['sale_key']} (แผน: {log_data['plan_name']}) - {pd.to_datetime(log_data['timestamp']).strftime('%d/%m/%Y')}"
-            self.summary_label.configure(text=info_text)
+            # อัปเดต Label
+            ts = pd.to_datetime(log_data['timestamp']).strftime('%d/%m/%Y %H:%M')
+            self.summary_label.configure(text=f"การคำนวณของ: {log_data['sale_key']} (แผน: {log_data['plan_name']}) เมื่อ {ts}")
 
-            # เรียกใช้ฟังก์ชันสร้างตารางสรุป
-            self._create_commission_summary_table(summary_df, self.table_container)
+            # 2. แกะข้อมูล JSON
+            debug_df = pd.DataFrame()
+            breakdown_df = pd.DataFrame()
+
+            if 'detail_json' in log_data and log_data['detail_json']:
+                try:
+                    details = json.loads(log_data['detail_json'])
+                    
+                    if isinstance(details, dict):
+                        if 'debug' in details: debug_df = pd.DataFrame(details['debug'])
+                        if 'breakdown' in details: breakdown_df = pd.DataFrame(details['breakdown'])
+                    elif isinstance(details, list):
+                        debug_df = pd.DataFrame(details)
+                        
+                except Exception as e:
+                    print(f"Error parsing detail_json: {e}")
+
+            # 3. แสดงผล Tab 1: ขั้นตอนการคำนวณ
+            if not debug_df.empty:
+                self._populate_calc_steps_tab(self.tab_steps, debug_df)
+            else:
+                self._clear_frame(self.tab_steps)
+                ctk.CTkLabel(self.tab_steps, text="ไม่พบข้อมูลขั้นตอนการคำนวณ (อาจเป็นข้อมูลเก่า)", font=("Arial", 16)).pack(pady=40)
+
+            # 4. แสดงผล Tab 2: รายละเอียด SO
+            if not breakdown_df.empty:
+                self._populate_so_breakdown_tab(self.tab_so, breakdown_df) 
+            else:
+                 self._clear_frame(self.tab_so)
+                 ctk.CTkLabel(self.tab_so, text="ไม่พบข้อมูล Breakdown ราย SO (อาจเป็นข้อมูลเก่า)", font=("Arial", 16)).pack(pady=20)
+                 ctk.CTkButton(self.tab_so, text="คลิกเพื่อดูรายละเอียด SO ทั้งหมด (ดึงข้อมูลสด)", command=self._open_so_list_viewer).pack(pady=10)
 
         except Exception as e:
-            messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดรายละเอียดการคำนวณได้: {e}", parent=self)
+            messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดรายละเอียดได้: {e}", parent=self)
             self.destroy()
 
-    # **สำคัญมาก:** คัดลอกฟังก์ชันนี้มาจาก hr_screen.py
-    def _create_commission_summary_table(self, summary_df, container=None):
-        if container is None:
-            container = self
-            
-        for widget in container.winfo_children(): widget.destroy()
-
-        if summary_df is None or summary_df.empty:
-            CTkLabel(container, text="ไม่พบข้อมูลสำหรับสร้างสรุป").pack(pady=20)
-            return
-
-        tree_frame = CTkFrame(container, fg_color="transparent")
-        tree_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Summary.Treeview.Heading", font=self.header_font_table, background="#3B82F6", foreground="white")
-        style.configure("Summary.Treeview", rowheight=30, font=self.entry_font)
-        style.map("Summary.Treeview", background=[('selected', "#DBEAFE")])
-
-        columns_to_show = list(summary_df.columns)
-        tree = ttk.Treeview(tree_frame, columns=columns_to_show, show="headings", style="Summary.Treeview")
-        tree.grid(row=0, column=0, sticky="nsew")
-
-        header_map = {'description': 'รายการสรุป', 'value': 'ยอดรวม (บาท)'}
-        for col_id in columns_to_show:
-            header_text = header_map.get(col_id, col_id)
-            anchor = 'e' if col_id == 'value' else 'w'
-            width = 400 if col_id == 'description' else 200
-            tree.heading(col_id, text=header_text)
-            tree.column(col_id, width=width, anchor=anchor)
-
-        tree.tag_configure('summary_row', font=self.header_font_table, background="#F3F4F6")
-        tree.tag_configure('final_row', font=self.header_font_table, background="#D1FAE5")
-
-        for _, row in summary_df.iterrows():
-            values_tuple = []
-            for col in columns_to_show:
-                val = row[col]
-                if isinstance(val, (int, float)):
-                    values_tuple.append(f"{val:,.2f}")
-                else:
-                    values_tuple.append(val)
-            
-            desc = row['description']
-            tags = ()
-            if any(s in desc for s in ["สรุป", "รวม", "ขั้นต้น"]): tags = ('summary_row',)
-            if "หลังหัก" in desc: tags = ('final_row',)
-            
-            tree.insert("", "end", values=tuple(values_tuple), tags=tags)
-
-
-class CalculationDetailViewer(CTkToplevel):
-    def __init__(self, master, debug_df, so_breakdown_df, plan_name):
-        super().__init__(master)
-        self.app_container = master.app_container
-        self.title(f"รายละเอียดการคำนวณ - {plan_name}")
-        self.plan_name = plan_name
-        self.geometry("900x600")
-        
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        self.tab_view = ctk.CTkTabview(self, corner_radius=10)
-        self.tab_view.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-
-        self.tab_1 = self.tab_view.add("ขั้นตอนการคำนวณ")
-        self.tab_2 = self.tab_view.add("รายละเอียดตาม SO")
-
-        # <<< START: แก้ไขให้เรียกใช้ฟังก์ชันที่ถูกต้องเพียงครั้งเดียว >>>
-        self._populate_calc_steps_tab(self.tab_1, debug_df)
-        self._populate_so_breakdown_tab(self.tab_2, so_breakdown_df)
-        # <<< END >>>
-
-        self.transient(master)
-        self.grab_set()
-    
-    def _on_so_row_double_click(self, event):
-        tree = event.widget
-        selected_item_iid = tree.focus()
-        if not selected_item_iid:
-            return
-        
-        try:
-            # ดึงค่าจากคอลัมน์แรก (SO Number)
-            so_number = tree.item(selected_item_iid, "values")[0]
-            if so_number:
-                # เปิดหน้าต่างใหม่
-                SODetailViewer(master=self, app_container=self.app_container, so_number=so_number)
-        except (IndexError, TclError) as e:
-            print(f"Could not get SO Number from selected row: {e}")
-    
-    def _populate_calc_steps_tab_v2(self, tab, df):
-        tab.grid_rowconfigure(0, weight=1)
-        tab.grid_columnconfigure(0, weight=1)
-        tree_frame = CTkFrame(tab, fg_color="transparent")
-        tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
-
-        if df is None or df.empty:
-            CTkLabel(tree_frame, text="ไม่พบข้อมูลขั้นตอนการคำนวณ").pack(pady=20)
-            return
-
-        # --- 1. ตั้งค่า Style และ Theme ---
-        style = ttk.Style(self)
-        style.theme_use("clam") # ใช้ theme ที่ปรับแต่งได้ง่าย
-        
-        # Style สำหรับแถวข้อมูลปกติ
-        style.configure("Detail.Treeview", 
-                        rowheight=28, 
-                        font=CTkFont(size=12),
-                        background="#FFFFFF",
-                        fieldbackground="#FFFFFF",
-                        foreground="#1E293B")
-
-        # Style สำหรับหัวตาราง
-        style.configure("Detail.Treeview.Heading", 
-                        font=CTkFont(size=12, weight="bold"),
-                        background="#F1F5F9", # สีพื้นหลังหัวข้อ
-                        relief="flat")
-        
-        # ทำให้เส้นตารางแสดงผล (สำหรับบาง OS)
-        style.layout("Detail.Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
-
-        tree = ttk.Treeview(tree_frame, columns=("รายการ", "ค่า"), show="headings", style="Detail.Treeview")
-        tree.grid(row=0, column=0, sticky="nsew")
-        
-        tree.heading("รายการ", text="รายการ")
-        tree.column("รายการ", width=500, anchor="w")
-        tree.heading("ค่า", text="ค่า")
-        tree.column("ค่า", width=200, anchor="e")
-
-        # --- 2. กำหนด Tag สีสำหรับแถวพิเศษ ---
-        tree.tag_configure('header_row', background='#E2E8F0', font=CTkFont(size=13, weight="bold"))
-        tree.tag_configure('separator_row', background='#F8FAFC')
-        tree.tag_configure('summary_row', font=CTkFont(size=12, weight="bold"))
-        tree.tag_configure('final_summary_row', background='#D1FAE5', font=CTkFont(size=12, weight="bold"))
-
-        for i, row in df.iterrows():
-            item = row['รายการ']
-            value = row['ค่า']
-            tags = ()
-        
-            
-            if str(item).startswith('##') and str(item).endswith('##'):
-                item = item.replace('##', '').strip()
-                tags += ('header_row',)
-            elif str(item) == '---':
-                item, value = '', ''
-                tags += ('separator_row',)
-            elif str(item).strip().startswith('='):
-                tags += ('summary_row',)
-            elif "ยอดรวมคอมมิชชั่น" in str(item):
-                tags += ('final_summary_row',)
-
-            value_str = f"{value:,.2f}" if isinstance(value, (int, float)) else value
-            
-            tree.insert("", "end", values=(item, value_str), tags=tags)
-            
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        vsb.grid(row=0, column=1, sticky="ns")
-        tree.configure(yscrollcommand=vsb.set)
-
     def _populate_calc_steps_tab(self, tab, df):
+        """แสดงข้อมูลขั้นตอนการคำนวณ (Debug Steps)"""
+        self._clear_frame(tab)
+
         tab.grid_rowconfigure(0, weight=1)
         tab.grid_columnconfigure(0, weight=1)
-        tree_frame = CTkFrame(tab, fg_color="transparent")
+        
+        tree_frame = ctk.CTkFrame(tab, fg_color="transparent")
         tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        if df is None or df.empty:
-            CTkLabel(tree_frame, text="ไม่พบข้อมูลขั้นตอนการคำนวณ").pack(pady=20)
-            return
-
         style = ttk.Style(self)
         style.theme_use("clam")
         
-        style.configure("Detail.Treeview", 
-                        rowheight=28, 
-                        font=CTkFont(size=12),
-                        background="#FFFFFF",
-                        fieldbackground="#FFFFFF",
-                        foreground="#1E293B")
-        style.configure("Detail.Treeview.Heading", 
-                        font=CTkFont(size=12, weight="bold"),
-                        background="#F1F5F9",
-                        relief="flat")
-        style.layout("Detail.Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
+        header_font = ("Tahoma", 11, "bold")
+        content_font = ("Tahoma", 11)
 
-        tree = ttk.Treeview(tree_frame, columns=("รายการ", "ค่า"), show="headings", style="Detail.Treeview")
+        style.configure("Steps.Treeview.Heading", font=header_font, background="#64748B", foreground="white", relief="flat")
+        style.configure("Steps.Treeview", rowheight=30, font=content_font)
+
+        tree = ttk.Treeview(tree_frame, columns=("item", "value"), show="headings", style="Steps.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
+
+        tree.heading("item", text="รายการ / ขั้นตอน")
+        tree.heading("value", text="ค่า / ผลลัพธ์")
         
-        tree.heading("รายการ", text="รายการ")
-        tree.column("รายการ", width=500, anchor="w")
-        tree.heading("ค่า", text="ค่า")
-        tree.column("ค่า", width=200, anchor="e")
+        tree.column("item", width=500, anchor="w")
+        tree.column("value", width=200, anchor="e")
 
-        tree.tag_configure('header_row', background='#E2E8F0', font=CTkFont(size=13, weight="bold"))
-        tree.tag_configure('separator_row', background='#F8FAFC')
-        tree.tag_configure('summary_row', font=CTkFont(size=12, weight="bold"))
-        tree.tag_configure('final_summary_row', background='#D1FAE5', font=CTkFont(size=12, weight="bold"))
+        tree.tag_configure('header', background='#E2E8F0', font=header_font)
+        tree.tag_configure('separator', background='#F1F5F9')
+        tree.tag_configure('highlight', background='#FEF9C3', font=header_font)
+        tree.tag_configure('success', background='#DCFCE7', foreground="#166534")
+        tree.tag_configure('fail', background='#FEE2E2', foreground="#991B1B")
 
-        for i, row in df.iterrows():
-            item = row['รายการ']
-            value = row['ค่า']
-            tags = ()
+        for _, row in df.iterrows():
+            item_text = str(row.get('รายการ', '')).strip()
+            value_text = str(row.get('ค่า', '')).strip()
             
-            if str(item).startswith('##') and str(item).endswith('##'):
-                item = item.replace('##', '').strip()
-                tags += ('header_row',)
-            elif str(item) == '---':
-                item, value = '', ''
-                tags += ('separator_row',)
-            elif str(item).strip().startswith('='):
-                tags += ('summary_row',)
-            elif "ยอดรวมคอมมิชชั่น" in str(item):
-                tags += ('final_summary_row',)
+            tags = []
+            if item_text.startswith('##'):
+                item_text = item_text.replace('##', '').strip()
+                tags.append('header')
+            elif item_text == '---':
+                item_text = ''
+                value_text = ''
+                tags.append('separator')
+            elif 'ยอดรวม' in item_text or 'สุทธิ' in item_text:
+                tags.append('highlight')
+            elif 'ผ่าน' in value_text and '✅' in value_text:
+                tags.append('success')
+            elif 'ไม่ผ่าน' in value_text or '❌' in value_text:
+                tags.append('fail')
+            
+            tree.insert("", "end", values=(item_text, value_text), tags=tuple(tags))
 
-            value_str = f"{value:,.2f}" if isinstance(value, (int, float)) else value
-            
-            tree.insert("", "end", values=(item, value_str), tags=tags)
-            
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
-
 
     def _populate_so_breakdown_tab(self, tab, df):
         """
-        ฉบับแก้ไข: แก้ปัญหาคอลัมน์ซ้ำ กำไร และ Margin
+        แสดงรายการ SO (Breakdown) แบบ Robust พร้อมสีและ Format
         """
-        # 1. ล้างหน้าจอเก่า
-        for widget in tab.winfo_children(): 
-            widget.destroy()
-        
-        # ตั้งค่า Grid
+        self._clear_frame(tab)
+
         tab.grid_rowconfigure(0, weight=1)
         tab.grid_columnconfigure(0, weight=1)
+
         tree_frame = ctk.CTkFrame(tab, fg_color="transparent")
         tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
         tree_frame.grid_rowconfigure(0, weight=1)
@@ -2653,202 +2526,338 @@ class CalculationDetailViewer(CTkToplevel):
             ctk.CTkLabel(tree_frame, text="ไม่พบข้อมูลรายละเอียด SO").pack(pady=20)
             return
 
-        # 2. เตรียมข้อมูล
         df_display = df.copy()
-        
-        # --- [Logic การคูณ 1.03] ---
-        cost_multiplier = 1.03
-        
-        # หาชื่อคอลัมน์ที่ถูกต้อง
-        cost_col_name = 'final_cost_amount' if 'final_cost_amount' in df_display.columns else 'ต้นทุน'
-        sales_col_name = 'sales_service_amount' if 'sales_service_amount' in df_display.columns else 'ยอดขาย'
-        
-        # คูณต้นทุน 1.03
-        if cost_col_name in df_display.columns:
-            df_display[cost_col_name] = pd.to_numeric(df_display[cost_col_name], errors='coerce').fillna(0)
-            df_display[cost_col_name] = df_display[cost_col_name] * cost_multiplier
 
-        # 🔥 ลบคอลัมน์เก่าที่อาจซ้ำออกก่อน
-        cols_to_drop = []
-        for col in df_display.columns:
-            col_lower = str(col).lower()
-            if 'profit' in col_lower or 'กำไร' in str(col) or 'margin' in col_lower:
-                cols_to_drop.append(col)
-        
-        df_display.drop(columns=cols_to_drop, errors='ignore', inplace=True)
-
-        # 🔥 คำนวณกำไรและ Margin ใหม่
-        if sales_col_name in df_display.columns and cost_col_name in df_display.columns:
-            sales_val = pd.to_numeric(df_display[sales_col_name], errors='coerce').fillna(0)
-            cost_new = df_display[cost_col_name]
-            
-            # สร้างคอลัมน์ใหม่
-            df_display['profit_calculated'] = sales_val - cost_new
-            df_display['margin_calculated'] = df_display.apply(
-                lambda row: ((row['profit_calculated'] / sales_val[row.name]) * 100) 
-                            if sales_val[row.name] != 0 else 0, 
-                axis=1
-            )
-
-        # เปลี่ยนชื่อหัวข้อเป็นภาษาไทย
-        rename_map = {
-            'PO Number': 'เลขที่ PO',
-            'sales_service_amount': 'ยอดขาย (Base)',
-            'final_cost_amount': 'ต้นทุน (Net)',
-            'commission_amount': 'ค่าคอมฯ',
-            'Status': 'สถานะ',
-            'shipping_cost': 'ค่ารถ (SO)',
-            'ยอดขาย': 'ยอดขาย (Base)',
-            'ต้นทุน': 'ต้นทุน (Net)',
-            'ค่าส่ง': 'ค่ารถ (SO)',
-            
-            # ใช้ชื่อที่เพิ่งสร้างใหม่เท่านั้น
-            'profit_calculated': 'กำไร (Profit)',
-            'margin_calculated': 'Margin %'
+        # Smart Column Mapping
+        col_mapping = {
+            'so_number': ['so_number', 'เลขที่ SO', 'SO Number'],
+            'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า'],
+            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost'],
+            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)'],
+            'margin': ['margin', 'Margin (%)', 'final_margin', 'Margin %'],
+            'status': ['status', 'Status', 'สถานะ'],
+            'multiplier': ['cost_multiplier', 'ตัวคูณ']
         }
-        df_display.rename(columns=rename_map, inplace=True)
 
-        # ค้นหาคอลัมน์ SO Number
-        so_col_name = next((c for c in df_display.columns if 'SO Number' in str(c) or 'so_number' in str(c).lower()), 'SO Number')
+        for target_col, possible_cols in col_mapping.items():
+            found_col = next((c for c in df_display.columns if c in possible_cols), None)
+            if found_col:
+                if target_col not in ['so_number', 'status']:
+                    df_display[target_col] = df_display[found_col].astype(str).str.replace(',', '', regex=False)
+                    df_display[target_col] = pd.to_numeric(df_display[target_col], errors='coerce').fillna(0)
+                else:
+                    df_display[target_col] = df_display[found_col]
+            else:
+                # [🔥 จุดแก้ไขสำคัญ] ถ้าหา 'multiplier' ไม่เจอ ให้ Default เป็น 1.03 (สำหรับ Plan A ส่วนใหญ่)
+                if target_col == 'multiplier':
+                     df_display[target_col] = 1.03 
+                else:
+                    df_display[target_col] = 0.0 if target_col not in ['so_number', 'status'] else '-'
+
+        # --- คำนวณต้นทุนรวมตัวคูณ และตั้งชื่อหัวข้อ ---
+        cost_header = "ต้นทุน (Net)"
         
-        # กำจัดรายการซ้ำ
-        try:
-            df_display = df_display.drop_duplicates(subset=[so_col_name])
-        except KeyError: 
-            pass
+        if df_display['multiplier'].max() > 1.001:
+            max_mult = df_display['multiplier'].max()
+            percent_add = int((max_mult - 1) * 100)
+            cost_header = f"ต้นทุน (+{percent_add}%)"
 
-        # เลือกคอลัมน์ที่จะแสดง (ไม่ซ้ำ)
-        desired_columns = [
-            so_col_name,  # ใช้ชื่อที่หาเจอจริง
-            'ยอดขาย (Base)', 
-            'ค่ารถ (SO)',    
-            'ต้นทุน (Net)', 
-            'กำไร (Profit)', 
-            'Margin %', 
-            'สถานะ'
-        ]
+            # คูณตัวเลขต้นทุนจริงๆ
+            df_display['cost'] = df_display['cost'] * df_display['multiplier']
         
-        # กรองเอาเฉพาะคอลัมน์ที่มีอยู่จริง
-        final_columns = [c for c in desired_columns if c in df_display.columns]
+        # คำนวณ Profit/Margin สดๆ อีกรอบ
+        df_display['profit'] = df_display['sales'] - df_display['cost']
+        df_display['margin'] = df_display.apply(
+            lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
+        )
 
-        # 3. สร้าง Treeview
+        final_columns = ['so_number', 'sales', 'cost', 'profit', 'margin', 'status']
+        header_labels = {
+            'so_number': 'เลขที่ SO', 'sales': 'ยอดขาย', 'cost': cost_header,
+            'profit': 'กำไร', 'margin': 'Margin %', 'status': 'สถานะ'
+        }
+
         style = ttk.Style(self)
         style.theme_use("clam")
-        thai_font = ("Tahoma", 11)
         header_font = ("Tahoma", 11, "bold")
+        content_font = ("Tahoma", 11)
 
-        style.configure("Breakdown.Treeview.Heading", 
-                        font=header_font, 
-                        background="#3B82F6", 
-                        foreground="white", 
-                        relief="flat")
-                        
-        style.configure("Breakdown.Treeview", 
-                        rowheight=30, 
-                        font=thai_font)
-        
+        style.configure("Breakdown.Treeview.Heading", font=header_font, background="#3B82F6", foreground="white", relief="flat")
+        style.configure("Breakdown.Treeview", rowheight=30, font=content_font)
+
         tree = ttk.Treeview(tree_frame, columns=final_columns, show="headings", style="Breakdown.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
-        
-        # Tag สีสถานะ
-        tree.tag_configure('Normal (>=10%)', background='#D1FAE5')
-        tree.tag_configure('Below Tier (<10%)', background='#FEE2E2')
-        tree.tag_configure('Below Tier (7.99-10%)', background='#FEF3C7')
-        tree.tag_configure('Below Tier (<7.99%)', background='#FEE2E2')
-        tree.tag_configure('total_row', font=ctk.CTkFont(size=12, weight="bold"), background='#DBEAFE', foreground="#1E3A8A")
 
-        # 4. สร้าง Headings
+        tree.tag_configure('Normal', background='#DCFCE7', foreground='#166534')      
+        tree.tag_configure('Below Tier', background='#FEE2E2', foreground='#991B1B')  
+        tree.tag_configure('Paid', background='#E0E7FF', foreground='#3730A3')        
+        tree.tag_configure('Default', background='white')
+
         for col in final_columns:
-            anchor = 'e' if any(x in col for x in ['ยอด', 'ต้นทุน', 'กำไร', 'ค่า', '%']) else 'center'
-            width = 120
-            if 'สถานะ' in col or 'Status' in col: 
-                width = 180
-            if 'SO' in col: 
-                width = 150
-            tree.heading(col, text=col)
+            anchor = 'center' if col in ['so_number', 'status'] else 'e'
+            width = 150 if col == 'so_number' else 120
+            tree.heading(col, text=header_labels.get(col, col))
             tree.column(col, width=width, anchor=anchor)
 
-        # 5. ใส่ข้อมูล
         for _, row in df_display.iterrows():
-            tag = row.get('สถานะ', row.get('Status', ''))
             values = []
-            for col in final_columns:
-                val = row.get(col, 0)
-                if isinstance(val, (int, float)):
-                    suffix = "%" if "Margin" in col or "%" in col else ""
-                    values.append(f"{val:,.2f}{suffix}")
-                else:
-                    values.append(str(val))
+            status_val = str(row['status'])
+            tag = 'Default'
+            if any(x in status_val for x in ['Normal', 'ผ่านเกณฑ์', '>=10']): tag = 'Normal'
+            elif any(x in status_val for x in ['Below', 'ต่ำกว่า', '<']): tag = 'Below Tier'
+            elif 'Paid' in status_val: tag = 'Paid'
+
+            values.append(row['so_number'])
+            values.append(f"{row['sales']:,.2f}")
+            values.append(f"{row['cost']:,.2f}")
+            values.append(f"{row['profit']:,.2f}")
+            values.append(f"{row['margin']:,.2f}%")
+            values.append(status_val)
+            
             tree.insert("", "end", values=tuple(values), tags=(tag,))
 
-        # 6. แถวสรุป (Total)
-        try:
-            total_values = [''] * len(final_columns)
-            for i, col in enumerate(final_columns):
-                if i == 0:
-                    total_values[i] = "รวมทั้งหมด"
-                elif any(x in col for x in ['ยอด', 'ต้นทุน', 'กำไร', 'ค่า']): 
-                    try:
-                        sum_val = pd.to_numeric(df_display[col], errors='coerce').fillna(0).sum()
-                        total_values[i] = f"{sum_val:,.2f}"
-                    except: 
-                        pass
-                elif '%' in col: 
-                    try:
-                        p_col = 'กำไร (Profit)'
-                        s_col = 'ยอดขาย (Base)'
-                        
-                        if p_col in df_display.columns and s_col in df_display.columns:
-                            sum_p = pd.to_numeric(df_display[p_col], errors='coerce').fillna(0).sum()
-                            sum_s = pd.to_numeric(df_display[s_col], errors='coerce').fillna(0).sum()
-                            avg_m = (sum_p / sum_s * 100) if sum_s != 0 else 0
-                            total_values[i] = f"{avg_m:.2f}%"
-                    except: 
-                        pass
-
-            tree.insert("", "end", values=tuple(total_values), tags=('total_row',))
-        except Exception as e:
-            print(f"Total row error: {e}")
-
-        # 7. Scrollbar & Event
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
-        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-        hsb.grid(row=1, column=0, sticky="ew")
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        
-        def on_double_click(event):
-            item_id = tree.focus()
-            if not item_id: 
-                return
-            vals = tree.item(item_id, "values")
-            so_num = vals[0]
-            if so_num and "SO" in str(so_num):
-                SODetailViewer(self, self.app_container, so_num)
+        tree.configure(yscrollcommand=vsb.set)
 
-        tree.bind("<Double-1>", on_double_click)
-        
-        def on_double_click(event):
-            item_id = tree.focus()
-            if not item_id: return
-            vals = tree.item(item_id, "values")
-            so_num = vals[0] # คอลัมน์แรกคือ SO
-            if so_num and "SO" in str(so_num):
-                SODetailViewer(self, self.app_container, so_num)
+    def _open_so_list_viewer(self):
+        PayoutDetailWindow(master=self, app_container=self.app_container, payout_id=self.payout_id)
 
-        tree.bind("<Double-1>", on_double_click)
-        
-        # ผูก Event Double Click (ต้องแก้ให้หา SO Number จากคอลัมน์ภาษาไทย)
-        def on_double_click(event):
-            item_id = tree.focus()
-            if not item_id: return
-            vals = tree.item(item_id, "values")
-            # สมมติว่าเลข SO อยู่คอลัมน์แรก (index 0) ตามที่เราจัดเรียง
-            so_num = vals[0]
-            if so_num and "SO" in str(so_num):
-                SODetailViewer(self, self.app_container, so_num)
+    def _clear_frame(self, frame):
+        for widget in frame.winfo_children():
+            widget.destroy()
 
-        tree.bind("<Double-1>", on_double_click)
+
+class CalculationDetailViewer(CTkToplevel):
+    def __init__(self, master, debug_df, so_breakdown_df, plan_name):
+        super().__init__(master)
+        self.app_container = master.app_container
+        self.title(f"รายละเอียดการคำนวณ - {plan_name}")
+        self.plan_name = plan_name
+        self.geometry("1100x700")
+        
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.tab_view = ctk.CTkTabview(self, corner_radius=10)
+        self.tab_view.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        self.tab_steps = self.tab_view.add("ขั้นตอนการคำนวณ")
+        self.tab_so = self.tab_view.add("รายละเอียดตาม SO")
+
+        # เรียกใช้ฟังก์ชันแสดงผล (ใช้ Logic ใหม่)
+        self._populate_calc_steps_tab(self.tab_steps, debug_df)
+        self._populate_so_breakdown_tab(self.tab_so, so_breakdown_df)
+
+        self.transient(master)
+        self.grab_set()
+    
+    def _populate_calc_steps_tab(self, tab, df):
+        """แสดงข้อมูลขั้นตอนการคำนวณ"""
+        self._clear_frame(tab)
+        
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+        
+        tree_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        if df is None or df.empty:
+            ctk.CTkLabel(tree_frame, text="ไม่พบข้อมูลขั้นตอนการคำนวณ").pack(pady=20)
+            return
+
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        header_font = ("Tahoma", 11, "bold")
+        content_font = ("Tahoma", 11)
+
+        style.configure("Steps.Treeview.Heading", font=header_font, background="#64748B", foreground="white", relief="flat")
+        style.configure("Steps.Treeview", rowheight=30, font=content_font)
+
+        tree = ttk.Treeview(tree_frame, columns=("item", "value"), show="headings", style="Steps.Treeview")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        tree.heading("item", text="รายการ / ขั้นตอน")
+        tree.heading("value", text="ค่า / ผลลัพธ์")
+        tree.column("item", width=500, anchor="w")
+        tree.column("value", width=200, anchor="e")
+
+        tree.tag_configure('header', background='#E2E8F0', font=header_font)
+        tree.tag_configure('separator', background='#F1F5F9')
+        tree.tag_configure('highlight', background='#FEF9C3', font=header_font)
+        tree.tag_configure('success', background='#DCFCE7', foreground="#166534")
+        tree.tag_configure('fail', background='#FEE2E2', foreground="#991B1B")
+
+        for _, row in df.iterrows():
+            item_text = str(row.get('รายการ', '')).strip()
+            value_text = str(row.get('ค่า', '')).strip()
+            
+            tags = []
+            if item_text.startswith('##'):
+                item_text = item_text.replace('##', '').strip()
+                tags.append('header')
+            elif item_text == '---':
+                item_text = ''
+                value_text = ''
+                tags.append('separator')
+            elif 'ยอดรวม' in item_text or 'สุทธิ' in item_text:
+                tags.append('highlight')
+            elif 'ผ่าน' in value_text and '✅' in value_text:
+                tags.append('success')
+            elif 'ไม่ผ่าน' in value_text or '❌' in value_text:
+                tags.append('fail')
+            
+            tree.insert("", "end", values=(item_text, value_text), tags=tuple(tags))
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=vsb.set)
+
+    def _populate_so_breakdown_tab(self, tab, df):
+        """
+        แสดงรายการ SO (Breakdown) พร้อมคูณ 1.03 และแบ่งสี
+        """
+        self._clear_frame(tab)
+        
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+
+        tree_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        tree_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        if df is None or df.empty:
+            ctk.CTkLabel(tree_frame, text="ไม่พบข้อมูลรายละเอียด SO").pack(pady=20)
+            return
+
+        # 1. เตรียมข้อมูล
+        df_display = df.copy()
+
+        # 2. Smart Mapping
+        col_mapping = {
+            'so_number': ['so_number', 'เลขที่ SO', 'SO Number'],
+            'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า'],
+            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost'],
+            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)'],
+            'margin': ['margin', 'Margin (%)', 'final_margin', 'Margin %'],
+            'status': ['status', 'Status', 'สถานะ'],
+            'multiplier': ['cost_multiplier', 'ตัวคูณ']
+        }
+
+        for target_col, possible_cols in col_mapping.items():
+            found_col = next((c for c in df_display.columns if c in possible_cols), None)
+            if found_col:
+                if target_col not in ['so_number', 'status']:
+                    df_display[target_col] = df_display[found_col].astype(str).str.replace(',', '', regex=False)
+                    df_display[target_col] = pd.to_numeric(df_display[target_col], errors='coerce').fillna(0)
+                else:
+                    df_display[target_col] = df_display[found_col]
+            else:
+                # Default Multiplier 1.03 ถ้าหาไม่เจอ
+                if target_col == 'multiplier':
+                    df_display[target_col] = 1.03
+                else:
+                    df_display[target_col] = 0.0 if target_col not in ['so_number', 'status'] else '-'
+
+        # 3. คำนวณคูณต้นทุน
+        cost_header = "ต้นทุน (Net)"
+        if df_display['multiplier'].max() > 1.001:
+            max_mult = df_display['multiplier'].max()
+            percent_add = int((max_mult - 1) * 100)
+            cost_header = f"ต้นทุน (+{percent_add}%)"
+            
+            # [🔥 FIX] คูณตัวเลขให้เห็นชัดๆ
+            df_display['cost'] = df_display['cost'] * df_display['multiplier']
+
+        # 4. คำนวณ Profit/Margin ใหม่จากตัวเลขที่คูณแล้ว
+        df_display['profit'] = df_display['sales'] - df_display['cost']
+        df_display['margin'] = df_display.apply(
+            lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
+        )
+
+        final_columns = ['so_number', 'sales', 'cost', 'profit', 'margin', 'status']
+        header_labels = {
+            'so_number': 'เลขที่ SO', 'sales': 'ยอดขาย', 
+            'cost': cost_header, # ชื่อหัวข้อเปลี่ยนตามจริง
+            'profit': 'กำไร', 'margin': 'Margin %', 'status': 'สถานะ'
+        }
+
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        
+        # Font settings
+        header_font = ("Tahoma", 11, "bold")
+        content_font = ("Tahoma", 11)
+        style.configure("Live.Treeview.Heading", font=header_font, background="#F97316", foreground="white", relief="flat") # สีส้มให้รู้ว่าเป็น Live
+        style.configure("Live.Treeview", rowheight=30, font=content_font)
+
+        tree = ttk.Treeview(tree_frame, columns=final_columns, show="headings", style="Live.Treeview")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        # Tags สี
+        tree.tag_configure('Normal', background='#DCFCE7', foreground='#166534')      
+        tree.tag_configure('Below Tier', background='#FEE2E2', foreground='#991B1B')  
+        tree.tag_configure('Default', background='white')
+
+        for col in final_columns:
+            anchor = 'center' if col in ['so_number', 'status'] else 'e'
+            width = 150 if col == 'so_number' else 120
+            tree.heading(col, text=header_labels.get(col, col))
+            tree.column(col, width=width, anchor=anchor)
+
+        for _, row in df_display.iterrows():
+            values = []
+            status_val = str(row['status'])
+            tag = 'Default'
+            if any(x in status_val for x in ['Normal', 'ผ่านเกณฑ์', '>=10']): tag = 'Normal'
+            elif any(x in status_val for x in ['Below', 'ต่ำกว่า', '<']): tag = 'Below Tier'
+
+            values.append(row['so_number'])
+            values.append(f"{row['sales']:,.2f}")
+            values.append(f"{row['cost']:,.2f}")
+            values.append(f"{row['profit']:,.2f}")
+            values.append(f"{row['margin']:,.2f}%")
+            values.append(status_val)
+            
+            tree.insert("", "end", values=tuple(values), tags=(tag,))
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=vsb.set)
+        
+        # ผูก Double Click เปิดดู SO Detail
+        tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e))
+
+    def _on_so_row_double_click(self, event):
+        tree = event.widget
+        selected = tree.focus()
+        if not selected: return
+        vals = tree.item(selected, "values")
+        so_num = vals[0]
+        
+        try:
+            # [🔥 แก้ไข] ลบบรรทัด import ออก แล้วเรียกใช้ Class ได้เลย
+            # เพราะ SODetailViewer อยู่ในไฟล์นี้แล้ว
+            SODetailViewer(self, self.app_container, so_num)
+            
+        except NameError:
+            # กันเหนียว: ถ้าหาไม่เจอจริงๆ ลอง import จากไฟล์ตัวเอง
+            try:
+                from hr_windows import SODetailViewer
+                SODetailViewer(self, self.app_container, so_num)
+            except Exception as e:
+                 messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างรายละเอียดได้: {e}")
+                 
+        except Exception as e:
+            print(f"Error opening detail: {e}")
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}")
+
+    def _clear_frame(self, frame):
+        for widget in frame.winfo_children():
+            widget.destroy()
 
 class SODetailViewer(CTkToplevel):
     def __init__(self, master, app_container, so_number):
