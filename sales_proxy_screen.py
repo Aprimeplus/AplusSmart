@@ -4,7 +4,7 @@ import tkinter as tk
 from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkOptionMenu, CTkButton
 from tkinter import messagebox
 import pandas as pd
-
+from sales_support_features import SalesSupportOutstandingManager
 # Import คลาสแม่
 from commission_app import CommissionApp
 
@@ -23,12 +23,39 @@ class SalesProxyScreen(CommissionApp):
 
         # เรียกใช้ Class แม่ (CommissionApp)
         super().__init__(master=master, 
-                         app_container=app_container, 
-                         sale_key=proxy_user_key, 
-                         sale_name=proxy_user_name,
-                         user_role=user_role,
-                         show_logout_button=show_logout_button,
-                         create_default_header=True)
+                           app_container=app_container, 
+                           sale_key=proxy_user_key, 
+                           sale_name=proxy_user_name,
+                           user_role=user_role,
+                           show_logout_button=show_logout_button,
+                           create_default_header=True)
+
+        # ======================================================================
+        # [🔥 โค้ดที่ต้องเพิ่ม] สร้างแท็บติดตามหนี้ (วางไว้หลัง super().__init__)
+        # ======================================================================
+        target_roles = ['Sales Support', 'Admin', 'Manager', 'Director']
+        
+        if self.user_role in target_roles:
+            # ชื่อแท็บใหม่
+            tab_name = "ติดตามหนี้ (Support)"
+            
+            # ตรวจสอบว่า self.tab_view มีอยู่จริง (มาจาก CommissionApp)
+            if hasattr(self, 'tab_view'):
+                # สร้างแท็บใหม่ (ถ้ายังไม่มี)
+                try:
+                    self.tab_view.tab(tab_name)
+                except ValueError: # กรณีไม่มีแท็บชื่อนี้
+                    self.tab_view.add(tab_name)
+                
+                # สร้างหน้าจอ Outstanding Manager ใส่ลงในแท็บนั้น
+                self.outstanding_manager = SalesSupportOutstandingManager(
+                    master=self.tab_view.tab(tab_name), 
+                    app_container=self.app_container
+                )
+                self.outstanding_manager.pack(fill="both", expand=True)
+            else:
+                print("Warning: self.tab_view not found in CommissionApp")
+        # ======================================================================
 
         self.active_sales_list = self._get_all_active_sales()
         
@@ -70,34 +97,73 @@ class SalesProxyScreen(CommissionApp):
     #  ★ จุดสำคัญ: บังคับโชว์ปุ่มโดยไม่สนเงื่อนไข ★
     # -----------------------------------------------------------
     def _populate_action_frame(self, parent):
-        # 1. สร้างปุ่มมาตรฐานก่อน
+        # 1. สร้างปุ่มมาตรฐานของหน้า Sales ก่อน
         super()._populate_action_frame(parent)
 
-        # --- [DEBUG] แสดง Role ปัจจุบันให้ดูหน่อย ---
-        print(f"---- DEBUG: Current Role is '{self.user_role}' ----")
+        # -----------------------------------------------------------
+        # ส่วนเครื่องมือพิเศษสำหรับ Sale Support / Admin
+        # -----------------------------------------------------------
+        target_roles = ['Sale Support', 'Admin', 'Manager', 'Director']
         
-        # 2. บังคับสร้างปุ่มเสมอ (เอา if ออกชั่วคราว)
-        # if self.user_role == 'Sale Support': 
+        # เช็คสิทธิ์: ถ้าเป็น Role ที่กำหนด ให้แสดงเครื่องมือพิเศษ
+        if self.user_role in target_roles:
             
-        # เส้นคั่น
-        separator = tk.Frame(parent, height=2, bd=1, relief="sunken")
-        separator.pack(fill="x", padx=20, pady=(15, 10))
+            # เส้นคั่นสวยๆ
+            separator = tk.Frame(parent, height=2, bd=1, relief="sunken")
+            separator.pack(fill="x", padx=20, pady=(15, 10))
 
-        # หัวข้อ
-        tool_label = CTkLabel(parent, text=f"เครื่องมือพิเศษ (Role: {self.user_role}):", font=CTkFont(size=14, weight="bold"), text_color="gray50")
-        tool_label.pack(anchor="w", padx=20, pady=(0, 5))
+            # หัวข้อ
+            tool_label = CTkLabel(parent, text=f"เครื่องมือพิเศษ ({self.user_role}):", 
+                                  font=CTkFont(size=14, weight="bold"), text_color="gray50")
+            tool_label.pack(anchor="w", padx=20, pady=(0, 5))
 
-        # ปุ่มสีม่วง
-        reassign_btn = CTkButton(
-            parent, 
-            text="🔄 ย้ายเจ้าของ SO (Reassign Owner)", 
-            fg_color="#8B5CF6", # สีม่วง
-            hover_color="#7C3AED",
-            height=40,
-            font=CTkFont(size=16, weight="bold"),
-            command=self._open_reassign_window
-        )
-        reassign_btn.pack(fill="x", padx=20, pady=(0, 20))
+            # --- [ปุ่มที่ 1] ติดตามหนี้ (เพิ่มใหม่) ---
+            debt_btn = CTkButton(
+                parent,
+                text="💰 ติดตามยอดค้างชำระ (Debt Tracker)",
+                fg_color="#059669",  # สีเขียว
+                hover_color="#047857",
+                height=40,
+                font=CTkFont(size=16, weight="bold"),
+                command=self._open_debt_tracking_window
+            )
+            debt_btn.pack(fill="x", padx=20, pady=(0, 10))
+
+            # --- [ปุ่มที่ 2] ย้ายเจ้าของ SO (ของเดิม) ---
+            reassign_btn = CTkButton(
+                parent, 
+                text="🔄 ย้ายเจ้าของ SO (Reassign Owner)", 
+                fg_color="#8B5CF6", # สีม่วง
+                hover_color="#7C3AED",
+                height=40,
+                font=CTkFont(size=16, weight="bold"),
+                command=self._open_reassign_window
+            )
+            reassign_btn.pack(fill="x", padx=20, pady=(0, 20))
+
+    def _open_debt_tracking_window(self):
+        """เปิดหน้าต่างติดตามหนี้แบบ Popup"""
+        try:
+            # สร้างหน้าต่างใหม่ (Popup)
+            debt_window = tk.Toplevel(self)
+            debt_window.title("ระบบติดตามยอดค้างชำระ - Sales Support")
+            debt_window.geometry("1100x700")
+            
+            # ทำให้หน้าต่างอยู่ตรงกลาง
+            x = self.winfo_x() + 50
+            y = self.winfo_y() + 50
+            debt_window.geometry(f"+{x}+{y}")
+
+            # เรียกใช้ Class ที่เราสร้างไว้
+            # (ต้องแน่ใจว่า import SalesSupportOutstandingManager มาแล้วที่หัวไฟล์)
+            debt_manager = SalesSupportOutstandingManager(
+                master=debt_window, 
+                app_container=self.app_container
+            )
+            debt_manager.pack(fill="both", expand=True)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างได้: {e}")
 
     def _open_reassign_window(self):
         """เปิดหน้าต่างย้ายเจ้าของ SO"""

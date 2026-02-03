@@ -571,25 +571,29 @@ class HRScreen(CTkFrame):
     
     def _get_special_service_amounts(self, so_ids):
         """
-        [NEW] ดึงยอดขาย (SO) และต้นทุน (PO) ของสินค้ากลุ่มพิเศษ (ค่าตัด/เจาะ, ค่าบริการอื่นๆ)
-        (แก้ไข: ดึงยอดขายจากตาราง commissions โดยตรง เพราะไม่มีตาราง sale_order_items)
+        [NEW] ดึงยอดขาย (SO) และต้นทุน (PO) ของสินค้ากลุ่มพิเศษ
+        (แก้ไข: นำ EXP-0194 ออก เพื่อให้คิดเป็นสินค้าปกติ)
         """
         if not so_ids:
             return pd.DataFrame()
 
+        # 1. กำหนดรหัสสินค้ากลุ่มพิเศษ (Hardcode)
+        
+        # Cutting/Drilling Codes (คงเดิม)
+        cutting_codes = ["'EXP-0079'", "'EXP-0128'"]
+        
+        # Other Service Codes (❌ เอา 'EXP-0194' ออกจากบรรทัดนี้ครับ)
+        service_codes = ["'EXP-0006'", "'EXP-0049'", "'EXP-0077'", "'EXP-0174'"]
+
         # แปลง List so_ids เป็น String สำหรับ Query IN (...)
         so_ids_str = ', '.join(map(str, so_ids))
 
-        # 2. เขียน SQL Query ดึงยอดเงิน
-        # - ฝั่ง SO: ดึงจาก Column ใน Commissions โดยตรง (cutting_drilling_fee, other_service_fee)
-        # - ฝั่ง PO: คำนวณจาก purchase_order_items โดยดูจากชื่อสินค้า (ค่าตัด, ค่าบริการ)
+        # 2. เขียน SQL Query (คงเดิม)
         sql = f"""
         WITH po_items AS (
             SELECT 
                 c.id AS comm_id,
-                -- ต้นทุนกลุ่ม Cutting (จาก Purchase Order Items)
                 COALESCE(SUM(CASE WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%' THEN poi.total_price ELSE 0 END), 0) as po_cutting_cost,
-                -- ต้นทุนกลุ่ม Service (จาก Purchase Order Items ที่ไม่ใช่ค่าตัด)
                 COALESCE(SUM(CASE WHEN poi.product_name LIKE '%%ค่าบริการ%%' THEN poi.total_price ELSE 0 END), 0) as po_service_cost
             FROM commissions c
             JOIN purchase_orders po ON c.so_number = po.so_number
@@ -600,11 +604,8 @@ class HRScreen(CTkFrame):
         SELECT 
             c.id,
             c.so_number,
-            -- [แก้ไข] ดึงยอดขายจาก Field ใน Commissions โดยตรง
             COALESCE(c.cutting_drilling_fee, 0) as so_cutting_rev,
             COALESCE(c.other_service_fee, 0) as so_service_rev,
-            
-            -- ยอดต้นทุนจาก PO (ถ้าไม่มีให้เป็น 0)
             COALESCE(p.po_cutting_cost, 0) as po_cutting_cost,
             COALESCE(p.po_service_cost, 0) as po_service_cost
         FROM commissions c

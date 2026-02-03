@@ -4,7 +4,7 @@ import tkinter as tk
 from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkOptionMenu, CTkButton
 from tkinter import messagebox
 import pandas as pd
-
+target_roles = ['Sales Support', 'Admin', 'Manager', 'Director']
 # Import คลาสแม่
 from commission_app import CommissionApp
 
