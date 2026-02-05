@@ -79,7 +79,6 @@ class SubmitPODialog(CTkToplevel):
         self.after(50, self._populate_po_list)
         self.transient(master)
         self.grab_set()
-    
 
     def _populate_po_list(self):
         try:
@@ -132,8 +131,6 @@ class SubmitPODialog(CTkToplevel):
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 
-                # --- START: แก้ไข Logic การอัปเดตค่าขนส่ง (ฉบับสมบูรณ์) ---
-
                 # 1. อัปเดตสถานะ PO ที่เลือกทั้งหมดให้เป็น 'Pending Approval' ก่อน
                 ids_tuple = tuple(selected_ids)
                 update_query = """
@@ -143,12 +140,11 @@ class SubmitPODialog(CTkToplevel):
                 """
                 cursor.execute(update_query, (ids_tuple,))
 
-                # 2. รวบรวม SO ที่เกี่ยวข้องทั้งหมดจากการส่งครั้งนี้ (เพื่อไม่ให้ทำงานซ้ำซ้อน)
+                # 2. รวบรวม SO ที่เกี่ยวข้องทั้งหมดจากการส่งครั้งนี้
                 affected_so_numbers = list(set(rec['so_number'] for _, rec in selected_records))
 
                 # 3. วนลูปเพื่อ "คำนวณยอดรวมค่าขนส่งใหม่ทั้งหมด" ของแต่ละ SO
                 for so_number in affected_so_numbers:
-                    # 3.1 Query ยอดรวมค่าขนส่งจาก PO "ทุกใบ" (ที่อนุมัติแล้วหรือกำลังรออนุมัติ) ของ SO นี้
                     cursor.execute("""
                         SELECT SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0))
                         FROM purchase_orders
@@ -157,17 +153,13 @@ class SubmitPODialog(CTkToplevel):
                     
                     new_total_shipping_cost = cursor.fetchone()[0] or 0.0
 
-                    # 3.2 นำยอดรวมใหม่ "อัปเดตทับ" ค่าเก่าในตาราง commissions
-                    # วิธีนี้จะทำให้ข้อมูลถูกต้องเสมอ ไม่มีการบวกซ้ำ
                     cursor.execute("""
                         UPDATE commissions
                         SET payment_before_vat = %s
                         WHERE so_number = %s AND is_active = 1
                     """, (new_total_shipping_cost, so_number))
 
-                # --- END: สิ้นสุดการแก้ไข Logic ---
-
-                # 4. สร้าง Notification (เหมือนเดิม)
+                # 4. สร้าง Notification
                 cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Manager' AND status = 'Active'")
                 manager_keys = [row[0] for row in cursor.fetchall()]
 
@@ -205,7 +197,6 @@ class MyTasksWindow(CTkToplevel):
         self.user_key = purchasing_screen_instance.user_key
         self.label_font = purchasing_screen_instance.label_font
         
-        # --- ตัวแปรสำหรับ Pagination และ Search ---
         self.new_so_current_page = 0
         self.new_so_rows_per_page = 15
         self.new_so_search_term = ""
@@ -222,11 +213,10 @@ class MyTasksWindow(CTkToplevel):
         self.transient(master)
         self.grab_set()
 
-    def _create_my_tasks_view(self, parent):
+    ddef _create_my_tasks_view(self, parent):
         header = CTkFrame(parent, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10,5))
         CTkLabel(header, text="งานของฉัน (My Tasks)", font=CTkFont(size=18, weight="bold")).pack(side="left")
-        # ปุ่ม Refresh หลักจะเรียกฟังก์ชัน load_tasks ซึ่งจะโหลดข้อมูลทุกแท็บ
         CTkButton(header, text="Refresh All", command=self.load_tasks, width=100).pack(side="right")
         
         self.task_tab_view = CTkTabview(parent, corner_radius=10)
@@ -236,9 +226,8 @@ class MyTasksWindow(CTkToplevel):
         self.in_progress_tab = self.task_tab_view.add("งานที่กำลังดำเนินการ (SO/PO Drafts)")
         self.rejected_tab = self.task_tab_view.add("งานที่ถูกปฏิเสธ (Rejected)")
 
-        # --- Layout ใหม่สำหรับแท็บ "SO ใหม่" (มี Search และ Pagination) ---
         self.new_so_tab.grid_columnconfigure(0, weight=1)
-        self.new_so_tab.grid_rowconfigure(2, weight=1) # แถวที่ 2 (Scroll Frame) จะขยาย
+        self.new_so_tab.grid_rowconfigure(2, weight=1)
 
         # 1. Search Frame
         search_frame = CTkFrame(self.new_so_tab)
@@ -259,7 +248,7 @@ class MyTasksWindow(CTkToplevel):
         self.new_so_next_button = CTkButton(pagination_frame, text="หน้าถัดไป >>", command=self._new_so_next_page, state="disabled")
         self.new_so_next_button.pack(side="right")
 
-        # 3. Scroll Frame (สำหรับแสดงผลลัพธ์)
+        # 3. Scroll Frame
         self.new_so_scroll_frame = CTkScrollableFrame(self.new_so_tab)
         self.new_so_scroll_frame.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
         
@@ -276,7 +265,7 @@ class MyTasksWindow(CTkToplevel):
         CTkLabel(po_zone, text="(PO ที่คุณสร้างและบันทึกร่างไว้ แต่ยังไม่ได้ส่งอนุมัติ)", font=CTkFont(size=12, slant="italic"), text_color="gray50").pack(anchor="w", padx=15, pady=(0, 10))
         self.po_draft_content_frame = CTkFrame(po_zone, fg_color="transparent"); self.po_draft_content_frame.pack(fill="x", expand=True, padx=5, pady=(0, 5))
         self.rejected_scroll_frame = CTkScrollableFrame(self.rejected_tab, label_text="รายการที่ต้องแก้ไข"); self.rejected_scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
+    
     def on_close(self):
         self.purchasing_screen._update_tasks_badge()
         self.purchasing_screen.tasks_window = None
@@ -289,7 +278,7 @@ class MyTasksWindow(CTkToplevel):
 
     def _search_new_so_tasks(self):
         self.new_so_search_term = self.new_so_search_entry.get().strip()
-        self.new_so_current_page = 0 # กลับไปหน้าแรกเสมอเมื่อค้นหา
+        self.new_so_current_page = 0
         self._load_new_so_tasks()
 
     def _new_so_prev_page(self):
@@ -308,12 +297,10 @@ class MyTasksWindow(CTkToplevel):
         self._load_new_so_tasks()
 
     def _load_new_so_tasks(self):
-        """(เวอร์ชันใหม่) โหลดข้อมูล SO พร้อม Search และ Pagination"""
         frame = self.new_so_scroll_frame
         for widget in frame.winfo_children(): widget.destroy()
 
         try:
-            # --- สร้าง Query และ Parameters แบบไดนามิก ---
             base_query = "FROM commissions c JOIN sales_users u ON c.sale_key = u.sale_key WHERE c.status = 'Pending PU' AND c.is_active = 1"
             params = []
             
@@ -322,19 +309,16 @@ class MyTasksWindow(CTkToplevel):
                 search_like = f"%{self.new_so_search_term}%"
                 params.extend([search_like, search_like])
 
-            # --- 1. Query เพื่อนับจำนวนทั้งหมดตามเงื่อนไข ---
             count_query = f"SELECT COUNT(c.id) {base_query}"
             total_rows = pd.read_sql_query(count_query, self.app_container.pg_engine, params=tuple(params)).iloc[0,0]
             total_pages = (total_rows + self.new_so_rows_per_page - 1) // self.new_so_rows_per_page
 
-            # --- 2. Query เพื่อดึงข้อมูลเฉพาะหน้าปัจจุบัน ---
             offset = self.new_so_current_page * self.new_so_rows_per_page
             data_query = f"SELECT c.id, c.so_number, c.timestamp, c.customer_name, u.sale_name {base_query} ORDER BY c.timestamp DESC LIMIT %s OFFSET %s"
             final_params = params + [self.new_so_rows_per_page, offset]
             
             df = pd.read_sql_query(data_query, self.app_container.pg_engine, params=tuple(final_params))
 
-            # --- 3. อัปเดต UI (Pagination controls) ---
             self.new_so_page_label.configure(text=f"หน้า {self.new_so_current_page + 1} / {max(1, total_pages)}")
             self.new_so_prev_button.configure(state="normal" if self.new_so_current_page > 0 else "disabled")
             self.new_so_next_button.configure(state="normal" if self.new_so_current_page < total_pages - 1 else "disabled")
@@ -344,7 +328,6 @@ class MyTasksWindow(CTkToplevel):
                 CTkLabel(frame, text=message).pack(pady=20)
                 return
             
-            # --- 4. แสดงผลลัพธ์ ---
             for _, row in df.iterrows():
                 card = CTkFrame(frame, border_width=1, fg_color="#F0FDF4")
                 card.pack(fill="x", padx=5, pady=3)
