@@ -81,10 +81,11 @@ class POSelectionDialog(CTkToplevel):
             self._populate_treeview(self.all_pos_df)
             return
 
+        # [🔥 แก้ไข] เติม regex=False เพื่อป้องกัน Error เวลาพิมพ์สัญลักษณ์แปลกๆ
         filtered_df = self.all_pos_df[
-            self.all_pos_df['po_number'].str.lower().str.contains(search_term, na=False) |
-            self.all_pos_df['so_number'].str.lower().str.contains(search_term, na=False) |
-            self.all_pos_df['supplier_name'].str.lower().str.contains(search_term, na=False)
+            self.all_pos_df['po_number'].str.lower().str.contains(search_term, na=False, regex=False) |
+            self.all_pos_df['so_number'].str.lower().str.contains(search_term, na=False, regex=False) |
+            self.all_pos_df['supplier_name'].str.lower().str.contains(search_term, na=False, regex=False)
         ]
         self._populate_treeview(filtered_df)
 
@@ -191,8 +192,8 @@ class SOSelectionPrintDialog(CTkToplevel):
             return
 
         filtered_df = self.all_sos_df[
-            self.all_sos_df['so_number'].str.lower().str.contains(search_term, na=False) |
-            self.all_sos_df['customer_name'].str.lower().str.contains(search_term, na=False)
+            self.all_sos_df['so_number'].str.lower().str.contains(search_term, na=False, regex=False) |
+            self.all_sos_df['customer_name'].str.lower().str.contains(search_term, na=False, regex=False)
         ]
         self._populate_treeview(filtered_df)
 

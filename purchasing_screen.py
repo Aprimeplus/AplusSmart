@@ -58,8 +58,6 @@ class SubmitPODialog(CTkToplevel):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
         
-        
-
         top_frame = CTkFrame(self, fg_color="transparent")
         top_frame.grid(row=0, column=0, padx=15, pady=(10, 0), sticky="ew")
         self.select_all_var = tk.IntVar(value=0)

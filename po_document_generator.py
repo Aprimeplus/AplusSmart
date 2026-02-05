@@ -182,7 +182,9 @@ def _build_left_column(header_data, styles, P, PB, format_num, width):
 
 def _build_right_column(header_data, items_data, payments_data, styles, P, PB, format_num, width):
     """
-    สร้างคอลัมน์ขวา
+    สร้างคอลัมน์ขวา (Cost Auditor)
+    - แก้ไข 1: คำนวณยอดเงิน/VAT ใหม่จากรายการสินค้า (แก้ปัญหา DB ไม่อัปเดต)
+    - แก้ไข 2: เพิ่มการดึงข้อมูล ทะเบียนรถ, รอบส่ง, ชื่อบริษัทขนส่ง มาแสดงผล
     """
     story = []
     
@@ -198,7 +200,22 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     safe_add_style(styles, ParagraphStyle(name='Tiny_Center_TH', fontName='THSarabunNew', fontSize=8, leading=10, alignment=1))
 
     def make_para(text, style='Small_TH'):
-        return Paragraph(str(text) if text is not None else '', styles[style])
+        return Paragraph(str(text) if text is not None and str(text) != 'nan' else '', styles[style])
+
+    # --- Helper: Date Formatter ---
+    from datetime import datetime
+    def fmt_date(d):
+        if not d or str(d).lower() == 'nan': return ""
+        try:
+            if isinstance(d, str): 
+                d = d.split(' ')[0]
+                d_obj = datetime.strptime(d, "%Y-%m-%d")
+                return d_obj.strftime("%d/%m/%Y")
+            elif hasattr(d, 'strftime'):
+                return d.strftime("%d/%m/%Y")
+            return str(d)
+        except:
+            return str(d)
 
     # --- 1. ตารางส่วนหัว (Header) ---
     header_widths = [1.8*cm, 1.8*cm, 1.5*cm, 2.0*cm, 1.5*cm, 1.5*cm]
@@ -213,7 +230,6 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     ]
     
     header_table = Table(header_data_grid, colWidths=HEADER_COL_WIDTHS)
-
     header_table.setStyle(TableStyle([ 
         ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
         ('LEFTPADDING', (0,0), (-1,-1), 2), 
@@ -229,7 +245,6 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
         ('BACKGROUND', (0,3), (1,3), colors.HexColor("#DDEBF7")), 
         ('BACKGROUND', (4,3), (4,3), colors.HexColor("#DDEBF7")),
     ]))
-
     story.append(header_table)
 
     # --- 2. ตารางรายการสินค้า (Items) ---
@@ -237,22 +252,34 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     item_scale = width / sum(item_widths)
     ITEM_COL_WIDTHS = [w * item_scale for w in item_widths]
     item_rows = []
+    
+    # [🔥 RE-CALCULATION PART 1] คำนวณยอดรวมสินค้าใหม่จาก List รายการ
+    recalc_total_cost = 0.0
+    
     for i, item in enumerate(items_data, 1):
-        item_rows.append([make_para(str(i), 'Small_Center_TH'), make_para(item.get('status', ''), 'Small_Center_TH'), make_para(item.get('product_name', ''), 'Product_Name_TH'), make_para(f"{item.get('quantity', 0):.2f}", 'Small_Right_TH'), make_para(format_num(item.get('unit_price', 0)), 'Small_Right_TH'), make_para(format_num(item.get('total_price', 0)), 'Small_Right_TH'),])
+        # ดึงราคารวมต่อรายการ (Total Price)
+        try:
+            total_price = float(item.get('total_price', 0) or 0)
+        except:
+            total_price = 0.0
+        
+        recalc_total_cost += total_price
+        
+        item_rows.append([
+            make_para(str(i), 'Small_Center_TH'), 
+            make_para(item.get('status', ''), 'Small_Center_TH'), 
+            make_para(item.get('product_name', ''), 'Product_Name_TH'), 
+            make_para(f"{item.get('quantity', 0):.2f}", 'Small_Right_TH'), 
+            make_para(format_num(item.get('unit_price', 0)), 'Small_Right_TH'), 
+            make_para(format_num(total_price), 'Small_Right_TH'),
+        ])
     
     while len(item_rows) < 5:
         item_rows.append([''] * 6)
     
     item_row_heights = [0.6*cm, 0.6*cm] + [None] * len(item_rows)
     
-    item_header_row = [
-        make_para("ลำดับ", 'Tiny_Center_TH'), 
-        make_para("สถานะ", 'Small_Center_TH'), 
-        make_para("ชื่อสินค้า", 'Small_Center_TH'), 
-        make_para("จำนวน", 'Tiny_Center_TH'), 
-        make_para("ราคา", 'Small_Center_TH'), 
-        make_para("รวม", 'Small_Center_TH')
-    ]
+    item_header_row = [make_para("ลำดับ", 'Tiny_Center_TH'), make_para("สถานะ", 'Small_Center_TH'), make_para("ชื่อสินค้า", 'Small_Center_TH'), make_para("จำนวน", 'Tiny_Center_TH'), make_para("ราคา", 'Small_Center_TH'), make_para("รวม", 'Small_Center_TH')]
     
     full_item_rows = [[make_para("PURCHASED RECORD", 'Header_Bold_TH')], item_header_row] + item_rows
     item_table = Table(full_item_rows, colWidths=ITEM_COL_WIDTHS, rowHeights=item_row_heights)
@@ -272,53 +299,131 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
         if not display_bank_name and payment.get('bank_name'):
             display_bank_name = payment.get('bank_name'); display_account_number = payment.get('bank_account_number')
     
-    grand_total = header_data.get('grand_total', 0) or 0.0
-    balance_due = grand_total - (deposit_amount + full_payment_amount)
-
     payment_widths = [2.0*cm, 2.2*cm, 1.8*cm, 3.8*cm] 
     payment_scale = width / sum(payment_widths)
     UNIFIED_COL_WIDTHS = [w * payment_scale for w in payment_widths]
 
     unified_payment_data = []
     
+    # --- [🔥 RE-CALCULATION PART 2] คำนวณ VAT และ Grand Total ใหม่ทั้งหมด ---
+    
+    # 1. เช็คว่ามี VAT 7% ไหม
+    is_vat_checked = header_data.get('vat_7_percent_checked')
+    if isinstance(is_vat_checked, str):
+        is_vat_checked = is_vat_checked.lower() in ['true', '1', 't', 'y', 'yes']
+    elif isinstance(is_vat_checked, int):
+        is_vat_checked = (is_vat_checked == 1)
+        
+    # 2. คำนวณ VAT สินค้า (จากยอด recalc_total_cost ที่บวกมาสดๆ)
+    if is_vat_checked:
+        recalc_product_vat = recalc_total_cost * 0.07
+    else:
+        recalc_product_vat = 0.0
+
+    # 3. คำนวณค่าขนส่งและ VAT ขนส่ง
+    try:
+        shipping_stock_cost = float(header_data.get('shipping_to_stock_cost', 0) or 0)
+        shipping_stock_vat = shipping_stock_cost * 0.07 if header_data.get('shipping_to_stock_vat_type') == 'VAT' else 0.0
+    except: 
+        shipping_stock_cost = 0.0
+        shipping_stock_vat = 0.0
+
+    try:
+        shipping_site_cost = float(header_data.get('shipping_to_site_cost', 0) or 0)
+        shipping_site_vat = shipping_site_cost * 0.07 if header_data.get('shipping_to_site_vat_type') == 'VAT' else 0.0
+    except: 
+        shipping_site_cost = 0.0
+        shipping_site_vat = 0.0
+
+    # 4. ยอดรวม VAT ทั้งหมด
+    recalc_total_vat = recalc_product_vat + shipping_stock_vat + shipping_site_vat
+    
+    # 5. ยอดรวม Grand Total (สินค้า + ขนส่ง + VAT)
+    recalc_grand_total = recalc_total_cost + shipping_stock_cost + shipping_site_cost + recalc_total_vat
+
+    # คำนวณ Balance Due ใหม่
+    balance_due = recalc_grand_total - (deposit_amount + full_payment_amount)
+    
+    # Debug เพื่อความชัวร์ (ดูใน Terminal)
+    print(f"DEBUG PDF RE-CALC:")
+    print(f"  - Items Total: {recalc_total_cost:,.2f}")
+    print(f"  - Product VAT: {recalc_product_vat:,.2f}")
+    print(f"  - Shipping VAT: {shipping_stock_vat + shipping_site_vat:,.2f}")
+    print(f"  - Total VAT: {recalc_total_vat:,.2f}")
+    print(f"  - Grand Total: {recalc_grand_total:,.2f}")
+
     # Top (3 rows)
     payment_data_top = [
-        [PB('เลขที่บัญชี', 'Small_TH'), make_para(display_account_number), PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(header_data.get('total_cost', 0)), 'Small_Right_TH')], 
-        [PB('ธนาคาร', 'Small_TH'), make_para(display_bank_name), PB('Vat 7%', 'Small_TH'), make_para(format_num(header_data.get('vat_7_percent_amount', 0)), 'Small_Right_TH')], 
-        [PB('ประเภท', 'Small_TH'), make_para(header_data.get('bank_account_type', ''), 'Small_TH'), PB('รวมทั้งสิ้น', 'Small_TH'), make_para(format_num(grand_total), 'Small_Right_TH')]
+        # ใช้ recalc_total_cost แทนค่าจาก DB
+        [PB('เลขที่บัญชี', 'Small_TH'), make_para(display_account_number), PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(recalc_total_cost), 'Small_Right_TH')], 
+        
+        # ใช้ recalc_total_vat ที่คำนวณใหม่
+        [PB('ธนาคาร', 'Small_TH'), make_para(display_bank_name), PB('Vat 7%', 'Small_TH'), make_para(format_num(recalc_total_vat), 'Small_Right_TH')], 
+        
+        # ใช้ recalc_grand_total ที่คำนวณใหม่
+        [PB('ประเภท', 'Small_TH'), make_para(header_data.get('bank_account_type', ''), 'Small_TH'), PB('รวมทั้งสิ้น', 'Small_TH'), make_para(format_num(recalc_grand_total), 'Small_Right_TH')]
     ]
     unified_payment_data.extend(payment_data_top)
     
-    # Mid (4 rows) - ส่วนที่แสดงมัดจำ (Deposit)
+    # Mid (4 rows)
     payment_data_mid = [
-        [PB('มัดจำ', 'Small_TH'), make_para(format_num(deposit_amount), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para(str(latest_deposit_date) if latest_deposit_date else '', 'Small_Center_TH')], 
+        [PB('มัดจำ', 'Small_TH'), make_para(format_num(deposit_amount), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para(fmt_date(latest_deposit_date), 'Small_Center_TH')], 
         [PB('ยอดค้าง', 'Small_TH'), make_para(format_num(balance_due), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para('', 'Small_Center_TH')], 
-        [PB('ชำระเต็ม', 'Small_TH'), make_para(format_num(full_payment_amount), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para(str(full_payment_date) if full_payment_date else '', 'Small_Center_TH')], 
-        [PB('CN/คืนส่วนต่าง', 'Small_TH'), make_para(format_num(cn_refund_amount), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para(str(cn_refund_date) if cn_refund_date else '', 'Small_Center_TH')]
+        [PB('ชำระเต็ม', 'Small_TH'), make_para(format_num(full_payment_amount), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para(fmt_date(full_payment_date), 'Small_Center_TH')], 
+        [PB('CN/คืนส่วนต่าง', 'Small_TH'), make_para(format_num(cn_refund_amount), 'Small_Right_TH'), PB('วันที่', 'Small_TH'), make_para(fmt_date(cn_refund_date), 'Small_Center_TH')]
     ]
     unified_payment_data.extend(payment_data_mid)
 
-    # Shipping
-    shipping_cost = header_data.get('shipping_to_stock_cost', 0) + header_data.get('shipping_to_site_cost', 0)
+    # Shipping (แสดงข้อมูลจัดส่งและหัก ณ ที่จ่าย)
+    total_shipping_cost = shipping_stock_cost + shipping_site_cost
+    
     stock_wht_type = header_data.get('shipping_to_stock_wht_type', 'ไม่มีหัก')
-    stock_wht_1 = header_data.get('shipping_to_stock_cost', 0) * 0.01 if stock_wht_type == '1%' else 0
+    stock_wht_1 = shipping_stock_cost * 0.01 if stock_wht_type == '1%' else 0
     site_wht_type = header_data.get('shipping_to_site_wht_type', 'ไม่มีหัก')
-    site_wht_1 = header_data.get('shipping_to_site_cost', 0) * 0.01 if site_wht_type == '1%' else 0
+    site_wht_1 = shipping_site_cost * 0.01 if site_wht_type == '1%' else 0
     total_wht_1 = stock_wht_1 + site_wht_1
 
-    # หัก 3% logic (เผื่อไว้ถ้ามีในอนาคต)
-    stock_wht_3 = header_data.get('shipping_to_stock_cost', 0) * 0.03 if stock_wht_type == '3%' else 0
-    site_wht_3 = header_data.get('shipping_to_site_cost', 0) * 0.03 if site_wht_type == '3%' else 0
+    stock_wht_3 = shipping_stock_cost * 0.03 if stock_wht_type == '3%' else 0
+    site_wht_3 = shipping_site_cost * 0.03 if site_wht_type == '3%' else 0
     total_wht_3 = stock_wht_3 + site_wht_3
 
+    # --- [🔥 ส่วนที่แก้ไขเพิ่ม] ดึงข้อมูล ขนส่ง/ทะเบียนรถ/รอบส่ง ---
     shipper_display = header_data.get('shipping_to_stock_shipper', '')
     if not shipper_display:
         shipper_display = header_data.get('shipping_to_site_shipper', '')
 
+    # 1. เตรียมข้อมูลรถ
+    truck_name = header_data.get('truck_name', '')
+    if not truck_name:
+        truck_name = header_data.get('truck_type', '') # เผื่อกรณีใช้ชื่อฟิลด์อื่น
+    license_plate = header_data.get('license_plate', '')
+    
+    # รวมข้อความที่จะแสดง (เช่น "รถกระบะ (1กข-1234)")
+    truck_info_display = truck_name
+    if license_plate:
+        truck_info_display += f" ({license_plate})"
+
+    # 2. เตรียมข้อมูลรอบส่งและวันที่
+    shipping_round = header_data.get('shipping_round', '')
+    
+    shipping_date_str = fmt_date(header_data.get('shipping_date'))
+    if not shipping_date_str:
+        # ถ้าไม่มี shipping_date ให้ลองดูวันที่เข้าคลังแทน
+        shipping_date_str = fmt_date(header_data.get('date_to_warehouse'))
+        
+    if not shipping_date_str:
+        shipping_date_str = "..../../.."
+
+    # 3. สร้างตาราง Shipping Data
     shipping_data = [
-        [PB('ค่าจัดส่งรับจ้าง', 'Small_TH'), make_para(format_num(shipping_cost), 'Small_Right_TH'), PB('วันที่จัดส่ง', 'Small_TH'), make_para('..../../..', 'Small_Center_TH')], 
-        [PB('ชื่อบริษัทจัดส่ง', 'Small_TH'), make_para(shipper_display, 'Small_Wrapped_TH'), PB('รอบส่ง', 'Small_TH'), make_para('', 'Small_TH')], 
-        [PB('ประเภทรถ', 'Small_TH'), make_para(''), PB('หัก 1%', 'Small_TH'), make_para(format_num(total_wht_1), 'Small_Right_TH')], 
+        [PB('ค่าจัดส่งรับจ้าง', 'Small_TH'), make_para(format_num(total_shipping_cost), 'Small_Right_TH'), PB('วันที่จัดส่ง', 'Small_TH'), make_para(shipping_date_str, 'Small_Center_TH')], 
+        
+        # บรรทัดชื่อบริษัท และ รอบส่ง
+        [PB('ชื่อบริษัทจัดส่ง', 'Small_TH'), make_para(shipper_display, 'Small_Wrapped_TH'), PB('รอบส่ง', 'Small_TH'), make_para(shipping_round, 'Small_TH')], 
+        
+        # บรรทัดประเภทรถ/ทะเบียน (ใส่ตัวแปร truck_info_display)
+        [PB('ประเภทรถ/ทะเบียน', 'Small_TH'), make_para(truck_info_display, 'Small_Wrapped_TH'), PB('หัก 1%', 'Small_TH'), make_para(format_num(total_wht_1), 'Small_Right_TH')], 
+        
         [PB('ค่าจัดส่ง', 'Small_TH'), make_para(''), PB('หัก 3%', 'Small_TH'), make_para(format_num(total_wht_3), 'Small_Right_TH')]
     ]
     unified_payment_data.extend(shipping_data)
