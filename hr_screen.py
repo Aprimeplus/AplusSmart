@@ -28,6 +28,9 @@ from matplotlib.font_manager import fontManager
 from export_utils import export_commission_details_to_excel
 import matplotlib
 from cancellation_dialog import CancellationReasonDialog
+from hr_windows import HRCoverSheetDialog
+
+
 
 try:
     # ใช้ os.path.join เพื่อให้ทำงานได้ทุกระบบปฏิบัติการ
@@ -433,6 +436,7 @@ class AnnualArchiveDialog(CTkToplevel):
         self.destroy()
 
 class HRScreen(CTkFrame):
+    
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None):
         super().__init__(master, corner_radius=0, fg_color=app_container.THEME["hr"]["bg"])
         self.app_container = app_container
@@ -485,10 +489,38 @@ class HRScreen(CTkFrame):
         header_frame = CTkFrame(self, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 0))
         CTkLabel(header_frame, text=f"หน้าจอสำหรับฝ่ายบุคคล (HR): {self.user_name}", font=CTkFont(size=22, weight="bold"), text_color=self.theme["header"]).pack(side="left")
-        CTkButton(header_frame, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="right")
+        
+        # --- [🔥 แก้ไข] เพิ่มปุ่มพิมพ์ใบปะหน้าไว้ข้างๆ ปุ่มออกจากระบบ ---
+        from hr_windows import HRCoverSheetDialog  # Import Class ใหม่ที่สร้างไว้
+
+        button_container = CTkFrame(header_frame, fg_color="transparent")
+        button_container.pack(side="right")
+
+        # ปุ่มพิมพ์ใบปะหน้า
+        CTkButton(
+            button_container, 
+            text="🖨️ พิมพ์ใบปะหน้า (ค้นหา)", 
+            command=lambda: HRCoverSheetDialog(self, self.app_container),
+            fg_color="#7C3AED", # สีม่วง
+            hover_color="#6D28D9",
+            width=140
+        ).pack(side="left", padx=(0, 10))
+
+        # ปุ่มออกจากระบบ
+        CTkButton(
+            button_container, 
+            text="ออกจากระบบ", 
+            command=self.app_container.show_login_screen, 
+            fg_color="transparent", 
+            border_color="#D32F2F", 
+            text_color="#D32F2F", 
+            border_width=2, 
+            hover_color="#FFEBEE"
+        ).pack(side="left")
+        # -------------------------------------------------------------
 
         # ========================================================================================
-        # [แก้ไขใหม่] สร้าง Main TabView (แท็บแม่) แบ่งหมวดหมู่
+        # สร้าง Main TabView (แท็บแม่) แบ่งหมวดหมู่
         # ========================================================================================
         self.main_tab_view = CTkTabview(self, corner_radius=10, border_width=0, width=200, fg_color=self.cget("fg_color"))
         self.main_tab_view.grid(row=1, column=0, pady=10, padx=20, sticky="nsew")
@@ -568,7 +600,7 @@ class HRScreen(CTkFrame):
         self._pu_mode_loaded = False 
         self._payout_history_loaded = False 
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
-    
+
     def _get_special_service_amounts(self, so_ids):
         """
         [NEW] ดึงยอดขาย (SO) และต้นทุน (PO) ของสินค้ากลุ่มพิเศษ
@@ -5083,3 +5115,4 @@ class HRScreen(CTkFrame):
         except Exception as e:
             CTkLabel(self.cancelled_history_frame, text=f"โหลดข้อมูลล้มเหลว: {e}", text_color="red").pack(pady=20)
             traceback.print_exc()
+

@@ -1693,8 +1693,10 @@ class PurchasingManagerScreen(CTkFrame):
         self.main_frame.grid_columnconfigure(0, weight=1)
         
     def _load_pending_pos(self):
-        """(เวอร์ชันแก้ไข) โหลดข้อมูล PO พร้อมชื่อเจ้าของ SO"""
+        """(เวอร์ชันแก้ไข + Debug) โหลดข้อมูล PO พร้อมชื่อเจ้าของ SO"""
         try:
+            print(f"DEBUG: Loading Pending POs for User Role: '{self.user_role}'")
+            
             # Base Query: เพิ่มการ JOIN ไปหา sales_users เพื่อเอาชื่อเจ้าของ SO
             base_query = """
                 SELECT 
@@ -1708,14 +1710,20 @@ class PurchasingManagerScreen(CTkFrame):
             
             where_clause = ""
             
-            if self.user_role == 'Purchasing Manager':
-                where_clause = "WHERE po.status = 'Pending Approval' AND po.approval_status = 'Pending Mgr 1'"
+            # ปรับเงื่อนไข Role ให้ครอบคลุมมากขึ้น
+            if self.user_role in ('Purchasing Manager', 'Manager'):
+                # บางระบบอาจใช้ 'Manager' เฉยๆ หรือ 'Purchasing Manager'
+                where_clause = "WHERE po.status = 'Pending Approval' AND po.approval_status IN ('Pending Mgr 1', 'Pending Mgr 2')"
             elif self.user_role == 'Director':
                 where_clause = "WHERE po.status = 'Pending Approval' AND po.approval_status = 'Pending Director'"
+            else:
+                print(f"WARNING: Unknown Role '{self.user_role}'. No POs will be loaded.")
             
             if where_clause:
                 final_query = f"{base_query} {where_clause} ORDER BY po.timestamp ASC"
+                print(f"DEBUG: Executing Query -> {final_query}")
                 self.all_pending_df = pd.read_sql_query(final_query, self.app_container.pg_engine)
+                print(f"DEBUG: Found {len(self.all_pending_df)} records.")
             else:
                 self.all_pending_df = pd.DataFrame()
 
@@ -1723,8 +1731,9 @@ class PurchasingManagerScreen(CTkFrame):
 
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูล PO ที่รออนุมัติได้: {e}", parent=self)
+            traceback.print_exc()
             self.all_pending_df = pd.DataFrame()
-            self._populate_pending_list(self.all_pending_df)    
+            self._populate_pending_list(self.all_pending_df)
             
     def _populate_pending_list(self, df_to_show):
         """(เวอร์ชันแก้ไข) แสดงรายการโดยจัดกลุ่มตาม SO และแสดงชื่อเจ้าของ"""

@@ -234,18 +234,35 @@ class AppContainer(CTk):
         self.show_login_screen()
     
     def _on_window_resize_or_move(self, event):
-        """
-        จัดการ Event เมื่อหน้าต่างถูกย้ายหรือปรับขนาด
-        โดยจะหน่วงเวลาการอัปเดตเพื่อป้องกันอาการกระตุก (Debouncing)
-        """
-        # ยกเลิกการจับเวลาครั้งเก่า (ถ้ามี) เพื่อไม่ให้คำสั่งซ้ำซ้อน
-        if self._resize_timer is not None:
-            self.after_cancel(self._resize_timer)
+        # ถ้าหน้าต่างถูกซ่อนหรือถูกทำลายไปแล้ว ไม่ต้องทำอะไร
+        try:
+            if not self.winfo_exists() or not self.winfo_viewable():
+                return
+        except Exception:
+            return
+
+        # ยกเลิก Timer เก่า
+        if self._resize_timer:
+            try:
+                self.after_cancel(self._resize_timer)
+            except Exception:
+                pass
         
-        # เริ่มจับเวลาใหม่ รอ 250ms (0.25 วินาที) ถ้าไม่มีการขยับอีก
-        # โปรแกรมถึงจะทำการ update_idletasks เพื่อวาดหน้าจอใหม่แค่ครั้งเดียว
-        # การเพิ่มเวลารอจะทำให้การลากหน้าต่างลื่นขึ้นมากสำหรับ UI ที่ซับซ้อน
-        self._resize_timer = self.after(250, self.update_idletasks)
+        # ตั้ง Timer ใหม่
+        try:
+            self._resize_timer = self.after(250, self._safe_update_idletasks)
+        except Exception:
+            pass
+
+    def _safe_update_idletasks(self):
+        """ฟังก์ชันช่วยสำหรับอัปเดตหน้าจอที่ปลอดภัยต่อการปิดโปรแกรม"""
+        self._resize_timer = None 
+        try:
+            # เช็คว่าหน้าต่างยังอยู่และยังแสดงผลอยู่ไหม
+            if self.winfo_exists() and self.winfo_viewable():
+                self.update_idletasks()
+        except Exception:
+            pass
 
     def show_po_edit_window_for_hr(self, po_id, refresh_callback):
         """เปิดหน้าต่างสำหรับให้ HR แก้ไขข้อมูล PO โดยเฉพาะ"""
@@ -335,26 +352,67 @@ class AppContainer(CTk):
 
 
     def _check_for_notifications(self):
-        if not self.current_user_key: return
+        # --- [1] จุดตรวจสอบที่ 1: เช็คว่าหน้าต่างหลักยังอยู่หรือไม่ ---
+        # ถ้าหน้าต่างถูกปิดไปแล้ว (destroy) ให้หยุดทำงานทันที เพื่อป้องกัน Error
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        # --------------------------------------------------------
+
+        if not self.current_user_key: 
+            # ถ้ายังไม่มี user key (ยังไม่ login) ให้รอรอบถัดไป
+            # ต้องตั้งเวลาทำงานรอบถัดไปก่อน return ไม่งั้น loop จะหยุด
+            try:
+                if self.winfo_exists():
+                    self.notification_poll_id = self.after(15000, self._check_for_notifications)
+            except Exception:
+                pass
+            return
+        
         conn = None
         try:
             conn = self.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute("SELECT id, message FROM notifications WHERE user_key_to_notify = %s AND is_read = FALSE", (self.current_user_key,))
                 new_notifications = cursor.fetchall()
+                
                 if new_notifications:
                     for notif in new_notifications:
-                        NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
+                        # --- [2] จุดตรวจสอบที่ 2: ก่อนเด้ง Popup ---
+                        # เช็คอีกทีก่อนสร้างหน้าต่างลูก (Popup)
+                        if self.winfo_exists():
+                            NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
+                        
                         cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notif['id'],))
+                    
                     conn.commit()
-                    if hasattr(self, 'current_screen') and self.current_screen is not None and hasattr(self.current_screen, '_update_tasks_badge'):
-                       self.current_screen._update_tasks_badge()
+                    
+                    # --- [3] จุดตรวจสอบที่ 3: ก่อนอัปเดตหน้าจออื่น ---
+                    # เช็คว่าหน้าจอปัจจุบัน (เช่น PurchasingScreen) ยังเปิดอยู่ไหม
+                    if hasattr(self, 'current_screen') and self.current_screen is not None:
+                        try:
+                            if self.current_screen.winfo_exists() and hasattr(self.current_screen, '_update_tasks_badge'):
+                                self.current_screen._update_tasks_badge()
+                        except Exception:
+                            pass # ข้ามไปถ้าหน้าจอถูกปิดแล้ว
+
         except Exception as e:
-            print(f"Error checking for notifications: {e}")
+            # ดักจับ Error ตอนปิดโปรแกรม ไม่ให้รก Terminal
+            if "application has been destroyed" not in str(e):
+                print(f"Error checking for notifications: {e}")
             if conn: conn.rollback()
         finally:
             if conn: self.release_connection(conn)
-        self.notification_poll_id = self.after(15000, self._check_for_notifications)
+        
+        # --- [4] จุดตรวจสอบที่ 4: ตั้งเวลาทำงานรอบถัดไป ---
+        # สำคัญ: ต้องเก็บ ID ไว้ใน self.notification_poll_id เพื่อให้ on_closing สั่งยกเลิกได้
+        try:
+            if self.winfo_exists():
+                self.notification_poll_id = self.after(15000, self._check_for_notifications)
+        except Exception:
+            pass
 
     def get_connection(self):
         if self.db_pool: return self.db_pool.getconn()
@@ -441,11 +499,22 @@ class AppContainer(CTk):
         try:
             conn = self.get_connection()
             with conn.cursor() as cursor:
+                # 1. ตาราง Sales Users
                 cursor.execute("CREATE TABLE IF NOT EXISTS sales_users (id SERIAL PRIMARY KEY, sale_key TEXT UNIQUE NOT NULL, sale_name TEXT NOT NULL, password_hash TEXT, role TEXT DEFAULT 'Sale', sales_target REAL DEFAULT 0, status TEXT DEFAULT 'Active', sale_type TEXT)")
+                
+                # 2. ตาราง Customers
                 cursor.execute("CREATE TABLE IF NOT EXISTS customers (id SERIAL PRIMARY KEY, customer_code TEXT UNIQUE NOT NULL, customer_name TEXT NOT NULL, credit_term TEXT)")
+                
+                # 3. ตาราง Commissions (SO)
                 cursor.execute("CREATE TABLE IF NOT EXISTS commissions (id SERIAL PRIMARY KEY, bill_date TEXT, customer_id TEXT, customer_name TEXT, so_number TEXT, sales_service_amount REAL, payment_date TEXT, shipping_cost REAL, delivery_date TEXT, total_payment_amount REAL, vat_deduction REAL, no_vat_deduction REAL, brokerage_fee REAL, giveaways REAL, coupons REAL, transfer_fee REAL, credit_card_fee REAL, wht_3_percent REAL, product_vat_7 REAL, shipping_vat_7 REAL, difference_amount REAL, sale_key TEXT, timestamp TEXT, status TEXT, is_active INTEGER, original_id INTEGER, payment_before_vat REAL DEFAULT 0, payment_no_vat REAL DEFAULT 0, separate_shipping_charge REAL DEFAULT 0, customer_type TEXT, credit_term TEXT, commission_month INTEGER, commission_year INTEGER, rejection_reason TEXT, claim_timestamp TIMESTAMP)")
+                
+                # 4. ตาราง Audit Log
                 cursor.execute("CREATE TABLE IF NOT EXISTS audit_log (id SERIAL PRIMARY KEY, timestamp TEXT, action TEXT, table_name TEXT, record_id INTEGER, user_info TEXT, old_value TEXT, new_value TEXT, changes TEXT)")
+                
+                # 5. ตาราง Suppliers
                 cursor.execute("CREATE TABLE IF NOT EXISTS suppliers (id SERIAL PRIMARY KEY, supplier_code TEXT UNIQUE NOT NULL, supplier_name TEXT NOT NULL, credit_term TEXT)")
+                
+                # 6. ตาราง Purchase Orders (PO) - [🔥 อัปเดตโครงสร้างใหม่]
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS purchase_orders (
                         id SERIAL PRIMARY KEY, so_number TEXT, po_number TEXT, rr_number TEXT,
@@ -456,12 +525,49 @@ class AppContainer(CTk):
                         grand_total REAL, form_data_json TEXT, approval_status TEXT DEFAULT 'Draft',
                         approver_manager1_key TEXT, approval_date_manager1 TIMESTAMP,
                         approver_manager2_key TEXT, approval_date_manager2 TIMESTAMP,
-                        approver_director_key TEXT, approval_date_director TIMESTAMP
+                        approver_director_key TEXT, approval_date_director TIMESTAMP,
+                        
+                        -- Shipping Columns (เพิ่มคอลัมน์ค่าจัดส่ง)
+                        shipping_to_stock_cost REAL DEFAULT 0, shipping_to_site_cost REAL DEFAULT 0,
+                        shipping_to_stock_vat_type TEXT, shipping_to_site_vat_type TEXT,
+                        shipping_to_stock_wht_type TEXT, shipping_to_site_wht_type TEXT,
+                        shipping_to_stock_wht_amount REAL DEFAULT 0, shipping_to_site_wht_amount REAL DEFAULT 0,
+                        shipping_to_stock_date TEXT, shipping_to_site_date TEXT,
+                        shipping_to_stock_shipper TEXT, shipping_to_site_shipper TEXT,
+                        shipping_to_stock_notes TEXT, shipping_to_site_notes TEXT,
+                        
+                        -- Cutting/Drilling Columns (เพิ่มคอลัมน์ค่าตัด/เจาะ)
+                        cutting_cost REAL DEFAULT 0,
+                        cutting_vat_type TEXT DEFAULT 'VAT',
+                        cutting_vat_amount REAL DEFAULT 0,
+                        cutting_wht_type TEXT DEFAULT 'No',
+                        cutting_wht_amount REAL DEFAULT 0,
+                        cutting_remark TEXT
                     )
                 """)
+                
+                # 7. ตาราง PO Items
                 cursor.execute("CREATE TABLE IF NOT EXISTS purchase_order_items (id SERIAL PRIMARY KEY, purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE, product_name TEXT, status TEXT, quantity REAL, weight_per_unit REAL, unit_price REAL, total_weight REAL, total_price REAL)")
-                cursor.execute("CREATE TABLE IF NOT EXISTS purchase_order_payments (id SERIAL PRIMARY KEY, purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE, payment_type TEXT, amount REAL, payment_date DATE)")
+                
+                # 8. ตาราง PO Payments
+                cursor.execute("CREATE TABLE IF NOT EXISTS purchase_order_payments (id SERIAL PRIMARY KEY, purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE, payment_type TEXT, amount REAL, payment_date DATE, bank_name TEXT, bank_account_number TEXT)")
+                
+                # 9. ตาราง Notifications
                 cursor.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_key_to_notify TEXT NOT NULL, message TEXT NOT NULL, related_po_id INTEGER, is_read BOOLEAN DEFAULT FALSE, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)")
+                
+                # 10. ตาราง Products (สินค้า)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS products (
+                        id SERIAL PRIMARY KEY, 
+                        product_code TEXT UNIQUE NOT NULL, 
+                        product_name TEXT NOT NULL, 
+                        warehouse TEXT, 
+                        last_unit_price REAL DEFAULT 0,
+                        last_weight_per_unit REAL DEFAULT 0,
+                        last_updated TIMESTAMP
+                    )
+                """)
+
             conn.commit()
         except Exception as e:
             messagebox.showerror("Database Setup Error", f"ไม่สามารถสร้างตารางเริ่มต้นได้: {e}")
@@ -656,11 +762,58 @@ class AppContainer(CTk):
             traceback.print_exc()
     
     def on_closing(self):
-        self.stop_background_threads.set()
-        if self.db_pool: self.db_pool.closeall()
-        print("Database connection pool closed.")
-        if self.pg_engine: self.pg_engine.dispose()
-        self.destroy()
+        print("Closing application...")
+
+        # --- [1] หยุดการโต้ตอบกับ UI ทันที ---
+        try:
+            # หยุดรับ Event การปรับขนาดหน้าจอ (ตัวต้นเรื่องของ error 'update')
+            self.unbind("<Configure>")
+            # ซ่อนหน้าต่างทันที เพื่อไม่ให้ CustomTkinter พยายามวาดใหม่
+            self.withdraw() 
+        except Exception:
+            pass
+
+        # --- [2] ยกเลิก Timer ของเราเอง ---
+        if self._resize_timer:
+            try:
+                self.after_cancel(self._resize_timer)
+            except Exception:
+                pass
+            self._resize_timer = None
+
+        if self.notification_poll_id:
+            try:
+                self.after_cancel(self.notification_poll_id)
+            except Exception:
+                pass
+            self.notification_poll_id = None
+
+        # --- [3] หยุด Thread เบื้องหลัง ---
+        try:
+            self.stop_background_threads.set()
+        except Exception:
+            pass
+        
+        # --- [4] ปิด Database ---
+        if self.db_pool:
+            try:
+                self.db_pool.closeall()
+                print("Database connection pool closed.")
+            except Exception:
+                pass
+        
+        if self.pg_engine:
+            try:
+                self.pg_engine.dispose()
+            except Exception:
+                pass
+
+        # --- [5] ทำลายหน้าต่าง (ปิดท้ายสุด) ---
+        try:
+            self.quit()    # หยุด mainloop
+            self.destroy() # ทำลาย widget
+        except Exception:
+            pass
 
     def clear_screen(self):
         """ล้างหน้าจอโดยการลบ Widget ทั้งหมดใน container"""

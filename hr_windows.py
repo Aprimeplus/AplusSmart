@@ -1429,6 +1429,8 @@ class HRVerificationWindow(CTkToplevel):
         finally:
             if conn: self.app_container.release_connection(conn)
 
+    
+
 class PayoutDetailWindow(CTkToplevel):
     """
     หน้าต่างแสดงรายละเอียด Payout (มี Navigation เลื่อนเดือนได้)
@@ -1467,7 +1469,7 @@ class PayoutDetailWindow(CTkToplevel):
 
         self.transient(master)
         self.grab_set()
-
+    
     def _create_navigation_bar(self):
         """สร้างปุ่มเลื่อนซ้ายขวา และชื่อ Title ตรงกลาง"""
         self.nav_frame.grid_columnconfigure(1, weight=1) # ให้ Title อยู่กลาง
@@ -3087,19 +3089,17 @@ class EditPOWindowByHR(CTkToplevel):
         self.entry_po_number = ctk.CTkEntry(header_frame)
         self.entry_po_number.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
 
-        # --- ส่วนรายการสินค้า (Scrollable) ---
+        # --- ส่วนรายการสินค้า (Scrollable) - Row 1 ---
         items_container = ctk.CTkScrollableFrame(self, label_text="รายการสินค้า (PO Items)")
         items_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=0)
-        items_container.grid_columnconfigure((0, 1, 2), weight=1) # ให้คอลัมน์ขยายเท่าๆ กัน
+        items_container.grid_columnconfigure((0, 1, 2), weight=1) 
 
-        # [แก้ไข] Frame สำหรับ Header และ Content ของตารางสินค้า
         self.items_content_frame = ctk.CTkFrame(items_container, fg_color="transparent")
         self.items_content_frame.pack(fill="both", expand=True)
         self.items_content_frame.grid_columnconfigure(0, weight=4) # Product Name
         self.items_content_frame.grid_columnconfigure(1, weight=1) # Quantity
         self.items_content_frame.grid_columnconfigure(2, weight=2) # Unit Price
 
-        # [แก้ไข] สร้าง Header ของตารางด้วย grid
         header = ctk.CTkFrame(self.items_content_frame, fg_color="#E5E7EB", corner_radius=0)
         header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 2))
         header.grid_columnconfigure(0, weight=4)
@@ -3109,9 +3109,39 @@ class EditPOWindowByHR(CTkToplevel):
         ctk.CTkLabel(header, text="Quantity").grid(row=0, column=1, padx=5)
         ctk.CTkLabel(header, text="Unit Price").grid(row=0, column=2, padx=5)
         
-        # --- [แก้ไข] ย้ายปุ่มออกมานอก ScrollFrame ---
+        # --- [🔥 เพิ่มใหม่] ส่วนแก้ไขค่าบริการตัด/เจาะ - Row 2 ---
+        cutting_frame = ctk.CTkFrame(self)
+        cutting_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+        cutting_frame.grid_columnconfigure(1, weight=1) # ให้ Entry ขยายเต็ม
+
+        ctk.CTkLabel(cutting_frame, text="ค่าบริการตัด/เจาะ:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.cutting_cost_entry = NumericEntry(cutting_frame)
+        self.cutting_cost_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+        # ตัวเลือก VAT/CASH
+        self.cutting_vat_var = tk.StringVar(value="VAT")
+        vat_frame = ctk.CTkFrame(cutting_frame, fg_color="transparent")
+        vat_frame.grid(row=0, column=2, padx=5, sticky="w")
+        ctk.CTkRadioButton(vat_frame, text="VAT", variable=self.cutting_vat_var, value="VAT").pack(side="left", padx=2)
+        ctk.CTkRadioButton(vat_frame, text="CASH", variable=self.cutting_vat_var, value="CASH").pack(side="left", padx=2)
+
+        # ตัวเลือก หัก ณ ที่จ่าย
+        ctk.CTkLabel(cutting_frame, text="หัก ณ ที่จ่าย:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.cutting_wht_var = tk.StringVar(value="No")
+        wht_frame = ctk.CTkFrame(cutting_frame, fg_color="transparent")
+        wht_frame.grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
+        ctk.CTkRadioButton(wht_frame, text="ไม่หัก", variable=self.cutting_wht_var, value="No").pack(side="left", padx=5)
+        ctk.CTkRadioButton(wht_frame, text="1%", variable=self.cutting_wht_var, value="1%").pack(side="left", padx=5)
+        ctk.CTkRadioButton(wht_frame, text="3%", variable=self.cutting_wht_var, value="3%").pack(side="left", padx=5)
+
+        # หมายเหตุ
+        ctk.CTkLabel(cutting_frame, text="หมายเหตุตัด/เจาะ:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.cutting_remark_entry = ctk.CTkEntry(cutting_frame)
+        self.cutting_remark_entry.grid(row=2, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+
+        # --- ปุ่มควบคุม - Row 3 ---
         button_frame = ctk.CTkFrame(self)
-        button_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+        button_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
         button_frame.grid_columnconfigure((0, 1), weight=1)
 
         ctk.CTkButton(button_frame, text="ยกเลิก", command=self._on_close, fg_color="gray").grid(row=0, column=0, padx=5, sticky="ew")
@@ -3120,15 +3150,30 @@ class EditPOWindowByHR(CTkToplevel):
     def _load_data(self):
         """ดึงข้อมูล PO และ Items จาก DB มาแสดงในฟอร์ม"""
         try:
-            # ดึงข้อมูล PO หลัก
-            po_df = pd.read_sql("SELECT * FROM purchase_orders WHERE id = %s", self.pg_engine, params=(self.po_id,))
+            # ดึงข้อมูล PO หลัก (รวมถึงฟิลด์ใหม่ cutting_...)
+            po_df = pd.read_sql("""
+                SELECT *, 
+                       cutting_cost, cutting_vat_type, cutting_wht_type, cutting_remark 
+                FROM purchase_orders 
+                WHERE id = %s
+            """, self.pg_engine, params=(self.po_id,))
+            
             if po_df.empty:
                 messagebox.showerror("ผิดพลาด", "ไม่พบข้อมูล PO ที่ต้องการแก้ไข", parent=self)
                 self.destroy()
                 return
+            
             po_data = po_df.iloc[0]
             self.entry_supplier.insert(0, po_data.get('supplier_name', ''))
             self.entry_po_number.insert(0, po_data.get('po_number', ''))
+            
+            # [🔥 เพิ่ม] โหลดข้อมูล Cutting
+            cutting_cost = po_data.get('cutting_cost', 0) or 0
+            self.cutting_cost_entry.insert(0, f"{cutting_cost:.2f}")
+            
+            self.cutting_vat_var.set(po_data.get('cutting_vat_type', 'VAT') or 'VAT')
+            self.cutting_wht_var.set(po_data.get('cutting_wht_type', 'No') or 'No')
+            self.cutting_remark_entry.insert(0, po_data.get('cutting_remark', '') or '')
             
             # ดึงข้อมูลรายการสินค้า
             items_df = pd.read_sql("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(self.po_id,))
@@ -3166,13 +3211,42 @@ class EditPOWindowByHR(CTkToplevel):
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
-                # 1. อัปเดตข้อมูลหลักในตาราง purchase_orders
+                # 1. รับค่า Cutting จาก UI และคำนวณ
+                new_cutting_cost = utils.convert_to_float(self.cutting_cost_entry.get())
+                new_cutting_vat_type = self.cutting_vat_var.get()
+                new_cutting_wht_type = self.cutting_wht_var.get()
+                new_cutting_remark = self.cutting_remark_entry.get().strip()
+
+                # คำนวณยอด VAT/WHT ของค่าตัดเจาะ (เพื่อบันทึกลง DB ให้ครบถ้วน)
+                new_cutting_vat_amount = new_cutting_cost * 0.07 if new_cutting_vat_type == 'VAT' else 0.0
+                
+                new_cutting_wht_amount = 0.0
+                if new_cutting_wht_type == '1%': new_cutting_wht_amount = new_cutting_cost * 0.01
+                elif new_cutting_wht_type == '3%': new_cutting_wht_amount = new_cutting_cost * 0.03
+
+                # 2. อัปเดตข้อมูลหลักในตาราง purchase_orders (รวม Cutting Fields)
                 new_supplier = self.entry_supplier.get()
                 new_po_number = self.entry_po_number.get()
-                cursor.execute("UPDATE purchase_orders SET supplier_name = %s, po_number = %s WHERE id = %s", 
-                               (new_supplier, new_po_number, self.po_id))
+                
+                cursor.execute("""
+                    UPDATE purchase_orders 
+                    SET supplier_name = %s, 
+                        po_number = %s,
+                        cutting_cost = %s,
+                        cutting_vat_type = %s,
+                        cutting_vat_amount = %s,
+                        cutting_wht_type = %s,
+                        cutting_wht_amount = %s,
+                        cutting_remark = %s
+                    WHERE id = %s
+                """, (
+                    new_supplier, new_po_number,
+                    new_cutting_cost, new_cutting_vat_type, new_cutting_vat_amount,
+                    new_cutting_wht_type, new_cutting_wht_amount, new_cutting_remark,
+                    self.po_id
+                ))
 
-                # 2. อัปเดตข้อมูลรายการสินค้าในตาราง purchase_order_items (วนลูป)
+                # 3. อัปเดตข้อมูลรายการสินค้าในตาราง purchase_order_items (วนลูป)
                 for item_row in self.item_widgets:
                     item_id = item_row['id']
                     new_name = item_row['name_entry'].get()
@@ -3186,8 +3260,13 @@ class EditPOWindowByHR(CTkToplevel):
                         WHERE id = %s
                     """, (new_name, new_qty, new_price, new_total, item_id))
 
-                # 3. บันทึก Log ว่า HR เป็นคนแก้ไข
-                log_details = { "message": f"Edited PO: {new_po_number} by HR" }
+                # 4. (Optional) ควรคำนวณ total_cost และ grand_total ของ PO ใหม่ด้วย
+                # แต่เนื่องจากในหน้านี้ไม่มีช่อง Shipping อาจทำให้ยอดเคลื่อนได้ถ้ามี Shipping อยู่เดิม
+                # ดังนั้นในที่นี้จะอัปเดตเฉพาะส่วนที่เห็นบนหน้าจอเพื่อความปลอดภัย
+                # หรือถ้าต้องการให้สมบูรณ์จริงๆ ต้องดึง Shipping Cost เดิมมาบวกลบด้วย
+
+                # 5. บันทึก Log ว่า HR เป็นคนแก้ไข
+                log_details = { "message": f"Edited PO: {new_po_number} by HR (Updated Cutting Cost)" }
                 cursor.execute("""
                     INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
                     VALUES (%s, %s, %s, %s, %s, %s)
@@ -3208,3 +3287,326 @@ class EditPOWindowByHR(CTkToplevel):
         if self.on_close_callback:
             self.on_close_callback() # สั่งให้หน้าต่าง HRVerificationWindow รีเฟรชตัวเอง
         self.destroy()
+
+# --- [🔥 NEW CLASS] หน้าต่างค้นหาและพิมพ์ใบปะหน้าสำหรับ HR ---
+class HRCoverSheetDialog(CTkToplevel):
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.pg_engine = app_container.pg_engine
+        
+        self.title("🖨️ ระบบพิมพ์ใบปะหน้า (HR Special)")
+        self.geometry("800x600") # ขยายขนาดให้กว้างขึ้นเพื่อใส่ตาราง
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1) # ให้พื้นที่ตารางขยายตัว
+
+        # --- 1. ส่วนค้นหา ---
+        search_frame = CTkFrame(self, fg_color="transparent")
+        search_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        
+        CTkLabel(search_frame, text="ค้นหา SO / PO / ลูกค้า:", font=CTkFont(size=14, weight="bold")).pack(side="left", padx=(0, 10))
+        
+        self.search_entry = CTkEntry(search_frame, placeholder_text="พิมพ์คำค้นหา...", width=300)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.search_entry.bind("<Return>", lambda e: self._search_data())
+        self.search_entry.bind("<KeyRelease>", self._on_key_release) # ค้นหาทันทีที่พิมพ์ (Optional)
+        
+        CTkButton(search_frame, text="🔍 ค้นหา", width=100, command=self._search_data).pack(side="left")
+
+        # --- 2. ส่วนแสดงตารางผลลัพธ์ (Treeview) ---
+        table_frame = CTkFrame(self)
+        table_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=5)
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(0, weight=1)
+
+        # สร้าง Style สำหรับ Treeview
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", rowheight=30, font=("Roboto", 12))
+        style.configure("Treeview.Heading", font=("Roboto", 12, "bold"))
+        
+        # กำหนดคอลัมน์
+        columns = ("so_number", "customer", "po_count", "total_amount", "status")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        
+        self.tree.heading("so_number", text="SO Number")
+        self.tree.heading("customer", text="ชื่อลูกค้า")
+        self.tree.heading("po_count", text="จำนวน PO")
+        self.tree.heading("total_amount", text="ยอดรวมต้นทุน PO")
+        self.tree.heading("status", text="สถานะ SO")
+
+        self.tree.column("so_number", width=120, anchor="center")
+        self.tree.column("customer", width=250, anchor="w")
+        self.tree.column("po_count", width=80, anchor="center")
+        self.tree.column("total_amount", width=120, anchor="e")
+        self.tree.column("status", width=100, anchor="center")
+        
+        # Scrollbar
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        # Bind Double Click -> Print
+        self.tree.bind("<Double-1>", lambda e: self._print_action())
+
+        # --- 3. ส่วนปุ่มดำเนินการ ---
+        action_frame = CTkFrame(self, fg_color="transparent")
+        action_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=20)
+        
+        self.status_label = CTkLabel(action_frame, text="พบข้อมูล 0 รายการ", text_color="gray50")
+        self.status_label.pack(side="left")
+
+        self.print_btn = CTkButton(action_frame, text="🖨️ พิมพ์ใบปะหน้า (Selected)", 
+                                   command=self._print_action, 
+                                   fg_color="#7C3AED", hover_color="#6D28D9",
+                                   state="disabled", width=200, height=40)
+        self.print_btn.pack(side="right")
+
+        self.print_transport_btn = CTkButton(action_frame, text="🖨️ ใบค่ารถ (Transport)", 
+                                   command=self._print_transport_action, 
+                                   fg_color="#059669", hover_color="#047857", # สีเขียว
+                                   state="disabled", width=180, height=40)
+        self.print_transport_btn.pack(side="right", padx=10)
+        
+        # โหลดข้อมูลเริ่มต้น (Optional)
+        self._search_data(initial=True)
+
+    def _print_transport_action(self):
+        selected_item = self.tree.selection()
+        if not selected_item: return
+        item_values = self.tree.item(selected_item[0], "values")
+        so_number = item_values[0]
+        
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # 1. Header
+                cursor.execute("""SELECT c.so_number, c.customer_name, u.sale_name FROM commissions c LEFT JOIN sales_users u ON c.sale_key = u.sale_key WHERE c.so_number = %s LIMIT 1""", (so_number,))
+                header = cursor.fetchone()
+                if not header: return
+
+                # 2. Items (ตัด column วันที่ที่มีปัญหาออก)
+                cursor.execute("""
+                    SELECT po_number, supplier_name, 
+                           shipping_to_stock_cost, shipping_to_site_cost,
+                           shipping_to_stock_shipper, shipping_to_site_shipper,
+                           shipping_to_stock_notes, shipping_to_site_notes,
+                           cutting_remark,
+                           shipping_to_stock_vat_type, shipping_to_site_vat_type,
+                           shipping_to_stock_wht_type, shipping_to_site_wht_type
+                    FROM purchase_orders 
+                    WHERE so_number = %s AND status != 'Cancelled'
+                """, (so_number,))
+                pos = cursor.fetchall()
+                
+                transport_list = []
+                for po in pos:
+                    shipper = po['shipping_to_stock_shipper'] or po['shipping_to_site_shipper'] or '-'
+                    license_info = po['shipping_to_stock_notes'] or po['shipping_to_site_notes'] or '-'
+                    real_remark = po['cutting_remark'] or '' 
+                    
+                    # เช็คประเภทภาษี
+                    if po['shipping_to_stock_cost'] and po['shipping_to_stock_cost'] > 0:
+                        vat_type = po['shipping_to_stock_vat_type']
+                        wht_type = po['shipping_to_stock_wht_type']
+                    else:
+                        vat_type = po['shipping_to_site_vat_type']
+                        wht_type = po['shipping_to_site_wht_type']
+
+                    transport_list.append({
+                        'po_number': po['po_number'],
+                        'shipper': shipper, # ชื่อบริษัทผู้จัดส่ง
+                        'license': license_info, # ทะเบียนรถ
+                        'remark': real_remark,
+                        'stock_cost': po['shipping_to_stock_cost'] or 0,
+                        'site_cost': po['shipping_to_site_cost'] or 0,
+                        'shipping_date': None, # วันที่ (เว้นว่างไว้)
+                        'vat_type': vat_type,    
+                        'wht_type': wht_type     
+                    })
+                
+                from po_document_generator import generate_transport_fee_pdf
+                generate_transport_fee_pdf(dict(header), transport_list)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _on_key_release(self, event):
+        # ทำ Debounce นิดหน่อยหรือค้นหาเลยก็ได้
+        if self.search_entry.get().strip() == "":
+            self._search_data(initial=True) # ถ้าลบหมดให้โหลดล่าสุด
+
+    def _search_data(self, initial=False):
+        keyword = self.search_entry.get().strip().upper()
+        
+        # ล้างข้อมูลเก่าในตาราง
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # เริ่มต้น Query หลัก
+                base_query = """
+                    SELECT 
+                        c.so_number, 
+                        c.customer_name, 
+                        c.status,
+                        COUNT(p.id) as po_count, 
+                        COALESCE(SUM(p.grand_total), 0) as total_amt
+                    FROM commissions c
+                    LEFT JOIN purchase_orders p ON c.so_number = p.so_number AND p.status != 'Cancelled'
+                    WHERE c.is_active = 1
+                """
+                
+                params = []
+                
+                # ถ้ามีการค้นหา ให้เพิ่มเงื่อนไข WHERE
+                if not initial and keyword:
+                    base_query += """
+                        AND (c.so_number ILIKE %s OR c.customer_name ILIKE %s OR p.po_number ILIKE %s)
+                    """
+                    search_term = f"%{keyword}%"
+                    params = [search_term, search_term, search_term]
+
+                # [🔥 แก้ไขสำคัญ] ย้าย GROUP BY ออกมาข้างนอก เพื่อให้ทำงานเสมอ (แก้ Error SQL)
+                # ต้อง Group ตามคอลัมน์ที่ไม่ได้ใช้ Aggregate function (COUNT/SUM)
+                base_query += " GROUP BY c.so_number, c.customer_name, c.status, c.timestamp"
+                
+                # เรียงลำดับจากล่าสุดไปเก่าสุด
+                base_query += " ORDER BY c.timestamp DESC"
+
+                # ถ้าเป็นการโหลดครั้งแรก หรือไม่ได้พิมพ์คำค้นหา ให้จำกัดจำนวน 20 รายการ
+                if initial or not keyword:
+                    base_query += " LIMIT 20"
+
+                cursor.execute(base_query, tuple(params))
+                results = cursor.fetchall()
+                
+                # วนลูปใส่ข้อมูลลงตาราง
+                for row in results:
+                    so_num = row[0]
+                    cust = row[1] or "N/A"
+                    status = row[2]
+                    po_cnt = row[3]
+                    total = row[4]
+                    
+                    self.tree.insert("", "end", values=(so_num, cust, po_cnt, f"{total:,.2f}", status))
+                
+                self.status_label.configure(text=f"พบข้อมูล {len(results)} รายการ")
+                
+                # ตรวจสอบว่าเจอข้อมูลหรือไม่ เพื่อเปิด/ปิดปุ่ม
+                if len(results) > 0:
+                    self.print_btn.configure(state="normal")
+                    
+                    # ถ้ามีปุ่มพิมพ์ค่ารถ ให้เปิดใช้งานด้วย
+                    if hasattr(self, 'print_transport_btn'):
+                        self.print_transport_btn.configure(state="normal")
+                    
+                    # Select รายการแรกให้อัตโนมัติ เพื่อความสะดวก
+                    child_id = self.tree.get_children()[0]
+                    self.tree.focus(child_id)
+                    self.tree.selection_set(child_id)
+                else:
+                    self.print_btn.configure(state="disabled")
+                    
+                    # ถ้ามีปุ่มพิมพ์ค่ารถ ให้ปิดใช้งานด้วย
+                    if hasattr(self, 'print_transport_btn'):
+                        self.print_transport_btn.configure(state="disabled")
+
+        except Exception as e:
+            print(f"Search error: {e}")
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการดึงข้อมูล: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _print_action(self):
+        selected_item = self.tree.selection()
+        if not selected_item:
+            messagebox.showwarning("แจ้งเตือน", "กรุณาเลือกรายการที่ต้องการพิมพ์")
+            return
+            
+        item_values = self.tree.item(selected_item[0], "values")
+        so_number = item_values[0] # ดึงเลข SO จากคอลัมน์แรก
+        
+        # เรียกใช้ Logic การพิมพ์เดิม
+        self._execute_print(so_number)
+
+    def _execute_print(self, so_number):
+        try:
+            # 1. ดึง SO Header
+            so_df = pd.read_sql_query("""
+                SELECT c.*, u_so.sale_name AS sale_name
+                FROM commissions c
+                LEFT JOIN sales_users u_so ON c.sale_key = u_so.sale_key
+                WHERE c.so_number = %s AND c.is_active = 1 LIMIT 1
+            """, self.pg_engine, params=(so_number,))
+            
+            if so_df.empty: return
+            so_header_data = so_df.iloc[0].to_dict()
+
+            # 2. ดึง PO List (ไม่สน Approved, เอาหมดที่ไม่ใช่ Cancelled)
+            po_query = """
+                SELECT po.*, u_po.sale_name AS user_name,
+                    m1.sale_name AS approver_1, m2.sale_name AS approver_2, d.sale_name AS approver_3
+                FROM purchase_orders po
+                LEFT JOIN sales_users u_po ON po.user_key = u_po.sale_key
+                LEFT JOIN sales_users m1 ON po.approver_manager1_key = m1.sale_key
+                LEFT JOIN sales_users m2 ON po.approver_manager2_key = m2.sale_key
+                LEFT JOIN sales_users d ON po.approver_director_key = d.sale_key
+                WHERE po.so_number = %s AND po.status != 'Cancelled'
+            """
+            all_po_df = pd.read_sql_query(po_query, self.pg_engine, params=(so_number,))
+            
+            if all_po_df.empty:
+                messagebox.showinfo("แจ้งเตือน", "รายการนี้ไม่มีใบสั่งซื้อ (PO)", parent=self)
+                return
+
+            # 3. เตรียม Data List
+            all_po_data_list = []
+            for _, po_row in all_po_df.iterrows():
+                po_id = po_row['id']
+                items_df = pd.read_sql("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
+                payments_df = pd.read_sql("SELECT * FROM purchase_order_payments WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
+                
+                # Manual Mapping (ย่อ)
+                po_dict = po_row.to_dict()
+                
+                deposit = sum(p['amount'] for p in payments_df.to_dict('records') if p['payment_type'] in ['Payment 1', 'Payment 2'])
+                full_pay = sum(p['amount'] for p in payments_df.to_dict('records') if p['payment_type'] == 'Full Payment')
+                
+                po_dict['deposit_amount'] = deposit
+                po_dict['full_payment_amount'] = full_pay
+                po_dict['balance_due_po'] = (po_dict.get('grand_total', 0) or 0) - deposit - full_pay
+                
+                # Mapping Shipping/Approver
+                po_dict['shipping_cost_1'] = po_dict.get('shipping_to_stock_cost', 0.0)
+                po_dict['shipping_vat_type_1'] = po_dict.get('shipping_to_stock_vat_type', 'CASH')
+                po_dict['shipper_1'] = po_dict.get('shipping_to_stock_shipper', '')
+                po_dict['shipping_cost_2'] = po_dict.get('shipping_to_site_cost', 0.0)
+                po_dict['shipping_vat_type_2'] = po_dict.get('shipping_to_site_vat_type', 'CASH')
+                po_dict['shipper_2'] = po_dict.get('shipping_to_site_shipper', '')
+                
+                po_dict['creator_user'] = po_dict.get('user_name', '')
+                po_dict['approver_1'] = po_dict.get('approver_1', '')
+                po_dict['approver_2'] = po_dict.get('approver_2', '')
+                po_dict['approver_3'] = po_dict.get('approver_3', '')
+
+                all_po_data_list.append({
+                    "header": po_dict,
+                    "items": items_df.to_dict('records'),
+                    "payments": payments_df.to_dict('records')
+                })
+
+            # 4. Print
+            from po_document_generator import generate_multi_po_pdf
+            generate_multi_po_pdf(so_header_data=so_header_data, all_po_data=all_po_data_list)
+            
+            # ไม่ต้องปิดหน้าต่าง (เผื่ออยากพิมพ์ใบอื่นต่อ)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Print Failed: {e}", parent=self)
+            traceback.print_exc()

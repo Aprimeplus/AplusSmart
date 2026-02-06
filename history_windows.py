@@ -391,15 +391,18 @@ class PurchaseDetailWindow(CTkToplevel):
         self._create_summary_section(self.scroll_frame, self.po_data)
         self._create_items_section(self.scroll_frame, self.items_data)
         self._create_shipping_section(self.scroll_frame, self.po_data)
+        
+        # --- [🔥 เพิ่ม] สร้างส่วนค่าบริการตัด/เจาะ ---
+        self._create_cutting_section(self.scroll_frame, self.po_data)
+        # ----------------------------------------
+
         self._create_payments_section(self.scroll_frame, self.payments_data)
         self._create_approval_info_section(self.scroll_frame, self.po_data)
         
         self._recalculate_summary_totals()
 
-        # --- เพิ่มบรรทัดนี้เข้าไปท้ายสุด ---
         # หน่วงเวลาเล็กน้อยเพื่อให้แน่ใจว่า UI วาดเสร็จแล้วจึงค่อยปรับขนาดและตำแหน่ง
         self.after(100, self._position_window)
-
     def _create_section(self, parent, title):
         section_frame = CTkFrame(parent, corner_radius=10, border_width=1)
         section_frame.pack(fill="x", padx=10, pady=8)
@@ -681,6 +684,44 @@ class PurchaseDetailWindow(CTkToplevel):
         current_row += 1
 
         self._create_editable_row(shipping_frame, current_row, "ค่าย้าย:", data.get("relocation_cost"), key="relocation_cost", is_numeric=True)
+    
+    def _create_cutting_section(self, parent, data):
+        """สร้าง Section สำหรับค่าบริการตัด/เจาะ"""
+        cutting_frame = self._create_section(parent, "ค่าบริการตัด/เจาะ (Cutting/Drilling)")
+        current_row = 1
+
+        # ค่าบริการ (Cost)
+        self._create_editable_row(cutting_frame, current_row, "ค่าบริการตัด/เจาะ:", data.get("cutting_cost"), key="cutting_cost", is_numeric=True)
+        current_row += 1
+
+        # แสดง VAT 7% (คำนวณอัตโนมัติ)
+        CTkLabel(cutting_frame, text="VAT 7%:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        cutting_vat_display = CTkEntry(cutting_frame, state="readonly", fg_color="gray85")
+        cutting_vat_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["cutting_vat_display"] = cutting_vat_display
+        current_row += 1
+
+        # ตัวเลือกประเภท VAT / หัก ณ ที่จ่าย
+        self._create_dropdown_row(cutting_frame, current_row, "ประเภท VAT", data.get("cutting_vat_type"), key="cutting_vat_type", options=["VAT", "CASH"])
+        current_row += 1
+
+        wht_options = ["No", "1%", "3%"] # ตรงกับ Database Default 'No'
+        self._create_dropdown_row(cutting_frame, current_row, "หัก ณ ที่จ่าย", data.get("cutting_wht_type"), key="cutting_wht_type", options=wht_options)
+        current_row += 1
+
+        # แสดงยอดหัก ณ ที่จ่าย (คำนวณอัตโนมัติ)
+        CTkLabel(cutting_frame, text="ยอดหัก ณ ที่จ่าย:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        cutting_wht_display = CTkEntry(cutting_frame, state="readonly", fg_color="gray85")
+        cutting_wht_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        self.po_entries["cutting_wht_display"] = cutting_wht_display
+        current_row += 1
+
+        # หมายเหตุ
+        self._create_editable_row(cutting_frame, current_row, "หมายเหตุ:", data.get("cutting_remark"), key="cutting_remark")
+        
+        # Note แจ้งเตือน
+        CTkLabel(cutting_frame, text="(หมายเหตุ: ค่าตัด/เจาะ จะถูกรวมในต้นทุน แต่ไม่ถูกรวมในยอดที่ต้องจ่ายให้ซัพพลายเออร์)", 
+                 font=CTkFont(size=11, slant="italic"), text_color="gray50").grid(row=current_row+1, column=0, columnspan=2, padx=10, pady=5, sticky="w")
 
     def _create_summary_section(self, parent, data):
         summary_frame = self._create_section(parent, "สรุปยอด")
@@ -749,9 +790,10 @@ class PurchaseDetailWindow(CTkToplevel):
         if not self.winfo_exists():
             return
             
-        total_cost = 0.0 # <--- นี่คือยอดรวมย่อย (Subtotal)
+        total_cost = 0.0 # ยอดรวมย่อยสินค้า
         total_weight = 0.0
         
+        # 1. คำนวณยอดสินค้าจากตาราง
         for item_row in self.item_entries:
             try:
                 widgets = item_row['widgets']
@@ -776,30 +818,12 @@ class PurchaseDetailWindow(CTkToplevel):
                 if total_price_label and total_price_label.winfo_exists():
                     total_price_label.configure(text="Error")
 
-        # --- START: จุดที่แก้ไข ---
-        
-        # 1. ดึงค่าส่วนลดท้ายบิลมาทันที
+        # 2. ดึงค่าอื่นๆ
         try:
             if not self.po_entries['bill_discount'].winfo_exists(): return
             bill_discount = self.po_entries['bill_discount'].get_value()
-        except (KeyError, ValueError, TypeError):
-            bill_discount = 0.0
-
-        # 2. คำนวณต้นทุนสุทธิ (Net Cost) ที่คุณต้องการ
-        net_product_cost = total_cost - bill_discount
-
-        # 3. อัปเดต Label "ยอดรวมต้นทุนสินค้า" ให้แสดงเป็นยอดสุทธิ (5,700)
-        if hasattr(self, 'total_cost_label') and self.total_cost_label.winfo_exists():
-            self.total_cost_label.configure(text=f"{net_product_cost:,.2f}")
-        
-        # (อัปเดตน้ำหนักรวมตามปกติ)
-        if hasattr(self, 'total_weight_label') and self.total_weight_label.winfo_exists():
-            self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
-        
-        # 4. ดึงข้อมูลส่วนที่เหลือ (ค่าส่ง, ภาษี ฯลฯ)
-        try:
-            if not self.po_entries['shipping_to_stock_cost'].winfo_exists(): return
             
+            # Shipping Info
             shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value()
             shipping_stock_vat_type = self.po_entries['shipping_to_stock_vat_type'].get()
             shipping_stock_wht_type = self.po_entries['shipping_to_stock_wht_type'].get()
@@ -809,41 +833,84 @@ class PurchaseDetailWindow(CTkToplevel):
             shipping_site_wht_type = self.po_entries['shipping_to_site_wht_type'].get()
 
             relocation_cost = self.po_entries['relocation_cost'].get_value()
+            
+            # [🔥 NEW] ดึงค่าตัด/เจาะ
+            cutting_cost = 0.0
+            cutting_vat_type = "VAT"
+            cutting_wht_type = "No"
+            if 'cutting_cost' in self.po_entries:
+                cutting_cost = self.po_entries['cutting_cost'].get_value()
+                cutting_vat_type = self.po_entries['cutting_vat_type'].get()
+                cutting_wht_type = self.po_entries['cutting_wht_type'].get()
+
             wht_entry = self.po_entries.get('wht_3_percent')
             vat_entry = self.po_entries.get('vat_7_percent')
         
         except (KeyError, ValueError, TypeError):
-            return # ออกจากฟังก์ชันหาก Widget ยังไม่พร้อม
+            return 
 
-        # (ส่วนการคำนวณ VAT/WHT ของค่าส่ง ไม่มีการเปลี่ยนแปลง)
+        # 3. คำนวณต้นทุนรวม (Net PO Cost)
+        # สูตร: (ค่าสินค้า - ส่วนลด) + ค่าตัด/เจาะ
+        product_base_cost = total_cost - bill_discount
+        net_po_cost = product_base_cost + cutting_cost
+
+        # อัปเดต Label ต้นทุน (แสดงยอดรวมทั้งหมด)
+        if hasattr(self, 'total_cost_label') and self.total_cost_label.winfo_exists():
+            self.total_cost_label.configure(text=f"{net_po_cost:,.2f}")
+        
+        if hasattr(self, 'total_weight_label') and self.total_weight_label.winfo_exists():
+            self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
+
+        # 4. คำนวณการแสดงผล VAT/WHT ของส่วนเสริม
+        # (Shipping)
         stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
         site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
         if self.po_entries.get("shipping_to_stock_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_vat_display"], f"{stock_vat_amount:,.2f}")
         if self.po_entries.get("shipping_to_site_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_site_vat_display"], f"{site_vat_amount:,.2f}")
-        shipping_stock_wht_amount = shipping_stock * (0.01 if shipping_stock_wht_type == '1%' else 0.03 if shipping_stock_wht_type == '3%' else 0)
-        shipping_site_wht_amount = shipping_site * (0.01 if shipping_site_wht_type == '1%' else 0.03 if shipping_site_wht_type == '3%' else 0)
+        
+        stock_wht_rate = 0.01 if shipping_stock_wht_type == '1%' else 0.03 if shipping_stock_wht_type == '3%' else 0
+        site_wht_rate = 0.01 if shipping_site_wht_type == '1%' else 0.03 if shipping_site_wht_type == '3%' else 0
+        shipping_stock_wht_amount = shipping_stock * stock_wht_rate
+        shipping_site_wht_amount = shipping_site * site_wht_rate
         if self.po_entries.get("shipping_to_stock_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_wht_display"], f"{shipping_stock_wht_amount:,.2f}")
         if self.po_entries.get("shipping_to_site_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_site_wht_display"], f"{shipping_site_wht_amount:,.2f}")
 
-        # 5. ใช้ "ยอดสุทธิ" (5,700) เป็นฐานในการคำนวณภาษี
-        base_for_tax = net_product_cost # <--- ใช้ยอดสุทธิเป็นฐาน
+        # (Cutting - สำหรับแสดงผลเท่านั้น)
+        cutting_vat_amount = cutting_cost * 0.07 if cutting_vat_type == 'VAT' else 0.0
+        if self.po_entries.get("cutting_vat_display"): utils.set_entry_text(self.po_entries["cutting_vat_display"], f"{cutting_vat_amount:,.2f}")
+        
+        cutting_wht_rate = 0.01 if cutting_wht_type == '1%' else 0.03 if cutting_wht_type == '3%' else 0
+        cutting_wht_amount = cutting_cost * cutting_wht_rate
+        if self.po_entries.get("cutting_wht_display"): utils.set_entry_text(self.po_entries["cutting_wht_display"], f"{cutting_wht_amount:,.2f}")
+
+        # 5. คำนวณยอดที่ต้องจ่ายซัพพลายเออร์ (Grand Total)
+        # สูตร: ฐานภาษีสินค้า + VAT สินค้า - WHT สินค้า + ค่าขนส่ง (ถ้ามี)
+        # [🔥 สำคัญ] ไม่รวม Cutting Cost ในยอดจ่ายซัพพลายเออร์ (ตาม Logic ที่ตกลงกัน)
+        
+        # ฐานสำหรับคิด VAT (สินค้า - ส่วนลด)
+        base_for_tax = product_base_cost 
+        
+        # บวกค่าขนส่งเข้าฐาน VAT ถ้าเป็นประเภท VAT (เฉพาะที่จ่ายซัพฯ)
         if shipping_stock_vat_type == 'VAT': base_for_tax += shipping_stock
         if shipping_site_vat_type == 'VAT': base_for_tax += shipping_site
 
+        # คำนวณ VAT/WHT รวม
         vat_amount_total = base_for_tax * 0.07 if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() == 1 else 0.0
         wht_amount_products = base_for_tax * 0.03 if hasattr(self, 'wht_checkbox') and self.wht_checkbox.get() == 1 else 0.0
 
         if wht_entry and wht_entry.winfo_exists(): wht_entry.set(wht_amount_products)
         if vat_entry and vat_entry.winfo_exists(): vat_entry.set(vat_amount_total)
 
-        # 6. คำนวณยอดรวมสุทธิ (Grand Total)
-        non_vat_costs = 0.0
-        if shipping_stock_vat_type == 'CASH': non_vat_costs += shipping_stock
-        if shipping_site_vat_type == 'CASH': non_vat_costs += shipping_site
-        non_vat_costs += relocation_cost
-        
+        # ส่วนที่ไม่มี VAT (และต้องจ่ายซัพฯ)
+        non_vat_payable = 0.0
+        if shipping_stock_vat_type == 'CASH': non_vat_payable += shipping_stock
+        if shipping_site_vat_type == 'CASH': non_vat_payable += shipping_site
+        non_vat_payable += relocation_cost # ค่าย้าย (สมมติว่าจ่ายซัพฯ)
+
         total_wht_deduction = wht_amount_products + shipping_stock_wht_amount + shipping_site_wht_amount
-        grand_total = base_for_tax + vat_amount_total - total_wht_deduction + non_vat_costs
+        
+        # ยอดสุทธิ
+        grand_total = base_for_tax + vat_amount_total - total_wht_deduction + non_vat_payable
         
         if hasattr(self, 'grand_total_label') and self.grand_total_label.winfo_exists():
             self.grand_total_label.configure(text=f"{grand_total:,.2f}")
@@ -1356,6 +1423,28 @@ class PurchaseDetailWindow(CTkToplevel):
                 total_cost = utils.convert_to_float(self.total_cost_label.cget("text"))
                 grand_total = utils.convert_to_float(self.grand_total_label.cget("text"))
 
+                # [🔥 เพิ่ม] ดึงค่าตัดเจาะมาเตรียมไว้
+                cutting_cost = 0.0
+                cutting_vat_type = 'VAT'
+                cutting_wht_type = 'No'
+                cutting_remark = ''
+
+                if 'cutting_cost' in self.po_entries:
+                    cutting_cost = self.po_entries['cutting_cost'].get_value()
+                if 'cutting_vat_type' in self.po_entries:
+                    cutting_vat_type = self.po_entries['cutting_vat_type'].get()
+                if 'cutting_wht_type' in self.po_entries:
+                    cutting_wht_type = self.po_entries['cutting_wht_type'].get()
+                if 'cutting_remark' in self.po_entries:
+                    cutting_remark = self.po_entries['cutting_remark'].get().strip()
+
+                # คำนวณยอด VAT/WHT ของค่าตัดเจาะ (Derived Values)
+                cutting_vat_amount = cutting_cost * 0.07 if cutting_vat_type == 'VAT' else 0.0
+                cutting_wht_amount = 0.0
+                if cutting_wht_type == '1%': cutting_wht_amount = cutting_cost * 0.01
+                elif cutting_wht_type == '3%': cutting_wht_amount = cutting_cost * 0.03
+
+                # [🔥 แก้ไข] เพิ่มฟิลด์ cutting_... ในคำสั่ง UPDATE
                 cursor.execute("""
                     UPDATE purchase_orders SET 
                         so_number = %s, po_number = %s, supplier_name = %s, 
@@ -1367,11 +1456,15 @@ class PurchaseDetailWindow(CTkToplevel):
                         shipping_to_stock_wht_type = %s, shipping_to_stock_notes = %s,
                         shipping_to_site_vat_type = %s, shipping_to_site_shipper = %s,
                         shipping_to_site_wht_type = %s, shipping_to_site_notes = %s,
+                        
+                        cutting_cost = %s, cutting_vat_type = %s, cutting_vat_amount = %s,
+                        cutting_wht_type = %s, cutting_wht_amount = %s, cutting_remark = %s,
+
                         wht_3_percent_checked = %s, vat_7_percent_checked = %s,
                         bill_discount = %s
                     WHERE id = %s
                 """, (
-                    new_so_number, # <-- ใช้ตัวแปรใหม่
+                    new_so_number,
                     self.po_entries['po_number'].get(),
                     supplier_name,
                     self.po_entries['credit_term'].get(), self.po_entries['po_mode'].get(),
@@ -1389,6 +1482,11 @@ class PurchaseDetailWindow(CTkToplevel):
                     self.po_entries['shipping_to_site_shipper'].get(),
                     self.po_entries['shipping_to_site_wht_type'].get(),
                     self.po_entries['shipping_to_site_notes'].get(),
+                    
+                    # Params สำหรับค่าตัดเจาะ
+                    cutting_cost, cutting_vat_type, cutting_vat_amount,
+                    cutting_wht_type, cutting_wht_amount, cutting_remark,
+
                     bool(self.wht_checkbox.get()),
                     bool(self.vat_checkbox.get()),
                     self.po_entries['bill_discount'].get_value(),
@@ -3178,3 +3276,4 @@ class CancelledHistoryWindow(CTkToplevel): # <-- แก้จาก ctk.CTkTople
             print(f"Error loading cancelled history: {e}")
             import traceback
             traceback.print_exc()
+
