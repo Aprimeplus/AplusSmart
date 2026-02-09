@@ -20,6 +20,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
     # ==================================================================================
     # HELPER: ฟังก์ชันสำหรับเตรียมข้อมูลและคำนวณกำไรสุทธิ (Core Logic)
     # ==================================================================================
+   
     def prepare_and_calculate_profit(df):
         # 1. Fill NA ให้ครบทุกฟิลด์ที่ต้องใช้
         cols_to_fix = [
@@ -27,14 +28,14 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'difference_amount', 'payment_before_vat', 'payment_no_vat', 
             
             # --- [SO Revenue Fields] ---
-            'shipping_cost',       # EXP-0006: ค่าขนส่ง (Site)
-            'relocation_cost',     # [🔥 สำคัญ] ค่าย้าย (Stock) จาก Delivery Note
-            'so_cutting_rev',      # ค่าตัด (Revenue)
-            'so_service_rev',      # ค่าบริการอื่นๆ (Revenue)
+            'shipping_cost',       # รายได้ค่าขนส่ง (Site)
+            'relocation_cost',     # รายได้ค่าย้าย (Stock) จาก Delivery Note
+            'so_cutting_rev',      # รายได้ค่าตัด (Revenue)
+            'so_service_rev',      # รายได้บริการอื่นๆ (Revenue)
             
-            # --- [PO Cost Fields] ---
-            'po_shipping_site_cost',  # PO: ค่าส่งเข้าไซต์
-            'po_shipping_stock_cost', # PO: ค่าส่งเข้าสต็อก
+            # --- [PO Cost Fields] (แก้ชื่อให้ตรงกับ DB) ---
+            'shipping_to_site_cost',   # <--- แก้จาก po_shipping_site_cost
+            'shipping_to_stock_cost',  # <--- แก้จาก po_shipping_stock_cost
             'po_cutting_cost',        # PO: ค่าตัด
             'po_service_cost'         # PO: ค่าบริการ
         ]
@@ -56,13 +57,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         # =========================================================
         
         # 1. คู่ค่าส่งเข้าไซต์ (Site): จับคู่ชนกัน
-        # รายรับ (shipping_cost) vs รายจ่าย (po_shipping_site_cost)
-        deduct_site_shipping = (df['po_shipping_site_cost'] - df['shipping_cost']).clip(lower=0)
+        # รายรับ (shipping_cost) vs รายจ่าย (shipping_to_site_cost)
+        deduct_site_shipping = (df['shipping_to_site_cost'] - df['shipping_cost']).clip(lower=0)
         
-        # 2. คู่ค่าย้ายเข้าสต็อก (Stock): จับคู่ชนกัน [🔥 แก้ไข]
-        # รายรับ (relocation_cost) vs รายจ่าย (po_shipping_stock_cost)
-        # ใช้ยอดจากช่อง Delivery Note มาช่วยหักลบต้นทุน
-        deduct_stock_shipping = (df['po_shipping_stock_cost'] - df['relocation_cost']).clip(lower=0)
+        # 2. คู่ค่าย้ายเข้าสต็อก (Stock): จับคู่ชนกัน
+        # รายรับ (relocation_cost) vs รายจ่าย (shipping_to_stock_cost)
+        deduct_stock_shipping = (df['shipping_to_stock_cost'] - df['relocation_cost']).clip(lower=0)
         
         # 3. คู่ค่าตัด/เจาะ: จับคู่ชนกัน
         deduct_cutting = (df['po_cutting_cost'] - df['so_cutting_rev']).clip(lower=0)
@@ -72,9 +72,6 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         # --- คำนวณต้นทุนสินค้าหลัก (Main Cost Calculation) ---
         # ต้องหักต้นทุนพิเศษออกจาก "ต้นทุนรวมใน PO" ก่อนนำไปคูณ 1.03
-        # เพราะต้นทุนพวกนี้ (ค่าตัด, ค่าบริการ) ถูกแยกไปคิดแบบ Matching ข้างบนแล้ว
-        
-        # หมายเหตุ: ค่าขนส่ง (Shipping/Stock) ปกติอยู่ช่องล่าง ไม่ได้รวมใน final_cost_amount อยู่แล้ว จึงไม่ต้องหักออก
         adjusted_po_cost = df['final_cost_amount'] - df['po_cutting_cost'] - df['po_service_cost']
         adjusted_po_cost = adjusted_po_cost.clip(lower=0)
 
@@ -94,6 +91,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         df['margin'] = (df['profit'] / df['sales_service_amount'].replace(0, np.nan)) * 100
         df['margin'] = df['margin'].fillna(0)
 
+        # [🔥 เพิ่ม] บันทึกค่า Excess ลง DataFrame เพื่อให้ Plan อื่นเรียกใช้ทำ Report ได้
+        df['excess_site_shipping'] = deduct_site_shipping
+        df['excess_stock_shipping'] = deduct_stock_shipping
+
         # --- Debug Print (แสดงผลเมื่อมีการหักลบยอด) ---
         check_sum = deduct_site_shipping.sum() + deduct_stock_shipping.sum() + deduct_cutting.sum() + deduct_service.sum()
         if check_sum > 0:
@@ -105,9 +106,9 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             for index, row in temp_df.iterrows():
                 print(f"📄 SO: {row.get('so_number', 'N/A')}")
                 if deduct_site_shipping[index] > 0:
-                    print(f"   🚚 ค่ารถ Site (Excess): จ่าย {row['po_shipping_site_cost']:,.2f} - รับ {row['shipping_cost']:,.2f} = หักกำไร {deduct_site_shipping[index]:,.2f}")
+                    print(f"   🚚 ค่ารถ Site (Excess): จ่าย {row['shipping_to_site_cost']:,.2f} - รับ {row['shipping_cost']:,.2f} = หักกำไร {deduct_site_shipping[index]:,.2f}")
                 if deduct_stock_shipping[index] > 0:
-                    print(f"   🏭 ค่าย้าย Stock (Excess): จ่าย {row['po_shipping_stock_cost']:,.2f} - รับ {row['relocation_cost']:,.2f} = หักกำไร {deduct_stock_shipping[index]:,.2f}")
+                    print(f"   🏭 ค่าย้าย Stock (Excess): จ่าย {row['shipping_to_stock_cost']:,.2f} - รับ {row['relocation_cost']:,.2f} = หักกำไร {deduct_stock_shipping[index]:,.2f}")
                 if deduct_cutting[index] > 0:
                     print(f"   ✂️ ค่าตัด (Excess): จ่าย {row['po_cutting_cost']:,.2f} - รับ {row['so_cutting_rev']:,.2f} = หักกำไร {deduct_cutting[index]:,.2f}")
                 print("-" * 60)
@@ -120,6 +121,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
     # ==================================================================================
     if plan_name == 'Plan A':
         # 1. เตรียมข้อมูล & คำนวณ Profit (ใช้ Helper Function ด้านบน)
+        # [🔥 สำคัญ] ขั้นตอนนี้กำไรจะถูกหักลบด้วยค่าขนส่งส่วนเกินแล้ว
         comm_df = prepare_and_calculate_profit(comm_df)
         
         # 2. คำนวณยอดขายรวม
@@ -127,10 +129,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         
         initial_commission = 0.0
         calculated_commission = 0.0
-        commission_normal = 0.0
-        commission_below = 0.0
         
-        # ค่าดำเนินการ (ถ้าไม่มีให้ใช้ 25,000)
+        # ค่าดำเนินการ (Default 25,000)
         OPERATING_FEE = 25000.00 if operating_fee is None else operating_fee
         
         # ตรวจสอบเงื่อนไขยอดขายขั้นต่ำ
@@ -179,9 +179,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         net_commission = pre_tax_commission - withholding_tax
 
         # --- 4. สร้างตาราง Breakdown ---
+        # [🔥 เพิ่ม] คอลัมน์ Shipping เพื่อให้เห็นรายละเอียด
         so_breakdown_df = comm_df[[
             'so_number', 'sales_service_amount', 'final_cost_amount', 
-            'po_cutting_cost', 'po_service_cost', # แสดงต้นทุนพิเศษให้เห็น
+            'shipping_to_stock_cost', 'shipping_to_site_cost', # เพิ่มตรงนี้
             'profit', 'margin', 'commission_amount', 'cost_multiplier'
         ]].copy()
         
@@ -190,8 +191,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'so_number': 'SO Number',
             'sales_service_amount': 'ยอดขาย', 
             'final_cost_amount': 'ต้นทุนสินค้า', 
-            'po_cutting_cost': 'ทุนตัด/เจาะ',
-            'po_service_cost': 'ทุนบริการ',
+            'shipping_to_stock_cost': 'ค่าย้าย(Stock)',
+            'shipping_to_site_cost': 'ค่ารถ(Site)',
             'profit': 'กำไรสุทธิ', 
             'margin': 'Margin (%)', 
             'commission_amount': 'ค่าคอมฯ (ก่อนหัก)'
@@ -245,15 +246,16 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         if comm_df.empty: 
             return {'type': 'summary_other', 'data': pd.DataFrame({'description': ["ยอดรวม"], 'value': [0.0]})}
         
-        # 1. เตรียมข้อมูล & คำนวณ Profit รายบรรทัด (เรียกใช้ Helper Function ที่แก้ไขไป)
-        # * ขั้นตอนนี้ EXP-0174 จะถูกรวมยอดขาย และหักต้นทุนค่าส่งสต็อกเรียบร้อยแล้วในค่า 'profit'
+        # 1. เตรียมข้อมูล & คำนวณ Profit รายบรรทัด (เรียกใช้ Helper Function)
+        # [🔥 สำคัญ] ขั้นตอนนี้กำไรสุทธิ (Profit) จะถูกคำนวณโดยหัก "ส่วนต่างค่าขนส่ง (Excess)" เรียบร้อยแล้ว
+        # ดังนั้น เมื่อเรารวมยอด Profit ในขั้นตอนต่อไป เราจะได้กำไรที่ถูกต้องตามจริง
         comm_df = prepare_and_calculate_profit(comm_df)
 
         if 'po_number' not in comm_df.columns: 
             comm_df['po_number'] = comm_df['so_number']
         
         # 2. รวมยอดตามใบสั่งซื้อ (Group by PO)
-        # เราต้องรวม Profit ที่คำนวณมาแล้ว เพื่อให้ได้กำไรสุทธิจริงของ PO นั้นๆ
+        # เราต้องรวม Profit ที่คำนวณมาแล้ว เพื่อให้ได้กำไรสุทธิจริงของ PO นั้นๆ (ซึ่งอาจประกอบด้วยหลาย SO)
         agg_rules = {
             'sales_service_amount': 'sum', 
             'giveaways': 'sum', 
@@ -261,15 +263,27 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'difference_amount': 'sum', 
             'final_cost_amount': 'sum', 
             'cost_multiplier': 'first', 
-            'so_number': lambda x: ', '.join(sorted(set(x))),
+            'so_number': lambda x: ', '.join(sorted(set(str(v) for v in x))),
             'profit': 'sum', # รวม Profit (ที่หักลบทุกอย่างมาแล้ว)
             
             # รวมยอดพิเศษเพื่อแสดงใน Breakdown (Option)
             'po_cutting_cost': 'sum', 
             'po_service_cost': 'sum',
-            'po_shipping_stock_cost': 'sum' # รวมต้นทุนค่าย้ายด้วย
+            'shipping_to_stock_cost': 'sum', # รวมต้นทุนค่าย้าย (Stock)
+            'shipping_to_site_cost': 'sum',  # รวมต้นทุนค่ารถ (Site)
+            'relocation_cost': 'sum',        # รวมรายรับค่าย้าย
+            'shipping_cost': 'sum',          # รวมรายรับค่ารถ
+            
+            # เก็บค่า Excess ไว้ดูเล่นใน Breakdown (ถ้าต้องการ)
+            'excess_site_shipping': 'sum',
+            'excess_stock_shipping': 'sum'
         }
-        po_grouped_df = comm_df.groupby('po_number').agg(agg_rules).reset_index()
+        
+        # ต้องระวัง Error กรณีคอลัมน์ไม่มีจริง (ถึงแม้ prepare_and_calculate_profit จะสร้างให้แล้วก็ตาม)
+        # กรองเอาเฉพาะคอลัมน์ที่มีอยู่จริงใน comm_df มาใส่ใน agg_rules
+        valid_agg_rules = {k: v for k, v in agg_rules.items() if k in comm_df.columns}
+        
+        po_grouped_df = comm_df.groupby('po_number').agg(valid_agg_rules).reset_index()
 
         # 3. คำนวณ Margin ใหม่จากยอดรวมของ PO
         # Margin = (กำไรสุทธิรวม / ยอดขายรวม) * 100
@@ -277,25 +291,36 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         po_grouped_df['margin'] = po_grouped_df['margin'].fillna(0)
 
         # 4. แบ่ง Tier ตาม Margin ของ PO
+        # Tier 1 (Normal): Margin >= 10%
         standard_margin_df = po_grouped_df[po_grouped_df['margin'] >= 10]
+        
+        # Tier 2 (Below 1): Margin 7.99% - 9.99%
         below_tier1_df = po_grouped_df[(po_grouped_df['margin'] >= 7.99) & (po_grouped_df['margin'] < 10)]
+        
+        # Tier 3 (Below 2): Margin < 7.99%
         below_tier2_df = po_grouped_df[po_grouped_df['margin'] < 7.99]
         
+        # รวมยอดขายแต่ละกลุ่ม
         total_standard_sales = standard_margin_df['sales_service_amount'].sum()
         total_below_tier1_sales = below_tier1_df['sales_service_amount'].sum()
         total_below_tier2_sales = below_tier2_df['sales_service_amount'].sum()
         total_monthly_sales = total_standard_sales + total_below_tier1_sales + total_below_tier2_sales
         
-        # คำนวณ Below Tier Commission (0.63% และ 0.50%)
+        # คำนวณ Below Tier Commission (คิดจากยอดขาย)
+        # Tier 2: 0.63%
         commission_below_t1 = total_below_tier1_sales * 0.0063
+        # Tier 3: 0.50%
         commission_below_t2 = total_below_tier2_sales * 0.0050
+        
         below_tier_commission = commission_below_t1 + commission_below_t2
 
-        # เตรียมฐานคำนวณ Normal Tier
+        # เตรียมฐานคำนวณ Normal Tier (Waterfall Logic)
         total_brokerage_fee = po_grouped_df['brokerage_fee'].sum()
+        
+        # ค่าดำเนินการ (Default 100,000 สำหรับ Plan B)
         OPERATING_FEE = 100000.00 if operating_fee is None else operating_fee
         
-        # ฐานคอม = ยอดขาย Normal - ค่านายหน้า - ค่าดำเนินการ (100,000)
+        # ฐานคอม = ยอดขาย Normal - ค่านายหน้า - ค่าดำเนินการ
         commission_base = max(0, total_standard_sales - total_brokerage_fee - OPERATING_FEE)
         
         t1, t2, t3, tier_commission, calculated_commission = 0, 0, 0, 0, 0
@@ -325,7 +350,9 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             # ไม่ผ่านเป้าขั้นต่ำ -> ได้ 0
             calculated_commission = 0.0
 
-        # 5. สรุปยอดเงิน (Financials)
+        commission_base_normal = commission_base # For reporting
+
+        # 5. สรุปยอดเงินสุดท้าย (Financials)
         gross_commission = calculated_commission + total_incentives
         pre_tax_commission = gross_commission - total_additional_deductions
         withholding_tax = pre_tax_commission * 0.03
@@ -343,7 +370,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             total_monthly_sales, 
             total_standard_sales, 
             OPERATING_FEE, 
-            commission_base, 
+            commission_base_normal, 
             calculated_commission
         ]
         
@@ -355,10 +382,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         summary_desc.extend(["ยอดคอมมิชชั่นก่อนหักภาษี", "(-) หัก ณ ที่จ่าย 3%", "ยอดสรุปคอมหลังหัก ณ ที่จ่าย"])
         summary_val.extend([pre_tax_commission, withholding_tax, net_commission])
 
-        # สร้างตาราง Breakdown (แสดงรายละเอียดตาม PO)
+        # สร้างตาราง Breakdown (แสดงรายละเอียดตาม PO) - ปรับปรุงคอลัมน์ให้ครบถ้วน
         so_breakdown_df = po_grouped_df[[
             'po_number', 'so_number', 'sales_service_amount', 'final_cost_amount', 
             'po_cutting_cost', 'po_service_cost',
+            'shipping_to_stock_cost', 'shipping_to_site_cost',
+            'excess_stock_shipping', 'excess_site_shipping',
             'profit', 'margin', 'cost_multiplier'
         ]].copy()
         
@@ -374,6 +403,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'final_cost_amount': 'ต้นทุนรวม',
             'po_cutting_cost': 'ทุนค่าตัด',
             'po_service_cost': 'ทุนบริการ',
+            'shipping_to_stock_cost': 'ทุนเข้าStock',
+            'shipping_to_site_cost': 'ทุนเข้าSite',
+            'excess_stock_shipping': 'หักส่วนต่างStock',
+            'excess_site_shipping': 'หักส่วนต่างSite',
             'profit': 'กำไรสุทธิ',
             'margin': 'Margin (%)'
         }, inplace=True)
@@ -394,11 +427,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             return {'type': 'summary_other', 'data': pd.DataFrame({'description': ["ยอดรวม"], 'value': [0.0]})}
         
         # 1. เตรียมข้อมูล & คำนวณ Profit (ใช้ Helper Function ที่แก้ไขแล้ว)
-        # * EXP-0174 (ค่าย้าย) จะถูกรวมในยอดขาย และหักค่าส่งสต็อกเป็นค่าใช้จ่ายให้เรียบร้อย
+        # [🔥 สำคัญ] ขั้นตอนนี้กำไรสุทธิ (Profit) จะถูกคำนวณโดยหัก "ส่วนต่างค่าขนส่ง (Excess)" เรียบร้อยแล้ว
+        # และ EXP-0174 (ค่าย้าย) จะถูกจัดการใน Logic ของ Matching Stock Shipping
         comm_df = prepare_and_calculate_profit(comm_df)
 
         # --- 2. แบ่งกลุ่มตาม Margin และรวมยอดขาย ---
-        # Tier 1: Margin >= 10%
+        # Tier 1 (Normal): Margin >= 10%
         tier1_df = comm_df[comm_df['margin'] >= 10]
         tier1_sales = tier1_df['sales_service_amount'].sum()
         
@@ -413,7 +447,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         total_sales = tier1_sales + tier2_sales + tier3_sales
         
         # --- 3. คำนวณค่าคอมมิชชั่น ---
+        # ค่าดำเนินการ (Default 100,000 สำหรับ Plan C)
         OPERATING_FEE = 100000.00 if operating_fee is None else operating_fee
+        
+        # ค่านายหน้า
         total_brokerage = comm_df['brokerage_fee'].sum()
         
         # ยอดหักรวม (Deduction Pool)
@@ -454,7 +491,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         withholding_tax = pre_tax_commission * 0.03
         net_commission = pre_tax_commission - withholding_tax
 
-        # --- 5. สร้าง Debug Report ---
+        # --- 5. สร้าง Debug Report (สำหรับตรวจสอบที่มาตัวเลข) ---
         debug_details = []
         debug_details.append({'รายการ': '## 1. สรุปยอดขาย (Sale Summary) ##', 'ค่า': ''})
         debug_details.append({'รายการ': 'Commission Plan', 'ค่า': plan_name})
@@ -495,14 +532,21 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         summary_val = [tier1_sales, tier2_sales, tier3_sales, calculated_commission]
         
         # เพิ่มส่วนเสริมใน Summary
-        summary_desc.append("ยอดคอมมิชชั่นขั้นต้น (Gross)"); summary_val.append(gross_commission)
+        summary_desc.append("ยอดคอมมิชชั่นขั้นต้น (Gross Commission)"); summary_val.append(gross_commission)
+        
+        for k, v in additional_deductions.items():
+            summary_desc.append(f"(-) หัก {k}")
+            summary_val.append(v)
+
         summary_desc.extend(["ยอดคอมมิชชั่นก่อนหักภาษี", "(-) หัก ณ ที่จ่าย 3%", "ยอดสรุปคอมหลังหัก ณ ที่จ่าย"])
         summary_val.extend([pre_tax_commission, withholding_tax, net_commission])
         
-        # สร้าง Breakdown Table
+        # สร้าง Breakdown Table - เพิ่มคอลัมน์ Shipping Breakdown
         so_breakdown_df = comm_df[[
             'so_number', 'sales_service_amount', 'final_cost_amount', 
             'po_cutting_cost', 'po_service_cost',
+            'shipping_to_stock_cost', 'shipping_to_site_cost',
+            'excess_stock_shipping', 'excess_site_shipping',
             'profit', 'margin', 'cost_multiplier'
         ]].copy()
         
@@ -519,6 +563,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'final_cost_amount': 'ต้นทุนรวม',
             'po_cutting_cost': 'ทุนตัด',
             'po_service_cost': 'ทุนบริการ',
+            'shipping_to_stock_cost': 'ทุนเข้าStock',
+            'shipping_to_site_cost': 'ทุนเข้าSite',
+            'excess_stock_shipping': 'หักส่วนต่างStock',
+            'excess_site_shipping': 'หักส่วนต่างSite',
             'profit': 'กำไร',
             'margin': 'Margin (%)'
         }, inplace=True)
@@ -533,12 +581,16 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
     # ==================================================================================
     # PLAN D (Logic คล้าย Plan B)
     # ==================================================================================
+    # ==================================================================================
+    # PLAN D (Logic คล้าย Plan C แต่ Fee/Rate ต่างกัน)
+    # ==================================================================================
     elif plan_name == 'Plan D':
         if comm_df.empty: 
             return {'type': 'summary_other', 'data': pd.DataFrame({'description': ["ยอดรวม"], 'value': [0.0]})}
         
-        # 1. เตรียมข้อมูล & คำนวณ Profit (เรียกใช้ Helper Function ที่แก้ไขแล้ว)
-        # * EXP-0174 (ค่าย้าย) จะถูกรวมในยอดขาย และหักค่าส่งสต็อกเป็นค่าใช้จ่ายให้เรียบร้อย
+        # 1. เตรียมข้อมูล & คำนวณ Profit (ใช้ Helper Function ที่แก้ไขแล้ว)
+        # [🔥 สำคัญ] ขั้นตอนนี้กำไรสุทธิ (Profit) จะถูกคำนวณโดยหัก "ส่วนต่างค่าขนส่ง (Excess)" เรียบร้อยแล้ว
+        # และ EXP-0174 (ค่าย้าย) จะถูกจัดการใน Logic ของ Matching Stock Shipping
         comm_df = prepare_and_calculate_profit(comm_df)
         
         # --- 2. แบ่งกลุ่มและรวมยอดขาย ---
@@ -585,6 +637,9 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             below_tier_commission = commission_base_below * 0.003 # Rate Below = 0.3%
             
             calculated_commission = normal_commission + below_tier_commission
+        else:
+             # ไม่ผ่านเป้าขั้นต่ำ
+             calculated_commission = 0.0
         
         # --- 4. สรุปยอดเงิน (Financials) ---
         gross_commission = calculated_commission + total_incentives
@@ -632,9 +687,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         debug_df = pd.DataFrame(debug_details)
         
         # --- 6. สร้างตาราง Breakdown ---
+        # [🔥 แก้ไข] เพิ่มคอลัมน์ Shipping Breakdown
         so_breakdown_df = comm_df[[
             'so_number', 'sales_service_amount', 'final_cost_amount', 
             'po_cutting_cost', 'po_service_cost',
+            'shipping_to_stock_cost', 'shipping_to_site_cost',
+            'excess_stock_shipping', 'excess_site_shipping',
             'profit', 'margin', 'cost_multiplier'
         ]].copy()
         
@@ -645,6 +703,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'final_cost_amount': 'ต้นทุนรวม', 
             'po_cutting_cost': 'ทุนตัด',
             'po_service_cost': 'ทุนบริการ',
+            'shipping_to_stock_cost': 'ทุนเข้าStock',
+            'shipping_to_site_cost': 'ทุนเข้าSite',
+            'excess_stock_shipping': 'หักส่วนต่างStock',
+            'excess_site_shipping': 'หักส่วนต่างSite',
             'profit': 'กำไร', 
             'margin': 'Margin (%)'
         }, inplace=True)
@@ -669,5 +731,6 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'so_breakdown_df': so_breakdown_df
         }
     
+    # กรณีไม่ใช่ Plan A-D หรือ Plan อื่นๆ ที่ยังไม่รองรับ
     else:   
          return {'type': 'error', 'message': f'ไม่พบ Plan ที่ชื่อว่า {plan_name}'}

@@ -337,6 +337,8 @@ class PurchaseDetailWindow(CTkToplevel):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # 1. ดึงข้อมูล Header ของ PO
+                # ใช้ SELECT * เพื่อให้ได้คอลัมน์ใหม่ (shipping_to_stock_driver ฯลฯ) มาด้วยอัตโนมัติ
                 cursor.execute("SELECT * FROM purchase_orders WHERE id = %s", (self.purchase_id,))
                 po_data = cursor.fetchone()
                 
@@ -347,30 +349,37 @@ class PurchaseDetailWindow(CTkToplevel):
 
                 self.po_data = dict(po_data)
                 
+                # 2. ดึงข้อมูล Supplier เพิ่มเติม (รหัส และ เครดิต)
                 supplier_name = self.po_data.get('supplier_name')
                 if supplier_name:
                     cursor.execute("SELECT supplier_code, credit_term FROM suppliers WHERE supplier_name = %s LIMIT 1", (supplier_name,))
                     supplier_info = cursor.fetchone()
                     if supplier_info:
                         self.po_data['supplier_code'] = supplier_info['supplier_code']
-                        self.po_data['credit_term'] = supplier_info['credit_term']
+                        # ถ้าใน PO ไม่มีเครดิต (เป็นค่าว่าง) ให้ดึงจาก Supplier Master มาใช้
+                        if not self.po_data.get('credit_term'):
+                            self.po_data['credit_term'] = supplier_info['credit_term']
                     else:
                         self.po_data['supplier_code'] = ""
-                        self.po_data['credit_term'] = ""
+                        # self.po_data['credit_term'] คงค่าเดิมไว้
 
+                # 3. ดึงรายการสินค้า (Items)
                 cursor.execute("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", (self.purchase_id,))
                 items_data = cursor.fetchall()
+
+                # 4. ดึงรายการชำระเงิน (Payments)
                 cursor.execute("SELECT * FROM purchase_order_payments WHERE purchase_order_id = %s ORDER BY id", (self.purchase_id,))
                 payments_data = cursor.fetchall()
 
+            # แปลงข้อมูลเป็น List of Dict
             self.items_data = [dict(item) for item in items_data]
             self.payments_data = [dict(payment) for payment in payments_data]
 
-            # --- START: แก้ไขจุดนี้ ---
-            # สั่งให้สร้างปุ่มต่างๆ หลังจากมี self.po_data แล้ว
+            # --- [สำคัญ] สร้างปุ่มและหน้าจอ ---
+            # ต้องสร้างปุ่มหลังจากโหลด self.po_data เสร็จแล้ว เพราะต้องเช็ค Status
             self._create_action_buttons()
-            # --- END ---
             
+            # สร้างหน้าจอแสดงผล (Shipping, Items, Cutting ฯลฯ)
             self._create_formatted_view()
 
         except Exception as e:
@@ -598,22 +607,24 @@ class PurchaseDetailWindow(CTkToplevel):
 # ให้นำฟังก์ชันนี้ไปวางทับของเดิม
 
     def _create_shipping_section(self, parent, data):
-        shipping_frame = self._create_section(parent, "ข้อมูลการจัดส่ง")
+        """สร้าง Section สำหรับข้อมูลการจัดส่ง (แก้ไข: เพิ่มคนขับ/ทะเบียน)"""
+        shipping_frame = self._create_section(parent, "ข้อมูลการจัดส่ง (Shipping)")
         current_row = 1
 
-        # --- Sub-section: ค่าส่งเข้าสต๊อก ---
-        CTkLabel(shipping_frame, text="--- ค่าจัดส่งเข้าสต๊อก ---", font=CTkFont(weight="bold")).grid(row=current_row, column=0, columnspan=2, pady=(5,2), sticky="w", padx=10)
+        # --- 1. ค่าจัดส่งเข้าสต๊อก ---
+        CTkLabel(shipping_frame, text="--- [1] ค่าจัดส่งเข้าสต๊อก ---", font=CTkFont(weight="bold"), text_color="#B91C1C").grid(row=current_row, column=0, columnspan=2, pady=(10,5), sticky="w", padx=10)
         current_row += 1
 
         self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าสต๊อก:", data.get("shipping_to_stock_cost"), key="shipping_to_stock_cost", is_numeric=True)
         current_row += 1
-
-        CTkLabel(shipping_frame, text="VAT 7%:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
-        stock_vat_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
-        stock_vat_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
-        self.po_entries["shipping_to_stock_vat_display"] = stock_vat_display
+        
+        # [🔥 เพิ่ม] คนขับ + ทะเบียน (Stock)
+        self._create_editable_row(shipping_frame, current_row, "คนขับ (Stock):", data.get("shipping_to_stock_driver"), key="shipping_to_stock_driver")
+        current_row += 1
+        self._create_editable_row(shipping_frame, current_row, "ทะเบียน (Stock):", data.get("shipping_to_stock_plate"), key="shipping_to_stock_plate")
         current_row += 1
 
+        # วันที่
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าสต๊อก:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         stock_date_selector = DateSelector(shipping_frame)
         stock_date_selector.set_date(data.get("shipping_to_stock_date"))
@@ -621,69 +632,56 @@ class PurchaseDetailWindow(CTkToplevel):
         self.po_entries["shipping_to_stock_date"] = stock_date_selector
         current_row += 1
 
-        self._create_dropdown_row(shipping_frame, current_row, "ประเภท VAT", data.get("shipping_to_stock_vat_type"), key="shipping_to_stock_vat_type", options=["VAT", "CASH"])
-        current_row += 1
-        
+        # ตัวเลือกอื่นๆ
         shipper_options = ["ซัพพลายเออร์จัดส่ง", "Aplus Logistic", "Lalamove/Others"]
         self._create_dropdown_row(shipping_frame, current_row, "ผู้จัดส่ง", data.get("shipping_to_stock_shipper"), key="shipping_to_stock_shipper", options=shipper_options)
         current_row += 1
-
+        
+        self._create_dropdown_row(shipping_frame, current_row, "ประเภท VAT", data.get("shipping_to_stock_vat_type"), key="shipping_to_stock_vat_type", options=["VAT", "CASH"])
+        current_row += 1
+        
         wht_options = ["ไม่มีหัก", "1%", "3%"]
         self._create_dropdown_row(shipping_frame, current_row, "หัก ณ ที่จ่าย", data.get("shipping_to_stock_wht_type"), key="shipping_to_stock_wht_type", options=wht_options)
         current_row += 1
         
-        # --- START: เพิ่มช่องแสดงยอดหัก ณ ที่จ่าย (สต๊อก) ---
-        CTkLabel(shipping_frame, text="ยอดหัก ณ ที่จ่าย:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
-        stock_wht_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
-        stock_wht_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
-        self.po_entries["shipping_to_stock_wht_display"] = stock_wht_display
-        current_row += 1
-        # --- END ---
-        
         self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_stock_notes"), key="shipping_to_stock_notes")
         current_row += 1
 
-        # --- Sub-section: ค่าส่งเข้าไซต์ ---
-        CTkLabel(shipping_frame, text="--- ค่าจัดส่งเข้าไซต์ ---", font=CTkFont(weight="bold")).grid(row=current_row, column=0, columnspan=2, pady=(10,2), sticky="w", padx=10)
+        # --- 2. ค่าจัดส่งเข้าไซต์ ---
+        CTkLabel(shipping_frame, text="--- [2] ค่าจัดส่งเข้าไซต์ ---", font=CTkFont(weight="bold"), text_color="#1D4ED8").grid(row=current_row, column=0, columnspan=2, pady=(15,5), sticky="w", padx=10)
         current_row += 1
 
         self._create_editable_row(shipping_frame, current_row, "ค่าส่งเข้าไซต์:", data.get("shipping_to_site_cost"), key="shipping_to_site_cost", is_numeric=True)
         current_row += 1
         
-        CTkLabel(shipping_frame, text="VAT 7%:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
-        site_vat_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
-        site_vat_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
-        self.po_entries["shipping_to_site_vat_display"] = site_vat_display
+        # [🔥 เพิ่ม] คนขับ + ทะเบียน (Site)
+        self._create_editable_row(shipping_frame, current_row, "คนขับ (Site):", data.get("shipping_to_site_driver"), key="shipping_to_site_driver")
+        current_row += 1
+        self._create_editable_row(shipping_frame, current_row, "ทะเบียน (Site):", data.get("shipping_to_site_plate"), key="shipping_to_site_plate")
         current_row += 1
 
+        # วันที่
         CTkLabel(shipping_frame, text="วันที่ส่งเข้าไซต์:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
         site_date_selector = DateSelector(shipping_frame)
         site_date_selector.set_date(data.get("shipping_to_site_date"))
         site_date_selector.grid(row=current_row, column=1, padx=10, pady=5, sticky="w")
         self.po_entries["shipping_to_site_date"] = site_date_selector
         current_row += 1
+
+        # ตัวเลือกอื่นๆ
+        self._create_dropdown_row(shipping_frame, current_row, "ผู้จัดส่ง", data.get("shipping_to_site_shipper"), key="shipping_to_site_shipper", options=shipper_options)
+        current_row += 1
         
         self._create_dropdown_row(shipping_frame, current_row, "ประเภท VAT", data.get("shipping_to_site_vat_type"), key="shipping_to_site_vat_type", options=["VAT", "CASH"])
         current_row += 1
         
-        self._create_dropdown_row(shipping_frame, current_row, "ผู้จัดส่ง", data.get("shipping_to_site_shipper"), key="shipping_to_site_shipper", options=shipper_options)
-        current_row += 1
-
         self._create_dropdown_row(shipping_frame, current_row, "หัก ณ ที่จ่าย", data.get("shipping_to_site_wht_type"), key="shipping_to_site_wht_type", options=wht_options)
         current_row += 1
-        
-        # --- START: เพิ่มช่องแสดงยอดหัก ณ ที่จ่าย (ไซต์) ---
-        CTkLabel(shipping_frame, text="ยอดหัก ณ ที่จ่าย:").grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
-        site_wht_display = CTkEntry(shipping_frame, state="readonly", fg_color="gray85")
-        site_wht_display.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
-        self.po_entries["shipping_to_site_wht_display"] = site_wht_display
-        current_row += 1
-        # --- END ---
         
         self._create_editable_row(shipping_frame, current_row, "หมายเหตุ:", data.get("shipping_to_site_notes"), key="shipping_to_site_notes")
         current_row += 1
 
-        self._create_editable_row(shipping_frame, current_row, "ค่าย้าย:", data.get("relocation_cost"), key="relocation_cost", is_numeric=True)
+        # ค่าย้าย (Relocation) - แยกออกมาต่างหาก
     
     def _create_cutting_section(self, parent, data):
         """สร้าง Section สำหรับค่าบริการตัด/เจาะ"""
@@ -793,7 +791,7 @@ class PurchaseDetailWindow(CTkToplevel):
         total_cost = 0.0 # ยอดรวมย่อยสินค้า
         total_weight = 0.0
         
-        # 1. คำนวณยอดสินค้าจากตาราง
+        # 1. คำนวณยอดสินค้าจากตาราง (ส่วนนี้ทำงานได้ปกติ)
         for item_row in self.item_entries:
             try:
                 widgets = item_row['widgets']
@@ -814,39 +812,43 @@ class PurchaseDetailWindow(CTkToplevel):
                 total_cost += item_total
                 total_weight += weight
             except (ValueError, TypeError, KeyError):
-                total_price_label = item_row.get('widgets', {}).get('total_price_label')
-                if total_price_label and total_price_label.winfo_exists():
-                    total_price_label.configure(text="Error")
+                pass
 
-        # 2. ดึงค่าอื่นๆ
+        # 2. ดึงค่าอื่นๆ (ปรับปรุงให้ปลอดภัยขึ้น: ใช้ .get() และเช็ค None)
         try:
-            if not self.po_entries['bill_discount'].winfo_exists(): return
-            bill_discount = self.po_entries['bill_discount'].get_value()
+            # Helper function เพื่อดึงค่าอย่างปลอดภัย (ถ้าหาไม่เจอให้เป็น 0)
+            def get_val(key):
+                entry = self.po_entries.get(key)
+                return entry.get_value() if entry and entry.winfo_exists() else 0.0
+            
+            def get_opt(key, default="CASH"):
+                entry = self.po_entries.get(key)
+                return entry.get() if entry and entry.winfo_exists() else default
+
+            bill_discount = get_val('bill_discount')
             
             # Shipping Info
-            shipping_stock = self.po_entries['shipping_to_stock_cost'].get_value()
-            shipping_stock_vat_type = self.po_entries['shipping_to_stock_vat_type'].get()
-            shipping_stock_wht_type = self.po_entries['shipping_to_stock_wht_type'].get()
+            shipping_stock = get_val('shipping_to_stock_cost')
+            shipping_stock_vat_type = get_opt('shipping_to_stock_vat_type')
+            shipping_stock_wht_type = get_opt('shipping_to_stock_wht_type', 'ไม่มีหัก')
             
-            shipping_site = self.po_entries['shipping_to_site_cost'].get_value()
-            shipping_site_vat_type = self.po_entries['shipping_to_site_vat_type'].get()
-            shipping_site_wht_type = self.po_entries['shipping_to_site_wht_type'].get()
+            shipping_site = get_val('shipping_to_site_cost')
+            shipping_site_vat_type = get_opt('shipping_to_site_vat_type')
+            shipping_site_wht_type = get_opt('shipping_to_site_wht_type', 'ไม่มีหัก')
 
-            relocation_cost = self.po_entries['relocation_cost'].get_value()
+            # [🔥 แก้ไข] ค่าย้าย: ดึงอย่างปลอดภัย ถ้าไม่มี Widget ก็ถือว่าเป็น 0
+            relocation_cost = get_val('relocation_cost') 
             
-            # [🔥 NEW] ดึงค่าตัด/เจาะ
-            cutting_cost = 0.0
-            cutting_vat_type = "VAT"
-            cutting_wht_type = "No"
-            if 'cutting_cost' in self.po_entries:
-                cutting_cost = self.po_entries['cutting_cost'].get_value()
-                cutting_vat_type = self.po_entries['cutting_vat_type'].get()
-                cutting_wht_type = self.po_entries['cutting_wht_type'].get()
+            # [🔥 แก้ไข] ค่าตัด/เจาะ
+            cutting_cost = get_val('cutting_cost')
+            cutting_vat_type = get_opt('cutting_vat_type')
+            cutting_wht_type = get_opt('cutting_wht_type', 'No')
 
             wht_entry = self.po_entries.get('wht_3_percent')
             vat_entry = self.po_entries.get('vat_7_percent')
         
-        except (KeyError, ValueError, TypeError):
+        except Exception as e:
+            print(f"Recalc Error (Data Fetch): {e}")
             return 
 
         # 3. คำนวณต้นทุนรวม (Net PO Cost)
@@ -865,27 +867,36 @@ class PurchaseDetailWindow(CTkToplevel):
         # (Shipping)
         stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
         site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
-        if self.po_entries.get("shipping_to_stock_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_vat_display"], f"{stock_vat_amount:,.2f}")
-        if self.po_entries.get("shipping_to_site_vat_display"): utils.set_entry_text(self.po_entries["shipping_to_site_vat_display"], f"{site_vat_amount:,.2f}")
         
-        stock_wht_rate = 0.01 if shipping_stock_wht_type == '1%' else 0.03 if shipping_stock_wht_type == '3%' else 0
-        site_wht_rate = 0.01 if shipping_site_wht_type == '1%' else 0.03 if shipping_site_wht_type == '3%' else 0
+        # อัปเดต Display VAT ขนส่ง (ถ้ามีช่องแสดง)
+        if self.po_entries.get("shipping_to_stock_vat_display"): 
+            utils.set_entry_text(self.po_entries["shipping_to_stock_vat_display"], f"{stock_vat_amount:,.2f}")
+        if self.po_entries.get("shipping_to_site_vat_display"): 
+            utils.set_entry_text(self.po_entries["shipping_to_site_vat_display"], f"{site_vat_amount:,.2f}")
+        
+        stock_wht_rate = 0.01 if '1' in shipping_stock_wht_type else 0.03 if '3' in shipping_stock_wht_type else 0
+        site_wht_rate = 0.01 if '1' in shipping_site_wht_type else 0.03 if '3' in shipping_site_wht_type else 0
+        
         shipping_stock_wht_amount = shipping_stock * stock_wht_rate
         shipping_site_wht_amount = shipping_site * site_wht_rate
-        if self.po_entries.get("shipping_to_stock_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_stock_wht_display"], f"{shipping_stock_wht_amount:,.2f}")
-        if self.po_entries.get("shipping_to_site_wht_display"): utils.set_entry_text(self.po_entries["shipping_to_site_wht_display"], f"{shipping_site_wht_amount:,.2f}")
-
-        # (Cutting - สำหรับแสดงผลเท่านั้น)
-        cutting_vat_amount = cutting_cost * 0.07 if cutting_vat_type == 'VAT' else 0.0
-        if self.po_entries.get("cutting_vat_display"): utils.set_entry_text(self.po_entries["cutting_vat_display"], f"{cutting_vat_amount:,.2f}")
         
-        cutting_wht_rate = 0.01 if cutting_wht_type == '1%' else 0.03 if cutting_wht_type == '3%' else 0
+        if self.po_entries.get("shipping_to_stock_wht_display"): 
+            utils.set_entry_text(self.po_entries["shipping_to_stock_wht_display"], f"{shipping_stock_wht_amount:,.2f}")
+        if self.po_entries.get("shipping_to_site_wht_display"): 
+            utils.set_entry_text(self.po_entries["shipping_to_site_wht_display"], f"{shipping_site_wht_amount:,.2f}")
+
+        # (Cutting)
+        cutting_vat_amount = cutting_cost * 0.07 if cutting_vat_type == 'VAT' else 0.0
+        if self.po_entries.get("cutting_vat_display"): 
+            utils.set_entry_text(self.po_entries["cutting_vat_display"], f"{cutting_vat_amount:,.2f}")
+        
+        cutting_wht_rate = 0.01 if '1' in cutting_wht_type else 0.03 if '3' in cutting_wht_type else 0
         cutting_wht_amount = cutting_cost * cutting_wht_rate
-        if self.po_entries.get("cutting_wht_display"): utils.set_entry_text(self.po_entries["cutting_wht_display"], f"{cutting_wht_amount:,.2f}")
+        if self.po_entries.get("cutting_wht_display"): 
+            utils.set_entry_text(self.po_entries["cutting_wht_display"], f"{cutting_wht_amount:,.2f}")
 
         # 5. คำนวณยอดที่ต้องจ่ายซัพพลายเออร์ (Grand Total)
-        # สูตร: ฐานภาษีสินค้า + VAT สินค้า - WHT สินค้า + ค่าขนส่ง (ถ้ามี)
-        # [🔥 สำคัญ] ไม่รวม Cutting Cost ในยอดจ่ายซัพพลายเออร์ (ตาม Logic ที่ตกลงกัน)
+        # สูตร: ฐานภาษีสินค้า + VAT สินค้า - WHT สินค้า + ค่าขนส่ง (ถ้ามี) + ค่าย้าย
         
         # ฐานสำหรับคิด VAT (สินค้า - ส่วนลด)
         base_for_tax = product_base_cost 
@@ -905,7 +916,7 @@ class PurchaseDetailWindow(CTkToplevel):
         non_vat_payable = 0.0
         if shipping_stock_vat_type == 'CASH': non_vat_payable += shipping_stock
         if shipping_site_vat_type == 'CASH': non_vat_payable += shipping_site
-        non_vat_payable += relocation_cost # ค่าย้าย (สมมติว่าจ่ายซัพฯ)
+        non_vat_payable += relocation_cost
 
         total_wht_deduction = wht_amount_products + shipping_stock_wht_amount + shipping_site_wht_amount
         
@@ -961,9 +972,11 @@ class PurchaseDetailWindow(CTkToplevel):
 
 
     def _create_payment_headers(self):
-        """สร้างหัวตารางสำหรับ Payment - เรียกใช้เฉพาะเมื่อมีข้อมูล"""
-        headers = ["ประเภทการชำระ", "ยอดเงิน", "วันที่ชำระ", "ธนาคาร", "เลขที่บัญชี"]
-        col_weights = [2, 2, 2, 2, 3]
+        """สร้างหัวตารางสำหรับ Payment (แก้ไข: เพิ่มคอลัมน์ประเภทบัญชี)"""
+        # [🔥 แก้ไข] เพิ่ม 'ประเภทบัญชี' ใน list
+        headers = ["ประเภทการชำระ", "ยอดเงิน", "วันที่ชำระ", "ธนาคาร", "เลขที่บัญชี", "ประเภทบัญชี"]
+        # [🔥 แก้ไข] ปรับน้ำหนักคอลัมน์ให้สมดุล
+        col_weights = [2, 2, 2, 2, 3, 2]
         
         self.payments_header_container = CTkFrame(self.payments_frame, fg_color="transparent")
         self.payments_header_container.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
@@ -1028,37 +1041,39 @@ class PurchaseDetailWindow(CTkToplevel):
     # --- END ---
 
     def _add_payment_row(self, payment_data=None):
+        """เพิ่มแถวการชำระเงิน (แก้ไข: เพิ่ม Dropdown ประเภทบัญชี)"""
         if payment_data is None: 
             payment_data = {}
 
         row_frame = CTkFrame(self.payments_content_frame, fg_color="transparent")
         row_frame.pack(fill="x", pady=2)
         
-        # แก้ไข: กำหนดน้ำหนักคอลัมน์ให้ถูกต้องและเพิ่มคอลัมน์สำหรับปุ่มลบ
-        row_frame.grid_columnconfigure(0, weight=2)  # ประเภทการชำระ
-        row_frame.grid_columnconfigure(1, weight=2)  # ยอดเงิน  
-        row_frame.grid_columnconfigure(2, weight=2)  # วันที่ชำระ
+        # [🔥 แก้ไข] กำหนด Grid ใหม่ (เพิ่มคอลัมน์ที่ 5)
+        row_frame.grid_columnconfigure(0, weight=2)  # ประเภท
+        row_frame.grid_columnconfigure(1, weight=2)  # ยอดเงิน
+        row_frame.grid_columnconfigure(2, weight=2)  # วันที่
         row_frame.grid_columnconfigure(3, weight=2)  # ธนาคาร
-        row_frame.grid_columnconfigure(4, weight=3)  # เลขที่บัญชี
-        row_frame.grid_columnconfigure(5, weight=0)  # ปุ่มลบ (ไม่ขยาย)
+        row_frame.grid_columnconfigure(4, weight=3)  # เลขบัญชี
+        row_frame.grid_columnconfigure(5, weight=2)  # [ใหม่] ประเภทบัญชี
+        row_frame.grid_columnconfigure(6, weight=0)  # ปุ่มลบ
 
-        # ประเภทการชำระ
+        # 0. ประเภทการชำระ
         payment_types = ["Payment 1", "Payment 2", "Full Payment", "CN Refund"]
         type_var = tk.StringVar(value=payment_data.get('payment_type', payment_types[0]))
         type_menu = CTkOptionMenu(row_frame, variable=type_var, values=payment_types, width=120)
         type_menu.grid(row=0, column=0, padx=(0, 5), sticky="ew")
 
-        # ยอดเงิน
+        # 1. ยอดเงิน
         amount_entry = FormattedNumericEntry(row_frame)
         amount_entry.set(payment_data.get('amount', 0.0))
         amount_entry.grid(row=0, column=1, padx=5, sticky="ew")
         
-        # วันที่ชำระ
+        # 2. วันที่ชำระ
         date_selector = DateSelector(row_frame)
         date_selector.set_date(payment_data.get('payment_date'))
         date_selector.grid(row=0, column=2, padx=5, sticky="ew")
         
-        # ธนาคาร
+        # 3. ธนาคาร
         bank_list = ["ระบุเอง", "BBL", "KBANK", "KTB", "SCB", "TTB", "BAY", "GSB", "BAAC", "UOB", "CIMB"]
         bank_var = tk.StringVar(value=payment_data.get('bank_name', bank_list[0]))
         bank_menu = CTkOptionMenu(row_frame, 
@@ -1068,27 +1083,36 @@ class PurchaseDetailWindow(CTkToplevel):
                                 command=lambda bank=bank_var.get(), acc_entry=None: self._on_bank_selected(bank, acc_entry))
         bank_menu.grid(row=0, column=3, padx=5, sticky="ew")
         
-        # เลขที่บัญชี
+        # 4. เลขที่บัญชี
         account_entry = CTkEntry(row_frame)
         account_number = payment_data.get('bank_account_number')
         if account_number is not None and pd.notna(account_number):
             account_entry.insert(0, str(account_number))
         account_entry.grid(row=0, column=4, padx=5, sticky="ew")
         
-        # แก้ไข trace สำหรับ bank selection
+        # [🔥 เพิ่มใหม่] 5. ประเภทบัญชี (Dropdown)
+        acc_type_val = payment_data.get('bank_account_type', 'ออมทรัพย์')
+        # กันเหนียวเผื่อค่าเป็น None
+        if not acc_type_val: acc_type_val = 'ออมทรัพย์'
+            
+        acc_type_var = tk.StringVar(value=acc_type_val)
+        acc_type_menu = CTkOptionMenu(row_frame, variable=acc_type_var, values=["ออมทรัพย์", "กระแสรายวัน"], width=100)
+        acc_type_menu.grid(row=0, column=5, padx=5, sticky="ew")
+
+        # แก้ไข trace สำหรับ bank selection (เพื่อให้ auto-fill เลขบัญชีทำงาน)
         bank_var.trace_add("write", lambda *args, bv=bank_var, ae=account_entry: self._on_bank_selected(bv.get(), ae))
         
-        # ปุ่มลบ - แก้ไขตำแหน่งและขนาด
+        # 6. ปุ่มลบ (ขยับไป column 6)
         delete_button = CTkButton(row_frame, 
                                 text="ลบ", 
-                                width=50,  # กำหนดความกว้างคงที่
-                                height=32, # กำหนดความสูงให้พอดีกับ entry
+                                width=50, 
+                                height=32,
                                 fg_color="#DC2626", 
                                 hover_color="#B91C1C",
                                 command=lambda r=row_frame, p_id=payment_data.get('id'): self._remove_payment_row(r, p_id))
-        delete_button.grid(row=0, column=5, padx=(5, 0), sticky="")  # ไม่ใช้ sticky="ew"
+        delete_button.grid(row=0, column=6, padx=(5, 0), sticky="")
 
-        # เก็บ reference ของ widgets
+        # เก็บ reference ของ widgets ลง list
         self.payment_entries.append({
             'id': payment_data.get('id'),
             'frame': row_frame,
@@ -1097,7 +1121,8 @@ class PurchaseDetailWindow(CTkToplevel):
                 'amount_entry': amount_entry,
                 'date_selector': date_selector,
                 'bank_var': bank_var,
-                'account_entry': account_entry
+                'account_entry': account_entry,
+                'acc_type_var': acc_type_var  # [🔥 สำคัญ] เก็บตัวแปรนี้ไว้ใช้ตอนบันทึก
             }
         })
     
@@ -1396,171 +1421,189 @@ class PurchaseDetailWindow(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
 
     def _save_changes(self):
+        """บันทึกการแก้ไขข้อมูล PO (Header, Items, Payments) แบบสมบูรณ์"""
+        
+        # คำนวณยอดเงินล่าสุดก่อนบันทึก
         self._recalculate_summary_totals()
-        conn = None
+        
+        conn = self.app_container.get_connection()
         try:
-            conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # --- START: เพิ่มโค้ดสำหรับตรวจสอบการเปลี่ยนแปลง SO ---
-                original_so_number = self.po_data.get('so_number', '').strip()
-                new_so_number = self.po_entries['so_number'].get().strip()
-                # --- END ---
-
-                # --- START: เพิ่ม Logic การอัปเดตข้อมูล Supplier ก่อน ---
-                supplier_name = self.po_entries['supplier_name'].get().strip()
-                supplier_code = self.po_entries['supplier_code'].get().strip()
+                # ========================================================================================
+                # PART 1: HEADER (ข้อมูลหลัก PO) - เหมือนเดิม
+                # ========================================================================================
+                new_supplier = self.po_entries['supplier_name'].get().strip()
+                new_po_number = self.po_entries['po_number'].get().strip()
                 
-                if supplier_name and supplier_code:
-                    cursor.execute("SELECT id FROM suppliers WHERE supplier_name = %s", (supplier_name,))
-                    existing_supplier = cursor.fetchone()
-                    if existing_supplier:
-                        cursor.execute("UPDATE suppliers SET supplier_code = %s, credit_term = %s WHERE id = %s", 
-                                    (supplier_code, self.po_entries['credit_term'].get(), existing_supplier[0]))
-                    else:
-                        cursor.execute("INSERT INTO suppliers (supplier_name, supplier_code, credit_term) VALUES (%s, %s, %s)",
-                                    (supplier_name, supplier_code, self.po_entries['credit_term'].get()))
-
                 total_cost = utils.convert_to_float(self.total_cost_label.cget("text"))
                 grand_total = utils.convert_to_float(self.grand_total_label.cget("text"))
 
-                # [🔥 เพิ่ม] ดึงค่าตัดเจาะมาเตรียมไว้
-                cutting_cost = 0.0
-                cutting_vat_type = 'VAT'
-                cutting_wht_type = 'No'
-                cutting_remark = ''
-
+                cut_cost = 0.0
                 if 'cutting_cost' in self.po_entries:
-                    cutting_cost = self.po_entries['cutting_cost'].get_value()
-                if 'cutting_vat_type' in self.po_entries:
-                    cutting_vat_type = self.po_entries['cutting_vat_type'].get()
-                if 'cutting_wht_type' in self.po_entries:
-                    cutting_wht_type = self.po_entries['cutting_wht_type'].get()
-                if 'cutting_remark' in self.po_entries:
-                    cutting_remark = self.po_entries['cutting_remark'].get().strip()
+                    cut_cost = self.po_entries['cutting_cost'].get_value()
 
-                # คำนวณยอด VAT/WHT ของค่าตัดเจาะ (Derived Values)
-                cutting_vat_amount = cutting_cost * 0.07 if cutting_vat_type == 'VAT' else 0.0
-                cutting_wht_amount = 0.0
-                if cutting_wht_type == '1%': cutting_wht_amount = cutting_cost * 0.01
-                elif cutting_wht_type == '3%': cutting_wht_amount = cutting_cost * 0.03
+                relocation_val = 0.0
+                if 'relocation_cost' in self.po_entries:
+                    relocation_val = self.po_entries['relocation_cost'].get_value()
 
-                # [🔥 แก้ไข] เพิ่มฟิลด์ cutting_... ในคำสั่ง UPDATE
                 cursor.execute("""
                     UPDATE purchase_orders SET 
-                        so_number = %s, po_number = %s, supplier_name = %s, 
+                        po_number = %s, supplier_name = %s, 
                         credit_term = %s, po_mode = %s,
+                        
                         shipping_to_stock_cost = %s, shipping_to_stock_date = %s, 
                         shipping_to_site_cost = %s, shipping_to_site_date = %s, 
                         relocation_cost = %s, total_cost = %s, grand_total = %s,
+                        
                         shipping_to_stock_vat_type = %s, shipping_to_stock_shipper = %s,
                         shipping_to_stock_wht_type = %s, shipping_to_stock_notes = %s,
+                        
                         shipping_to_site_vat_type = %s, shipping_to_site_shipper = %s,
                         shipping_to_site_wht_type = %s, shipping_to_site_notes = %s,
                         
-                        cutting_cost = %s, cutting_vat_type = %s, cutting_vat_amount = %s,
-                        cutting_wht_type = %s, cutting_wht_amount = %s, cutting_remark = %s,
+                        shipping_to_stock_driver = %s, shipping_to_stock_plate = %s,
+                        shipping_to_site_driver = %s, shipping_to_site_plate = %s,
+
+                        cutting_cost = %s, cutting_vat_type = %s, cutting_wht_type = %s, cutting_remark = %s,
 
                         wht_3_percent_checked = %s, vat_7_percent_checked = %s,
                         bill_discount = %s
                     WHERE id = %s
                 """, (
-                    new_so_number,
-                    self.po_entries['po_number'].get(),
-                    supplier_name,
+                    new_po_number, new_supplier,
                     self.po_entries['credit_term'].get(), self.po_entries['po_mode'].get(),
+                    
                     self.po_entries['shipping_to_stock_cost'].get_value(),
                     self.po_entries['shipping_to_stock_date'].get_date(),
                     self.po_entries['shipping_to_site_cost'].get_value(),
                     self.po_entries['shipping_to_site_date'].get_date(),
-                    self.po_entries['relocation_cost'].get_value(),
+                    
+                    relocation_val,
                     total_cost, grand_total,
+                    
                     self.po_entries['shipping_to_stock_vat_type'].get(),
                     self.po_entries['shipping_to_stock_shipper'].get(),
                     self.po_entries['shipping_to_stock_wht_type'].get(),
                     self.po_entries['shipping_to_stock_notes'].get(),
+                    
                     self.po_entries['shipping_to_site_vat_type'].get(),
                     self.po_entries['shipping_to_site_shipper'].get(),
                     self.po_entries['shipping_to_site_wht_type'].get(),
                     self.po_entries['shipping_to_site_notes'].get(),
-                    
-                    # Params สำหรับค่าตัดเจาะ
-                    cutting_cost, cutting_vat_type, cutting_vat_amount,
-                    cutting_wht_type, cutting_wht_amount, cutting_remark,
+
+                    self.po_entries.get('shipping_to_stock_driver', tk.StringVar()).get(),
+                    self.po_entries.get('shipping_to_stock_plate', tk.StringVar()).get(),
+                    self.po_entries.get('shipping_to_site_driver', tk.StringVar()).get(),
+                    self.po_entries.get('shipping_to_site_plate', tk.StringVar()).get(),
+
+                    cut_cost, 
+                    self.po_entries.get('cutting_vat_type', tk.StringVar(value='VAT')).get(),
+                    self.po_entries.get('cutting_wht_type', tk.StringVar(value='No')).get(),
+                    self.po_entries.get('cutting_remark', tk.StringVar()).get(),
 
                     bool(self.wht_checkbox.get()),
                     bool(self.vat_checkbox.get()),
                     self.po_entries['bill_discount'].get_value(),
                     self.purchase_id
                 ))
+
+                # ========================================================================================
+                # PART 2: ITEMS (สินค้า) - เหมือนเดิม
+                # ========================================================================================
                 
                 if self.deleted_item_ids:
                     cursor.execute("DELETE FROM purchase_order_items WHERE id IN %s", (tuple(self.deleted_item_ids),))
 
                 for item_row in self.item_entries:
-                    widgets, item_id = item_row['widgets'], item_row['id']
-                    code, name = widgets['product_code'].get(), widgets['product_name'].get()
-                    warehouse = widgets['warehouse'].get()
-                    weight, qty = widgets['total_weight'].get_value(), widgets['quantity'].get_value()
-                    price, discount = widgets['unit_price'].get_value(), widgets['discount_value'].get_value()
-                    discount_type = widgets['discount_type_var'].get()
-                    line_total = qty * price
-                    discount_amount = (line_total * (discount / 100.0)) if discount_type == "%" else discount
-                    total = line_total - discount_amount
+                    widgets = item_row['widgets']
                     
-                    if item_id:
+                    qty = widgets['quantity'].get_value()
+                    price = widgets['unit_price'].get_value()
+                    discount = widgets['discount_value'].get_value()
+                    discount_type = widgets['discount_type_var'].get()
+                    
+                    line_total = qty * price
+                    discount_amount = (line_total * (discount / 100.0)) if discount_type == '%' else discount
+                    item_total = line_total - discount_amount
+
+                    item_id = item_row.get('id')
+
+                    if item_id: 
                         cursor.execute("""
-                            UPDATE purchase_order_items SET 
-                                product_code = %s, product_name = %s, warehouse = %s, total_weight = %s, 
-                                quantity = %s, unit_price = %s, discount_value = %s, 
-                                discount_type = %s, total_price = %s 
+                            UPDATE purchase_order_items 
+                            SET product_code = %s, product_name = %s, warehouse = %s,
+                                total_weight = %s, quantity = %s, unit_price = %s, 
+                                discount_value = %s, discount_type = %s, total_price = %s
                             WHERE id = %s
-                        """, (code, name, warehouse, weight, qty, price, discount, discount_type, total, item_id))
+                        """, (
+                            widgets['product_code'].get(), widgets['product_name'].get(), widgets['warehouse'].get(),
+                            widgets['total_weight'].get_value(), qty, price,
+                            discount, discount_type, item_total,
+                            item_id
+                        ))
                     else:
                         cursor.execute("""
                             INSERT INTO purchase_order_items 
-                            (purchase_order_id, product_code, product_name, warehouse, total_weight, 
-                            quantity, unit_price, discount_value, discount_type, total_price) 
+                            (purchase_order_id, product_code, product_name, warehouse, total_weight, quantity, unit_price, discount_value, discount_type, total_price)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (self.purchase_id, code, name, warehouse, weight, qty, price, discount, discount_type, total))
+                        """, (
+                            self.purchase_id,
+                            widgets['product_code'].get(), widgets['product_name'].get(), widgets['warehouse'].get(),
+                            widgets['total_weight'].get_value(), qty, price,
+                            discount, discount_type, item_total
+                        ))
 
+                # ========================================================================================
+                # PART 3: PAYMENTS (การชำระเงิน) - แก้ไขเพิ่ม bank_account_type
+                # ========================================================================================
+                
                 if self.deleted_payment_ids:
                     cursor.execute("DELETE FROM purchase_order_payments WHERE id IN %s", (tuple(self.deleted_payment_ids),))
-                for payment_row in self.payment_entries:
-                    widgets, payment_id = payment_row['widgets'], payment_row['id']
-                    p_type, p_amount, p_date = widgets['type_var'].get(), widgets['amount_entry'].get_value(), widgets['date_selector'].get_date()
-                    p_bank, p_account = widgets['bank_var'].get(), widgets['account_entry'].get()
-                    if payment_id:
-                        cursor.execute("UPDATE purchase_order_payments SET payment_type = %s, amount = %s, payment_date = %s, bank_name = %s, bank_account_number = %s WHERE id = %s", (p_type, p_amount, p_date, p_bank, p_account, payment_id))
-                    else:
-                        cursor.execute("INSERT INTO purchase_order_payments (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number) VALUES (%s, %s, %s, %s, %s, %s)", (self.purchase_id, p_type, p_amount, p_date, p_bank, p_account))
-                
-                log_details = { "message": f"PO ID {self.purchase_id} edited by {self.user_role} ({self.app_container.current_user_key})" }
-                cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, %s)", ('PO Edited', 'purchase_orders', self.purchase_id, self.app_container.current_user_key, json.dumps(log_details, default=str), datetime.now()))
-            
-            conn.commit()
 
-            # --- START: ปรับปรุงข้อความยืนยัน ---
-            if original_so_number != new_so_number and new_so_number != '':
-                po_number_display = self.po_entries['po_number'].get()
-                success_message = (f"บันทึกสำเร็จ!\n\n"
-                                   f"PO '{po_number_display}' ถูกย้ายจาก SO '{original_so_number}' "
-                                   f"ไปยัง SO '{new_so_number}' เรียบร้อยแล้ว")
-            else:
-                success_message = "บันทึกการแก้ไข PO เรียบร้อยแล้ว"
-            
-            messagebox.showinfo("สำเร็จ", success_message, parent=self)
-            # --- END ---
+                for pay_row in self.payment_entries:
+                    widgets = pay_row['widgets']
+                    
+                    p_type = widgets['type_var'].get()
+                    amount = widgets['amount_entry'].get_value()
+                    p_date = widgets['date_selector'].get_date()
+                    bank = widgets['bank_var'].get()
+                    acc_num = widgets['account_entry'].get()
+                    
+                    # [🔥 เพิ่ม] ดึงค่าประเภทบัญชีจาก Widget
+                    acc_type = widgets['acc_type_var'].get()
+                    
+                    pay_id = pay_row.get('id')
+
+                    if pay_id:
+                        # UPDATE: เพิ่ม bank_account_type
+                        cursor.execute("""
+                            UPDATE purchase_order_payments
+                            SET payment_type = %s, amount = %s, payment_date = %s,
+                                bank_name = %s, bank_account_number = %s, bank_account_type = %s
+                            WHERE id = %s
+                        """, (p_type, amount, p_date, bank, acc_num, acc_type, pay_id))
+                    else:
+                        # INSERT: เพิ่ม bank_account_type
+                        cursor.execute("""
+                            INSERT INTO purchase_order_payments
+                            (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number, bank_account_type)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (self.purchase_id, p_type, amount, p_date, bank, acc_num, acc_type))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูล PO เรียบร้อยแล้ว", parent=self)
             
             if self.on_save_callback: 
                 self.on_save_callback()
             
+            self.destroy()
+
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
             traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
-
 
 class PurchaseHistoryWindow(CTkToplevel):
 
