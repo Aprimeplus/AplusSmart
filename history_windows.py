@@ -130,6 +130,7 @@ class PurchaseDetailWindow(CTkToplevel):
         self.purchase_id = purchase_id
         self.on_save_callback = on_save_callback
         self._load_supplier_data_for_autocomplete()
+        self._load_product_master_data()
         
         self.user_role = self.app_container.current_user_role
         
@@ -163,6 +164,67 @@ class PurchaseDetailWindow(CTkToplevel):
         self.transient(master)
         self.grab_set()
     
+    def _load_product_master_data(self):
+        try:
+            query = "SELECT product_code, product_name, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
+            df = pd.read_sql(query, self.app_container.pg_engine)
+            
+            self.product_completion_data = []
+            self.product_data_map = {}
+            
+            MAX_NAME_LENGTH = 50
+            for _, row in df.iterrows():
+                name = row['product_name'] or ""
+                display_name = name[:MAX_NAME_LENGTH] + '...' if len(name) > MAX_NAME_LENGTH else name
+                display_text = f"{row['product_code']} - {display_name}"
+
+                item_data = {
+                    "name": name,
+                    "code": row['product_code'],
+                    "warehouse": row.get('warehouse', ''),
+                    "display": display_text,
+                    "last_price": row.get('last_unit_price'),
+                    "last_weight": row.get('last_weight_per_unit')
+                }
+                self.product_completion_data.append(item_data)
+                self.product_data_map[item_data['code']] = item_data
+                
+        except Exception as e: 
+            print(f"Error loading product master data: {e}")
+            self.product_completion_data = []
+            self.product_data_map = {}
+
+    # [🔥 เพิ่มใหม่ 2] ฟังก์ชันทำงานเมื่อเลือกสินค้า (Auto-fill ชื่อ/ราคา)
+    def _on_product_code_selected(self, selection_dict, row_widgets):
+        if not selection_dict: return
+        
+        # อัปเดตค่าในช่องรหัส (เผื่อเลือกจาก Dropdown)
+        row_widgets['product_code'].delete(0, "end")
+        row_widgets['product_code'].insert(0, selection_dict.get('code', ''))
+
+        # ดึงข้อมูลสินค้ามาเติม
+        code = selection_dict.get('code')
+        product_data = self.product_data_map.get(code)
+        
+        if product_data:
+            # เติมชื่อสินค้า
+            row_widgets['product_name'].delete(0, "end")
+            row_widgets['product_name'].insert(0, product_data.get('name', ''))
+            
+            # เติมคลัง
+            row_widgets['warehouse'].delete(0, "end")
+            row_widgets['warehouse'].insert(0, product_data.get('warehouse', ''))
+            
+            # เติมราคาล่าสุด (ถ้ามี)
+            if product_data.get('last_price'):
+                row_widgets['unit_price'].set(product_data.get('last_price'))
+            
+            # เติมน้ำหนัก (ถ้ามี)
+            if product_data.get('last_weight'):
+                row_widgets['total_weight'].set(product_data.get('last_weight'))
+
+            # คำนวณยอดรวมใหม่
+            self._recalculate_summary_totals()
 
     def _position_window(self):
         """จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลางแนวนอน และยึดตำแหน่งบนสุดไว้"""
@@ -549,7 +611,17 @@ class PurchaseDetailWindow(CTkToplevel):
         for i, w in enumerate(col_weights):
             row_frame.grid_columnconfigure(i, weight=w)
 
-        entry_code = CTkEntry(row_frame); entry_code.insert(0, item_data.get('product_code', '')); entry_code.grid(row=0, column=0, padx=5, sticky="ew")
+        # [🔥 แก้ไข] ใช้ AutoCompleteEntry แทน CTkEntry ปกติ
+        # (ต้องมั่นใจว่าเรียก _load_product_master_data แล้วนะ)
+        entry_code = AutoCompleteEntry(
+            row_frame, 
+            completion_list=getattr(self, 'product_completion_data', []), # กัน Error ถ้ายังไม่โหลด
+            display_key='display',
+            placeholder_text="รหัส"
+        )
+        entry_code.insert(0, item_data.get('product_code', ''))
+        entry_code.grid(row=0, column=0, padx=5, sticky="ew")
+
         entry_name = CTkEntry(row_frame); entry_name.insert(0, item_data.get('product_name', '')); entry_name.grid(row=0, column=1, padx=5, sticky="ew")
         
         # เพิ่มช่องกรอกสำหรับ 'คลัง'
@@ -574,16 +646,22 @@ class PurchaseDetailWindow(CTkToplevel):
         label_total = CTkLabel(row_frame, text="0.00", anchor="e"); label_total.grid(row=0, column=7, padx=5, sticky="ew")
         delete_button = CTkButton(row_frame, text="ลบ", width=40, fg_color="#DC2626", hover_color="#B91C1C", command=lambda r=row_frame, i=item_data.get('id'): self._remove_item_row(r, i)); delete_button.grid(row=0, column=8, padx=(5,0))
 
+        # รวม Widgets เพื่อเก็บ Reference
+        widgets_dict = {
+            'product_code': entry_code, 'product_name': entry_name, 
+            'warehouse': entry_warehouse, 
+            'total_weight': entry_weight, 'quantity': entry_qty, 
+            'unit_price': entry_price, 'discount_value': entry_discount,
+            'discount_type_var': discount_type_var,
+            'total_price_label': label_total
+        }
+
+        # [🔥 เพิ่ม] ผูก Command เมื่อเลือกสินค้า
+        entry_code.command = lambda sel, w=widgets_dict: self._on_product_code_selected(sel, w)
+
         self.item_entries.append({
             'id': item_data.get('id'), 'frame': row_frame, 
-            'widgets': {
-                'product_code': entry_code, 'product_name': entry_name, 
-                'warehouse': entry_warehouse, # <-- เก็บ widget ใหม่
-                'total_weight': entry_weight, 'quantity': entry_qty, 
-                'unit_price': entry_price, 'discount_value': entry_discount,
-                'discount_type_var': discount_type_var,
-                'total_price_label': label_total
-            }
+            'widgets': widgets_dict
         })
         self._recalculate_summary_totals()
 
@@ -1143,20 +1221,56 @@ class PurchaseDetailWindow(CTkToplevel):
         self._recalculate_summary_totals()
 
     def _create_action_buttons(self):
+        """สร้างปุ่ม Action ต่างๆ ตามสถานะและสิทธิ์"""
         # ล้าง Frame เดิมก่อนสร้างใหม่
         for widget in self.button_frame.winfo_children():
             widget.destroy()
 
         po_status = self.po_data.get('status')
+        
+        # [🔥 เพิ่ม] เช็คสิทธิ์ความเป็นเจ้าของ
+        current_user = self.app_container.current_user_key
+        po_owner = self.po_data.get('user_key')
+        is_owner = (current_user == po_owner)
+        
+        # เช็คสิทธิ์ Manager/Director
         is_manager_or_director = self.user_role in ['Purchasing Manager', 'Director']
         
-        # --- กำหนดค่าความสูงและระยะห่างของปุ่ม ---
-        button_height = 40  # ความสูงของปุ่ม
-        vertical_padding = 10 # ระยะห่างแนวตั้ง
+        # กำหนดค่าความสูงและระยะห่าง
+        button_height = 40
+        vertical_padding = 10
 
-        # --- Logic การแสดงผลปุ่ม (เหมือนเดิม) แต่เพิ่ม height และ pady ---
+        # ==============================================================================
+        # 1. ส่วนปุ่มพิเศษ (แสดงเสมอถ้าเป็นเจ้าของ หรือ Manager - ไม่สนสถานะ PO)
+        # ==============================================================================
+        # วางไว้ที่ Row 10+ เพื่อให้อยู่ด้านล่างปุ่ม Action หลัก
         
-        # กรณีที่ 1: Manager/Director เปิด PO ที่ "อนุมัติแล้ว"
+        if is_owner or is_manager_or_director:
+            # ปุ่มแก้ไขค่ารถ (Backdoor Edit)
+            transport_btn = CTkButton(
+                self.button_frame, 
+                text="🚚 แก้ไขค่ารถ/ขนส่ง (กรณีพิเศษ)", 
+                fg_color="#8B5CF6", hover_color="#7C3AED", # สีม่วง
+                height=button_height,
+                command=self._open_transport_edit_dialog
+            )
+            transport_btn.grid(row=10, column=0, columnspan=4, padx=5, pady=(15, 5), sticky="ew")
+
+            # ปุ่มดู Log
+            log_btn = CTkButton(
+                self.button_frame,
+                text="📜 ดูประวัติการแก้ไข (Logs)",
+                fg_color="#64748B", hover_color="#475569", # สีเทา
+                height=button_height,
+                command=self._open_transport_log_viewer
+            )
+            log_btn.grid(row=11, column=0, columnspan=4, padx=5, pady=(0, 10), sticky="ew")
+
+        # ==============================================================================
+        # 2. ส่วนปุ่ม Action หลัก (Approve/Reject/Save) - เปลี่ยนตามสถานะ PO
+        # ==============================================================================
+        
+        # กรณีที่ 1: Manager/Director เปิด PO ที่ "อนุมัติแล้ว" (มีปุ่ม Revert)
         if po_status == 'Approved' and is_manager_or_director:
             self.button_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
@@ -1169,8 +1283,8 @@ class PurchaseDetailWindow(CTkToplevel):
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
             close_button.grid(row=0, column=2, padx=5, pady=vertical_padding, sticky="ew")
 
-        # กรณีที่ 2: ผู้ใช้ที่มีสิทธิ์อนุมัติเปิด PO ที่ยังไม่ Approved
-        elif self.user_role in ['Purchasing Staff', 'Purchasing Manager', 'Director', 'HR']:
+        # กรณีที่ 2: PO รออนุมัติ (Pending Approval) และ User มีสิทธิ์อนุมัติ
+        elif po_status == 'Pending Approval' and self.user_role in ['Purchasing Staff', 'Purchasing Manager', 'Director', 'HR']:
             self.button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
             approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D", height=button_height)
@@ -1185,16 +1299,41 @@ class PurchaseDetailWindow(CTkToplevel):
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
             close_button.grid(row=0, column=3, padx=5, pady=vertical_padding, sticky="ew")
         
-        # กรณีอื่นๆ (Fallback)
+        # กรณีที่ 3: ทั่วไป (Draft, Rejected, หรือดูเฉยๆ)
         else:
             self.button_frame.grid_columnconfigure((0, 1), weight=1)
-            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, height=button_height)
-            save_button.grid(row=0, column=0, padx=(0,5), pady=vertical_padding, sticky="ew")
-        
+            
+            # ถ้าเป็นเจ้าของ หรือ Manager ให้แก้ได้
+            if is_owner or is_manager_or_director:
+                save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, height=button_height)
+                save_button.grid(row=0, column=0, padx=(0,5), pady=vertical_padding, sticky="ew")
+            else:
+                # คนอื่นดูได้อย่างเดียว
+                save_button = CTkButton(self.button_frame, text="บันทึก (Disabled)", state="disabled", height=button_height)
+                save_button.grid(row=0, column=0, padx=(0,5), pady=vertical_padding, sticky="ew")
+            
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
             close_button.grid(row=0, column=1, padx=(5,0), pady=vertical_padding, sticky="ew")
-        # --- END ---
-    
+
+    def _open_transport_edit_dialog(self):
+        """เปิดหน้าต่างแก้ไขค่าขนส่ง"""
+        try:
+            TransportEditDialog(
+                master=self,
+                app_container=self.app_container,
+                po_id=self.purchase_id,
+                on_save_callback=self._load_and_display_data # รีโหลดหน้าจอหลัก
+            )
+        except NameError:
+            messagebox.showerror("Error", "ไม่พบคลาส TransportEditDialog (โปรดตรวจสอบว่าได้วางโค้ด Class ไว้ท้ายไฟล์แล้ว)")
+
+    def _open_transport_log_viewer(self):
+        """เปิดหน้าต่างดู Log ค่าขนส่ง"""
+        try:
+            TransportLogViewer(self, self.app_container)
+        except NameError:
+             messagebox.showerror("Error", "ไม่พบคลาส TransportLogViewer")
+
     def _approve_po(self):
         # Logic การอนุมัติ (ยกมาจาก purchasing_manager_screen.py)
         # สามารถนำ Logic ที่ซับซ้อนเกี่ยวกับการอนุมัติตามลำดับขั้นและยอดเงินมาใส่ที่นี่ได้
@@ -3320,3 +3459,488 @@ class CancelledHistoryWindow(CTkToplevel): # <-- แก้จาก ctk.CTkTople
             import traceback
             traceback.print_exc()
 
+class TransportEditDialog(CTkToplevel):
+    def __init__(self, master, app_container, po_id, on_save_callback=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.po_id = po_id
+        self.on_save_callback = on_save_callback
+        self.old_data = {} 
+
+        # ตัวแปรสำหรับ Radio Button
+        self.cut_vat_var = tk.StringVar(value="VAT")
+        self.cut_wht_var = tk.StringVar(value="No")
+
+        self.title("แก้ไขข้อมูลขนส่ง/ค่าตัด (Special Edit)")
+        self.geometry("700x800")
+        
+        self.main_frame = CTkScrollableFrame(self)
+        self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.main_frame.grid_columnconfigure(1, weight=1)
+
+        self._create_ui()
+        self.after(50, self._load_current_data)
+        
+        self.transient(master)
+        self.grab_set()
+
+    def _create_ui(self):
+        r = 0
+        CTkLabel(self.main_frame, text="แก้ไขค่าขนส่ง/ค่าตัด (Backdoor)", font=CTkFont(size=18, weight="bold"), text_color="#B91C1C").grid(row=r, column=0, columnspan=2, pady=(10, 5)); r+=1
+        
+        # --- 1. Stock ---
+        self._add_header(r, "[1] ค่าย้าย / เข้า Stock"); r+=1
+        self.stock_cost = self._add_row(r, "ยอดเงิน (ค่าย้าย):", is_numeric=True); r+=1
+        self.stock_driver = self._add_row(r, "คนขับ/ขนส่ง:"); r+=1
+        self.stock_plate = self._add_row(r, "ทะเบียนรถ:"); r+=1
+        self.stock_note = self._add_row(r, "หมายเหตุ:"); r+=1
+
+        # --- 2. Site ---
+        self._add_header(r, "[2] ค่ารถ / ส่ง Site (ลูกค้า)"); r+=1
+        self.site_cost = self._add_row(r, "ยอดเงิน (ค่ารถ):", is_numeric=True); r+=1
+        self.site_driver = self._add_row(r, "คนขับ/ขนส่ง:"); r+=1
+        self.site_plate = self._add_row(r, "ทะเบียนรถ:"); r+=1
+        self.site_note = self._add_row(r, "หมายเหตุ:"); r+=1
+
+        # --- 3. Cutting ---
+        self._add_header(r, "[3] ค่าบริการตัด/เจาะ (Cutting)"); r+=1
+        self.cutting_cost = self._add_row(r, "ยอดเงิน (ค่าตัด):", is_numeric=True); 
+        self.cutting_cost.bind("<KeyRelease>", self._update_cutting_summary)
+        r+=1
+
+        # ตัวเลือก VAT / WHT
+        opt_frame = CTkFrame(self.main_frame, fg_color="transparent")
+        opt_frame.grid(row=r, column=1, sticky="w", padx=10, pady=2)
+        CTkLabel(opt_frame, text="ประเภท:").pack(side="left", padx=(0,5))
+        CTkRadioButton(opt_frame, text="VAT", variable=self.cut_vat_var, value="VAT", command=self._update_cutting_summary).pack(side="left", padx=5)
+        CTkRadioButton(opt_frame, text="CASH", variable=self.cut_vat_var, value="CASH", command=self._update_cutting_summary).pack(side="left", padx=5)
+        CTkLabel(opt_frame, text="|", text_color="gray").pack(side="left", padx=10)
+        CTkLabel(opt_frame, text="หัก ณ ที่จ่าย:").pack(side="left", padx=(0,5))
+        CTkRadioButton(opt_frame, text="ไม่หัก", variable=self.cut_wht_var, value="No", command=self._update_cutting_summary).pack(side="left", padx=5)
+        CTkRadioButton(opt_frame, text="1%", variable=self.cut_wht_var, value="1%", command=self._update_cutting_summary).pack(side="left", padx=5)
+        CTkRadioButton(opt_frame, text="3%", variable=self.cut_wht_var, value="3%", command=self._update_cutting_summary).pack(side="left", padx=5)
+        r+=1
+
+        # สรุปการคำนวณ
+        summary_frame = CTkFrame(self.main_frame, fg_color="#F3F4F6", corner_radius=6)
+        summary_frame.grid(row=r, column=1, sticky="ew", padx=10, pady=5)
+        self.lbl_vat_amt = CTkLabel(summary_frame, text="VAT: 0.00", font=CTkFont(size=12), text_color="gray")
+        self.lbl_vat_amt.pack(side="left", padx=10, pady=5)
+        self.lbl_wht_amt = CTkLabel(summary_frame, text="WHT: 0.00", font=CTkFont(size=12), text_color="red")
+        self.lbl_wht_amt.pack(side="left", padx=10, pady=5)
+        self.lbl_net_amt = CTkLabel(summary_frame, text="สุทธิ: 0.00", font=CTkFont(size=14, weight="bold"), text_color="green")
+        self.lbl_net_amt.pack(side="right", padx=10, pady=5)
+        r+=1
+
+        self.cutting_note = self._add_row(r, "หมายเหตุ (ตัด):"); r+=1
+
+        # --- Save Button ---
+        CTkButton(self.main_frame, text="บันทึกการแก้ไข", fg_color="#16A34A", hover_color="#15803D", height=45, font=CTkFont(size=16, weight="bold"), command=self._save_transport_changes).grid(row=r, column=0, columnspan=2, pady=30, sticky="ew")
+
+    def _add_header(self, row, text):
+        CTkLabel(self.main_frame, text=text, font=CTkFont(size=14, weight="bold"), fg_color="gray90", corner_radius=6, text_color="black").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(15,5), padx=5)
+
+    def _add_row(self, row, label, is_numeric=False):
+        CTkLabel(self.main_frame, text=label).grid(row=row, column=0, padx=10, pady=5, sticky="e")
+        if is_numeric:
+            entry = NumericEntry(self.main_frame)
+        else:
+            entry = CTkEntry(self.main_frame)
+        entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        return entry
+
+    def _update_cutting_summary(self, *args):
+        try:
+            base_cost = utils.convert_to_float(self.cutting_cost.get())
+            vat_amt = base_cost * 0.07 if self.cut_vat_var.get() == "VAT" else 0.0
+            wht_rate = 0.01 if self.cut_wht_var.get() == "1%" else (0.03 if self.cut_wht_var.get() == "3%" else 0.0)
+            wht_amt = base_cost * wht_rate
+            net = (base_cost + vat_amt) - wht_amt
+            self.lbl_vat_amt.configure(text=f"VAT: {vat_amt:,.2f}")
+            self.lbl_wht_amt.configure(text=f"หัก: {wht_amt:,.2f}")
+            self.lbl_net_amt.configure(text=f"สุทธิ: {net:,.2f}")
+        except: pass
+
+    def _load_current_data(self):
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute("SELECT * FROM purchase_orders WHERE id = %s", (self.po_id,))
+                data = cursor.fetchone()
+                if data:
+                    self.old_data = dict(data)
+                    utils.set_entry_text(self.stock_cost, data.get('shipping_to_stock_cost', 0))
+                    utils.set_entry_text(self.stock_driver, data.get('shipping_to_stock_driver', ''))
+                    utils.set_entry_text(self.stock_plate, data.get('shipping_to_stock_plate', ''))
+                    utils.set_entry_text(self.stock_note, data.get('shipping_to_stock_notes', ''))
+                    utils.set_entry_text(self.site_cost, data.get('shipping_to_site_cost', 0))
+                    utils.set_entry_text(self.site_driver, data.get('shipping_to_site_driver', ''))
+                    utils.set_entry_text(self.site_plate, data.get('shipping_to_site_plate', ''))
+                    utils.set_entry_text(self.site_note, data.get('shipping_to_site_notes', ''))
+                    utils.set_entry_text(self.cutting_cost, data.get('cutting_cost', 0))
+                    utils.set_entry_text(self.cutting_note, data.get('cutting_remark', ''))
+                    self.cut_vat_var.set(data.get('cutting_vat_type', 'VAT'))
+                    wht_val = data.get('cutting_wht_type', 'No')
+                    self.cut_wht_var.set(wht_val if wht_val in ['No','1%','3%'] else 'No')
+                    self._update_cutting_summary()
+        except Exception as e: messagebox.showerror("Error", f"Load failed: {e}")
+        finally: self.app_container.release_connection(conn)
+
+    def _save_transport_changes(self):
+        new_stock_cost = utils.convert_to_float(self.stock_cost.get())
+        new_site_cost = utils.convert_to_float(self.site_cost.get())
+        new_cut_cost = utils.convert_to_float(self.cutting_cost.get())
+        
+        old_stock_cost = float(self.old_data.get('shipping_to_stock_cost') or 0)
+        old_site_cost = float(self.old_data.get('shipping_to_site_cost') or 0)
+        old_cut_cost = float(self.old_data.get('cutting_cost') or 0)
+
+        changes_log = []
+        user = self.app_container.current_user_key
+        po_num = self.old_data.get('po_number', '-')
+
+        def format_money_change(label, old_val, new_val):
+            diff = new_val - old_val
+            if diff == 0: return None
+            icon = "🔺" if diff > 0 else "🔻"
+            return f"💰 {label}: {old_val:,.2f} ➜ {new_val:,.2f} ({icon}{diff:,.2f})"
+
+        if log := format_money_change("ค่าย้าย (Stock)", old_stock_cost, new_stock_cost): changes_log.append(log)
+        if log := format_money_change("ค่ารถ (Site)", old_site_cost, new_site_cost): changes_log.append(log)
+        if log := format_money_change("ค่าตัด/เจาะ", old_cut_cost, new_cut_cost): changes_log.append(log)
+        
+        text_fields = {
+            'shipping_to_stock_driver': (self.stock_driver.get(), "คนขับ-Stock"),
+            'shipping_to_stock_plate': (self.stock_plate.get(), "ทะเบียน-Stock"),
+            'shipping_to_stock_notes': (self.stock_note.get(), "Note-Stock"),
+            'shipping_to_site_driver': (self.site_driver.get(), "คนขับ-Site"),
+            'shipping_to_site_plate': (self.site_plate.get(), "ทะเบียน-Site"),
+            'shipping_to_site_notes': (self.site_note.get(), "Note-Site"),
+            'cutting_remark': (self.cutting_note.get(), "Note-Cutting"),
+            'cutting_vat_type': (self.cut_vat_var.get(), "VAT-Type"),
+            'cutting_wht_type': (self.cut_wht_var.get(), "WHT-Type")
+        }
+        for key, (new_val, label) in text_fields.items():
+            old_val = self.old_data.get(key, '') or ''
+            if key == 'cutting_wht_type' and not old_val: old_val = 'No'
+            if str(new_val).strip() != str(old_val).strip():
+                changes_log.append(f"📝 {label}: '{old_val}' ➜ '{new_val}'")
+
+        if not changes_log:
+            messagebox.showinfo("Info", "ไม่มีการเปลี่ยนแปลงข้อมูล")
+            return
+
+        full_log_msg = f"PO {po_num} Edited by {user}:\n" + "\n".join(changes_log)
+
+        if not messagebox.askyesno("ยืนยัน", f"ยืนยันการแก้ไขใช่หรือไม่?\n\n{full_log_msg}"): return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Calculate Net Diff
+                def calc_net(base, vat_type, wht_type):
+                    v = base * 0.07 if vat_type == 'VAT' else 0
+                    w = 0.01 if wht_type == '1%' else (0.03 if wht_type == '3%' else 0)
+                    return (base + v) - (base * w)
+
+                old_stock_net = calc_net(old_stock_cost, self.old_data.get('shipping_to_stock_vat_type'), self.old_data.get('shipping_to_stock_wht_type'))
+                old_site_net = calc_net(old_site_cost, self.old_data.get('shipping_to_site_vat_type'), self.old_data.get('shipping_to_site_wht_type'))
+                old_cut_net = calc_net(old_cut_cost, self.old_data.get('cutting_vat_type'), self.old_data.get('cutting_wht_type'))
+
+                new_stock_net = calc_net(new_stock_cost, self.old_data.get('shipping_to_stock_vat_type'), self.old_data.get('shipping_to_stock_wht_type'))
+                new_site_net = calc_net(new_site_cost, self.old_data.get('shipping_to_site_vat_type'), self.old_data.get('shipping_to_site_wht_type'))
+                new_cut_net = calc_net(new_cut_cost, self.cut_vat_var.get(), self.cut_wht_var.get())
+
+                diff_grand_total = (new_stock_net - old_stock_net) + (new_site_net - old_site_net) + (new_cut_net - old_cut_net)
+                diff_total_cost = (new_cut_cost - old_cut_cost) 
+
+                new_cut_vat = new_cut_cost * 0.07 if self.cut_vat_var.get() == "VAT" else 0
+                new_cut_wht_rate = 0.01 if self.cut_wht_var.get() == "1%" else (0.03 if self.cut_wht_var.get() == "3%" else 0)
+                new_cut_wht = new_cut_cost * new_cut_wht_rate
+
+                cursor.execute("""
+                    UPDATE purchase_orders SET 
+                        shipping_to_stock_cost = %s, shipping_to_stock_driver = %s, shipping_to_stock_plate = %s, shipping_to_stock_notes = %s,
+                        shipping_to_site_cost = %s, shipping_to_site_driver = %s, shipping_to_site_plate = %s, shipping_to_site_notes = %s,
+                        cutting_cost = %s, cutting_remark = %s, cutting_vat_type = %s, cutting_wht_type = %s, cutting_vat_amount = %s, cutting_wht_amount = %s,
+                        total_cost = total_cost + %s, grand_total = grand_total + %s
+                    WHERE id = %s
+                """, (
+                    new_stock_cost, self.stock_driver.get(), self.stock_plate.get(), self.stock_note.get(),
+                    new_site_cost, self.site_driver.get(), self.site_plate.get(), self.site_note.get(),
+                    new_cut_cost, self.cutting_note.get(), self.cut_vat_var.get(), self.cut_wht_var.get(), new_cut_vat, new_cut_wht,
+                    diff_total_cost, diff_grand_total, self.po_id
+                ))
+
+                cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, NOW())", 
+                               ('Edit PO Transport', 'purchase_orders', self.po_id, user, full_log_msg))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
+            if self.on_save_callback: self.on_save_callback()
+            self.destroy()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"{e}")
+            print(traceback.format_exc())
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+class TransportLogViewer(CTkToplevel):
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.title("ประวัติการแก้ไขค่าขนส่ง (Transport Logs)")
+        self.geometry("1000x600")
+
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        filter_frame = CTkFrame(self)
+        filter_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
+        
+        self.month_var = tk.StringVar(value="ทุกเดือน")
+        month_menu = CTkOptionMenu(filter_frame, variable=self.month_var, values=["ทุกเดือน"] + self.thai_months, command=self.load_logs)
+        month_menu.pack(side="left", padx=5)
+
+        self.year_var = tk.StringVar(value=str(datetime.now().year))
+        year_menu = CTkOptionMenu(filter_frame, variable=self.year_var, values=[str(y) for y in range(2024, 2030)], command=self.load_logs)
+        year_menu.pack(side="left", padx=5)
+
+        self.search_entry = CTkEntry(filter_frame, placeholder_text="ค้นหา PO / User...")
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=5)
+        CTkButton(filter_frame, text="ค้นหา", command=self.load_logs).pack(side="left", padx=5)
+
+        self.tree_frame = CTkFrame(self)
+        self.tree_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        self.tree_frame.grid_rowconfigure(0, weight=1)
+        self.tree_frame.grid_columnconfigure(0, weight=1)
+
+        self._create_treeview()
+        CTkLabel(self, text="* ดับเบิลคลิกที่รายการเพื่อดูรายละเอียดทั้งหมด", text_color="gray50", font=CTkFont(size=12)).grid(row=2, column=0, pady=5)
+        self.after(100, self.load_logs)
+        self.transient(master)
+        self.grab_set()
+
+    def _create_treeview(self):
+        columns = ("timestamp", "user", "po_number", "details")
+        self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings")
+        self.tree.heading("timestamp", text="เวลาแก้ไข"); self.tree.column("timestamp", width=150, anchor="center")
+        self.tree.heading("user", text="ผู้แก้ไข"); self.tree.column("user", width=100, anchor="center")
+        self.tree.heading("po_number", text="เลขที่ PO"); self.tree.column("po_number", width=120, anchor="center")
+        self.tree.heading("details", text="รายละเอียดการเปลี่ยนแปลง"); self.tree.column("details", width=600, anchor="w")
+
+        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb = ttk.Scrollbar(self.tree_frame, orient="horizontal", command=self.tree.xview)
+        hsb.grid(row=1, column=0, sticky="ew")
+
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<Double-1>", self._on_double_click)
+
+    def _on_double_click(self, event):
+        item_id = self.tree.focus()
+        if not item_id: return
+        item = self.tree.item(item_id)
+        formatted_text = str(item['values'][3]).replace(" | ", "\n")
+        
+        popup = CTkToplevel(self)
+        popup.title("รายละเอียด Log")
+        popup.geometry("500x400")
+        textbox = CTkTextbox(popup, font=CTkFont(size=14))
+        textbox.pack(fill="both", expand=True, padx=10, pady=10)
+        textbox.insert("1.0", formatted_text)
+        textbox.configure(state="disabled")
+        CTkButton(popup, text="ปิด", command=popup.destroy).pack(pady=10)
+        popup.transient(self); popup.grab_set()
+
+    def load_logs(self, *args):
+        for item in self.tree.get_children(): self.tree.delete(item)
+        month_str, year_str = self.month_var.get(), self.year_var.get()
+        search_txt = self.search_entry.get().strip().lower()
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                query = """
+                    SELECT a.timestamp, a.user_info, p.po_number, a.changes
+                    FROM audit_log a
+                    LEFT JOIN purchase_orders p ON a.record_id = p.id
+                    WHERE a.action = 'Edit PO Transport'
+                """
+                params = []
+                if month_str != "ทุกเดือน":
+                    query += " AND EXTRACT(MONTH FROM a.timestamp::timestamp) = %s"
+                    params.append(self.thai_month_map[month_str])
+                if year_str:
+                    query += " AND EXTRACT(YEAR FROM a.timestamp::timestamp) = %s"
+                    params.append(int(year_str))
+                query += " ORDER BY a.timestamp::timestamp DESC"
+
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+                for row in rows:
+                    po_num, user, changes = row['po_number'] or "N/A", row['user_info'], row['changes']
+                    if search_txt and search_txt not in str(po_num).lower() and search_txt not in str(user).lower() and search_txt not in str(changes).lower(): continue
+                    
+                    try: ts_str = pd.to_datetime(row['timestamp']).strftime("%d/%m/%Y %H:%M")
+                    except: ts_str = str(row['timestamp'])
+                    
+                    self.tree.insert("", "end", values=(ts_str, user, po_num, str(changes).replace('\n', ' | ')))
+        except Exception as e: messagebox.showerror("Error", f"Load logs failed: {e}")
+        finally: self.app_container.release_connection(conn)
+
+class TransportPOSearchDialog(CTkToplevel):
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.title("ค้นหา PO เพื่อแก้ไขค่าขนส่ง (Transport Manager)")
+        self.geometry("1000x600")
+        
+        # Grid Configuration
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # 1. Header & Search
+        top_frame = CTkFrame(self, fg_color="transparent")
+        top_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        
+        CTkLabel(top_frame, text="เลือก PO ของคุณเพื่อแก้ไขค่ารถ", font=CTkFont(size=16, weight="bold")).pack(side="left")
+        
+        self.search_entry = CTkEntry(top_frame, placeholder_text="ค้นหา PO / SO / Supplier...", width=250)
+        self.search_entry.pack(side="right", padx=5)
+        self.search_entry.bind("<Return>", lambda e: self._load_data())
+        
+        CTkButton(top_frame, text="ค้นหา", width=80, command=self._load_data).pack(side="right")
+
+        # 2. Table List
+        self.tree_frame = CTkFrame(self)
+        self.tree_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=5)
+        self.tree_frame.grid_columnconfigure(0, weight=1)
+        self.tree_frame.grid_rowconfigure(0, weight=1)
+
+        self._create_treeview()
+        
+        # 3. Action Button
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=20)
+        
+        # ปุ่มดู Log
+        CTkButton(btn_frame, text="ดูประวัติการแก้ไข (Logs)", fg_color="#64748B", hover_color="#475569", command=self._open_log_viewer).pack(side="left")
+        
+        # ปุ่มแก้ไข (Enable เมื่อเลือกรายการ)
+        self.btn_edit = CTkButton(btn_frame, text="🚚 แก้ไขค่ารถรายการที่เลือก", 
+                                  fg_color="#8B5CF6", hover_color="#7C3AED", # สีม่วง
+                                  font=CTkFont(size=16, weight="bold"),
+                                  state="disabled",
+                                  command=self._open_edit_dialog)
+        self.btn_edit.pack(side="right")
+
+        # Initial Load
+        self.after(100, self._load_data)
+        self.transient(master)
+        self.grab_set()
+
+    def _create_treeview(self):
+        columns = ("id", "po_number", "so_number", "supplier", "status", "transport_cost")
+        self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings")
+        
+        self.tree.heading("id", text="ID")
+        self.tree.heading("po_number", text="PO Number")
+        self.tree.heading("so_number", text="SO Number")
+        self.tree.heading("supplier", text="Supplier")
+        self.tree.heading("status", text="สถานะ")
+        self.tree.heading("transport_cost", text="ค่ารถปัจจุบัน (Stock+Site)")
+
+        self.tree.column("id", width=0, stretch=False) # ซ่อน ID
+        self.tree.column("po_number", width=120, anchor="center")
+        self.tree.column("so_number", width=120, anchor="center")
+        self.tree.column("supplier", width=250, anchor="w")
+        self.tree.column("status", width=100, anchor="center")
+        self.tree.column("transport_cost", width=150, anchor="e")
+
+        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
+        vsb.pack(side='right', fill='y')
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(fill="both", expand=True)
+        
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.tree.bind("<Double-1>", lambda e: self._open_edit_dialog())
+
+    def _load_data(self):
+        # Clear
+        for item in self.tree.get_children(): self.tree.delete(item)
+        self.btn_edit.configure(state="disabled")
+
+        search_txt = self.search_entry.get().strip().lower()
+        user_key = self.app_container.current_user_key
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # Query: ดึง PO ของ User นี้ (และไม่เอาที่ Cancelled)
+                query = """
+                    SELECT id, po_number, so_number, supplier_name, status, 
+                           (COALESCE(shipping_to_stock_cost,0) + COALESCE(shipping_to_site_cost,0)) as total_transport
+                    FROM purchase_orders 
+                    WHERE user_key = %s 
+                    AND status != 'Cancelled'
+                """
+                params = [user_key]
+
+                if search_txt:
+                    query += " AND (LOWER(po_number) LIKE %s OR LOWER(so_number) LIKE %s OR LOWER(supplier_name) LIKE %s)"
+                    wildcard = f"%{search_txt}%"
+                    params.extend([wildcard, wildcard, wildcard])
+                
+                query += " ORDER BY id DESC"
+                
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+
+                for row in rows:
+                    vals = (
+                        row['id'],
+                        row['po_number'],
+                        row['so_number'],
+                        row['supplier_name'],
+                        row['status'],
+                        f"{row['total_transport']:,.2f}"
+                    )
+                    self.tree.insert("", "end", values=vals)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"{e}")
+        finally:
+            self.app_container.release_connection(conn)
+
+    def _on_select(self, event):
+        if self.tree.selection():
+            self.btn_edit.configure(state="normal")
+        else:
+            self.btn_edit.configure(state="disabled")
+
+    def _open_edit_dialog(self):
+        selected = self.tree.selection()
+        if not selected: return
+        
+        item = self.tree.item(selected[0])
+        po_id = item['values'][0] # ID hidden at index 0
+        
+        # เรียกใช้ TransportEditDialog (ต้องมี Class นี้อยู่ในไฟล์เดียวกันแล้ว)
+        try:
+            TransportEditDialog(self, self.app_container, po_id, on_save_callback=self._load_data)
+        except NameError:
+             messagebox.showerror("Error", "ไม่พบ Class TransportEditDialog ในไฟล์ history_windows.py")
+
+    def _open_log_viewer(self):
+        # เรียกใช้ TransportLogViewer (ต้องมี Class นี้อยู่ในไฟล์เดียวกันแล้ว)
+        try:
+            TransportLogViewer(self, self.app_container)
+        except NameError:
+             messagebox.showerror("Error", "ไม่พบ Class TransportLogViewer ในไฟล์ history_windows.py")

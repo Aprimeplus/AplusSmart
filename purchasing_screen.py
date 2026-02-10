@@ -1003,8 +1003,7 @@ class ProductEditDialog(CTkToplevel):
             self.product_code_entry.insert(0, self.product_data.get('product_code', ''))
             self.product_name_entry.insert(0, self.product_data.get('product_name', ''))
             self.warehouse_entry.insert(0, self.product_data.get('warehouse', ''))
-            if self.editing_mode:
-                self.product_code_entry.configure(state="readonly")
+            # [แก้ไข] เอาบรรทัดที่ล็อก readonly ออกแล้ว เพื่อให้แก้ไขได้
 
     def _save_product(self):
         code = self.product_code_entry.get().strip()
@@ -1019,10 +1018,20 @@ class ProductEditDialog(CTkToplevel):
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 if self.editing_mode:
                     product_id = self.product_data['id']
+                    
+                    # [เพิ่ม] ตรวจสอบรหัสซ้ำ (กรณีเปลี่ยนรหัส)
+                    cursor.execute("SELECT id FROM products WHERE product_code = %s AND id != %s", (code, product_id))
+                    if cursor.fetchone():
+                        messagebox.showerror("ข้อมูลซ้ำ", f"รหัสสินค้า '{code}' มีอยู่ในระบบแล้ว", parent=self)
+                        return
+
+                    # [แก้ไข] อัปเดต product_code ด้วย
                     cursor.execute("""
-                        UPDATE products SET product_name = %s, warehouse = %s, last_updated = %s
+                        UPDATE products 
+                        SET product_code = %s, product_name = %s, warehouse = %s, last_updated = %s
                         WHERE id = %s
-                    """, (name, warehouse, datetime.now(), product_id))
+                    """, (code, name, warehouse, datetime.now(), product_id))
+                    
                     messagebox.showinfo("สำเร็จ", f"อัปเดตสินค้า '{name}' เรียบร้อยแล้ว", parent=self)
                 else:
                     cursor.execute("SELECT id FROM products WHERE product_code = %s", (code,))
@@ -1034,9 +1043,11 @@ class ProductEditDialog(CTkToplevel):
                         VALUES (%s, %s, %s, %s)
                     """, (code, name, warehouse, datetime.now()))
                     messagebox.showinfo("สำเร็จ", f"เพิ่มสินค้าใหม่ '{name}' เรียบร้อยแล้ว", parent=self)
+            
             conn.commit()
             self.pm_window.load_products()
             self.on_close()
+            
         except psycopg2.Error as db_error:
             if conn: conn.rollback()
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการบันทึกข้อมูล: {db_error}", parent=self)
@@ -1139,7 +1150,17 @@ class PurchasingScreen(CTkFrame):
         self._poll_and_update_tasks_badge()
         self.bind("<Destroy>", self._on_destroy)
         
-    
+    def _open_transport_manager(self):
+        """เปิดหน้าต่างค้นหาและจัดการค่าขนส่ง"""
+        # ต้อง Import Class มาก่อน (ระวัง Circular Import)
+        try:
+            from history_windows import TransportPOSearchDialog
+            TransportPOSearchDialog(self, self.app_container)
+        except ImportError:
+            messagebox.showerror("Error", "ไม่พบโมดูล TransportPOSearchDialog", parent=self)
+        except Exception as e:
+            print(traceback.format_exc())
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
     
     def _edit_so_number(self):
         if not self.current_commission_data:
@@ -1560,6 +1581,14 @@ class PurchasingScreen(CTkFrame):
         
         self.tasks_button = CTkButton(button_container, text="My Tasks 🔔 (0)", command=self._open_my_tasks_window)
         self.tasks_button.pack(side="left", padx=(0, 5))
+
+        # --- [🔥 ส่วนที่เพิ่มใหม่] ปุ่มจัดการค่าขนส่ง ---
+        CTkButton(button_container, 
+                  text="🚚 จัดการค่าขนส่ง & ค่าตัด", 
+                  command=self._open_transport_manager, 
+                  fg_color="#8B5CF6", hover_color="#7C3AED" # สีม่วง
+        ).pack(side="left", padx=5)
+        # ---------------------------------------------
 
         CTkButton(button_container, text="🔍 ค้นหา SO", command=self._lookup_so_details, fg_color="#0891B2").pack(side="left", padx=5)
 

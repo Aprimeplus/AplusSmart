@@ -364,6 +364,15 @@ class PurchasingManagerScreen(CTkFrame):
     
     # --- START: เพิ่ม 6 ฟังก์ชันใหม่สำหรับแท็บ Master Edit ---
     
+    def _open_transport_log_viewer_mp(self):
+        """เปิดหน้าต่างดู Log ค่าขนส่ง (สำหรับ Manager ดูได้ทุกคน)"""
+        try:
+            from history_windows import TransportLogViewer
+            # เรียกใช้โดยไม่ filter user_key (Logic นี้ต้องไปแก้ใน TransportLogViewer ด้วย ถ้าเดิมมัน Lock ไว้)
+            TransportLogViewer(self, self.app_container) 
+        except Exception as e:
+             messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่าง Log ได้: {e}")
+
     def _cancel_so_logic(self, so_number, reason):
         """Logic การยกเลิก SO + PO + Noti + Log"""
         conn = self.app_container.get_connection()
@@ -1100,29 +1109,38 @@ class PurchasingManagerScreen(CTkFrame):
 
         # 2. ปุ่มจัดการ PO
         CTkButton(button_container, text="📄 พิมพ์ใบสั่งซื้อ PO", command=self._open_po_print_dialog, fg_color="#7C3AED", hover_color="#6D28D9").pack(side="left", padx=5)
-        CTkButton(button_container, text="ดึงงาน PO กลับมาแก้ไข", command=self._open_reopen_po_window, fg_color="#F97316", hover_color="#EA580C").pack(side="left", padx=5)
         
+        # [❌ ลบปุ่ม "ดึงงาน PO กลับมาแก้ไข" ออกไปแล้วตามที่ขอครับ]
+
         # 3. ปุ่มดูประวัติ
         CTkButton(button_container, text="ประวัติการตีกลับ", command=self._open_rejection_history, fg_color="#EF4444", hover_color="#B91C1C").pack(side="left", padx=5)
+        
+        # ปุ่มสำหรับ MP (ดู Log แก้ไขค่าขนส่ง)
+        CTkButton(button_container, 
+                  text="📜 ประวัติแก้ค่าขนส่ง", 
+                  command=self._open_transport_log_viewer_mp, 
+                  fg_color="#6366f1", hover_color="#4f46e5" # สี Indigo
+        ).pack(side="left", padx=5)
+
         CTkButton(button_container, text="ดูประวัติ PO ที่อนุมัติแล้ว", command=self._open_approved_po_history).pack(side="left", padx=5)
         
-        # +++ [เพิ่มใหม่] ปุ่มประวัติการยกเลิก +++
+        # ปุ่มประวัติการยกเลิก
         CTkButton(button_container, text="ประวัติการยกเลิก", 
                   command=self._open_cancelled_history, 
-                  fg_color="#B91C1C", # สีแดงเข้ม เพื่อให้แตกต่างจากปุ่มตีกลับเล็กน้อย
+                  fg_color="#B91C1C", 
                   hover_color="#991B1B").pack(side="left", padx=5)
-        # +++++++++++++++++++++++++++++++++++++
 
+        # ปุ่มยกเลิก SO
         CTkButton(button_container, text="⚠️ ยกเลิก SO", 
                   command=self._manual_cancel_so_process, 
-                  fg_color="#991B1B", # สีแดงเลือดหมู
+                  fg_color="#991B1B", 
                   hover_color="#7F1D1D",
                   width=100).pack(side="left", padx=5)
 
         # 4. ปุ่ม System / Export
         CTkButton(button_container, text="Refresh", width=80, command=self._load_data).pack(side="left", padx=5)
         CTkButton(button_container, text="PDF (อนุมัติ)", width=100, command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
-        CTkButton(button_container, text="Excel (อนุมัติ)", width=100, command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B").pack(side="left", padx=5)   
+        CTkButton(button_container, text="Excel (อนุมัติ)", width=100, command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B").pack(side="left", padx=5)    
         
         # 5. ปุ่ม Logout
         CTkButton(button_container, text="ออก", width=60, command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="left", padx=5)

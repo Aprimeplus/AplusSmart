@@ -401,6 +401,8 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     payment_data_top = [
         [PB('เลขที่บัญชี', 'Small_TH'), make_para(display_account_number), PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(recalc_total_cost), 'Small_Right_TH')], 
         [PB('ธนาคาร', 'Small_TH'), make_para(display_bank_name), PB('Vat 7%', 'Small_TH'), make_para(format_num(recalc_total_vat), 'Small_Right_TH')], 
+        
+        # [🔥 แก้ไขจุดนี้] ใช้ตัวแปร display_account_type แทนการ get ใหม่
         [PB('ประเภท', 'Small_TH'), make_para(display_account_type, 'Small_TH'), PB('รวมทั้งสิ้น', 'Small_TH'), make_para(format_num(recalc_grand_total), 'Small_Right_TH')]
     ]
     unified_payment_data.extend(payment_data_top)
