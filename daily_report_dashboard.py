@@ -233,7 +233,8 @@ class DailyDashboard(CTkFrame):
         
     def _draw_matplotlib_chart(self, df, year, month_name):
         """
-        🔥 ปรับปรุงแล้ว: แก้ปัญหา Label ซ้อนกัน + แกน X แน่นเกิน
+        🎨 ปรับปรุง V.8 - Smart Flip Tooltip
+        ✅ แก้ปัญหา Tooltip ตกขอบขวา (Auto Flip ซ้าย/ขวา ตามตำแหน่งเมาส์)
         """
         if self.canvas:
             self.canvas.get_tk_widget().destroy()
@@ -247,142 +248,223 @@ class DailyDashboard(CTkFrame):
         total_sales = df['cumulative_sales']
         target = df['cumulative_target']
 
-        bar_width = 0.6  # เพิ่มจาก 0.45 เพื่อให้แท่งหนาขึ้น
+        bar_width = 0.6
+        total_bars_count = len(days) # นับจำนวนวันทั้งหมดเพื่อใช้คำนวณตำแหน่ง
 
-        # -----------------------------
-        # 1. Stacked Bars (2 สี)
-        # -----------------------------
-        ax.bar(days, prev_sales, width=bar_width,
-            color='#F59E0B', alpha=0.7, label='ยอดสะสมเดิม')
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 📊 1. STACKED BAR CHART
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        rects1 = ax.bar(days, prev_sales, width=bar_width,
+                        color='#F59E0B', alpha=0.75, 
+                        label='ยอดสะสมเดิม', zorder=2,
+                        edgecolor='#D97706', linewidth=0.5)
 
-        ax.bar(days, daily_amount, bottom=prev_sales, width=bar_width,
-            color='#0EA5E9', alpha=0.9, label='ยอดขายเพิ่มวันนี้')
+        rects2 = ax.bar(days, daily_amount, bottom=prev_sales, width=bar_width,
+                        color='#0EA5E9', alpha=0.9, 
+                        label='ยอดขายเพิ่มวันนี้', zorder=2,
+                        edgecolor='#0284C7', linewidth=0.5)
 
-        # -----------------------------
-        # 2. Target line
-        # -----------------------------
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 🎯 2. TARGET LINE
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         ax.plot(days, target,
                 color='#DC2626', linewidth=2.5,
-                marker='o', markersize=5,
+                marker='o', markersize=6, markerfacecolor='#FEE2E2',
+                markeredgewidth=2, markeredgecolor='#DC2626',
                 label='เป้าหมายสะสม', zorder=5)
 
-        # -----------------------------
-        # 3. 🔥 SMART LABEL CONTROL (แก้ปัญหาซ้อนกัน)
-        # -----------------------------
-        MIN_SHOW = 0.15e6  # เพิ่มจาก 0.10M → แสดงน้อยลง
-        LABEL_STEP = 3     # แสดงทุกๆ 3 วัน แทนที่จะทุกวัน
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 💬 3. TOOLTIP (SMART POSITIONING)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        annot = ax.annotate("", xy=(0,0), xytext=(25, 25),
+                            textcoords="offset points",
+                            bbox=dict(
+                                boxstyle="round,pad=0.8",
+                                fc="#F8FAFC",
+                                ec="#D1D5DB",
+                                alpha=0.98,
+                                linewidth=1.2
+                            ),
+                            arrowprops=dict(
+                                arrowstyle="->",
+                                fc="#64748B", 
+                                ec="#64748B",
+                                lw=1.5,
+                                alpha=0.8,
+                                connectionstyle="arc3,rad=0.2"
+                            ),
+                            fontsize=10.5, 
+                            color='#1E293B',
+                            fontfamily='Tahoma',
+                            fontweight='normal',
+                            zorder=25)
+        annot.set_visible(False)
+
+        def update_annot(bar, idx):
+            x = bar.get_x() + bar.get_width() / 2
+            y = bar.get_y() + bar.get_height()
+            annot.xy = (x, y)
+            
+            # --- 🔥 SMART FLIP LOGIC (แก้ปัญหาตกขอบ) ---
+            # ถ้าตำแหน่งแท่งกราฟ เกิน 60% ของกราฟทั้งหมด ให้ปัด Tooltip ไปทางซ้าย
+            if idx > (total_bars_count * 0.6):
+                # ปัดซ้าย (xytext ติดลบ) + ปรับโค้งลูกศรกลับด้าน
+                annot.set_position((-20, 25))  
+                annot.arrow_patch.set_connectionstyle("arc3,rad=-0.2") # rad ติดลบเพื่อกลับด้านโค้ง
+                # ปรับตำแหน่ง Text alignment ให้ชิดขวาของกล่อง (optional)
+                annot.set_ha('right') 
+            else:
+                # ปัดขวา (ค่าปกติ)
+                annot.set_position((25, 25))
+                annot.arrow_patch.set_connectionstyle("arc3,rad=0.2")
+                annot.set_ha('left')
+
+            # --- Data Retrieval ---
+            day_val = days.iloc[idx]
+            daily_val = daily_amount.iloc[idx]
+            total_val = total_sales.iloc[idx]
+            target_val = target.iloc[idx] if idx < len(target) else 0
+            
+            progress = (total_val / target_val * 100) if target_val > 0 else 0
+            gap = total_val - target_val
+            
+            # --- Smart Format ---
+            def smart_format(val):
+                if abs(val) >= 1e6: return f"{val/1e6:,.2f}M"
+                elif abs(val) >= 1e3: return f"{val/1e3:,.1f}K"
+                else: return f"{val:,.0f}"
+            
+            # --- Status Logic ---
+            if progress >= 100:
+                status_icon, status_text, border_color = "✅", "บรรลุเป้า", "#10B981"
+            elif progress >= 90:
+                status_icon, status_text, border_color = "🟢", "ใกล้เป้า", "#84CC16"
+            elif progress >= 75:
+                status_icon, status_text, border_color = "🟡", "พอใช้", "#F59E0B"
+            else:
+                status_icon, status_text, border_color = "🔴", "ห่างเป้า", "#EF4444"
+            
+            # --- Visual Elements ---
+            bar_len = 12
+            filled = min(int(progress / 100 * bar_len), bar_len)
+            p_bar = "█" * filled + "░" * (bar_len - filled)
+            
+            thai_days_full = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
+            m_idx = self.thai_months.index(month_name) + 1
+            d_name = thai_days_full[datetime(year, m_idx, int(day_val)).weekday()]
+            
+            if gap > 0: gap_icon, gap_lbl, gap_txt = "📈", "เกินเป้า", f"+{smart_format(gap)}"
+            elif gap < 0: gap_icon, gap_lbl, gap_txt = "📉", "ห่างเป้า", smart_format(gap)
+            else: gap_icon, gap_lbl, gap_txt = "🎯", "ตรงเป้า", "0"
+            
+            # --- Text Content ---
+            sep_line = "─" * 22 
+            text = (
+                f"📅  {int(day_val)} {month_name} ({d_name})\n"
+                f"{sep_line}\n"
+                f"💰  วันนี้       {smart_format(daily_val):>9}\n"
+                f"📦  สะสม       {smart_format(total_val):>9}\n"
+                f"🎯  เป้าหมาย     {smart_format(target_val):>9}\n\n"
+                f"{status_icon}  {status_text}  ({progress:.1f}%)\n"
+                f"{p_bar}\n"
+                f"{gap_icon}  {gap_lbl}: {gap_txt}"
+            )
+            
+            annot.set_text(text)
+            annot.get_bbox_patch().set_edgecolor(border_color)
+
+        def hover(event):
+            vis = annot.get_visible()
+            if event.inaxes == ax:
+                for idx, bar in enumerate(rects2):
+                    if bar.contains(event)[0]:
+                        update_annot(bar, idx)
+                        annot.set_visible(True)
+                        event.canvas.draw_idle()
+                        return
+                for idx, bar in enumerate(rects1):
+                    if bar.contains(event)[0]:
+                        update_annot(bar, idx)
+                        annot.set_visible(True)
+                        event.canvas.draw_idle()
+                        return
+            
+            if vis:
+                annot.set_visible(False)
+                event.canvas.draw_idle()
+
+        fig.canvas.mpl_connect("motion_notify_event", hover)
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 🏷️ 4. STATIC LABELS
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        MIN_SHOW = 0.15e6
+        LABEL_STEP = 3
         
-        # คำนวณ Max สำหรับกำหนด Offset แบบ Dynamic
-        max_cumulative = total_sales.max(skipna=True)
-        offset_base = max_cumulative * 0.015  # 1.5% ของ max
-        OFFSET_LEVELS = [offset_base * 1.2, offset_base * 2.8]  # สลับสูง-ต่ำ
+        max_cumulative = total_sales.max(skipna=True) if not total_sales.empty else 0
+        offset_base = max_cumulative * 0.015
+        OFFSET_LEVELS = [offset_base * 1.2, offset_base * 2.8]
 
         for i, day in enumerate(days):
-            # เงื่อนไข: แสดงเฉพาะวันที่
-            # 1. มียอดขาย >= 0.15M
-            # 2. เป็นทุกๆ 3 วัน (หรือวันสุดท้าย)
-            # 3. ไม่ใช่วันในอนาคต
-            if (
-                pd.notna(total_sales[i]) and
-                daily_amount[i] >= MIN_SHOW and
-                (i % LABEL_STEP == 0 or i == len(days) - 1)
-            ):
-                offset = OFFSET_LEVELS[i % 2]  # สลับความสูง
+            if (pd.notna(total_sales[i]) and 
+                daily_amount[i] >= MIN_SHOW and 
+                (i % LABEL_STEP == 0 or i == len(days) - 1)):
+                
+                offset = OFFSET_LEVELS[i % 2]
+                if daily_amount[i] >= 1e6: label_text = f'+{daily_amount[i] / 1e6:.2f}M'
+                else: label_text = f'+{daily_amount[i] / 1e3:.0f}K'
+                
+                ax.text(day, total_sales[i] + offset, label_text,
+                    ha='center', va='bottom', fontsize=9, weight='bold', color='#0369A1', zorder=10,
+                    bbox=dict(facecolor='white', edgecolor='#BAE6FD', alpha=0.9, pad=2.5, boxstyle='round,pad=0.35', linewidth=1.2))
 
-                ax.text(
-                    day,
-                    total_sales[i] + offset,
-                    f'+{daily_amount[i] / 1e6:.2f}M',
-                    ha='center',
-                    va='bottom',
-                    fontsize=9,
-                    weight='bold',
-                    color='#0369A1',
-                    bbox=dict(
-                        facecolor='white',
-                        edgecolor='#E2E8F0',
-                        alpha=0.9,
-                        pad=3,
-                        boxstyle='round,pad=0.4'
-                    )
-                )
-
-        # -----------------------------
-        # 4. Cumulative Total (ท้ายเดือน)
-        # -----------------------------
         last_idx = df[pd.notna(total_sales)].index.max()
         if pd.notna(last_idx):
             last_day = days[last_idx]
             last_total = total_sales[last_idx]
+            last_target = target[last_idx] if last_idx < len(target) else 0
+            achievement = (last_total / last_target * 100) if last_target > 0 else 0
+            
+            if achievement >= 100: badge_bg, badge_border, badge_icon = '#D1FAE5', '#10B981', '✅'
+            elif achievement >= 90: badge_bg, badge_border, badge_icon = '#FEF3C7', '#F59E0B', '🟡'
+            else: badge_bg, badge_border, badge_icon = '#FEE2E2', '#EF4444', '⚠️'
+            
+            ax.text(last_day, last_total + max_cumulative * 0.09,
+                f'{badge_icon} ยอดสะสม {last_total/1e6:.2f}M ({achievement:.1f}%)',
+                ha='center', va='bottom', fontsize=11, weight='bold', color='#1E293B', zorder=10,
+                bbox=dict(facecolor=badge_bg, edgecolor=badge_border, alpha=0.95, pad=5, boxstyle='round,pad=0.6', linewidth=1.5))
 
-            ax.text(
-                last_day,
-                last_total + max_cumulative * 0.08,  # 8% ของ max
-                f'ยอดสะสม {last_total/1e6:.1f}M',
-                ha='center',
-                va='bottom',
-                fontsize=11,
-                weight='bold',
-                color='#1E293B',
-                bbox=dict(
-                    facecolor='#FEF3C7',
-                    edgecolor='#F59E0B',
-                    alpha=0.9,
-                    pad=4,
-                    boxstyle='round,pad=0.5'
-                )
-            )
-
-        # -----------------------------
-        # 5. 🔥 X-Axis Improvement (แก้ปัญหาแน่นเกิน)
-        # -----------------------------
-        thai_days = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."]
-        month_idx = self.thai_months.index(month_name) + 1
-
-        # แสดง Tick ทุกๆ 3 วัน + วันแรก + วันสุดท้าย
-        tick_days = [days.iloc[0]]  # วันแรก
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 📐 5. AXES & STYLING
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        thai_days_short = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."]
+        month_idx_int = self.thai_months.index(month_name) + 1
+        
+        tick_days = [days.iloc[0]]
         tick_days.extend([d for i, d in enumerate(days) if (i % 3 == 0 and i > 0)])
-        if days.iloc[-1] not in tick_days:
-            tick_days.append(days.iloc[-1])  # วันสุดท้าย
+        if days.iloc[-1] not in tick_days: tick_days.append(days.iloc[-1])
 
         ax.set_xticks(tick_days)
-        ax.set_xticklabels(
-            [f"{int(d)}\n{thai_days[datetime(year, month_idx, int(d)).weekday()]}" 
-             for d in tick_days],
-            fontsize=9
-        )
-
-        # Grid แนวตั้งเบาๆ ที่จุด Tick
+        ax.set_xticklabels([f"{int(d)}\n{thai_days_short[datetime(year, month_idx_int, int(d)).weekday()]}" for d in tick_days], fontsize=9, color='#374151')
         ax.set_xticks(days, minor=True)
-        ax.grid(axis='x', which='minor', linestyle=':', alpha=0.15)
-
-        # -----------------------------
-        # 6. Y-Axis Format
-        # -----------------------------
-        ax.yaxis.set_major_formatter(
-            plt.FuncFormatter(lambda x, p: f'{x/1e6:.1f}M')
-        )
-
-        # เผื่อพื้นที่ด้านบนเพิ่มเพื่อรองรับ Label
-        ymax = max(target.max(skipna=True), total_sales.max(skipna=True))
-        ax.set_ylim(0, ymax * 1.25)  # เพิ่มจาก 1.22 → 1.25
-
-        # -----------------------------
-        # 7. Styling
-        # -----------------------------
-        ax.set_title(
-            f"วิเคราะห์ยอดขายและการเติบโตรายวัน - {month_name} {year}",
-            fontsize=16, weight='bold', pad=20
-        )
-
-        ax.legend(loc='upper left', fontsize=10, frameon=True, 
-                 framealpha=0.95, edgecolor='#E2E8F0', ncol=3)
-        ax.grid(axis='y', linestyle='--', alpha=0.3)
+        ax.grid(axis='x', which='minor', linestyle=':', alpha=0.2, color='#D1D5DB')
         
-        # เพิ่มสีพื้นหลังอ่อนๆ
-        ax.set_facecolor('#FAFAFA')
-        fig.patch.set_facecolor('white')
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1e6:.1f}M'))
+        max_target = target.max(skipna=True) if not target.empty else 0
+        max_total = total_sales.max(skipna=True) if not total_sales.empty else 0
+        ymax = max(max_target, max_total)
+        if ymax > 0: ax.set_ylim(0, ymax * 1.28)
 
+        ax.set_title(f"📊 วิเคราะห์ยอดขายและการเติบโตรายวัน - {month_name} {year}", fontsize=17, weight='bold', pad=25, color='#1F2937')
+        ax.legend(loc='upper left', fontsize=10.5, frameon=True, framealpha=0.97, edgecolor='#D1D5DB', fancybox=True, shadow=False, ncol=3, columnspacing=1.5, labelspacing=0.8)
+        ax.grid(axis='y', linestyle='--', alpha=0.35, color='#D1D5DB', linewidth=0.8)
+        ax.set_facecolor('#F9FAFB')
+        fig.patch.set_facecolor('white')
+        
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#E5E7EB')
+            spine.set_linewidth(1)
+        
         plt.subplots_adjust(top=0.88, bottom=0.12, left=0.08, right=0.95)
 
         self.canvas = FigureCanvasTkAgg(fig, master=self.main_chart_canvas_area)

@@ -1,19 +1,24 @@
 import os
+import sys
 import traceback
-import utils
+from datetime import datetime
 from tkinter import filedialog, messagebox
+
+# ReportLab Core
 from reportlab.platypus import (
-    BaseDocTemplate, PageTemplate, FrameBreak, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+    BaseDocTemplate, PageTemplate, Frame, Paragraph, 
+    Spacer, Table, TableStyle, Image, PageBreak
 )
-from reportlab.platypus.frames import Frame
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.lib.pagesizes import A4
-import sys
-from datetime import datetime
+
+# Font & Metrics
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -24,20 +29,23 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def register_thai_fonts():
-    """Registers Thai fonts for ReportLab."""
+    """ ลงทะเบียนฟอนต์ไทยและสร้าง Mapping เพื่อให้ใช้งานตัวหนา <b> ได้ถูกต้อง """
     try:
+        # ระบุ Path ให้ถูกต้อง (รองรับทั้งตอน Dev และตอน Build เป็น .exe)
         font_path = resource_path("resources/THSarabunNew.ttf")
         font_bold_path = resource_path("resources/THSarabunNew Bold.ttf")
+        
+        # ตรวจสอบว่าไฟล์มีอยู่จริงก่อนลงทะเบียน
+        if not os.path.exists(font_path): font_path = "THSarabunNew.ttf"
+        if not os.path.exists(font_bold_path): font_bold_path = "THSarabunNew Bold.ttf"
+
         pdfmetrics.registerFont(TTFont('THSarabunNew', font_path))
         pdfmetrics.registerFont(TTFont('THSarabunNew-Bold', font_bold_path))
-        pdfmetrics.registerFontFamily('THSarabunNew', normal='THSarabunNew', bold='THSarabunNew-Bold')
-    except Exception:
-        try:
-            pdfmetrics.registerFont(TTFont('THSarabunNew', 'THSarabunNew.ttf'))
-            pdfmetrics.registerFont(TTFont('THSarabunNew-Bold', 'THSarabunNew Bold.ttf'))
-            pdfmetrics.registerFontFamily('THSarabunNew', normal='THSarabunNew', bold='THSarabunNew-Bold')
-        except Exception as fallback_e:
-            print(f"ERROR: Could not register fonts. Error: {fallback_e}")
+        
+        # สำคัญ: ต้อง Map ให้ระบบรู้จักความสัมพันธ์ของฟอนต์
+        registerFontFamily('THSarabunNew', normal='THSarabunNew', bold='THSarabunNew-Bold')
+    except Exception as e:
+        print(f"Font Registration Warning: {e}")
 
 def _build_left_column(header_data, styles, P, PB, format_num, width):
     """
@@ -525,210 +533,183 @@ def generate_multi_po_pdf(so_header_data, all_po_data):
 
 # --- [🔥 NEW] ฟังก์ชันสร้างใบปะหน้าค่าขนส่งโดยเฉพาะ ---
 # --- [🔥 NEW FUNCTION] สร้างใบสรุปค่าขนส่ง (Transport Fee) ---
+
+def register_thai_fonts():
+    """ ลงทะเบียนฟอนต์ไทยและสร้างความสัมพันธ์ระหว่างตัวปกติและตัวหนา """
+    try:
+        # ลงทะเบียนฟอนต์รายไฟล์
+        pdfmetrics.registerFont(TTFont('THSarabunNew', 'THSarabunNew.ttf'))
+        pdfmetrics.registerFont(TTFont('THSarabunNew-Bold', 'THSarabunNew Bold.ttf'))
+        
+        # เชื่อมโยงฟอนต์ (Mapping) เพื่อให้ใช้งาน <b> หรือ Style Bold ได้
+        registerFontFamily('THSarabunNew', normal='THSarabunNew', bold='THSarabunNew-Bold')
+    except Exception as e:
+        print(f"Font Error: {e}")
+
 def generate_transport_fee_pdf(so_header_data, transport_data_list):
     """
     สร้างใบสรุปค่าขนส่ง (Transportation Expense Record)
-    Design: Card Layout (แก้ไข: ช่องสถานที่จัดส่งเป็นสีดำ)
+    Version: FORCE SHOW (บังคับแสดงตารางแม้ข้อมูลจะเป็น 0 หรือว่าง)
     """
     register_thai_fonts()
-    documents_path = os.path.join(os.path.expanduser('~'), 'Documents')
-    if not os.path.exists(documents_path): documents_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-
+    
     so_number = so_header_data.get('so_number', 'Unknown')
-    default_filename = f"Transport_Fee_{so_number}.pdf"
-    save_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")], initialfile=default_filename, initialdir=documents_path)
-    if not save_path: return
-
-    # ตั้งค่าหน้ากระดาษ
-    doc = BaseDocTemplate(save_path, pagesize=A4, leftMargin=1.0*cm, rightMargin=1.0*cm, topMargin=1.0*cm, bottomMargin=1.0*cm)
-    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id='normal')
-    doc.addPageTemplates([PageTemplate(id='OneCol', frames=frame)])
+    save_path = filedialog.asksaveasfilename(
+        defaultextension=".pdf", 
+        initialfile=f"Transport_Fee_{so_number}.pdf"
+    )
+    if not save_path: 
+        return
 
     styles = getSampleStyleSheet()
-    # Style
-    style_header = ParagraphStyle(name='Header_TH', fontName='THSarabunNew-Bold', fontSize=18, alignment=1, leading=22)
-    style_normal = ParagraphStyle(name='Normal_TH', fontName='THSarabunNew', fontSize=14, leading=16)
-    
-    # Style ในตาราง
-    style_label_center = ParagraphStyle(name='Label_Center', fontName='THSarabunNew', fontSize=11, leading=12, alignment=1)
-    style_val_center = ParagraphStyle(name='Val_Center', fontName='THSarabunNew-Bold', fontSize=11, leading=12, alignment=1)
-    style_val_left = ParagraphStyle(name='Val_Left', fontName='THSarabunNew-Bold', fontSize=11, leading=12, alignment=0)
-    
-    # [ลบ style_red ออก หรือไม่ได้ใช้แล้ว] 
-    # style_red = ParagraphStyle(name='Red_TH', fontName='THSarabunNew', fontSize=11, leading=12, textColor=colors.red)
-    
-    # helper functions
-    def P(text, style=style_val_center): return Paragraph(str(text), style)
-    def PLabel(text): return Paragraph(str(text), style_label_center)
+    st_header = ParagraphStyle('H', parent=styles['Normal'], fontName='THSarabunNew', fontSize=18, alignment=TA_CENTER)
+    st_norm = ParagraphStyle('N', parent=styles['Normal'], fontName='THSarabunNew', fontSize=14, alignment=TA_LEFT)
+    st_val_center = ParagraphStyle('VC', parent=styles['Normal'], fontName='THSarabunNew-Bold', fontSize=11, alignment=TA_CENTER)
+    st_val_left = ParagraphStyle('VL', parent=styles['Normal'], fontName='THSarabunNew-Bold', fontSize=11, alignment=TA_LEFT)
 
+    def P(text, style=st_val_center): 
+        val = str(text).strip()
+        if not val or val.lower() in ['none', 'null', 'nan', 'false', '0', '0.0']:
+            return Paragraph("-", style)
+        return Paragraph(val, style)
+    
+    def fmt_num(v): 
+        try:
+            return f"{float(v):,.2f}"
+        except:
+            return "0.00"
+
+    doc = BaseDocTemplate(save_path, pagesize=A4, leftMargin=1*cm, rightMargin=1*cm, topMargin=1*cm, bottomMargin=1*cm)
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id='normal')
+    doc.addPageTemplates([PageTemplate(id='OneCol', frames=frame)])
+    
     story = []
-
-    # --- 1. หัวกระดาษ ---
-    story.append(Paragraph("ใบสรุปค่าขนส่ง (Transportation Expense Record)", style_header))
+    story.append(Paragraph(f"<b>ใบสรุปค่าขนส่ง (Transportation Expense Record)</b>", st_header))
     story.append(Spacer(1, 0.5*cm))
 
     curr_date = datetime.now().strftime('%d/%m/%Y')
-    info_data = [
-        [Paragraph(f"<b>SO Number:</b> {so_number}", style_normal), Paragraph(f"<b>วันที่:</b> {curr_date}", style_normal)],
-        [Paragraph(f"<b>ลูกค้า:</b> {so_header_data.get('customer_name', '-')}", style_normal), Paragraph(f"<b>Sale:</b> {so_header_data.get('sale_name', '-')}", style_normal)]
-    ]
-    info_table = Table(info_data, colWidths=[12*cm, 7*cm])
+    info_table = Table([
+        [Paragraph(f"<b>SO Number:</b> {so_number}", st_norm), Paragraph(f"<b>วันที่:</b> {curr_date}", st_norm)],
+        [Paragraph(f"<b>ลูกค้า:</b> {so_header_data.get('customer_name', '-')}", st_norm), Paragraph(f"<b>Sale:</b> {so_header_data.get('sale_name', '-')}", st_norm)]
+    ], colWidths=[12*cm, 7*cm])
     info_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')]))
     story.append(info_table)
     story.append(Spacer(1, 0.5*cm))
 
-    # --- ฟังก์ชันจัดรูปแบบตัวเลข ---
-    def fmt_num(val): 
-        try:
-            v = float(val)
-            if v == 0: return "-"
-            return f"{v:,.2f}"
-        except: return "-"
-
-    # --- ฟังก์ชันแปลงวันที่ (รองรับภาษาไทย) ---
-    def fmt_date(d):
-        if not d: return "..../..../...."
-        
-        # Mapping เดือนไทย
-        thai_months = {
-            'ม.ค.': 1, 'ก.พ.': 2, 'มี.ค.': 3, 'เม.ย.': 4, 'พ.ค.': 5, 'มิ.ย.': 6,
-            'ก.ค.': 7, 'ส.ค.': 8, 'ก.ย.': 9, 'ต.ค.': 10, 'พ.ย.': 11, 'ธ.ค.': 12
-        }
-
-        try:
-            # กรณีรับมาเป็น String
-            if isinstance(d, str):
-                parts = d.split()
-                if len(parts) == 3:
-                    day = parts[0]
-                    month_str = parts[1]
-                    year = parts[2]
-                    
-                    month_num = thai_months.get(month_str, 0)
-                    if month_num > 0:
-                        return f"{day}/{month_num}/{year}"
-            
-            # กรณีเป็น Date object
-            if hasattr(d, 'day'):
-                return f"{d.day}/{d.month}/{d.year + 543}"
-                
-            return str(d)
-        except: return str(d)
-
-    # --- กำหนดความกว้างคอลัมน์ ---
-    w_top = [3.0*cm, 6.0*cm, 5.0*cm, 5.0*cm] 
-    w_bot = [3.0*cm, 3.5*cm, 1.5*cm, 2.5*cm, 3.5*cm, 5.0*cm]
-    
-    blue_color = colors.HexColor("#DDEBF7")
     grand_total_cost = 0
     grand_total_paid = 0
+    blue = colors.HexColor("#DDEBF7")
 
-    # --- 2. Loop สร้าง Card ---
-    for item in transport_data_list:
-        stock = float(item.get('stock_cost', 0))
-        site = float(item.get('site_cost', 0))
-        cost = stock + site
+    for raw in transport_data_list:
         
-        # Clean Data
-        vat_raw = str(item.get('vat_type', '')).strip().upper()
-        wht_raw = str(item.get('wht_type', '')).strip()
+        def get_clean(key):
+            val = raw.get(key)
+            if val is None: return '-'
+            s = str(val).strip()
+            if not s or s.lower() in ['nan', 'none', '']: return '-'
+            return s
 
-        # คำนวณเงิน
-        vat_amount = cost * 0.07 if vat_raw == 'VAT' else 0
-        
-        # เช็ค WHT
-        if '1' in wht_raw and '%' in wht_raw:
-            wht_rate = 0.01
-        elif '3' in wht_raw and '%' in wht_raw:
-            wht_rate = 0.03
-        else:
-            wht_rate = 0
+        configs = [
+            {
+                'title': 'ค่าย้ายของ (เข้าโกดัง)',
+                'cost': float(raw.get('shipping_to_stock_cost') or 0),
+                'driver': get_clean('shipping_to_stock_driver'), 
+                'plate':  get_clean('shipping_to_stock_plate'),
+                'vat':    str(raw.get('shipping_to_stock_vat_type') or 'CASH').upper(),
+                'note':   get_clean('shipping_to_stock_notes'),
+                'date':   raw.get('shipping_to_stock_date'),
+                'wht':    str(raw.get('shipping_to_stock_wht_type') or 'ไม่มีหัก')
+            },
+            {
+                'title': 'ค่าขนส่ง (ส่งหน้างาน)',
+                'cost': float(raw.get('shipping_to_site_cost') or 0), 
+                'driver': get_clean('shipping_to_site_driver'),
+                'plate':  get_clean('shipping_to_site_plate'),
+                'vat':    str(raw.get('shipping_to_site_vat_type') or 'CASH').upper(),
+                'note':   get_clean('shipping_to_site_notes'),
+                'date':   raw.get('shipping_to_site_date'),
+                'wht':    str(raw.get('shipping_to_site_wht_type') or 'ไม่มีหัก')
+            }
+        ]
+
+        for cfg in configs:
+            # --- [สำคัญ] ลบเงื่อนไข if ออก เพื่อบังคับสร้างตารางเสมอ ---
+            cost = cfg['cost']
             
-        wht_amount = cost * wht_rate
-        net_paid = cost + vat_amount - wht_amount
-        
-        grand_total_cost += cost
-        grand_total_paid += net_paid
+            is_vat = (cfg['vat'] == 'VAT')
+            vat_amt = cost * 0.07 if is_vat else 0
+            wht_str = cfg['wht']
+            wht_rate = 0.01 if '1' in wht_str else (0.03 if '3' in wht_str else 0)
+            net_paid = cost + vat_amt - (cost * wht_rate)
 
-        # ข้อความสถานที่
-        loc_text = "รับโกดัง/ส่งหน้างาน"
-        if stock > 0 and site == 0: loc_text = "รับโกดัง"
-        elif stock == 0 and site > 0: loc_text = "ส่งหน้างาน"
-        
-        # Checkbox
-        box_mark = "[&nbsp;&nbsp;]"
-        chk_mark = "[ / ]"
+            grand_total_cost += cost
+            grand_total_paid += net_paid
 
-        chk_vat = chk_mark if vat_raw == 'VAT' else box_mark
-        chk_wht_1 = chk_mark if ('1' in wht_raw and '%' in wht_raw) else box_mark
-        chk_wht_3 = chk_mark if ('3' in wht_raw and '%' in wht_raw) else box_mark
+            # รวมหมายเหตุ + ทะเบียน
+            plate_str = cfg['plate']
+            note_str = cfg['note']
+            
+            parts = []
+            if note_str != '-': parts.append(note_str)
+            if plate_str != '-' and plate_str not in note_str: parts.append(f"(ทะเบียน: {plate_str})")
+            
+            full_remark = " ".join(parts) if parts else "-"
 
-        # 1. ตารางส่วนหัว
-        top_data = [
-            [PLabel("PO NUMBER"), PLabel("ชื่อบริษัทผู้จัดส่ง"), PLabel("ผู้จัดส่ง"), PLabel("ทะเบียนรถ")],
-            [P(item['po_number']), P(item.get('shipper', '-')), P("-"), P(item.get('license', '-'))]
-        ]
-        t_top = Table(top_data, colWidths=w_top, rowHeights=[0.7*cm, 0.9*cm])
-        t_top.setStyle(TableStyle([
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('BACKGROUND', (0,0), (-1,0), blue_color),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ]))
+            # วันที่
+            s_date = cfg['date']
+            s_date_str = "-"
+            if s_date:
+                try: 
+                    if isinstance(s_date, str): s_date_str = datetime.strptime(s_date[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+                    else: s_date_str = s_date.strftime("%d/%m/%Y")
+                except: pass
 
-        # 2. ตารางส่วนล่าง
-        vat_str = f"{chk_vat} vat"
-        wht_str = f"{chk_wht_1} 1%<br/>{chk_wht_3} 3%"
-        
-        bot_data = [
-            [PLabel("วันที่จัดส่ง"), PLabel("ค่าจัดส่ง"), PLabel("vat"), PLabel("หัก ณ ที่จ่าย"), PLabel("ชำระจริง"), PLabel("วัน-เดือน-ปี ที่จ่าย")],
-            [P(fmt_date(item.get('shipping_date'))), P(fmt_num(cost)), PLabel(vat_str), PLabel(wht_str), P(fmt_num(net_paid)), P(fmt_date(None))],
-            # [แก้ไข] เปลี่ยนจาก style_red เป็น style_val_left (สีดำ ตัวหนา ชิดซ้าย)
-            [PLabel("สถานที่จัดส่ง"), Paragraph(loc_text, style_val_left), '', '', '', ''],
-            [PLabel("หมายเหตุ:"), Paragraph(item.get('remark', ''), style_val_left), '', '', '', '']
-        ]
-        
-        t_bot = Table(bot_data, colWidths=w_bot, rowHeights=[0.7*cm, 1.2*cm, 0.7*cm, 0.7*cm])
-        t_bot.setStyle(TableStyle([
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('BACKGROUND', (0,0), (-1,0), blue_color),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('SPAN', (1,2), (-1,2)), 
-            ('ALIGN', (1,2), (-1,2), 'LEFT'),
-            ('SPAN', (1,3), (-1,3)),
-            ('ALIGN', (1,3), (-1,3), 'LEFT'),
-        ]))
+            # Table Top
+            t_top = Table([
+                [Paragraph("PO NUMBER", st_val_center), Paragraph("ชื่อบริษัทผู้จัดส่ง", st_val_center), Paragraph("ผู้จัดส่ง/คนขับ", st_val_center), Paragraph("ทะเบียนรถ", st_val_center)],
+                [P(raw.get('po_number')), P(raw.get('shipper')), P(cfg['driver']), P(plate_str)]
+            ], colWidths=[3*cm, 6*cm, 5*cm, 5*cm], rowHeights=[0.7*cm, 0.9*cm])
+            
+            t_top.setStyle(TableStyle([
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('BACKGROUND', (0,0), (-1,0), blue),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER')
+            ]))
 
-        story.append(t_top)
-        story.append(t_bot)
-        story.append(Spacer(1, 0.5*cm))
+            # Table Bottom
+            chk_v = "[ / ] vat" if is_vat else "[   ] vat"
+            chk_w1 = "[ / ] 1%" if wht_rate == 0.01 else "[   ] 1%"
+            chk_w3 = "[ / ] 3%" if wht_rate == 0.03 else "[   ] 3%"
 
-    # --- 3. ยอดรวมท้ายเอกสาร ---
-    total_data = [
-        ['',                                
-         P(fmt_num(grand_total_cost)),                     
-         '', '',                                    
-         P(fmt_num(grand_total_paid)),                     
-         ''                                        
-        ]
-    ]
-    total_label = Paragraph("<b>ยอดรวมค่าขนส่ง</b>", style_normal)
-    total_data[0][0] = total_label
-    
-    t_total = Table(total_data, colWidths=w_bot, rowHeights=[0.8*cm])
+            t_bot = Table([
+                [Paragraph("วันที่จัดส่ง", st_val_center), Paragraph("ค่าจัดส่ง", st_val_center), Paragraph("vat", st_val_center), Paragraph("หัก ณ ที่จ่าย", st_val_center), Paragraph("ชำระจริง", st_val_center), Paragraph("วันจ่าย", st_val_center)],
+                [P(s_date_str), P(fmt_num(cost)), Paragraph(chk_v, st_val_center), Paragraph(f"{chk_w1}<br/>{chk_w3}", st_val_center), P(fmt_num(net_paid)), P("-")],
+                [Paragraph("ประเภทรายการ", st_norm), Paragraph(cfg['title'], st_val_left), '', '', '', ''],
+                [Paragraph("หมายเหตุ:", st_norm), Paragraph(full_remark, st_val_left), '', '', '', '']
+            ], colWidths=[3*cm, 3.5*cm, 1.5*cm, 2.5*cm, 3.5*cm, 5*cm], rowHeights=[0.7*cm, 1.2*cm, 0.7*cm, 0.7*cm])
+            
+            t_bot.setStyle(TableStyle([
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('BACKGROUND', (0,0), (-1,0), blue),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('SPAN', (1,2), (-1,2)), ('ALIGN', (1,2), (-1,2), 'LEFT'),
+                ('SPAN', (1,3), (-1,3)), ('ALIGN', (1,3), (-1,3), 'LEFT')
+            ]))
+
+            story.extend([t_top, t_bot, Spacer(1, 0.5*cm)])
+
+    # Total
+    t_total = Table([
+        [Paragraph("<b>ยอดรวมค่าขนส่ง</b>", st_norm), P(fmt_num(grand_total_cost)), '', '', P(fmt_num(grand_total_paid)), '']
+    ], colWidths=[3*cm, 3.5*cm, 1.5*cm, 2.5*cm, 3.5*cm, 5*cm], rowHeights=[0.8*cm])
     t_total.setStyle(TableStyle([
-        ('BOX', (0,0), (-1,-1), 1, colors.black), 
-        
-        # เส้นแนวตั้ง
-        ('LINEAFTER', (0,0), (0,0), 0.5, colors.black), 
-        ('LINEAFTER', (1,0), (1,0), 0.5, colors.black), 
-        ('LINEAFTER', (4,0), (4,0), 0.5, colors.black), 
-        
-        ('ALIGN', (0,0), (0,0), 'RIGHT'),
+        ('BOX', (0,0), (-1,-1), 1, colors.black),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('RIGHTPADDING', (0,0), (0,0), 10),
+        ('ALIGN', (0,0), (0,0), 'RIGHT'),
+        ('RIGHTPADDING', (0,0), (0,0), 10)
     ]))
-    
     story.append(Spacer(1, 0.2*cm))
     story.append(t_total)
 

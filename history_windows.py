@@ -1,13 +1,8 @@
 # history_windows.py
 
 import tkinter as tk
-from tkinter import ttk, filedialog
-from customtkinter import (CTkToplevel, CTkTextbox, CTkScrollableFrame, CTkLabel, CTkFont, CTkFrame, CTkButton, CTkEntry, CTkRadioButton, CTkOptionMenu, CTkTabview)
-from customtkinter import CTkToplevel, CTkLabel, CTkFrame, CTkEntry, CTkButton
-from tkinter import messagebox
+from tkinter import ttk, filedialog, messagebox
 import json
-import customtkinter
-from customtkinter import CTkLabel, CTkFont, CTkCheckBox
 import pandas as pd
 from datetime import datetime
 import traceback
@@ -15,14 +10,67 @@ import psycopg2.errors
 import psycopg2.extras
 import numpy as np
 
+# --- CustomTkinter Imports (กู้คืนส่วนนี้ที่หายไป) ---
+from customtkinter import (
+    CTkToplevel, CTkTextbox, CTkScrollableFrame, CTkLabel, CTkFont, 
+    CTkFrame, CTkButton, CTkEntry, CTkRadioButton, CTkOptionMenu, CTkTabview,
+    CTkCheckBox 
+)
 
-# --- ตรวจสอบว่า import ถูกต้องตามนี้ ---
 import utils
 from utils import FormattedNumericEntry, RejectionReasonDialog
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
-# ---
 
-from sqlalchemy import create_engine
+# --- Import ฟังก์ชัน PDF จากไฟล์ที่เราเพิ่งแก้ ---
+from po_document_generator import generate_transport_fee_pdf
+
+# ========================================================================================
+#  PRINT WRAPPER FUNCTION
+# ========================================================================================
+
+def print_transport_pdf_wrapper(app_container, po_id):
+    conn = app_container.get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            # 1. ดึงข้อมูล
+            cursor.execute("SELECT * FROM purchase_orders WHERE id = %s", (po_id,))
+            po_data = cursor.fetchone()
+            
+            if not po_data:
+                messagebox.showerror("Error", "ไม่พบข้อมูล PO นี้")
+                return
+
+            po_dict = dict(po_data)
+            
+            # --- DEBUG LOG (จะขึ้นใน Terminal เมื่อกดปุ่ม Print) ---
+            print("\n" + "="*40)
+            print(f"DEBUG PRINT: {po_dict.get('po_number')}")
+            print(f"Stock Driver: '{po_dict.get('shipping_to_stock_driver')}'")
+            print(f"Stock Plate:  '{po_dict.get('shipping_to_stock_plate')}'")
+            print("-" * 20)
+            print(f"Site Driver:  '{po_dict.get('shipping_to_site_driver')}'")
+            print(f"Site Plate:   '{po_dict.get('shipping_to_site_plate')}'")
+            print("="*40 + "\n")
+
+            header_data = {
+                'so_number': po_dict.get('so_number', '-'),
+                'customer_name': po_dict.get('customer_name', '-'),
+                'sale_name': po_dict.get('user_key', '-') 
+            }
+
+            # เรียกฟังก์ชันจาก po_document_generator.py
+            generate_transport_fee_pdf(header_data, [po_dict])
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Error: {e}")
+        print(traceback.format_exc())
+    finally:
+        app_container.release_connection(conn)
+
+# ========================================================================================
+#  EXISTING CLASSES START HERE
+# ========================================================================================
+
 
 class SalesDataViewerWindow(CTkToplevel):
     def __init__(self, master, app_container, so_number):
@@ -900,8 +948,15 @@ class PurchaseDetailWindow(CTkToplevel):
                 return entry.get_value() if entry and entry.winfo_exists() else 0.0
             
             def get_opt(key, default="CASH"):
-                entry = self.po_entries.get(key)
-                return entry.get() if entry and entry.winfo_exists() else default
+                obj = self.po_entries.get(key)
+                if obj:
+                    # ถ้าเป็น StringVar ให้ดึงค่าเลย ไม่ต้องเช็ค winfo_exists
+                    if isinstance(obj, tk.StringVar):
+                        return obj.get()
+                    # ถ้าเป็น Widget (OptionMenu) ค่อยเช็ค
+                    elif hasattr(obj, 'winfo_exists') and obj.winfo_exists():
+                        return obj.get()
+                return default
 
             bill_discount = get_val('bill_discount')
             
@@ -1569,7 +1624,7 @@ class PurchaseDetailWindow(CTkToplevel):
         try:
             with conn.cursor() as cursor:
                 # ========================================================================================
-                # PART 1: HEADER (ข้อมูลหลัก PO) - เหมือนเดิม
+                # PART 1: HEADER (ข้อมูลหลัก PO)
                 # ========================================================================================
                 new_supplier = self.po_entries['supplier_name'].get().strip()
                 new_po_number = self.po_entries['po_number'].get().strip()
@@ -1584,6 +1639,39 @@ class PurchaseDetailWindow(CTkToplevel):
                 relocation_val = 0.0
                 if 'relocation_cost' in self.po_entries:
                     relocation_val = self.po_entries['relocation_cost'].get_value()
+
+                # Helper ดึงค่า String จาก Entry แบบปลอดภัย
+                def get_str(key):
+                    entry = self.po_entries.get(key)
+                    if entry:
+                        return str(entry.get()).strip()
+                    return ""
+
+                # Helper ดึงค่าวันที่
+                def get_date(key):
+                    entry = self.po_entries.get(key)
+                    if entry and hasattr(entry, 'get_date'):
+                        return entry.get_date()
+                    return None
+
+                # Helper ดึงค่าตัวเลข
+                def get_num(key):
+                    entry = self.po_entries.get(key)
+                    if not entry: return 0.0
+                    
+                    # 1. ถ้า widget มีเมธอด get_value() (เช่น NumericEntry) ให้ใช้เลย
+                    if hasattr(entry, 'get_value'):
+                        try:
+                            return float(entry.get_value())
+                        except:
+                            return 0.0
+                            
+                    # 2. ถ้าเป็น CTkEntry หรือ StringVar
+                    try:
+                        val_str = str(entry.get()).replace(',', '').strip()
+                        return float(val_str) if val_str else 0.0
+                    except:
+                        return 0.0
 
                 cursor.execute("""
                     UPDATE purchase_orders SET 
@@ -1610,44 +1698,49 @@ class PurchaseDetailWindow(CTkToplevel):
                     WHERE id = %s
                 """, (
                     new_po_number, new_supplier,
-                    self.po_entries['credit_term'].get(), self.po_entries['po_mode'].get(),
+                    get_str('credit_term'), get_str('po_mode'),
                     
-                    self.po_entries['shipping_to_stock_cost'].get_value(),
-                    self.po_entries['shipping_to_stock_date'].get_date(),
-                    self.po_entries['shipping_to_site_cost'].get_value(),
-                    self.po_entries['shipping_to_site_date'].get_date(),
+                    get_num('shipping_to_stock_cost'),
+                    get_date('shipping_to_stock_date'),
+                    get_num('shipping_to_site_cost'),
+                    get_date('shipping_to_site_date'),
                     
                     relocation_val,
                     total_cost, grand_total,
                     
-                    self.po_entries['shipping_to_stock_vat_type'].get(),
-                    self.po_entries['shipping_to_stock_shipper'].get(),
-                    self.po_entries['shipping_to_stock_wht_type'].get(),
-                    self.po_entries['shipping_to_stock_notes'].get(),
+                    get_str('shipping_to_stock_vat_type'),
+                    get_str('shipping_to_stock_shipper'),
+                    get_str('shipping_to_stock_wht_type'),
+                    get_str('shipping_to_stock_notes'),
                     
-                    self.po_entries['shipping_to_site_vat_type'].get(),
-                    self.po_entries['shipping_to_site_shipper'].get(),
-                    self.po_entries['shipping_to_site_wht_type'].get(),
-                    self.po_entries['shipping_to_site_notes'].get(),
+                    get_str('shipping_to_site_vat_type'),
+                    get_str('shipping_to_site_shipper'),
+                    get_str('shipping_to_site_wht_type'),
+                    get_str('shipping_to_site_notes'),
 
-                    self.po_entries.get('shipping_to_stock_driver', tk.StringVar()).get(),
-                    self.po_entries.get('shipping_to_stock_plate', tk.StringVar()).get(),
-                    self.po_entries.get('shipping_to_site_driver', tk.StringVar()).get(),
-                    self.po_entries.get('shipping_to_site_plate', tk.StringVar()).get(),
+                    # --- [จุดสำคัญ] ต้องดึงให้ตรงกับ Key ที่สร้างไว้ใน _create_shipping_section ---
+                    get_str('shipping_to_stock_driver'), 
+                    get_str('shipping_to_stock_plate'),
+                    get_str('shipping_to_site_driver'), 
+                    get_str('shipping_to_site_plate'),
+                    # ------------------------------------------------------------------------
 
                     cut_cost, 
-                    self.po_entries.get('cutting_vat_type', tk.StringVar(value='VAT')).get(),
-                    self.po_entries.get('cutting_wht_type', tk.StringVar(value='No')).get(),
-                    self.po_entries.get('cutting_remark', tk.StringVar()).get(),
+                    get_str('cutting_vat_type'),
+                    get_str('cutting_wht_type'),
+                    get_str('cutting_remark'),
 
                     bool(self.wht_checkbox.get()),
                     bool(self.vat_checkbox.get()),
-                    self.po_entries['bill_discount'].get_value(),
+                    get_num('bill_discount'),
                     self.purchase_id
                 ))
 
+                # ... (ส่วน PART 2: ITEMS และ PART 3: PAYMENTS ปล่อยไว้เหมือนเดิมได้เลยครับ ไม่ต้องแก้) ...
+                # ... แต่เพื่อให้ชัวร์ คุณก๊อปปี้ส่วนล่างของฟังก์ชันเดิมมาต่อท้ายตรงนี้ได้เลย ...
+                
                 # ========================================================================================
-                # PART 2: ITEMS (สินค้า) - เหมือนเดิม
+                # PART 2: ITEMS (สินค้า)
                 # ========================================================================================
                 
                 if self.deleted_item_ids:
@@ -1693,7 +1786,7 @@ class PurchaseDetailWindow(CTkToplevel):
                         ))
 
                 # ========================================================================================
-                # PART 3: PAYMENTS (การชำระเงิน) - แก้ไขเพิ่ม bank_account_type
+                # PART 3: PAYMENTS (การชำระเงิน)
                 # ========================================================================================
                 
                 if self.deleted_payment_ids:
@@ -1707,14 +1800,11 @@ class PurchaseDetailWindow(CTkToplevel):
                     p_date = widgets['date_selector'].get_date()
                     bank = widgets['bank_var'].get()
                     acc_num = widgets['account_entry'].get()
-                    
-                    # [🔥 เพิ่ม] ดึงค่าประเภทบัญชีจาก Widget
                     acc_type = widgets['acc_type_var'].get()
                     
                     pay_id = pay_row.get('id')
 
                     if pay_id:
-                        # UPDATE: เพิ่ม bank_account_type
                         cursor.execute("""
                             UPDATE purchase_order_payments
                             SET payment_type = %s, amount = %s, payment_date = %s,
@@ -1722,7 +1812,6 @@ class PurchaseDetailWindow(CTkToplevel):
                             WHERE id = %s
                         """, (p_type, amount, p_date, bank, acc_num, acc_type, pay_id))
                     else:
-                        # INSERT: เพิ่ม bank_account_type
                         cursor.execute("""
                             INSERT INTO purchase_order_payments
                             (purchase_order_id, payment_type, amount, payment_date, bank_name, bank_account_number, bank_account_type)
@@ -2916,13 +3005,23 @@ class SOPopupWindow(CTkToplevel):
             val_p1_date = data.get('payment_date')
             
         # ทำแบบเดียวกันกับยอดเงิน (Amount)
-        val_p1_amt = data.get('payment1_amount', 0)
-        val_p2_amt = data.get('payment2_amount', 0)
-        
-        if (val_p1_amt == 0 or val_p1_amt is None) and (val_p2_amt == 0 or val_p2_amt is None):
-             total_pay = data.get('total_payment_amount', 0)
-             if total_pay and total_pay > 0:
-                 val_p1_amt = total_pay
+        def to_float_safe(x):
+            try:
+                return float(x) if x is not None else 0.0
+            except:
+                return 0.0
+
+        val_p1_amt = to_float_safe(data.get('payment1_amount'))
+        val_p2_amt = to_float_safe(data.get('payment2_amount'))
+        total_pay_db = to_float_safe(data.get('total_payment_amount'))
+
+        # เงื่อนไข: ถ้า (P1 เป็น 0) และ (P2 เป็น 0) แต่ (ยอดรวมใน DB มีค่ามากกว่า 0)
+        # แสดงว่าข้อมูลรายย่อยหาย -> ให้กู้คืนโดยเอายอดรวมมาใส่ P1 ทันที
+        if val_p1_amt == 0 and val_p2_amt == 0 and total_pay_db > 0:
+             val_p1_amt = total_pay_db
+             # ถ้าวันที่ P1 หายด้วย ให้ใช้วันที่หลัก (Payment Date) มาใส่แทน
+             if pd.isna(val_p1_date):
+                 val_p1_date = data.get('payment_date')
         # -----------------------------------------------------------
 
         key_map = {
@@ -3534,8 +3633,28 @@ class TransportEditDialog(CTkToplevel):
 
         self.cutting_note = self._add_row(r, "หมายเหตุ (ตัด):"); r+=1
 
-        # --- Save Button ---
-        CTkButton(self.main_frame, text="บันทึกการแก้ไข", fg_color="#16A34A", hover_color="#15803D", height=45, font=CTkFont(size=16, weight="bold"), command=self._save_transport_changes).grid(row=r, column=0, columnspan=2, pady=30, sticky="ew")
+        # ======================================================================
+        # ปุ่ม Action (พิมพ์ และ บันทึก)
+        # ======================================================================
+        btn_frame = CTkFrame(self.main_frame, fg_color="transparent")
+        btn_frame.grid(row=r, column=0, columnspan=2, pady=30, sticky="ew")
+        btn_frame.grid_columnconfigure((0, 1), weight=1)
+
+        # ปุ่มพิมพ์ (เรียก Wrapper เพื่อดึงข้อมูลใหม่เสมอ)
+        CTkButton(btn_frame, 
+                  text="🖨️ พิมพ์ใบสรุป (PDF)", 
+                  fg_color="#3B82F6", hover_color="#2563EB", 
+                  height=45, font=CTkFont(size=16, weight="bold"), 
+                  command=self._print_action_safe
+        ).grid(row=0, column=0, padx=5, sticky="ew")
+
+        # ปุ่มบันทึก
+        CTkButton(btn_frame, 
+                  text="บันทึกการแก้ไข", 
+                  fg_color="#16A34A", hover_color="#15803D", 
+                  height=45, font=CTkFont(size=16, weight="bold"), 
+                  command=self._save_transport_changes
+        ).grid(row=0, column=1, padx=5, sticky="ew")
 
     def _add_header(self, row, text):
         CTkLabel(self.main_frame, text=text, font=CTkFont(size=14, weight="bold"), fg_color="gray90", corner_radius=6, text_color="black").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(15,5), padx=5)
@@ -3573,12 +3692,15 @@ class TransportEditDialog(CTkToplevel):
                     utils.set_entry_text(self.stock_driver, data.get('shipping_to_stock_driver', ''))
                     utils.set_entry_text(self.stock_plate, data.get('shipping_to_stock_plate', ''))
                     utils.set_entry_text(self.stock_note, data.get('shipping_to_stock_notes', ''))
+                    
                     utils.set_entry_text(self.site_cost, data.get('shipping_to_site_cost', 0))
                     utils.set_entry_text(self.site_driver, data.get('shipping_to_site_driver', ''))
                     utils.set_entry_text(self.site_plate, data.get('shipping_to_site_plate', ''))
                     utils.set_entry_text(self.site_note, data.get('shipping_to_site_notes', ''))
+                    
                     utils.set_entry_text(self.cutting_cost, data.get('cutting_cost', 0))
                     utils.set_entry_text(self.cutting_note, data.get('cutting_remark', ''))
+                    
                     self.cut_vat_var.set(data.get('cutting_vat_type', 'VAT'))
                     wht_val = data.get('cutting_wht_type', 'No')
                     self.cut_wht_var.set(wht_val if wht_val in ['No','1%','3%'] else 'No')
@@ -3586,99 +3708,106 @@ class TransportEditDialog(CTkToplevel):
         except Exception as e: messagebox.showerror("Error", f"Load failed: {e}")
         finally: self.app_container.release_connection(conn)
 
+    # ในคลาส TransportEditDialog
     def _save_transport_changes(self):
+        """บันทึกข้อมูลและคำนวณส่วนต่างเพื่ออัปเดต Grand Total"""
+        
+        # 1. รับค่าใหม่จาก GUI (ใช้ .get() และ .strip() ให้ชัวร์)
         new_stock_cost = utils.convert_to_float(self.stock_cost.get())
         new_site_cost = utils.convert_to_float(self.site_cost.get())
         new_cut_cost = utils.convert_to_float(self.cutting_cost.get())
         
-        old_stock_cost = float(self.old_data.get('shipping_to_stock_cost') or 0)
-        old_site_cost = float(self.old_data.get('shipping_to_site_cost') or 0)
-        old_cut_cost = float(self.old_data.get('cutting_cost') or 0)
-
+        # [สำคัญ] ดึงข้อมูล Text ให้ครบ
+        stock_drv = str(self.stock_driver.get()).strip()
+        stock_plt = str(self.stock_plate.get()).strip()
+        stock_nte = str(self.stock_note.get()).strip()
+        
+        site_drv = str(self.site_driver.get()).strip()
+        site_plt = str(self.site_plate.get()).strip()
+        site_nte = str(self.site_note.get()).strip()
+        
+        cut_rem = str(self.cutting_note.get()).strip()
+        
+        # 2. เตรียม Log
         changes_log = []
         user = self.app_container.current_user_key
         po_num = self.old_data.get('po_number', '-')
 
-        def format_money_change(label, old_val, new_val):
-            diff = new_val - old_val
-            if diff == 0: return None
-            icon = "🔺" if diff > 0 else "🔻"
-            return f"💰 {label}: {old_val:,.2f} ➜ {new_val:,.2f} ({icon}{diff:,.2f})"
+        # คำนวณส่วนต่าง
+        old_stock_cost = float(self.old_data.get('shipping_to_stock_cost') or 0)
+        old_site_cost = float(self.old_data.get('shipping_to_site_cost') or 0)
+        old_cut_cost = float(self.old_data.get('cutting_cost') or 0)
 
-        if log := format_money_change("ค่าย้าย (Stock)", old_stock_cost, new_stock_cost): changes_log.append(log)
-        if log := format_money_change("ค่ารถ (Site)", old_site_cost, new_site_cost): changes_log.append(log)
-        if log := format_money_change("ค่าตัด/เจาะ", old_cut_cost, new_cut_cost): changes_log.append(log)
-        
-        text_fields = {
-            'shipping_to_stock_driver': (self.stock_driver.get(), "คนขับ-Stock"),
-            'shipping_to_stock_plate': (self.stock_plate.get(), "ทะเบียน-Stock"),
-            'shipping_to_stock_notes': (self.stock_note.get(), "Note-Stock"),
-            'shipping_to_site_driver': (self.site_driver.get(), "คนขับ-Site"),
-            'shipping_to_site_plate': (self.site_plate.get(), "ทะเบียน-Site"),
-            'shipping_to_site_notes': (self.site_note.get(), "Note-Site"),
-            'cutting_remark': (self.cutting_note.get(), "Note-Cutting"),
-            'cutting_vat_type': (self.cut_vat_var.get(), "VAT-Type"),
-            'cutting_wht_type': (self.cut_wht_var.get(), "WHT-Type")
-        }
-        for key, (new_val, label) in text_fields.items():
-            old_val = self.old_data.get(key, '') or ''
-            if key == 'cutting_wht_type' and not old_val: old_val = 'No'
-            if str(new_val).strip() != str(old_val).strip():
-                changes_log.append(f"📝 {label}: '{old_val}' ➜ '{new_val}'")
-
-        if not changes_log:
-            messagebox.showinfo("Info", "ไม่มีการเปลี่ยนแปลงข้อมูล")
-            return
-
-        full_log_msg = f"PO {po_num} Edited by {user}:\n" + "\n".join(changes_log)
-
-        if not messagebox.askyesno("ยืนยัน", f"ยืนยันการแก้ไขใช่หรือไม่?\n\n{full_log_msg}"): return
+        if not messagebox.askyesno("ยืนยัน", f"ยืนยันบันทึกการแก้ไข PO: {po_num}?"): return
 
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
-                # Calculate Net Diff
-                def calc_net(base, vat_type, wht_type):
-                    v = base * 0.07 if vat_type == 'VAT' else 0
-                    w = 0.01 if wht_type == '1%' else (0.03 if wht_type == '3%' else 0)
+                # คำนวณยอดสุทธิ (Net Logic)
+                def calc_net(base, vat, wht):
+                    v = base * 0.07 if vat == 'VAT' else 0
+                    w = 0.01 if wht == '1%' else (0.03 if wht == '3%' else 0)
                     return (base + v) - (base * w)
 
-                old_stock_net = calc_net(old_stock_cost, self.old_data.get('shipping_to_stock_vat_type'), self.old_data.get('shipping_to_stock_wht_type'))
-                old_site_net = calc_net(old_site_cost, self.old_data.get('shipping_to_site_vat_type'), self.old_data.get('shipping_to_site_wht_type'))
-                old_cut_net = calc_net(old_cut_cost, self.old_data.get('cutting_vat_type'), self.old_data.get('cutting_wht_type'))
+                # ดึง Vat/Wht เดิม
+                o_stock_v = self.old_data.get('shipping_to_stock_vat_type')
+                o_stock_w = self.old_data.get('shipping_to_stock_wht_type')
+                o_site_v = self.old_data.get('shipping_to_site_vat_type')
+                o_site_w = self.old_data.get('shipping_to_site_wht_type')
+                o_cut_v = self.old_data.get('cutting_vat_type')
+                o_cut_w = self.old_data.get('cutting_wht_type')
 
-                new_stock_net = calc_net(new_stock_cost, self.old_data.get('shipping_to_stock_vat_type'), self.old_data.get('shipping_to_stock_wht_type'))
-                new_site_net = calc_net(new_site_cost, self.old_data.get('shipping_to_site_vat_type'), self.old_data.get('shipping_to_site_wht_type'))
-                new_cut_net = calc_net(new_cut_cost, self.cut_vat_var.get(), self.cut_wht_var.get())
+                n_cut_v = self.cut_vat_var.get()
+                n_cut_w = self.cut_wht_var.get()
 
-                diff_grand_total = (new_stock_net - old_stock_net) + (new_site_net - old_site_net) + (new_cut_net - old_cut_net)
+                old_net_stock = calc_net(old_stock_cost, o_stock_v, o_stock_w)
+                new_net_stock = calc_net(new_stock_cost, o_stock_v, o_stock_w)
+                
+                old_net_site = calc_net(old_site_cost, o_site_v, o_site_w)
+                new_net_site = calc_net(new_site_cost, o_site_v, o_site_w)
+                
+                old_net_cut = calc_net(old_cut_cost, o_cut_v, o_cut_w)
+                new_net_cut = calc_net(new_cut_cost, n_cut_v, n_cut_w)
+
+                diff_grand_total = (new_net_stock - old_net_stock) + (new_net_site - old_net_site) + (new_net_cut - old_net_cut)
                 diff_total_cost = (new_cut_cost - old_cut_cost) 
 
-                new_cut_vat = new_cut_cost * 0.07 if self.cut_vat_var.get() == "VAT" else 0
-                new_cut_wht_rate = 0.01 if self.cut_wht_var.get() == "1%" else (0.03 if self.cut_wht_var.get() == "3%" else 0)
-                new_cut_wht = new_cut_cost * new_cut_wht_rate
-
+                # 5. Update SQL (อัปเดตทุกฟิลด์ให้ครบ)
                 cursor.execute("""
                     UPDATE purchase_orders SET 
-                        shipping_to_stock_cost = %s, shipping_to_stock_driver = %s, shipping_to_stock_plate = %s, shipping_to_stock_notes = %s,
-                        shipping_to_site_cost = %s, shipping_to_site_driver = %s, shipping_to_site_plate = %s, shipping_to_site_notes = %s,
-                        cutting_cost = %s, cutting_remark = %s, cutting_vat_type = %s, cutting_wht_type = %s, cutting_vat_amount = %s, cutting_wht_amount = %s,
-                        total_cost = total_cost + %s, grand_total = grand_total + %s
+                        shipping_to_stock_cost = %s, 
+                        shipping_to_stock_driver = %s, 
+                        shipping_to_stock_plate = %s, 
+                        shipping_to_stock_notes = %s,
+                        
+                        shipping_to_site_cost = %s, 
+                        shipping_to_site_driver = %s, 
+                        shipping_to_site_plate = %s, 
+                        shipping_to_site_notes = %s,
+                        
+                        cutting_cost = %s, 
+                        cutting_remark = %s, 
+                        cutting_vat_type = %s, 
+                        cutting_wht_type = %s,
+                        
+                        total_cost = COALESCE(total_cost, 0) + %s, 
+                        grand_total = COALESCE(grand_total, 0) + %s
                     WHERE id = %s
                 """, (
-                    new_stock_cost, self.stock_driver.get(), self.stock_plate.get(), self.stock_note.get(),
-                    new_site_cost, self.site_driver.get(), self.site_plate.get(), self.site_note.get(),
-                    new_cut_cost, self.cutting_note.get(), self.cut_vat_var.get(), self.cut_wht_var.get(), new_cut_vat, new_cut_wht,
+                    new_stock_cost, stock_drv, stock_plt, stock_nte,
+                    new_site_cost, site_drv, site_plt, site_nte,
+                    new_cut_cost, cut_rem, n_cut_v, n_cut_w,
                     diff_total_cost, diff_grand_total, self.po_id
                 ))
 
+                # Log
                 cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, NOW())", 
-                               ('Edit PO Transport', 'purchase_orders', self.po_id, user, full_log_msg))
+                               ('Edit PO Transport', 'purchase_orders', self.po_id, user, "Updated Transport/Cutting details"))
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
+            
             if self.on_save_callback: self.on_save_callback()
-            self.destroy()
 
         except Exception as e:
             if conn: conn.rollback()
@@ -3686,6 +3815,16 @@ class TransportEditDialog(CTkToplevel):
             print(traceback.format_exc())
         finally:
             if conn: self.app_container.release_connection(conn)
+
+    def _print_action_safe(self):
+        """ปุ่มพิมพ์ในหน้าแก้ไข"""
+        # บังคับถามก่อนพิมพ์ เพื่อเตือนสติให้ Save
+        if messagebox.askyesno("พิมพ์เอกสาร", "ระบบจะพิมพ์ข้อมูลล่าสุดจากฐานข้อมูล\nหากเพิ่งแก้ไข กรุณากด 'บันทึก' ก่อน\n\nต้องการพิมพ์เลยหรือไม่?"):
+            try:
+                # เรียก Wrapper ที่อยู่ไฟล์เดียวกัน
+                print_transport_pdf_wrapper(self.app_container, self.po_id)
+            except Exception as e:
+                messagebox.showerror("Error", f"Print Failed: {e}")
 
 class TransportLogViewer(CTkToplevel):
     def __init__(self, master, app_container):
@@ -3841,11 +3980,37 @@ class TransportPOSearchDialog(CTkToplevel):
                                   command=self._open_edit_dialog)
         self.btn_edit.pack(side="right")
 
+        self.print_transport_btn = CTkButton(
+            btn_frame, # ตรวจสอบชื่อตัวแปรนี้ให้ตรงกับของคุณ (btn_frame หรือ action_frame)
+            text="🖨️ ใบค่ารถ (Transport)", 
+            fg_color="#059669", hover_color="#047857", # สีเขียว
+            state="disabled", 
+            width=180, height=40,
+            command=self._print_transport_action # <--- ต้องเรียกฟังก์ชันนี้
+        )
+        self.print_transport_btn.pack(side="right", padx=10)
+
         # Initial Load
         self.after(100, self._load_data)
         self.transient(master)
         self.grab_set()
 
+    def _print_transport_action(self):
+        """เมื่อกดปุ่มใบค่ารถ"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("เตือน", "กรุณาเลือกรายการก่อนครับ")
+            return
+        
+        # ดึง ID ของ PO ที่เลือก
+        item = self.tree.item(selected[0])
+        po_id = item['values'][0] 
+        
+        print(f">>> User Clicked Print for PO ID: {po_id}")
+
+        # เรียก Wrapper เพื่อดึงข้อมูลสดแล้วพิมพ์
+        print_transport_pdf_wrapper(self.app_container, po_id)
+ 
     def _create_treeview(self):
         columns = ("id", "po_number", "so_number", "supplier", "status", "transport_cost")
         self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings")
@@ -3922,8 +4087,10 @@ class TransportPOSearchDialog(CTkToplevel):
     def _on_select(self, event):
         if self.tree.selection():
             self.btn_edit.configure(state="normal")
+            self.btn_print.configure(state="normal") 
         else:
             self.btn_edit.configure(state="disabled")
+            self.btn_print.configure(state="disabled")
 
     def _open_edit_dialog(self):
         selected = self.tree.selection()
@@ -3937,6 +4104,21 @@ class TransportPOSearchDialog(CTkToplevel):
             TransportEditDialog(self, self.app_container, po_id, on_save_callback=self._load_data)
         except NameError:
              messagebox.showerror("Error", "ไม่พบ Class TransportEditDialog ในไฟล์ history_windows.py")
+
+    def _print_selected_action(self):
+        """ดึง ID รายการที่เลือกแล้วสั่งพิมพ์"""
+        selected = self.tree.selection()
+        if not selected: return
+        
+        item = self.tree.item(selected[0])
+        po_id = item['values'][0] # ดึง ID จากคอลัมน์แรกที่ซ่อนอยู่
+        
+        # เรียก Wrapper เพื่อดึงข้อมูลสดๆ จาก DB แล้วพิมพ์
+        # (ต้องมั่นใจว่า print_transport_pdf_wrapper ถูก import หรือประกาศไว้ด้านบนไฟล์แล้ว)
+        try:
+            print_transport_pdf_wrapper(self.app_container, po_id)
+        except Exception as e:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการสั่งพิมพ์: {e}")
 
     def _open_log_viewer(self):
         # เรียกใช้ TransportLogViewer (ต้องมี Class นี้อยู่ในไฟล์เดียวกันแล้ว)
