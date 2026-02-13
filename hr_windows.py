@@ -16,7 +16,7 @@ import numpy as np
 from utils import RejectionReasonDialog
 from sqlalchemy import create_engine
 from history_windows import SOPopupWindow
-
+from history_windows import print_transport_pdf_wrapper
 
 
 
@@ -3422,7 +3422,19 @@ class HRCoverSheetDialog(CTkToplevel):
         
         # โหลดข้อมูลเริ่มต้น (Optional)
         self._search_data(initial=True)
+ 
+    def _print_transport_action(self):
+        """Action สำหรับปุ่มพิมพ์ใบค่ารถในหน้า HR"""
+        selected = self.tree.selection()
+        if not selected:
+            from tkinter import messagebox
+            messagebox.showwarning("แจ้งเตือน", "กรุณาเลือกรายการในตารางก่อน", parent=self)
+            return
 
+        # ดึง ID ของ PO จากตาราง (ปกติจะอยู่ที่ values[0])
+        item_data = self.tree.item(selected[0])
+        po_id = item_data['values'][0]
+ 
     def _print_transport_action(self):
         selected_item = self.tree.selection()
         if not selected_item: return
@@ -3433,20 +3445,41 @@ class HRCoverSheetDialog(CTkToplevel):
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 # 1. Header
-                cursor.execute("""SELECT c.so_number, c.customer_name, u.sale_name FROM commissions c LEFT JOIN sales_users u ON c.sale_key = u.sale_key WHERE c.so_number = %s LIMIT 1""", (so_number,))
+                cursor.execute("""
+                    SELECT c.so_number, c.customer_name, u.sale_name 
+                    FROM commissions c 
+                    LEFT JOIN sales_users u ON c.sale_key = u.sale_key 
+                    WHERE c.so_number = %s LIMIT 1
+                """, (so_number,))
                 header = cursor.fetchone()
                 if not header: return
 
-                # 2. Items (เพิ่มการดึงวันที่ shipping_to_stock_date และ shipping_to_site_date)
+                # 2. Items
                 cursor.execute("""
-                    SELECT po_number, supplier_name, 
-                           shipping_to_stock_cost, shipping_to_site_cost,
-                           shipping_to_stock_shipper, shipping_to_site_shipper,
-                           shipping_to_stock_notes, shipping_to_site_notes,
-                           cutting_remark,
-                           shipping_to_stock_vat_type, shipping_to_site_vat_type,
-                           shipping_to_stock_wht_type, shipping_to_site_wht_type,
-                           shipping_to_stock_date, shipping_to_site_date  -- <--- [🔥 เพิ่มตรงนี้]
+                    SELECT 
+                        po_number, 
+                        supplier_name,
+                        
+                        -- Stock (ค่าย้ายเข้าโกดัง)
+                        shipping_to_stock_cost,
+                        shipping_to_stock_driver,
+                        shipping_to_stock_plate,
+                        shipping_to_stock_notes,
+                        shipping_to_stock_shipper,
+                        shipping_to_stock_vat_type,
+                        shipping_to_stock_wht_type,
+                        shipping_to_stock_date,
+                        
+                        -- Site (ค่าส่งหน้างาน)
+                        shipping_to_site_cost,
+                        shipping_to_site_driver,
+                        shipping_to_site_plate,
+                        shipping_to_site_notes,
+                        shipping_to_site_shipper,
+                        shipping_to_site_vat_type,
+                        shipping_to_site_wht_type,
+                        shipping_to_site_date
+                        
                     FROM purchase_orders 
                     WHERE so_number = %s AND status != 'Cancelled'
                 """, (so_number,))
@@ -3454,43 +3487,39 @@ class HRCoverSheetDialog(CTkToplevel):
                 
                 transport_list = []
                 for po in pos:
-                    shipper = po['shipping_to_stock_shipper'] or po['shipping_to_site_shipper'] or '-'
-                    license_info = po['shipping_to_stock_notes'] or po['shipping_to_site_notes'] or '-'
-                    real_remark = po['cutting_remark'] or '' 
-                    
-                    stock_cost = po['shipping_to_stock_cost'] or 0
-                    site_cost = po['shipping_to_site_cost'] or 0
-
-                    # เช็คประเภทภาษี และ วันที่ (เลือกวันที่ตามยอดเงินที่มี)
-                    shipping_date = None
-                    
-                    if stock_cost > 0:
-                        vat_type = po['shipping_to_stock_vat_type']
-                        wht_type = po['shipping_to_stock_wht_type']
-                        shipping_date = po['shipping_to_stock_date'] # [🔥 ดึงวันที่ Stock]
-                    else:
-                        vat_type = po['shipping_to_site_vat_type']
-                        wht_type = po['shipping_to_site_wht_type']
-                        shipping_date = po['shipping_to_site_date']  # [🔥 ดึงวันที่ Site]
-
                     transport_list.append({
                         'po_number': po['po_number'],
-                        'shipper': shipper,
-                        'license': license_info,
-                        'remark': real_remark,
-                        'stock_cost': stock_cost,
-                        'site_cost': site_cost,
-                        'shipping_date': shipping_date, # [🔥 ส่งค่าวันที่เข้าไป]
-                        'vat_type': vat_type,    
-                        'wht_type': wht_type     
+
+                        # === STOCK (ค่าย้าย) ===
+                        'stock_cost': po['shipping_to_stock_cost'] or 0,
+                        'stock_driver': po['shipping_to_stock_driver'] or '-',
+                        'stock_plate': po['shipping_to_stock_plate'] or '-',
+                        'stock_notes': po['shipping_to_stock_notes'] or '-',  
+                        'stock_supplier': po['shipping_to_stock_shipper'] or '-',  # ✅ ชื่อบริษัทจริง
+                        'stock_vat': po['shipping_to_stock_vat_type'] or 'CASH',
+                        'stock_wht': po['shipping_to_stock_wht_type'] or 'ไม่มีหัก',
+                        'stock_date': po['shipping_to_stock_date'],
+
+                        # === SITE (ค่าส่งหน้างาน) ===
+                        'site_cost': po['shipping_to_site_cost'] or 0,
+                        'site_driver': po['shipping_to_site_driver'] or '-',
+                        'site_plate': po['shipping_to_site_plate'] or '-',
+                        'site_notes': po['shipping_to_site_notes'] or '-',  
+                        'site_supplier': po['shipping_to_site_shipper'] or '-',     # ✅ ชื่อบริษัทจริง
+                        'site_vat': po['shipping_to_site_vat_type'] or 'CASH',
+                        'site_wht': po['shipping_to_site_wht_type'] or 'ไม่มีหัก',
+                        'site_date': po['shipping_to_site_date'],
                     })
                 
-                # เรียกฟังก์ชันสร้าง PDF (ใช้ตัวเดิมที่คุณมีได้เลย)
+                # เรียกฟังก์ชันสร้าง PDF
                 from po_document_generator import generate_transport_fee_pdf
                 generate_transport_fee_pdf(dict(header), transport_list)
 
         except Exception as e:
+            from tkinter import messagebox
             messagebox.showerror("Error", str(e))
+            import traceback
+            traceback.print_exc()
         finally:
             if conn: self.app_container.release_connection(conn)
 

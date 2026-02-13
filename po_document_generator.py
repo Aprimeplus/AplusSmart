@@ -546,10 +546,12 @@ def register_thai_fonts():
     except Exception as e:
         print(f"Font Error: {e}")
 
+
 def generate_transport_fee_pdf(so_header_data, transport_data_list):
     """
     สร้างใบสรุปค่าขนส่ง (Transportation Expense Record)
-    Version: FORCE SHOW (บังคับแสดงตารางแม้ข้อมูลจะเป็น 0 หรือว่าง)
+    Version: แก้ไขแล้ว - แสดงข้อมูลถูกต้อง + วันที่จ่ายช่องว่าง + หมายเหตุไม่รวมทะเบียน
+    + ชื่อบริษัทผู้จัดส่งตรงกับระบบ
     """
     register_thai_fonts()
     
@@ -589,8 +591,8 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
 
     curr_date = datetime.now().strftime('%d/%m/%Y')
     info_table = Table([
-        [Paragraph(f"<b>SO Number:</b> {so_number}", st_norm), Paragraph(f"<b>วันที่:</b> {curr_date}", st_norm)],
-        [Paragraph(f"<b>ลูกค้า:</b> {so_header_data.get('customer_name', '-')}", st_norm), Paragraph(f"<b>Sale:</b> {so_header_data.get('sale_name', '-')}", st_norm)]
+        [Paragraph(f"<b>SO Number:</b> {so_number}", st_norm), Paragraph(f"<b>วันที่พิมพ์:</b> {curr_date}", st_norm)],
+        [Paragraph(f"<b>ลูกค้า:</b> {so_header_data.get('customer_name', '-')}", st_norm), Paragraph(f"<b>ผู้จัดทำ/Sale:</b> {so_header_data.get('sale_name', '-')}", st_norm)]
     ], colWidths=[12*cm, 7*cm])
     info_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')]))
     story.append(info_table)
@@ -601,41 +603,33 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
     blue = colors.HexColor("#DDEBF7")
 
     for raw in transport_data_list:
-        
-        def get_clean(key):
-            val = raw.get(key)
-            if val is None: return '-'
-            s = str(val).strip()
-            if not s or s.lower() in ['nan', 'none', '']: return '-'
-            return s
-
         configs = [
             {
                 'title': 'ค่าย้ายของ (เข้าโกดัง)',
-                'cost': float(raw.get('shipping_to_stock_cost') or 0),
-                'driver': get_clean('shipping_to_stock_driver'), 
-                'plate':  get_clean('shipping_to_stock_plate'),
-                'vat':    str(raw.get('shipping_to_stock_vat_type') or 'CASH').upper(),
-                'note':   get_clean('shipping_to_stock_notes'),
-                'date':   raw.get('shipping_to_stock_date'),
-                'wht':    str(raw.get('shipping_to_stock_wht_type') or 'ไม่มีหัก')
+                'cost': float(raw.get('stock_cost') or 0),
+                'driver': raw.get('stock_driver', '-'),
+                'plate': raw.get('stock_plate', '-'),
+                'note': raw.get('stock_notes', '-'),  
+                'vat': str(raw.get('stock_vat') or 'CASH').upper(),
+                'date': raw.get('stock_date'),
+                'wht': str(raw.get('stock_wht') or 'ไม่มีหัก'),
+                'supplier_company': raw.get('stock_supplier', '-')  # ✅ ใช้ชื่อบริษัทจริง
             },
             {
                 'title': 'ค่าขนส่ง (ส่งหน้างาน)',
-                'cost': float(raw.get('shipping_to_site_cost') or 0), 
-                'driver': get_clean('shipping_to_site_driver'),
-                'plate':  get_clean('shipping_to_site_plate'),
-                'vat':    str(raw.get('shipping_to_site_vat_type') or 'CASH').upper(),
-                'note':   get_clean('shipping_to_site_notes'),
-                'date':   raw.get('shipping_to_site_date'),
-                'wht':    str(raw.get('shipping_to_site_wht_type') or 'ไม่มีหัก')
+                'cost': float(raw.get('site_cost') or 0),
+                'driver': raw.get('site_driver', '-'),
+                'plate': raw.get('site_plate', '-'),
+                'note': raw.get('site_notes', '-'),  
+                'vat': str(raw.get('site_vat') or 'CASH').upper(),
+                'date': raw.get('site_date'),
+                'wht': str(raw.get('site_wht') or 'ไม่มีหัก'),
+                'supplier_company': raw.get('site_supplier', '-')  # ✅ ใช้ชื่อบริษัทจริง
             }
         ]
 
         for cfg in configs:
-            # --- [สำคัญ] ลบเงื่อนไข if ออก เพื่อบังคับสร้างตารางเสมอ ---
             cost = cfg['cost']
-            
             is_vat = (cfg['vat'] == 'VAT')
             vat_amt = cost * 0.07 if is_vat else 0
             wht_str = cfg['wht']
@@ -645,31 +639,37 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
             grand_total_cost += cost
             grand_total_paid += net_paid
 
-            # รวมหมายเหตุ + ทะเบียน
-            plate_str = cfg['plate']
+            # หมายเหตุไม่รวมทะเบียน
             note_str = cfg['note']
-            
-            parts = []
-            if note_str != '-': parts.append(note_str)
-            if plate_str != '-' and plate_str not in note_str: parts.append(f"(ทะเบียน: {plate_str})")
-            
-            full_remark = " ".join(parts) if parts else "-"
+            full_remark = note_str if note_str != '-' else "-"
 
-            # วันที่
+            # วันที่จัดส่ง
             s_date = cfg['date']
             s_date_str = "-"
             if s_date:
                 try: 
-                    if isinstance(s_date, str): s_date_str = datetime.strptime(s_date[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
-                    else: s_date_str = s_date.strftime("%d/%m/%Y")
-                except: pass
+                    if isinstance(s_date, str): 
+                        s_date_str = datetime.strptime(s_date[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+                    else: 
+                        s_date_str = s_date.strftime("%d/%m/%Y")
+                except: 
+                    pass
 
             # Table Top
             t_top = Table([
-                [Paragraph("PO NUMBER", st_val_center), Paragraph("ชื่อบริษัทผู้จัดส่ง", st_val_center), Paragraph("ผู้จัดส่ง/คนขับ", st_val_center), Paragraph("ทะเบียนรถ", st_val_center)],
-                [P(raw.get('po_number')), P(raw.get('shipper')), P(cfg['driver']), P(plate_str)]
+                [
+                    Paragraph("PO NUMBER", st_val_center),
+                    Paragraph("ชื่อบริษัทผู้จัดส่ง", st_val_center),
+                    Paragraph("ผู้จัดส่ง/คนขับ", st_val_center),
+                    Paragraph("ทะเบียนรถ", st_val_center)
+                ],
+                [
+                    P(raw.get('po_number')),
+                    P(cfg['supplier_company']),  # ✅ แสดงชื่อบริษัท
+                    P(cfg['driver']),
+                    P(cfg['plate'])
+                ]
             ], colWidths=[3*cm, 6*cm, 5*cm, 5*cm], rowHeights=[0.7*cm, 0.9*cm])
-            
             t_top.setStyle(TableStyle([
                 ('GRID', (0,0), (-1,-1), 0.5, colors.black),
                 ('BACKGROUND', (0,0), (-1,0), blue),
@@ -683,12 +683,33 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
             chk_w3 = "[ / ] 3%" if wht_rate == 0.03 else "[   ] 3%"
 
             t_bot = Table([
-                [Paragraph("วันที่จัดส่ง", st_val_center), Paragraph("ค่าจัดส่ง", st_val_center), Paragraph("vat", st_val_center), Paragraph("หัก ณ ที่จ่าย", st_val_center), Paragraph("ชำระจริง", st_val_center), Paragraph("วันจ่าย", st_val_center)],
-                [P(s_date_str), P(fmt_num(cost)), Paragraph(chk_v, st_val_center), Paragraph(f"{chk_w1}<br/>{chk_w3}", st_val_center), P(fmt_num(net_paid)), P("-")],
-                [Paragraph("ประเภทรายการ", st_norm), Paragraph(cfg['title'], st_val_left), '', '', '', ''],
-                [Paragraph("หมายเหตุ:", st_norm), Paragraph(full_remark, st_val_left), '', '', '', '']
-            ], colWidths=[3*cm, 3.5*cm, 1.5*cm, 2.5*cm, 3.5*cm, 5*cm], rowHeights=[0.7*cm, 1.2*cm, 0.7*cm, 0.7*cm])
-            
+                [
+                    Paragraph("วันที่จัดส่ง", st_val_center),
+                    Paragraph("ค่าจัดส่ง", st_val_center),
+                    Paragraph("vat", st_val_center),
+                    Paragraph("หัก ณ ที่จ่าย", st_val_center),
+                    Paragraph("ชำระจริง", st_val_center),
+                    Paragraph("วันที่จ่าย", st_val_center)
+                ],
+                [
+                    P(s_date_str),
+                    P(fmt_num(cost)),
+                    Paragraph(chk_v, st_val_center),
+                    Paragraph(f"{chk_w1}<br/>{chk_w3}", st_val_center),
+                    P(fmt_num(net_paid)),
+                    Paragraph("", st_val_center)
+                ],
+                [
+                    Paragraph("ประเภทรายการ", st_norm),
+                    Paragraph(cfg['title'], st_val_left),
+                    '', '', '', ''
+                ],
+                [
+                    Paragraph("หมายเหตุ:", st_norm),
+                    Paragraph(full_remark, st_val_left),
+                    '', '', '', ''
+                ]
+            ], colWidths=[3*cm, 3.5*cm, 2*cm, 3*cm, 4.5*cm, 3*cm], rowHeights=[0.7*cm, 1.2*cm, 0.7*cm, 0.7*cm])
             t_bot.setStyle(TableStyle([
                 ('GRID', (0,0), (-1,-1), 0.5, colors.black),
                 ('BACKGROUND', (0,0), (-1,0), blue),
@@ -702,10 +723,17 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
 
     # Total
     t_total = Table([
-        [Paragraph("<b>ยอดรวมค่าขนส่ง</b>", st_norm), P(fmt_num(grand_total_cost)), '', '', P(fmt_num(grand_total_paid)), '']
-    ], colWidths=[3*cm, 3.5*cm, 1.5*cm, 2.5*cm, 3.5*cm, 5*cm], rowHeights=[0.8*cm])
+        [
+            Paragraph("<b>ยอดรวมค่าขนส่ง</b>", st_norm),
+            P(fmt_num(grand_total_cost)),
+            '', '', P(fmt_num(grand_total_paid))
+        ]
+    ], colWidths=[3*cm, 3.5*cm, 2*cm, 3*cm, 7.5*cm], rowHeights=[0.8*cm])
+
     t_total.setStyle(TableStyle([
-        ('BOX', (0,0), (-1,-1), 1, colors.black),
+        ('BOX', (0,0), (-1,-1), 1, colors.black),           # รอบด้าน
+        ('LINEBEFORE', (1,0), (1,0), 0.5, colors.black),    # เส้นระหว่างช่องยอดรวม
+        ('LINEBEFORE', (4,0), (4,0), 0.5, colors.black),    # เส้นระหว่างช่องชำระจริง
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('ALIGN', (0,0), (0,0), 'RIGHT'),
         ('RIGHTPADDING', (0,0), (0,0), 10)
