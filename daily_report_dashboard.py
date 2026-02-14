@@ -239,7 +239,7 @@ class DailyDashboard(CTkFrame):
         if self.canvas:
             self.canvas.get_tk_widget().destroy()
 
-        plt.rcParams['font.family'] = 'Tahoma'
+        plt.rcParams['font.family'] = ['Tahoma', 'Segoe UI Emoji']
         fig, ax = plt.subplots(figsize=(15, 8), dpi=100)
 
         days = df['day']

@@ -1,10 +1,8 @@
-# sales_manager_screen.py (ฉบับปรับปรุง เพิ่มแท็บ Master Edit)
-
 import tkinter as tk
 from tkinter import ttk
 from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
                            CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkEntry,
-                           CTkOptionMenu, CTkRadioButton, CTkTabview) # <-- เพิ่ม CTkTabview
+                           CTkOptionMenu, CTkRadioButton, CTkTabview)
 from tkinter import messagebox
 import pandas as pd
 from datetime import datetime
@@ -13,9 +11,9 @@ import psycopg2.extras
 import traceback
 import utils
 
-# --- นำเข้า Class ที่จำเป็น ---\
+# --- นำเข้า Class ที่จำเป็น ---
 from history_windows import SOPopupWindow
-from custom_widgets import NumericEntry, DateSelector
+from daily_report_widget import DailyReportWidget
 
 class SalesManagerScreen(CTkFrame):
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None):
@@ -28,217 +26,281 @@ class SalesManagerScreen(CTkFrame):
         self.label_font = CTkFont(size=14, weight="bold")
         self.entry_font = CTkFont(size=14)
         
-        # --- START: เพิ่มตัวแปรและ Theme ที่จำเป็นสำหรับ SOPopupWindow ---\
+        # --- เตรียมตัวแปรสำหรับ SOPopupWindow ---
         self.so_popup = None
-        self.so_form_widgets = {}
-        self._so_create_string_vars() # สร้าง StringVars ที่จำเป็น
-        
-        # กำหนด Theme (อาจปรับตามความเหมาะสม)
-        self.sale_theme = self.app_container.THEME.get("sale", {"bg": "white", "primary": "blue"})
-        # --- END ---
+        self._so_create_string_vars()
+        self.sale_theme = self.app_container.THEME.get("sale", {"bg": "white", "primary": "#3B82F6"})
         
         self.pg_engine = self.app_container.pg_engine
         
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1) # <-- แถวที่ 1 (Tabview) จะขยาย
+        self.grid_rowconfigure(1, weight=1) 
 
-        # --- 1. สร้าง Header (เหมือนเดิม) ---
+        # --- 1. Header ---
+        self._create_header()
+
+        # --- 2. TabView ---
+        self.tab_view = CTkTabview(self, corner_radius=10, border_width=1)
+        self.tab_view.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+
+        # สร้าง 2 Tabs
+        self.daily_report_tab = self.tab_view.add("📅 รายงานประจำวัน (SO Report)")
+        self.master_tab = self.tab_view.add("🛠️ ค้นหาและจัดการ (Master)")
+
+        # สร้างเนื้อหาในแต่ละ Tab
+        self._create_daily_report_widget(self.daily_report_tab) 
+        self._create_master_tab(self.master_tab)            
+        
+        # โหลดข้อมูลเริ่มต้น
+        self.tab_view.set("📅 รายงานประจำวัน (SO Report)")
+
+    def _create_header(self):
         header_frame = CTkFrame(self, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
         
-        CTkLabel(header_frame, text=f"หน้าจอผู้จัดการฝ่ายขาย: {self.user_name}", font=CTkFont(size=22, weight="bold")).pack(side="left")
+        CTkLabel(header_frame, text=f"Sale Manager Dashboard: {self.user_name}", font=CTkFont(size=22, weight="bold")).pack(side="left")
         
         button_frame = CTkFrame(header_frame, fg_color="transparent")
         button_frame.pack(side="right", padx=10)
         
-        CTkButton(button_frame, text="Refresh", command=self._load_pending_so).pack(side="left", padx=5)
+        CTkButton(button_frame, text="🔄 Refresh All", command=self._refresh_all_tabs).pack(side="left", padx=5)
+        
         CTkButton(button_frame, text="ออกจากระบบ", command=self.app_container.show_login_screen, 
-                    fg_color="transparent", border_color="#D32F2F", 
-                    text_color="#D32F2F", border_width=2, 
-                    hover_color="#FFEBEE").pack(side="left", padx=5)
+                  fg_color="transparent", border_color="#D32F2F", 
+                  text_color="#D32F2F", border_width=2, 
+                  hover_color="#FFEBEE").pack(side="left", padx=5)
 
-        # --- 2. สร้าง TabView ---
-        self.tab_view = CTkTabview(self, corner_radius=10, border_width=1)
-        self.tab_view.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
-
-        self.pending_tab = self.tab_view.add("รายการรออนุมัติ")
-        self.master_edit_tab = self.tab_view.add("ค้นหา & ตีกลับ SO (Master)")
-
-        # --- 3. สร้างเนื้อหาสำหรับแต่ละแท็บ ---
-        self._create_pending_tab(self.pending_tab)
-        self._create_master_edit_tab(self.master_edit_tab)
+    def _refresh_all_tabs(self):
+        """รีโหลดข้อมูลทุกแท็บ"""
+        if hasattr(self, 'daily_report_widget'):
+            self.daily_report_widget.load_report_data()
+            if hasattr(self.daily_report_widget, 'dashboard_view'):
+                 self.daily_report_widget.dashboard_view._update_chart()
         
-        # --- 4. โหลดข้อมูลเริ่มต้นสำหรับแท็บแรก ---
-        self._load_pending_so() 
+        # รีโหลด Master Tab
+        self._load_master_data()
 
-    def _create_pending_tab(self, parent_tab):
-        """สร้าง UI สำหรับแท็บรออนุมัติ (โค้ดเดิม)"""
+    # =========================================================================
+    # TAB 1: DAILY REPORT WIDGET
+    # =========================================================================
+    def _create_daily_report_widget(self, parent):
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(0, weight=1)
+        self.daily_report_widget = DailyReportWidget(parent, self.app_container)
+        self.daily_report_widget.pack(fill="both", expand=True)
+
+    # =========================================================================
+    # TAB 2: MASTER EDIT & SEARCH (Auto Load + Filters)
+    # =========================================================================
+    def _create_master_tab(self, parent_tab):
         parent_tab.grid_columnconfigure(0, weight=1)
-        parent_tab.grid_rowconfigure(0, weight=1)
-        self.main_frame = CTkScrollableFrame(parent_tab, label_text="SO ที่รอการอนุมัติ (Pending Sale Manager Approval)")
-        self.main_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        self.main_frame.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1) # ให้ Result ขยาย
 
-    def _create_master_edit_tab(self, parent_tab):
-        """(ฟังก์ชันใหม่) สร้าง UI สำหรับแท็บ Master Edit"""
-        parent_tab.grid_columnconfigure(0, weight=1)
-        parent_tab.grid_rowconfigure(1, weight=1) # แถวที่ 1 (ScrollFrame) จะขยาย
+        # --- 1. Filter Frame ---
+        filter_frame = CTkFrame(parent_tab)
+        filter_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        
+        # ตัวแปร Filter
+        current_year = datetime.now().year
+        self.mst_year_var = tk.StringVar(value="ทุกปี")
+        self.mst_month_var = tk.StringVar(value="ทุกเดือน")
+        self.mst_day_var = tk.StringVar(value="ทุกวัน") # [เพิ่ม] วัน
+        self.mst_sale_var = tk.StringVar(value="All Sales")
+        
+        # Options
+        years = ["ทุกปี"] + [str(y) for y in range(current_year, current_year - 3, -1)]
+        months = ["ทุกเดือน"] + ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
+                                 "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        days = ["ทุกวัน"] + [str(d) for d in range(1, 32)] # [เพิ่ม] 1-31
+        sales_list = self._get_sale_list()
 
-        # --- Frame สำหรับฟิลเตอร์และการค้นหา ---
-        search_frame = CTkFrame(parent_tab)
-        search_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        search_frame.grid_columnconfigure(0, weight=1)
-        
-        self.sm_master_search_entry = CTkEntry(search_frame, font=self.entry_font, placeholder_text="กรอก SO Number ที่ต้องการค้นหา...")
-        self.sm_master_search_entry.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="ew")
-        
-        self.sm_master_search_entry.bind("<Return>", lambda event: self._sm_master_search())
-        self.sm_master_search_entry.bind("<KP_Enter>", lambda event: self._sm_master_search())
-        
-        search_button = CTkButton(search_frame, text="ค้นหา", command=self._sm_master_search, width=100)
-        search_button.grid(row=0, column=1, padx=5, pady=10)
+        # UI Filters (เรียงแถวเดียวกัน)
+        CTkLabel(filter_frame, text="ปี:", font=self.entry_font).pack(side="left", padx=(10, 2))
+        CTkOptionMenu(filter_frame, variable=self.mst_year_var, values=years, width=75, command=self._load_master_data).pack(side="left", padx=5)
 
-        # --- Frame สำหรับแสดงผลลัพธ์ ---
-        self.sm_master_results_frame = CTkScrollableFrame(parent_tab, label_text="ผลการค้นหา")
-        self.sm_master_results_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        CTkLabel(filter_frame, text="เดือน:", font=self.entry_font).pack(side="left", padx=(10, 2))
+        CTkOptionMenu(filter_frame, variable=self.mst_month_var, values=months, width=110, command=self._load_master_data).pack(side="left", padx=5)
+
+        CTkLabel(filter_frame, text="วัน:", font=self.entry_font).pack(side="left", padx=(10, 2))
+        CTkOptionMenu(filter_frame, variable=self.mst_day_var, values=days, width=70, command=self._load_master_data).pack(side="left", padx=5)
+
+        CTkLabel(filter_frame, text="Sale:", font=self.entry_font).pack(side="left", padx=(10, 2))
+        CTkOptionMenu(filter_frame, variable=self.mst_sale_var, values=sales_list, width=120, command=self._load_master_data).pack(side="left", padx=5)
+
+        # Search Box
+        self.sm_master_search_entry = CTkEntry(filter_frame, font=self.entry_font, placeholder_text="SO / ลูกค้า...", width=150)
+        self.sm_master_search_entry.pack(side="left", padx=(15, 5), fill="x", expand=True)
+        self.sm_master_search_entry.bind("<Return>", lambda e: self._load_master_data())
+        
+        # ปุ่ม
+        CTkButton(filter_frame, text="🔍 ค้นหา", width=80, command=self._load_master_data).pack(side="left", padx=5)
+        CTkButton(filter_frame, text="↺ รีเซ็ต", width=60, fg_color="gray", command=self._reset_master_filter).pack(side="left", padx=5)
+
+        # --- 2. Results Frame ---
+        self.sm_master_results_frame = CTkScrollableFrame(parent_tab, label_text="รายการ SO ล่าสุด (แก้ไข/ตีกลับ)")
+        self.sm_master_results_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
         self.sm_master_results_frame.grid_columnconfigure(0, weight=1)
 
-    def _sm_master_search(self):
-        """(ฟังก์ชันใหม่) ค้นหา SO ทั้งหมดจาก Keyword"""
-        for widget in self.sm_master_results_frame.winfo_children():
-            widget.destroy()
-            
-        keyword = self.sm_master_search_entry.get().strip().upper()
-        if not keyword:
-            return
+        # Auto Load ทันทีที่เปิดโปรแกรม
+        self.after(200, self._load_master_data)
 
-        search_term = keyword.replace("SO", "") # ค้นหาแบบง่ายๆ
+    def _get_sale_list(self):
+        """ดึงรายชื่อ Sale"""
+        try:
+            df = pd.read_sql_query("SELECT sale_key FROM sales_users WHERE role='Sale' ORDER BY sale_key", self.pg_engine)
+            return ["All Sales"] + df['sale_key'].tolist()
+        except:
+            return ["All Sales"]
+
+    def _reset_master_filter(self):
+        """ล้างค่าตัวกรอง"""
+        self.mst_year_var.set("ทุกปี")
+        self.mst_month_var.set("ทุกเดือน")
+        self.mst_day_var.set("ทุกวัน")
+        self.mst_sale_var.set("All Sales")
+        self.sm_master_search_entry.delete(0, "end")
+        self._load_master_data()
+
+    def _load_master_data(self, event=None):
+        """โหลดข้อมูลตาม Filter + Search"""
+        # เคลียร์ข้อมูลเก่า
+        for widget in self.sm_master_results_frame.winfo_children(): widget.destroy()
         
         try:
-            # ค้นหา SO (ดึงข้อมูลเซลส์และสถานะมาด้วย)
+            # Base Query
             query = """
-                SELECT c.id, c.so_number, c.customer_name, c.sale_key, c.status, u.sale_name
+                SELECT c.id, c.so_number, c.customer_name, c.sale_key, c.status, u.sale_name, c.sales_service_amount
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.so_number ILIKE %s AND c.is_active = 1
+                WHERE c.is_active = 1
             """
-            so_df = pd.read_sql_query(query, self.pg_engine, params=(f"%{search_term}%",))
+            params = []
 
-            if so_df.empty:
-                CTkLabel(self.sm_master_results_frame, text=f"ไม่พบข้อมูลสำหรับ '{keyword}'").pack(pady=20)
+            # 1. Filter Year
+            if self.mst_year_var.get() != "ทุกปี":
+                query += " AND EXTRACT(YEAR FROM c.timestamp::timestamp) = %s"
+                params.append(int(self.mst_year_var.get()))
+
+            # 2. Filter Month
+            thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
+                           "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+            if self.mst_month_var.get() != "ทุกเดือน":
+                m_idx = thai_months.index(self.mst_month_var.get()) + 1
+                query += " AND EXTRACT(MONTH FROM c.timestamp::timestamp) = %s"
+                params.append(m_idx)
+
+            # 3. Filter Day
+            if self.mst_day_var.get() != "ทุกวัน":
+                query += " AND EXTRACT(DAY FROM c.timestamp::timestamp) = %s"
+                params.append(int(self.mst_day_var.get()))
+
+            # 4. Filter Sale
+            if self.mst_sale_var.get() != "All Sales":
+                query += " AND c.sale_key = %s"
+                params.append(self.mst_sale_var.get())
+
+            # 5. Text Search (SO / Customer)
+            search_txt = self.sm_master_search_entry.get().strip().upper()
+            if search_txt:
+                term = search_txt.replace("SO", "")
+                query += " AND (c.so_number ILIKE %s OR c.customer_name ILIKE %s)"
+                params.extend([f"%{term}%", f"%{term}%"])
+
+            # Order & Limit (10 รายการล่าสุด ตามที่ขอ)
+            query += " ORDER BY c.timestamp DESC LIMIT 20" 
+
+            # Execute
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+
+            if df.empty:
+                CTkLabel(self.sm_master_results_frame, text="ไม่พบข้อมูลตามเงื่อนไข").pack(pady=20)
                 return
 
-            for _, row in so_df.iterrows():
-                # สร้าง Card แสดงผลลัพธ์
-                self._create_sm_master_so_card(self.sm_master_results_frame, row.to_dict())
+            # Create Cards
+            for _, row in df.iterrows():
+                # [แก้ไข] เรียกใช้โดยไม่ต้องส่ง mode
+                self._create_so_card(self.sm_master_results_frame, row.to_dict())
 
         except Exception as e:
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการค้นหา: {e}", parent=self)
+            messagebox.showerror("Error", f"Data Load Failed: {e}")
+            print(traceback.format_exc())
 
-    def _create_sm_master_so_card(self, parent, so_data):
-        """(ฟังก์ชันใหม่) สร้าง Card แสดงผลลัพธ์ SO ในแท็บ Master Edit"""
+    # =========================================================================
+    # SHARED: SO CARD & ACTIONS
+    # =========================================================================
+    def _create_so_card(self, parent, so_data):
+        """สร้าง Card แสดงข้อมูล SO พร้อมปุ่ม Edit / Reject"""
         so_id = so_data['id']
         so_number = so_data['so_number']
-        so_status = so_data.get('status', 'N/A')
-        
-        # กำหนดสีพื้นหลังตามสถานะ
+        status = so_data.get('status', 'N/A')
+        amount = so_data.get('sales_service_amount', 0)
+
+        # สีพื้นหลังการ์ดตามสถานะ
         status_colors = {
-            'Paid': '#D1FAE5', 'HR Verified': '#A7F3D0', 
-            'PO Sent': '#67E8F9', 'Pending Sale Manager Approval': '#FDE047',
-            'PO In Progress': '#FEF3C7', 'Draft': '#E5E7EB',
-            'Rejected': '#FECACA', 'Cancelled': '#FECACA', 'Rejected by SM': '#FECACA'
+            'PO In Progress': '#E0F2FE', 'Approved': '#DCFCE7', 'Paid': '#D1FAE5',
+            'Rejected by SM': '#FEE2E2', 'Cancelled': '#F3F4F6', 'Draft': '#FEF3C7',
+            'Pending Sale Manager Approval': '#FEF9C3'
         }
-        card_color = status_colors.get(so_status, "#F9FAFB")
+        bg_color = status_colors.get(status, "#FFFFFF")
 
-        so_card = CTkFrame(parent, border_width=1, fg_color=card_color)
-        so_card.pack(fill="x", padx=10, pady=5)
-        
-        info_text = f"SO: {so_number} | ลูกค้า: {so_data.get('customer_name','N/A')} | สถานะ: {so_status} | เซลส์: {so_data.get('sale_name', 'N/A')}"
-        CTkLabel(so_card, text=info_text, font=self.entry_font).pack(side="left", padx=10, pady=5, anchor="w")
-        
-        action_frame = CTkFrame(so_card, fg_color="transparent")
-        action_frame.pack(side="right", padx=10, pady=5)
+        card = CTkFrame(parent, border_width=1, corner_radius=8, fg_color=bg_color)
+        card.pack(fill="x", padx=5, pady=5)
+        card.grid_columnconfigure(0, weight=1)
 
-        # ปุ่มที่ 1: "แก้ไข SO" (เรียกใช้ฟังก์ชันเดิม)
-        CTkButton(
-            action_frame, 
-            text="แก้ไข SO", 
-            width=100, 
-            command=lambda s_num=so_number: self._open_so_editor_for_sm(s_num)
-        ).pack(side="left", padx=5)
-        
-        # ปุ่มที่ 2: "ตีกลับ SO" (เรียกใช้ฟังก์ชันเดิม)
-        # เราจะแสดงปุ่มนี้ ตราบใดที่ SO ยังไม่ถูกตีกลับไปแล้ว
-        if so_status not in ('Draft', 'Rejected by SM', 'Cancelled'):
-            CTkButton(
-                action_frame, 
-                text="ตีกลับ SO (Revert)", 
-                width=140, 
-                fg_color="#D32F2F", hover_color="#B71C1C", # สีแดง
-                command=lambda s_id=so_id, s_num=so_number: self._reject_so(s_id, s_num)
-            ).pack(side="left", padx=5)
+        # Info Text
+        info_text = f"SO: {so_number} | ลูกค้า: {so_data.get('customer_name')} | ยอด: {amount:,.2f} | เซลส์: {so_data.get('sale_name')}\nสถานะ: {status}"
+        CTkLabel(card, text=info_text, font=self.entry_font, text_color="black", justify="left").pack(side="left", padx=15, pady=10)
 
+        # Actions Frame
+        btn_frame = CTkFrame(card, fg_color="transparent")
+        btn_frame.pack(side="right", padx=10, pady=5)
 
-    def _so_create_string_vars(self):
-        """สร้าง StringVars ทั้งหมดที่ SOPopupWindow ต้องการ"""
-        self.so_shared_vars = {}
-        now = datetime.now()
-        thai_months_list = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-        
-        self.so_shared_vars['thai_months'] = thai_months_list
-        self.so_shared_vars['thai_month_map'] = {name: i + 1 for i, name in enumerate(thai_months_list)}
-        self.so_shared_vars['customer_type_var'] = tk.StringVar(value="ลูกค้าเก่า")
-        self.so_shared_vars['credit_term_var'] = tk.StringVar(value="เงินสด")
-        self.so_shared_vars['commission_month_var'] = tk.StringVar(value=thai_months_list[now.month - 1])
-        self.so_shared_vars['commission_year_var'] = tk.StringVar(value=str(now.year + 543))
-        self.so_shared_vars['payment1_percent_var'] = tk.StringVar(value="ระบุยอดเอง")
-        self.so_shared_vars['payment2_percent_var'] = tk.StringVar(value="ระบุยอดเอง")
-        self.so_shared_vars['payment_total_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['so_subtotal_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['so_vat_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['so_grand_total_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['so_vs_payment_result_var'] = tk.StringVar(value="-")
-        self.so_shared_vars['difference_amount_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['balance_due_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cash_product_input_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cash_service_total_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cash_required_total_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cash_actual_payment_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cash_verification_result_var'] = tk.StringVar(value="-")
-        
-        self.so_shared_vars['sales_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['cutting_drilling_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['other_service_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['shipping_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['card_fee_vat_calc_var'] = tk.StringVar(value="0.00")
-        self.so_shared_vars['relocation_vat_calc_var'] = tk.StringVar(value="0.00")
+        # 1. ปุ่มแก้ไข (SM แก้ได้ทุกใบ)
+        CTkButton(btn_frame, text="🛠️ แก้ไข", width=90, fg_color="#4F46E5", hover_color="#4338CA",
+                  command=lambda: self._open_so_editor_for_sm(so_number)).pack(side="left", padx=2)
 
-        self.so_shared_vars['sales_service_vat_option'] = tk.StringVar(value="VAT")
-        self.so_shared_vars['cutting_drilling_fee_vat_option'] = tk.StringVar(value="VAT")
-        self.so_shared_vars['other_service_fee_vat_option'] = tk.StringVar(value="VAT")
-        self.so_shared_vars['shipping_vat_option_var'] = tk.StringVar(value="VAT")
-        self.so_shared_vars['credit_card_fee_vat_option_var'] = tk.StringVar(value="VAT")
-        self.so_shared_vars['relocation_cost_vat_option'] = tk.StringVar(value="VAT")
+        # 2. ปุ่มตีกลับ (ตีกลับได้ทุกใบ ยกเว้นที่ Cancelled หรือตีกลับไปแล้ว)
+        if status not in ['Cancelled', 'Rejected by SM']:
+            CTkButton(btn_frame, text="❌ ตีกลับ", width=90, fg_color="#DC2626", hover_color="#B91C1C",
+                      command=lambda: self._reject_so(so_id, so_number)).pack(side="left", padx=2)
 
-        self.so_shared_vars['delivery_type_var'] = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
+    def _reject_so(self, so_id, so_number):
+        dialog = CTkInputDialog(text=f"ระบุเหตุผลที่ตีกลับ SO: {so_number}", title="ตีกลับ SO")
+        reason = dialog.get_input()
+        if not reason or not reason.strip(): return
+
+        try:
+            with self.app_container.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # อัปเดตสถานะเป็น Rejected by SM
+                    cursor.execute(
+                        "UPDATE commissions SET status = 'Rejected by SM', rejection_reason = %s WHERE id = %s",
+                        (reason.strip(), so_id)
+                    )
+                    # แจ้งเตือนเจ้าของ SO
+                    cursor.execute("SELECT sale_key FROM commissions WHERE id = %s", (so_id,))
+                    res = cursor.fetchone()
+                    if res:
+                        cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES (%s, %s, FALSE, %s)",
+                                       (res[0], f"SO: {so_number} ถูกตีกลับโดย SM: {reason}", so_id))
+                conn.commit()
+            messagebox.showinfo("สำเร็จ", "ตีกลับเรียบร้อย")
+            self._refresh_all_tabs()
+        except Exception as e:
+            messagebox.showerror("Error", f"Reject Failed: {e}")
 
     def _open_so_editor_for_sm(self, so_number):
-        """(ปรับปรุง) เปิดหน้าต่างแก้ไข SO และตั้งค่า callback ให้ refresh ทั้งสองแท็บ"""
         if self.so_popup is not None and self.so_popup.winfo_exists():
             self.so_popup.focus()
             return
-
         try:
             so_df = pd.read_sql_query("SELECT * FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", self.pg_engine, params=(so_number,))
             if so_df.empty:
-                messagebox.showerror("ไม่พบข้อมูล", f"ไม่พบข้อมูล SO: {so_number}", parent=self)
+                messagebox.showerror("Error", "ไม่พบข้อมูล SO")
                 return
             
-            # --- สร้างฟังก์ชัน Callback ---
             def _refresh_on_save():
-                self._load_pending_so() # Refresh แท็บรออนุมัติ
-                if hasattr(self, 'sm_master_search_entry'): # Refresh แท็บค้นหา
-                    self._sm_master_search()
+                self._refresh_all_tabs()
             
             self.so_popup = SOPopupWindow(
                 master=self,
@@ -246,161 +308,54 @@ class SalesManagerScreen(CTkFrame):
                 sales_data=so_df.iloc[0].to_dict(),
                 so_shared_vars=self.so_shared_vars,
                 sale_theme=self.sale_theme,
-                on_save_callback=_refresh_on_save # <-- ใช้ callback ที่เราสร้าง
+                on_save_callback=_refresh_on_save
             )
         except Exception as e:
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถเปิดหน้าต่างแก้ไข SO ได้: {e}", parent=self)
-            traceback.print_exc()
-            if self.so_popup:
-                self.so_popup.destroy()
-                self.so_popup = None
+            messagebox.showerror("Error", f"Open Editor Failed: {e}")
+            print(traceback.format_exc())
 
-    def _load_pending_so(self):
-        """โหลด SO ที่รอการอนุมัติ (สำหรับแท็บแรก)"""
-        # ตรวจสอบว่า main_frame ถูกสร้างแล้วหรือยัง
-        if not hasattr(self, 'main_frame') or not self.main_frame.winfo_exists():
-            self.after(100, self._load_pending_so) # ถ้ายังไม่สร้าง ให้รอ 100ms แล้วลองใหม่
-            return
+    def _so_create_string_vars(self):
+        """สร้าง StringVars สำหรับหน้าจอแก้ไข SO"""
+        self.so_shared_vars = {}
+        now = datetime.now()
+        thai_months_list = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
+                            "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        
+        self.so_shared_vars.update({
+            'thai_months': thai_months_list,
+            'thai_month_map': {name: i + 1 for i, name in enumerate(thai_months_list)},
+            'customer_type_var': tk.StringVar(value="ลูกค้าเก่า"),
+            'credit_term_var': tk.StringVar(value="เงินสด"),
+            'commission_month_var': tk.StringVar(value=thai_months_list[now.month - 1]),
+            'commission_year_var': tk.StringVar(value=str(now.year + 543)),
+            'payment1_percent_var': tk.StringVar(value="ระบุยอดเอง"),
+            'payment2_percent_var': tk.StringVar(value="ระบุยอดเอง"),
+            'delivery_type_var': tk.StringVar(value="ซัพพลายเออร์จัดส่ง"),
             
-        for widget in self.main_frame.winfo_children():
-            widget.destroy()
+            'payment_total_var': tk.StringVar(value="0.00"),
+            'so_subtotal_var': tk.StringVar(value="0.00"),
+            'so_vat_var': tk.StringVar(value="0.00"),
+            'so_grand_total_var': tk.StringVar(value="0.00"),
+            'so_vs_payment_result_var': tk.StringVar(value="-"),
+            'difference_amount_var': tk.StringVar(value="0.00"),
+            'balance_due_var': tk.StringVar(value="0.00"),
+            'cash_product_input_var': tk.StringVar(value="0.00"),
+            'cash_service_total_var': tk.StringVar(value="0.00"),
+            'cash_required_total_var': tk.StringVar(value="0.00"),
+            'cash_actual_payment_var': tk.StringVar(value="0.00"),
+            'cash_verification_result_var': tk.StringVar(value="-"),
             
-        try:
-            query = """
-                SELECT c.id, c.so_number, c.customer_name, c.sale_key, u.sale_name, c.timestamp
-                FROM commissions c
-                JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.status = 'Pending Sale Manager Approval' AND c.is_active = 1
-                ORDER BY c.timestamp DESC
-            """
-            pending_so_df = pd.read_sql_query(query, self.pg_engine)
+            'sales_vat_calc_var': tk.StringVar(value="0.00"),
+            'cutting_drilling_vat_calc_var': tk.StringVar(value="0.00"),
+            'other_service_vat_calc_var': tk.StringVar(value="0.00"),
+            'shipping_vat_calc_var': tk.StringVar(value="0.00"),
+            'card_fee_vat_calc_var': tk.StringVar(value="0.00"),
+            'relocation_vat_calc_var': tk.StringVar(value="0.00"),
             
-            if pending_so_df.empty:
-                CTkLabel(self.main_frame, text="ไม่พบรายการที่รอการอนุมัติในขณะนี้").pack(pady=20)
-                return
-                
-            for _, row in pending_so_df.iterrows():
-                self._create_pending_so_card(row.to_dict())
-                
-        except Exception as e:
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการโหลดข้อมูล: {e}", parent=self)
-            traceback.print_exc()
-
-    def _create_pending_so_card(self, so_data):
-        """สร้าง Card สำหรับ SO ที่รออนุมัติ (สำหรับแท็บแรก)"""
-        so_id = so_data['id']
-        so_number = so_data['so_number']
-        
-        card = CTkFrame(self.main_frame, border_width=1, corner_radius=10)
-        card.pack(fill="x", padx=10, pady=5)
-        
-        card.grid_columnconfigure(0, weight=1)
-        
-        info_frame = CTkFrame(card, fg_color="transparent")
-        info_frame.grid(row=0, column=0, padx=15, pady=10, sticky="w")
-        
-        CTkLabel(info_frame, text=f"SO: {so_number}", font=CTkFont(size=16, weight="bold")).pack(anchor="w")
-        CTkLabel(info_frame, text=f"ลูกค้า: {so_data.get('customer_name', 'N/A')}").pack(anchor="w")
-        CTkLabel(info_frame, text=f"เซลส์: {so_data.get('sale_name', 'N/A')} ({so_data.get('sale_key', 'N/A')})").pack(anchor="w")
-        CTkLabel(info_frame, text=f"วันที่ส่ง: {so_data.get('timestamp', pd.Timestamp.now()).strftime('%Y-%m-%d %H:%M')}").pack(anchor="w")
-        
-        action_frame = CTkFrame(card, fg_color="transparent")
-        action_frame.grid(row=0, column=1, padx=15, pady=10, sticky="e")
-        
-        # --- ปุ่มสำหรับแท็บรออนุมัติ ---
-        approve_button = CTkButton(action_frame, text="อนุมัติ", 
-                                   command=lambda s_id=so_id, s_num=so_number: self._approve_so(s_id, s_num),
-                                   fg_color="#16A34A", hover_color="#15803D")
-        approve_button.pack(pady=5, fill="x")
-        
-        reject_button = CTkButton(action_frame, text="ตีกลับ (Reject)", 
-                                  command=lambda s_id=so_id, s_num=so_number: self._reject_so(s_id, s_num),
-                                  fg_color="#D32F2F", hover_color="#B71C1C")
-        reject_button.pack(pady=5, fill="x")
-        
-        # ผูก Double-click กับการ์ด (เหมือนเดิม)
-        card.bind("<Double-1>", lambda e, s_num=so_number: self._on_so_card_double_click(e, s_num))
-        for widget in info_frame.winfo_children():
-            widget.bind("<Double-1>", lambda e, s_num=so_number: self._on_so_card_double_click(e, s_num))
-
-    def _on_so_card_double_click(self, event, so_number):
-        """เมื่อดับเบิลคลิกที่ SO Card ให้เปิดหน้าต่างแก้ไข"""
-        self._open_so_editor_for_sm(so_number)
-
-    def _approve_so(self, so_id_to_approve, so_number):
-        """อนุมัติ SO (ฟังก์ชันเดิม)"""
-        if not messagebox.askyesno("ยืนยันการอนุมัติ", f"คุณต้องการอนุมัติ SO: {so_number} ใช่หรือไม่?\nSO จะถูกส่งต่อไปยังฝ่ายจัดซื้อ (PU)", parent=self):
-            return
-            
-        conn = None
-        try:
-            conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                # 1. อัปเดตสถานะ SO
-                cursor.execute(
-                    "UPDATE commissions SET status = 'PO In Progress', approver_sale_manager_key = %s, approval_date_sale_manager = %s WHERE id = %s",
-                    (self.user_key, datetime.now(), so_id_to_approve)
-                )
-                
-                # 2. สร้าง Notification แจ้งเตือนฝ่ายจัดซื้อ (PU)
-                cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Staff' AND status = 'Active'")
-                pu_keys = [row[0] for row in cursor.fetchall()]
-                
-                message = f"SO: {so_number} ได้รับการอนุมัติแล้ว กรุณาสร้าง PO"
-                for pu_key in pu_keys:
-                    cursor.execute(
-                        "INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES (%s, %s, FALSE, %s)",
-                        (pu_key, message, so_id_to_approve)
-                    )
-                
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", "อนุมัติ SO เรียบร้อยแล้ว\nแจ้งเตือนฝ่ายจัดซื้อเพื่อดำเนินการต่อ", parent=self)
-            self._load_pending_so() # Refresh หน้าจอ
-            
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการอนุมัติ: {e}", parent=self)
-            traceback.print_exc()
-        finally:
-            if conn: self.app_container.release_connection(conn)
-
-    def _reject_so(self, so_id_to_reject, so_number):
-        """(ปรับปรุง) ตีกลับ SO (ใช้สำหรับทั้งสองแท็บ)"""
-        dialog = CTkInputDialog(text=f"กรุณาระบุเหตุผลที่ตีกลับ SO: {so_number}", title="ตีกลับ SO")
-        reason = dialog.get_input()
-        if not reason or not reason.strip():
-            return
-
-        conn = None
-        try:
-            conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE commissions SET status = 'Rejected by SM', rejection_reason = %s WHERE id = %s",
-                    (reason.strip(), so_id_to_reject)
-                )
-                
-                # หา sale_key และสร้าง Notification
-                cursor.execute("SELECT sale_key FROM commissions WHERE id = %s", (so_id_to_reject,))
-                sale_key = cursor.fetchone()[0]
-                
-                message = f"SO: {so_number} ถูกตีกลับโดย SM\nเหตุผล: {reason.strip()}"
-                cursor.execute(
-                    "INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES (%s, %s, FALSE, %s)",
-                    (sale_key, message, so_id_to_reject)
-                )
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", "ตีกลับ SO เรียบร้อยแล้ว", parent=self)
-            
-            # --- START: Refresh ทั้งสองส่วน ---
-            self._load_pending_so() # Refresh แท็บรออนุมัติ
-            if hasattr(self, 'sm_master_search_entry'): # Refresh แท็บค้นหา (ถ้ามี)
-                self._sm_master_search()
-            # --- END ---
-            
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
-            traceback.print_exc()
-        finally:
-            if conn: self.app_container.release_connection(conn)
+            'sales_service_vat_option': tk.StringVar(value="VAT"),
+            'cutting_drilling_fee_vat_option': tk.StringVar(value="VAT"),
+            'other_service_fee_vat_option': tk.StringVar(value="VAT"),
+            'shipping_vat_option_var': tk.StringVar(value="VAT"),
+            'credit_card_fee_vat_option_var': tk.StringVar(value="VAT"),
+            'relocation_cost_vat_option': tk.StringVar(value="VAT")
+        })

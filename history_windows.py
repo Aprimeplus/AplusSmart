@@ -1276,60 +1276,36 @@ class PurchaseDetailWindow(CTkToplevel):
         self._recalculate_summary_totals()
 
     def _create_action_buttons(self):
-        """สร้างปุ่ม Action ต่างๆ ตามสถานะและสิทธิ์"""
+        """สร้างปุ่ม Action แบบเรียบง่าย (ตัดปุ่มพิเศษออก) และเปิดสิทธิ์ให้ HR แก้ไขได้"""
         # ล้าง Frame เดิมก่อนสร้างใหม่
         for widget in self.button_frame.winfo_children():
             widget.destroy()
 
         po_status = self.po_data.get('status')
-        
-        # [🔥 เพิ่ม] เช็คสิทธิ์ความเป็นเจ้าของ
         current_user = self.app_container.current_user_key
         po_owner = self.po_data.get('user_key')
+        
+        # --- ตรวจสอบสิทธิ์ ---
         is_owner = (current_user == po_owner)
-        
-        # เช็คสิทธิ์ Manager/Director
         is_manager_or_director = self.user_role in ['Purchasing Manager', 'Director']
-        
+        is_hr = (self.user_role == 'HR')
+
+        # ใครบ้างที่มีสิทธิ์ "บันทึก" ได้เสมอ (แม้ PO จะ Approved แล้ว)
+        can_edit_always = is_owner or is_manager_or_director or is_hr
+
         # กำหนดค่าความสูงและระยะห่าง
         button_height = 40
         vertical_padding = 10
 
         # ==============================================================================
-        # 1. ส่วนปุ่มพิเศษ (แสดงเสมอถ้าเป็นเจ้าของ หรือ Manager - ไม่สนสถานะ PO)
-        # ==============================================================================
-        # วางไว้ที่ Row 10+ เพื่อให้อยู่ด้านล่างปุ่ม Action หลัก
-        
-        if is_owner or is_manager_or_director:
-            # ปุ่มแก้ไขค่ารถ (Backdoor Edit)
-            transport_btn = CTkButton(
-                self.button_frame, 
-                text="🚚 แก้ไขค่ารถ/ขนส่ง (กรณีพิเศษ)", 
-                fg_color="#8B5CF6", hover_color="#7C3AED", # สีม่วง
-                height=button_height,
-                command=self._open_transport_edit_dialog
-            )
-            transport_btn.grid(row=10, column=0, columnspan=4, padx=5, pady=(15, 5), sticky="ew")
-
-            # ปุ่มดู Log
-            log_btn = CTkButton(
-                self.button_frame,
-                text="📜 ดูประวัติการแก้ไข (Logs)",
-                fg_color="#64748B", hover_color="#475569", # สีเทา
-                height=button_height,
-                command=self._open_transport_log_viewer
-            )
-            log_btn.grid(row=11, column=0, columnspan=4, padx=5, pady=(0, 10), sticky="ew")
-
-        # ==============================================================================
-        # 2. ส่วนปุ่ม Action หลัก (Approve/Reject/Save) - เปลี่ยนตามสถานะ PO
+        # ส่วนปุ่ม Action หลัก (Approve/Reject/Save/Close)
         # ==============================================================================
         
-        # กรณีที่ 1: Manager/Director เปิด PO ที่ "อนุมัติแล้ว" (มีปุ่ม Revert)
+        # กรณี A: Manager/Director เปิด PO Approved (เห็นปุ่ม Revert)
         if po_status == 'Approved' and is_manager_or_director:
             self.button_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
-            revert_button = CTkButton(self.button_frame, text="ตีกลับเป็นฉบับร่าง (Revert)", command=self._revert_to_draft, fg_color="#F97316", hover_color="#EA580C", height=button_height)
+            revert_button = CTkButton(self.button_frame, text="ตีกลับ (Revert)", command=self._revert_to_draft, fg_color="#F97316", hover_color="#EA580C", height=button_height)
             revert_button.grid(row=0, column=0, padx=5, pady=vertical_padding, sticky="ew")
 
             save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB", height=button_height)
@@ -1338,34 +1314,48 @@ class PurchaseDetailWindow(CTkToplevel):
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
             close_button.grid(row=0, column=2, padx=5, pady=vertical_padding, sticky="ew")
 
-        # กรณีที่ 2: PO รออนุมัติ (Pending Approval) และ User มีสิทธิ์อนุมัติ
-        elif po_status == 'Pending Approval' and self.user_role in ['Purchasing Staff', 'Purchasing Manager', 'Director', 'HR']:
+        # กรณี B: PO รออนุมัติ (เห็นปุ่ม Approve/Reject) - เฉพาะคนที่มีสิทธิ์อนุมัติ
+        elif po_status == 'Pending Approval' and (is_manager_or_director or is_hr):
             self.button_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
-            approve_button = CTkButton(self.button_frame, text="อนุมัติ (Approve)", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D", height=button_height)
+            approve_button = CTkButton(self.button_frame, text="อนุมัติ", command=self._approve_po, fg_color="#16A34A", hover_color="#15803D", height=button_height)
             approve_button.grid(row=0, column=0, padx=5, pady=vertical_padding, sticky="ew")
 
-            reject_button = CTkButton(self.button_frame, text="ปฏิเสธ (Reject)", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C", height=button_height)
+            reject_button = CTkButton(self.button_frame, text="ปฏิเสธ", command=self._reject_po, fg_color="#DC2626", hover_color="#B91C1C", height=button_height)
             reject_button.grid(row=0, column=1, padx=5, pady=vertical_padding, sticky="ew")
 
-            save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB", height=button_height)
+            save_button = CTkButton(self.button_frame, text="บันทึก", command=self._save_changes, fg_color="#3B82F6", hover_color="#2563EB", height=button_height)
             save_button.grid(row=0, column=2, padx=5, pady=vertical_padding, sticky="ew")
 
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
             close_button.grid(row=0, column=3, padx=5, pady=vertical_padding, sticky="ew")
         
-        # กรณีที่ 3: ทั่วไป (Draft, Rejected, หรือดูเฉยๆ)
+        # กรณี C: ทั่วไป (HR หรือ Owner ดู PO ปกติ หรือ PO Approved แล้ว)
         else:
             self.button_frame.grid_columnconfigure((0, 1), weight=1)
             
-            # ถ้าเป็นเจ้าของ หรือ Manager ให้แก้ได้
-            if is_owner or is_manager_or_director:
-                save_button = CTkButton(self.button_frame, text="บันทึกการแก้ไข", command=self._save_changes, height=button_height)
-                save_button.grid(row=0, column=0, padx=(0,5), pady=vertical_padding, sticky="ew")
+            # เช็คว่าจะให้ปุ่มบันทึกกดได้หรือไม่?
+            if can_edit_always:
+                save_text = "บันทึกการแก้ไข"
+                save_state = "normal"
+                save_color = "#3B82F6" # สีฟ้า
+                save_hover = "#2563EB"
             else:
-                # คนอื่นดูได้อย่างเดียว
-                save_button = CTkButton(self.button_frame, text="บันทึก (Disabled)", state="disabled", height=button_height)
-                save_button.grid(row=0, column=0, padx=(0,5), pady=vertical_padding, sticky="ew")
+                save_text = "บันทึก (Disabled)"
+                save_state = "disabled"
+                save_color = "gray"
+                save_hover = "gray"
+
+            save_button = CTkButton(
+                self.button_frame, 
+                text=save_text, 
+                state=save_state,
+                fg_color=save_color,
+                hover_color=save_hover,
+                command=self._save_changes, 
+                height=button_height
+            )
+            save_button.grid(row=0, column=0, padx=(0,5), pady=vertical_padding, sticky="ew")
             
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
             close_button.grid(row=0, column=1, padx=(5,0), pady=vertical_padding, sticky="ew")

@@ -3,7 +3,7 @@ import sys
 import traceback
 from datetime import datetime
 from tkinter import filedialog, messagebox
-
+import utils
 # ReportLab Core
 from reportlab.platypus import (
     BaseDocTemplate, PageTemplate, Frame, Paragraph, 
@@ -535,16 +535,38 @@ def generate_multi_po_pdf(so_header_data, all_po_data):
 # --- [🔥 NEW FUNCTION] สร้างใบสรุปค่าขนส่ง (Transport Fee) ---
 
 def register_thai_fonts():
-    """ ลงทะเบียนฟอนต์ไทยและสร้างความสัมพันธ์ระหว่างตัวปกติและตัวหนา """
+    """ ลงทะเบียนฟอนต์ไทย (รองรับทั้ง Dev และ .exe) """
     try:
-        # ลงทะเบียนฟอนต์รายไฟล์
-        pdfmetrics.registerFont(TTFont('THSarabunNew', 'THSarabunNew.ttf'))
-        pdfmetrics.registerFont(TTFont('THSarabunNew-Bold', 'THSarabunNew Bold.ttf'))
+        # 1. ลองหาฟอนต์จาก _MEIPASS (ตอน Pack เป็น .exe)
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.abspath(".")
         
-        # เชื่อมโยงฟอนต์ (Mapping) เพื่อให้ใช้งาน <b> หรือ Style Bold ได้
-        registerFontFamily('THSarabunNew', normal='THSarabunNew', bold='THSarabunNew-Bold')
+        font_path = os.path.join(base_path, "THSarabunNew.ttf")
+        font_bold_path = os.path.join(base_path, "THSarabunNew Bold.ttf")
+        
+        # 2. ถ้าหาไม่เจอ ลองหาใน resources/
+        if not os.path.exists(font_path):
+            font_path = os.path.join(base_path, "resources", "THSarabunNew.ttf")
+        if not os.path.exists(font_bold_path):
+            font_bold_path = os.path.join(base_path, "resources", "THSarabunNew Bold.ttf")
+        
+        # 3. ลงทะเบียนฟอนต์
+        pdfmetrics.registerFont(TTFont('THSarabunNew', font_path))
+        pdfmetrics.registerFont(TTFont('THSarabunNew-Bold', font_bold_path))
+        
+        # 4. สร้างความสัมพันธ์ (Mapping)
+        registerFontFamily('THSarabunNew', 
+                          normal='THSarabunNew', 
+                          bold='THSarabunNew-Bold')
+        
+        print(f"✅ Font loaded: {font_path}")  # Debug
+        
     except Exception as e:
-        print(f"Font Error: {e}")
+        print(f"❌ Font Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def generate_transport_fee_pdf(so_header_data, transport_data_list):
