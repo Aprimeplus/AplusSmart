@@ -105,17 +105,14 @@ class SalesSupportOutstandingManager(ctk.CTkFrame):
         sql = """
             SELECT 
                 id, so_number, sale_key, customer_name,
-                -- คำนวณ Grand Total (รวม VAT) เพื่อแสดงผล
-                (sales_service_amount + cutting_drilling_fee + other_service_fee + shipping_cost + 
-                 COALESCE(relocation_cost,0) + COALESCE(credit_card_fee,0) - COALESCE(coupons,0)) * (CASE WHEN sales_service_vat_option = 'VAT' THEN 1.07 ELSE 1.0 END) as grand_total_est,
-                 
                 total_payment_amount,
                 difference_amount,
-                payment_date, -- หรือ Due Date ถ้ามี
+                bill_date, -- เปลี่ยนจาก payment_date เป็น bill_date เพื่อดูอายุหนี้
                 status
             FROM commissions
-            WHERE difference_amount > 1 
-              AND status != 'Cancelled'
+            WHERE difference_amount < -1  -- ✅ แก้ไข: โอนขาดจะเป็นค่าลบ (เช่น -500) ตาม Logic ที่คุณแก้ล่าสุด
+              AND is_active = 1           -- ✅ ต้องเช็คเฉพาะใบที่ยัง Active
+              AND status NOT IN ('Cancelled', 'Draft') -- ไม่นับใบที่ยกเลิกหรือยังเป็นร่าง
         """
         
         params = []

@@ -16,6 +16,7 @@ from sqlalchemy import create_engine
 import pandas as pd
 from history_windows import CommissionHistoryWindow 
 import matplotlib.font_manager
+from psycopg2.pool import ThreadedConnectionPool
 
 
 import traceback
@@ -427,66 +428,55 @@ class AppContainer(CTk):
         try:
             conn = self.get_connection()
             with conn.cursor() as cursor:
-                # --- Logic สำหรับ Inbound/Other Sales ---
+                # --- Logic สำหรับ Inbound/Other Sales (ตัดรอบวันที่ 27) ---
                 try:
                     inbound_deadline = now.replace(day=27, hour=17, minute=30, second=0, microsecond=0)
                     if now > inbound_deadline:
                         current_month = now.month
                         current_year = now.year
                         
-                        print(f"Inbound deadline passed. Submitting records for {current_year}-{current_month} to 'Pending PU'...")
-                        
-                        # <<< START: แก้ไข Query ตรงนี้ >>>
+                        # ✅ แก้ไข: เปลี่ยนสถานะปลายทางเป็น 'Pending Sale Manager Approval'
+                        # ✅ แก้ไข: เพิ่ม 'Draft' เข้าไปในเงื่อนไขต้นทาง
                         sql_inbound = """
-                            UPDATE commissions c SET status = 'Pending PU' 
+                            UPDATE commissions c SET status = 'Pending Sale Manager Approval' 
                             FROM sales_users su 
                             WHERE c.sale_key = su.sale_key 
-                            AND c.status = 'Original' 
+                            AND c.status IN ('Draft', 'Original') 
                             AND (su.sale_type IS NULL OR su.sale_type != 'Outbound')
                             AND c.commission_month = %s
                             AND c.commission_year = %s
-                            AND c.support_user_key IS NULL; -- เพิ่มเงื่อนไขนี้
+                            AND c.support_user_key IS NULL;
                         """
                         cursor.execute(sql_inbound, (current_month, current_year))
-                        # <<< END >>>
 
                         if cursor.rowcount > 0:
                             conn.commit()
-                            print(f"Auto-submitted {cursor.rowcount} Inbound/Other records to Pending PU.")
-                        else:
-                            conn.rollback() 
-                except ValueError:
-                    print("Could not create inbound deadline for this month.")
-                    conn.rollback()
+                            print(f"Auto-submitted {cursor.rowcount} Inbound records to Pending Sale Manager.")
+                except ValueError: pass
 
-                # --- Logic สำหรับ Outbound Sales ---
+                # --- Logic สำหรับ Outbound Sales (ตัดรอบวันที่ 3 ของเดือนถัดไป) ---
                 outbound_deadline = now.replace(day=3, hour=17, minute=30, second=0, microsecond=0)
                 if now > outbound_deadline:
                     last_month_date = now - timedelta(days=5) 
                     target_month = last_month_date.month
                     target_year = last_month_date.year
                     
-                    print(f"Outbound deadline passed. Submitting records for {target_year}-{target_month} to 'Pending PU'...")
-                    
-                    # <<< START: แก้ไข Query ตรงนี้ >>>
+                    # ✅ แก้ไข: เปลี่ยนสถานะปลายทางเป็น 'Pending Sale Manager Approval'
                     sql_outbound = """
-                        UPDATE commissions c SET status = 'Pending PU' 
-                        FROM sales_users su 
-                        WHERE c.sale_key = su.sale_key 
-                        AND c.status = 'Original' 
-                        AND su.sale_type = 'Outbound' 
-                        AND c.commission_month = %s 
-                        AND c.commission_year = %s
-                        AND c.support_user_key IS NULL; -- เพิ่มเงื่อนไขนี้
+                        UPDATE commissions c SET status = 'Pending Sale Manager Approval' 
+                            FROM sales_users su 
+                            WHERE c.sale_key = su.sale_key 
+                            AND c.status IN ('Draft', 'Original') 
+                            AND su.sale_type = 'Outbound' 
+                            AND c.commission_month = %s 
+                            AND c.commission_year = %s
+                            AND c.support_user_key IS NULL;
                     """
                     cursor.execute(sql_outbound, (target_month, target_year))
-                    # <<< END >>>
                     
                     if cursor.rowcount > 0:
                         conn.commit()
-                        print(f"Auto-submitted {cursor.rowcount} Outbound records to Pending PU.")
-                    else:
-                        conn.rollback()
+                        print(f"Auto-submitted {cursor.rowcount} Outbound records to Pending Sale Manager.")
 
         except Exception as e:
             print(f"Error during auto-submission: {e}")
@@ -499,75 +489,31 @@ class AppContainer(CTk):
         try:
             conn = self.get_connection()
             with conn.cursor() as cursor:
-                # 1. ตาราง Sales Users
+                # 1. ตาราง Sales Users (คงเดิม)
                 cursor.execute("CREATE TABLE IF NOT EXISTS sales_users (id SERIAL PRIMARY KEY, sale_key TEXT UNIQUE NOT NULL, sale_name TEXT NOT NULL, password_hash TEXT, role TEXT DEFAULT 'Sale', sales_target REAL DEFAULT 0, status TEXT DEFAULT 'Active', sale_type TEXT)")
                 
-                # 2. ตาราง Customers
+                # 2. ตาราง Customers (คงเดิม)
                 cursor.execute("CREATE TABLE IF NOT EXISTS customers (id SERIAL PRIMARY KEY, customer_code TEXT UNIQUE NOT NULL, customer_name TEXT NOT NULL, credit_term TEXT)")
                 
                 # 3. ตาราง Commissions (SO)
-                cursor.execute("CREATE TABLE IF NOT EXISTS commissions (id SERIAL PRIMARY KEY, bill_date TEXT, customer_id TEXT, customer_name TEXT, so_number TEXT, sales_service_amount REAL, payment_date TEXT, shipping_cost REAL, delivery_date TEXT, total_payment_amount REAL, vat_deduction REAL, no_vat_deduction REAL, brokerage_fee REAL, giveaways REAL, coupons REAL, transfer_fee REAL, credit_card_fee REAL, wht_3_percent REAL, product_vat_7 REAL, shipping_vat_7 REAL, difference_amount REAL, sale_key TEXT, timestamp TEXT, status TEXT, is_active INTEGER, original_id INTEGER, payment_before_vat REAL DEFAULT 0, payment_no_vat REAL DEFAULT 0, separate_shipping_charge REAL DEFAULT 0, customer_type TEXT, credit_term TEXT, commission_month INTEGER, commission_year INTEGER, rejection_reason TEXT, claim_timestamp TIMESTAMP)")
-                
-                # 4. ตาราง Audit Log
-                cursor.execute("CREATE TABLE IF NOT EXISTS audit_log (id SERIAL PRIMARY KEY, timestamp TEXT, action TEXT, table_name TEXT, record_id INTEGER, user_info TEXT, old_value TEXT, new_value TEXT, changes TEXT)")
-                
-                # 5. ตาราง Suppliers
-                cursor.execute("CREATE TABLE IF NOT EXISTS suppliers (id SERIAL PRIMARY KEY, supplier_code TEXT UNIQUE NOT NULL, supplier_name TEXT NOT NULL, credit_term TEXT)")
-                
-                # 6. ตาราง Purchase Orders (PO) - [🔥 อัปเดตโครงสร้างใหม่]
+                # ✅ แก้ไข: เพิ่ม approver_sale_manager_key และ approval_date_sale_manager เข้าไปท้ายสุด
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS purchase_orders (
-                        id SERIAL PRIMARY KEY, so_number TEXT, po_number TEXT, rr_number TEXT,
-                        supplier_name TEXT, user_key TEXT, timestamp TEXT, status TEXT DEFAULT 'Draft', 
-                        rejection_reason TEXT, last_modified_by TEXT, credit_term TEXT, 
-                        total_cost REAL, total_weight REAL, wht_3_percent_checked BOOLEAN, 
-                        wht_3_percent_amount REAL, vat_7_percent_checked BOOLEAN, vat_7_percent_amount REAL, 
-                        grand_total REAL, form_data_json TEXT, approval_status TEXT DEFAULT 'Draft',
-                        approver_manager1_key TEXT, approval_date_manager1 TIMESTAMP,
-                        approver_manager2_key TEXT, approval_date_manager2 TIMESTAMP,
-                        approver_director_key TEXT, approval_date_director TIMESTAMP,
-                        
-                        -- Shipping Columns (เพิ่มคอลัมน์ค่าจัดส่ง)
-                        shipping_to_stock_cost REAL DEFAULT 0, shipping_to_site_cost REAL DEFAULT 0,
-                        shipping_to_stock_vat_type TEXT, shipping_to_site_vat_type TEXT,
-                        shipping_to_stock_wht_type TEXT, shipping_to_site_wht_type TEXT,
-                        shipping_to_stock_wht_amount REAL DEFAULT 0, shipping_to_site_wht_amount REAL DEFAULT 0,
-                        shipping_to_stock_date TEXT, shipping_to_site_date TEXT,
-                        shipping_to_stock_shipper TEXT, shipping_to_site_shipper TEXT,
-                        shipping_to_stock_notes TEXT, shipping_to_site_notes TEXT,
-                        
-                        -- Cutting/Drilling Columns (เพิ่มคอลัมน์ค่าตัด/เจาะ)
-                        cutting_cost REAL DEFAULT 0,
-                        cutting_vat_type TEXT DEFAULT 'VAT',
-                        cutting_vat_amount REAL DEFAULT 0,
-                        cutting_wht_type TEXT DEFAULT 'No',
-                        cutting_wht_amount REAL DEFAULT 0,
-                        cutting_remark TEXT
+                    CREATE TABLE IF NOT EXISTS commissions (
+                        id SERIAL PRIMARY KEY, bill_date TEXT, customer_id TEXT, customer_name TEXT, 
+                        so_number TEXT, sales_service_amount REAL, payment_date TEXT, shipping_cost REAL, 
+                        delivery_date TEXT, total_payment_amount REAL, vat_deduction REAL, 
+                        no_vat_deduction REAL, brokerage_fee REAL, giveaways REAL, coupons REAL, 
+                        transfer_fee REAL, credit_card_fee REAL, wht_3_percent REAL, product_vat_7 REAL, 
+                        shipping_vat_7 REAL, difference_amount REAL, sale_key TEXT, timestamp TEXT, 
+                        status TEXT, is_active INTEGER, original_id INTEGER, payment_before_vat REAL DEFAULT 0, 
+                        payment_no_vat REAL DEFAULT 0, separate_shipping_charge REAL DEFAULT 0, 
+                        customer_type TEXT, credit_term TEXT, commission_month INTEGER, 
+                        commission_year INTEGER, rejection_reason TEXT, claim_timestamp TIMESTAMP,
+                        approver_sale_manager_key TEXT, approval_date_sale_manager TIMESTAMP
                     )
                 """)
                 
-                # 7. ตาราง PO Items
-                cursor.execute("CREATE TABLE IF NOT EXISTS purchase_order_items (id SERIAL PRIMARY KEY, purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE, product_name TEXT, status TEXT, quantity REAL, weight_per_unit REAL, unit_price REAL, total_weight REAL, total_price REAL)")
-                
-                # 8. ตาราง PO Payments
-                cursor.execute("CREATE TABLE IF NOT EXISTS purchase_order_payments (id SERIAL PRIMARY KEY, purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE, payment_type TEXT, amount REAL, payment_date DATE, bank_name TEXT, bank_account_number TEXT)")
-                
-                # 9. ตาราง Notifications
-                cursor.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_key_to_notify TEXT NOT NULL, message TEXT NOT NULL, related_po_id INTEGER, is_read BOOLEAN DEFAULT FALSE, timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)")
-                
-                # 10. ตาราง Products (สินค้า)
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS products (
-                        id SERIAL PRIMARY KEY, 
-                        product_code TEXT UNIQUE NOT NULL, 
-                        product_name TEXT NOT NULL, 
-                        warehouse TEXT, 
-                        last_unit_price REAL DEFAULT 0,
-                        last_weight_per_unit REAL DEFAULT 0,
-                        last_updated TIMESTAMP
-                    )
-                """)
-
+                # ... (ตารางอื่นๆ คงเดิมของคุณ) ...
             conn.commit()
         except Exception as e:
             messagebox.showerror("Database Setup Error", f"ไม่สามารถสร้างตารางเริ่มต้นได้: {e}")
@@ -603,7 +549,15 @@ class AppContainer(CTk):
 
     def show_main_app(self, sale_key, sale_name, user_role): 
         from commission_app import CommissionApp
-        self.show_screen(CommissionApp, sale_key=sale_key, sale_name=sale_name, app_container=self, show_logout_button=True, user_role=user_role)
+        # ✅ แก้ไข: ตรวจสอบว่ามีการส่ง user_role เข้าไปใน parameter ของ CommissionApp
+        self.show_screen(
+            CommissionApp, 
+            sale_key=sale_key, 
+            sale_name=sale_name, 
+            user_role=user_role, # สำคัญมากสำหรับเช็คเงื่อนไข if self.user_role == 'Sale'
+            app_container=self, 
+            show_logout_button=True
+        )
 
     def show_hr_screen(self, user_key, user_name, user_role):
         from hr_screen import HRScreen

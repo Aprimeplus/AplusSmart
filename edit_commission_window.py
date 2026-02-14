@@ -182,8 +182,12 @@ class EditCommissionWindow(CTkToplevel):
                     else: new_data[col_name] = entry_widget.get().strip() if entry_widget.get() else None
 
                 # --- Logic สถานะ ---
-                if self.user_role == 'Sales Manager':
-                    new_data["status"] = 'Awaiting SM Approval'
+                if self.user_role == 'Sale':
+                    # ถ้าเซลส์เป็นคนแก้ ให้ส่งกลับไปรอ SM อนุมัติใหม่เสมอ
+                    new_data["status"] = 'Pending Sale Manager Approval'
+                elif self.user_role == 'Sales Manager':
+                    # ถ้า SM แก้เอง ให้ถือว่าอนุมัติไปในตัว (ส่งไป PU เลย)
+                    new_data["status"] = 'PO In Progress'
                 else: 
                     new_data["status"] = 'Edited'
 

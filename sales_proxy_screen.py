@@ -196,9 +196,8 @@ class SalesProxyScreen(CommissionApp):
                 self.sale_key = self.sale_key_owner
                 self.sale_name = selected_sale_data['sale_name']
                 self._toggle_main_form(state="normal")
-            else:
-                self.sale_key_owner = None
-                self._toggle_main_form(state="disabled")
+                # ✅ เพิ่มบรรทัดนี้: เพื่อโหลดเลขแจ้งเตือนของเซลส์ที่เราไปทำงานแทน
+                self._update_tasks_badge()
     
     def _toggle_main_form(self, state):
         if hasattr(self, 'scrollable_main_container') and self.scrollable_main_container.winfo_exists():

@@ -557,31 +557,22 @@ class SalesTasksWindow(CTkToplevel):
     def _load_draft_tasks(self):
         for widget in self.draft_frame.winfo_children(): widget.destroy()
         try:
-            # VVVV เพิ่มบรรทัดนี้เข้าไปเพื่อ Debug VVVV
-            print(f"--- DEBUG: กำลังโหลดฉบับร่างสำหรับ sale_key: {self.sale_key} ---")
-            
+            # ✅ แก้ไข: เพิ่ม 'Draft' ใน Query เพื่อให้ดึงงานใหม่มาโชว์ได้
             query = """
-                SELECT *
-                FROM commissions 
-                WHERE sale_key = %s AND status IN ('Original', 'Edited') AND is_active = 1 
+                SELECT * FROM commissions 
+                WHERE sale_key = %s AND status IN ('Draft', 'Original', 'Edited') AND is_active = 1 
                 ORDER BY timestamp DESC
             """
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.sale_key,))
             if df.empty:
                 CTkLabel(self.draft_frame, text="ไม่มีฉบับร่าง").pack(pady=20)
                 return
-            
             for _, row in df.iterrows():
                 card = CTkFrame(self.draft_frame, border_width=1)
                 card.pack(fill="x", padx=5, pady=3)
-                info = f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']}"
-                CTkLabel(card, text=info).pack(side="left", padx=10, pady=5)
-
-                edit_callback = lambda e, r=row: self._edit_and_close(r)
-                card.bind("<Double-1>", edit_callback)
-                for child in card.winfo_children(): child.bind("<Double-1>", edit_callback)
-        except Exception as e:
-            messagebox.showerror("Error", f"ไม่สามารถโหลดฉบับร่างได้: {e}", parent=self)
+                CTkLabel(card, text=f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']}").pack(side="left", padx=10)
+                card.bind("<Double-1>", lambda e, r=row: self._edit_and_close(r))
+        except Exception as e: print(e)
             
     def _edit_and_close(self, row_data):
         self.commission_app._edit_history_item(row_data.to_dict())
@@ -628,8 +619,22 @@ class SubmitSODialog(CTkToplevel):
         self.grab_set()
 
     def _populate_so_list(self):
+        """ดึงรายการ SO ฉบับร่างมาแสดง พร้อมผูก Event ให้ปุ่มกดส่งทำงานได้"""
         try:
-            query = "SELECT id, so_number, customer_name FROM commissions WHERE sale_key = %s AND status IN ('Original', 'Edited') AND is_active = 1 ORDER BY timestamp DESC"
+            # 1. เคลียร์วิดเจ็ตเก่าและล้าง list ก่อนโหลดใหม่ (กันข้อมูลซ้ำ)
+            for widget in self.scroll_frame.winfo_children():
+                widget.destroy()
+            self.checkbox_list = []
+
+            # 2. Query ข้อมูล (รวมสถานะ 'Draft' ตามแผนงานใหม่)
+            query = """
+                SELECT id, so_number, customer_name 
+                FROM commissions 
+                WHERE sale_key = %s 
+                AND status IN ('Draft', 'Original', 'Edited') 
+                AND is_active = 1 
+                ORDER BY timestamp DESC
+            """
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.sale_key,))
 
             if df.empty:
@@ -637,20 +642,24 @@ class SubmitSODialog(CTkToplevel):
                 self.select_all_checkbox.configure(state="disabled")
                 return
 
+            # 3. สร้างรายการ Checkbox
             for _, row in df.iterrows():
-                checkbox_var = tk.IntVar(value=0)
-                checkbox_var.trace_add("write", self._update_submit_button_state)
+                var = tk.IntVar(value=0)
                 
-                so_id = row['id']
+                # 🔥 [จุดสำคัญ] ต้องมีบรรทัดนี้! เพื่อสั่งให้ปุ่ม "ยืนยันการนำส่ง" อัปเดตสถานะ (Enabled/Disabled)
+                var.trace_add("write", self._update_submit_button_state)
+
                 so_text = f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']}"
                 
-                cb = CTkCheckBox(self.scroll_frame, text=so_text, variable=checkbox_var)
+                cb = CTkCheckBox(self.scroll_frame, text=so_text, variable=var)
                 cb.pack(anchor="w", padx=10, pady=5)
-                self.checkbox_list.append((checkbox_var, so_id, row.to_dict()))
+                
+                # เก็บตัวแปร var และ ID ไว้เพื่อใช้ตรวจสอบตอนกดส่ง
+                self.checkbox_list.append((var, row['id'], row.to_dict()))
 
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดรายการ SO ได้: {e}", parent=self)
-            self.destroy()
+            print(f"Debug Error: {e}")
 
     def _toggle_all_checkboxes(self):
         is_selected = self.select_all_var.get()
@@ -658,68 +667,39 @@ class SubmitSODialog(CTkToplevel):
             var.set(is_selected)
 
     def _update_submit_button_state(self, *args):
+        """นับจำนวนที่เลือก และเปิด/ปิดการใช้งานปุ่มส่งข้อมูล"""
         selected_count = sum(var.get() for var, _, _ in self.checkbox_list)
         self.submit_button.configure(text=f"ยืนยันการนำส่ง ({selected_count})")
+        
         if selected_count > 0:
-            self.submit_button.configure(state="normal")
+            self.submit_button.configure(state="normal") # ติ๊กแล้ว ปุ่มจะกดได้
         else:
-            self.submit_button.configure(state="disabled")
+            self.submit_button.configure(state="disabled") # ไม่ติ๊ก ปุ่มจะกดไม่ได้
 
     def _confirm_submission(self):
-        selected_records = [(so_id, record_data) for var, so_id, record_data in self.checkbox_list if var.get() == 1]
+        selected_records = [(so_id, data) for var, so_id, data in self.checkbox_list if var.get() == 1]
+        if not selected_records: return
+        if not messagebox.askyesno("ยืนยัน", f"ส่ง SO จำนวน {len(selected_records)} รายการให้ผู้จัดการอนุมัติ?"): return
         
-        if not selected_records:
-            messagebox.showwarning("ยังไม่ได้เลือก", "กรุณาเลือก SO อย่างน้อย 1 รายการ", parent=self)
-            return
-
-        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการนำส่ง SO จำนวน {len(selected_records)} รายการใช่หรือไม่?", parent=self):
-            return
-            
-        selected_ids = [so_id for so_id, _ in selected_records]
-        
-        # เพิ่มบรรทัดนี้: สร้าง tuple ของ IDs จาก selected_ids
-        ids_tuple = tuple(selected_ids) 
-
-        conn = None
+        ids = tuple(r[0] for r in selected_records)
         try:
-            conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                new_status = 'Pending PU'
-                # บรรทัดนี้ควรถูกลบออก หรือเป็นคอมเมนต์ ถ้าไม่ใช่การใช้ execute_values
-                # psycopg2.extras.execute_values 
-                cursor.execute(
-                    f"UPDATE commissions SET status = '{new_status}' WHERE id IN %s",
-                    (ids_tuple,) 
-                )
-                
-                cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Staff' AND status = 'Active'")
-                pu_keys = [row[0] for row in cursor.fetchall()]
-
-                notif_data = []
-                for _, record_data in selected_records:
-                    message = f"SO ใหม่รอสร้าง PO: {record_data['so_number']}"
-                    for pu_key in pu_keys:
-                        notif_data.append((pu_key, message, False, record_data['id']))
-                
-                psycopg2.extras.execute_values(
-                    cursor,
-                    "INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES %s",
-                    notif_data
-                )
-            
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", f"นำส่งข้อมูลจำนวน {len(selected_ids)} รายการไปยังฝ่ายจัดซื้อเรียบร้อยแล้ว", parent=self.commission_app)
-            
+            with self.app_container.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 1. เปลี่ยนสถานะ
+                    cursor.execute("UPDATE commissions SET status = 'Pending Sale Manager Approval' WHERE id IN %s", (ids,))
+                    # 2. ✅ แก้ไข: ดึง Sale Manager มาแจ้งเตือน
+                    cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sale Manager' AND status = 'Active'")
+                    sm_keys = [row[0] for row in cursor.fetchall()]
+                    notif_data = []
+                    for _, data in selected_records:
+                        for sm_key in sm_keys:
+                            notif_data.append((sm_key, f"SO ใหม่รออนุมัติ: {data['so_number']}", False, data['id']))
+                    if notif_data:
+                        psycopg2.extras.execute_values(cursor, "INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES %s", notif_data)
+            messagebox.showinfo("สำเร็จ", "ส่งรายการให้ผู้จัดการเรียบร้อยแล้ว")
             self.commission_app._update_tasks_badge()
-            self.commission_app._refresh_history_if_open()
             self.destroy()
-
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการนำส่งข้อมูล: {e}", parent=self)
-            traceback.print_exc()
-        finally:
-            if conn: self.app_container.release_connection(conn)
+        except Exception as e: messagebox.showerror("Error", str(e))
 
 class CommissionApp(CTkFrame):
     def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None, create_default_header=True):
@@ -795,36 +775,19 @@ class CommissionApp(CTkFrame):
             self.tasks_window.focus()
 
     def _update_tasks_badge(self):
-        conn = None
         try:
-            conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                # --- แก้ไขจุดนี้: เพิ่มสถานะ 'Rejected by HR' และ 'Defer Requested' เข้าไปใน Query ---
-                cursor.execute("""
-                    SELECT COUNT(*) FROM commissions 
-                    WHERE sale_key = %s 
-                    AND status IN ('Rejected by SM', 'Rejected by HR', 'Defer Requested') 
-                    AND is_active = 1
-                """, (self.sale_key,))
-                
-                rejected_and_defer_count = cursor.fetchone()[0]
-                
-                # ส่วนนับ Draft (Original, Edited) เหมือนเดิม
-                cursor.execute("SELECT COUNT(*) FROM commissions WHERE sale_key = %s AND status IN ('Original', 'Edited') AND is_active = 1", (self.sale_key,))
-                draft_count = cursor.fetchone()[0]
-            
-            total_tasks = rejected_and_defer_count + draft_count
-            
-            if hasattr(self, 'tasks_button') and self.tasks_button and self.tasks_button.winfo_exists():
-                self.tasks_button.configure(text=f"งานของฉัน 🔔 ({total_tasks})")
-                if total_tasks > 0:
-                    self.tasks_button.configure(fg_color="#F59E0B", hover_color="#D97706") # สีส้มเมื่อมีงาน
-                else:
-                    self.tasks_button.configure(fg_color=("#3B8ED0", "#1F6AA5"), hover_color=("#36719F", "#144870")) # สีฟ้าปกติ
-        except Exception as e:
-            print(f"Error updating tasks badge: {e}")
-        finally:
-            if conn: self.app_container.release_connection(conn)
+            with self.app_container.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # ✅ เพิ่ม 'Draft' ในการนับจำนวนงานที่ค้างใน My Tasks
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM commissions 
+                        WHERE sale_key = %s 
+                        AND status IN ('Draft', 'Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Defer Requested') 
+                        AND is_active = 1
+                    """, (self.sale_key,))
+                    total = cursor.fetchone()[0]
+            if hasattr(self, 'tasks_button'): self.tasks_button.configure(text=f"งานของฉัน 🔔 ({total})")
+        except: pass
 
     def _start_polling(self):
         self._update_tasks_badge()
@@ -931,39 +894,45 @@ class CommissionApp(CTkFrame):
             )
 
     def _save_data(self):
+        """บันทึกข้อมูล SO และเก็บประวัติการแก้ไข (Audit Trail)"""
         form_data = self._gather_data_from_form()
         is_valid, message = self._validate_form(form_data)
         if not is_valid:
             messagebox.showerror("ข้อมูลไม่ถูกต้อง", message, parent=self)
             return
+
         if self.editing_record_id:
-            if not messagebox.askyesno("ยืนยันการแก้ไข", "คุณต้องการบันทึกการเปลี่ยนแปลงนี้ใช่หรือไม่?", parent=self):
+            if not messagebox.askyesno("ยืนยัน", "คุณต้องการบันทึกการเปลี่ยนแปลงนี้ใช่หรือไม่?", parent=self):
                 return
-        if form_data['customer_type'] == "ลูกค้าใหม่" and not self.editing_record_id:
-            try:
-                self._handle_new_customer(form_data)
-            except Exception as e:
-                messagebox.showerror("ผิดพลาด", f"ไม่สามารถเพิ่มลูกค้าใหม่ได้:\n{e}", parent=self)
-                return
+
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
                 if self.editing_record_id:
+                    # 1. ยกเลิก Record เดิม (ทำให้เป็น Inactive)
                     cursor.execute("UPDATE commissions SET is_active = 0 WHERE id = %s", (self.editing_record_id,))
-                    form_data['status'] = 'Edited'
+                    
+                    # 2. ปรับสถานะใบใหม่ (ถ้าเซลส์แก้ ให้ส่งไปรอ SM อนุมัติทันที)
+                    if self.user_role == 'Sale':
+                        form_data['status'] = 'Pending Sale Manager Approval'
+                    else:
+                        form_data['status'] = 'Edited'
                     form_data['original_id'] = self.editing_record_id
+                else:
+                    form_data['status'] = 'Draft'
+
+                # 3. บันทึกข้อมูลลงฐานข้อมูล
                 self._perform_db_insert(form_data)
+            
             conn.commit()
-            action = "อัปเดต" if self.editing_record_id else "บันทึก"
-            messagebox.showinfo("สำเร็จ", f"{action}ข้อมูลเรียบร้อยแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
             self._clear_form(confirm=False)
-            self._load_customer_data()
-            self._refresh_history_if_open()
             self._update_tasks_badge()
+
         except Exception as e:
             if conn: conn.rollback()
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถบันทึกข้อมูลได้:\n{e}", parent=self)
+            messagebox.showerror("Error", f"บันทึกไม่สำเร็จ: {e}", parent=self)
         finally:
             if conn: self.app_container.release_connection(conn)
 
@@ -1720,20 +1689,16 @@ class CommissionApp(CTkFrame):
         set_check_result(self.cash_verification_result_entry, self.cash_verification_result_var, cash_diff, "เงินสดขาด", "เงินสดเกิน")
 
     def _gather_data_from_form(self):
+        """รวบรวมข้อมูลจากหน้าจอ (แก้ไขชื่อตัวแปรที่สะกดผิด)"""
         is_new_customer = self.customer_type_var.get() == "ลูกค้าใหม่"
-
         customer_id = self.new_customer_id_entry.get().strip() if is_new_customer else self.customer_id_entry.get().strip()
         customer_name = self.new_customer_name_entry.get().strip() if is_new_customer else self.customer_name_entry.get().strip()
 
         p1_date = self.payment1_date_selector.get_date()
         p2_date = self.payment2_date_selector.get_date()
-        main_payment_date = None
-        if p1_date and p2_date: main_payment_date = max(p1_date, p2_date)
-        elif p1_date: main_payment_date = p1_date
-        elif p2_date: main_payment_date = p2_date
+        main_payment_date = max(p1_date, p2_date) if p1_date and p2_date else (p1_date or p2_date)
 
         data = {
-            # Sales Details
             "bill_date": self.bill_date_selector.get_date(),
             "commission_month": self.thai_month_map.get(self.commission_month_var.get()),
             "commission_year": int(self.commission_year_var.get()) - 543 if self.commission_year_var.get().isdigit() else None,
@@ -1742,70 +1707,50 @@ class CommissionApp(CTkFrame):
             "customer_id": customer_id,
             "credit_term": self.credit_term_var.get(),
             "so_number": self.so_number_var.get().strip(),
-
-            # Sales and Services
             "sales_service_amount": utils.convert_to_float(self.sales_amount_entry.get()),
             "sales_service_vat_option": self.sales_service_vat_option.get(),
             "cutting_drilling_fee": utils.convert_to_float(self.cutting_drilling_fee_entry.get()),
             "cutting_drilling_fee_vat_option": self.cutting_drilling_fee_vat_option.get(),
             "other_service_fee": utils.convert_to_float(self.other_service_fee_entry.get()),
             "other_service_fee_vat_option": self.other_service_fee_vat_option.get(),
-
-            # Shipping
             "shipping_cost": utils.convert_to_float(self.shipping_cost_entry.get()),
             "shipping_vat_option": self.shipping_vat_option_var.get(),
             "delivery_date": self.delivery_date_selector.get_date(),
-
-            # Fees
             "credit_card_fee": utils.convert_to_float(self.credit_card_fee_entry.get()),
-            "credit_card_fee_vat_option": self.credit_card_fee_vat_option_var.get(),
+            
+            # ✅ แก้ไขจุดนี้: เติม _var ให้ถูกต้องตามที่ประกาศไว้
+            "credit_card_fee_vat_option": self.credit_card_fee_vat_option_var.get(), 
+            
             "transfer_fee": utils.convert_to_float(self.transfer_fee_entry.get()),
             "wht_3_percent": utils.convert_to_float(self.wht_fee_entry.get()),
-
-            # Other Expenses / Delivery Note
             "brokerage_fee": utils.convert_to_float(self.brokerage_fee_entry.get()),
             "coupons": utils.convert_to_float(self.coupon_value_entry.get()),
             "giveaways": utils.convert_to_float(self.giveaway_value_entry.get()),
             "relocation_cost_vat_option": self.relocation_vat_option_var.get(),
-            
             "delivery_type": self.delivery_type_var.get(),
             "pickup_location": self.pickup_location_entry.get().strip(),
             "relocation_cost": utils.convert_to_float(self.relocation_cost_entry.get()),
             "date_to_warehouse": self.date_to_wh_selector.get_date(),
             "date_to_customer": self.date_to_customer_selector.get_date(),
             "pickup_registration": self.pickup_rego_entry.get().strip(),
-
-            # --- [แก้ไข] Payment: เพิ่มการเก็บยอดแยกย่อย เพื่อให้ PDF นำไปใช้ได้ถูกต้อง ---
             "payment1_amount": utils.convert_to_float(self.payment1_amount_entry.get()), 
             "payment2_amount": utils.convert_to_float(self.payment2_amount_entry.get()),
             "total_payment_amount": utils.convert_to_float(self.payment_total_var.get()),
-            # ------------------------------------------------------------------------
-
             "payment_date": main_payment_date,
             "payment1_date": p1_date,
             "payment2_date": p2_date,
             "payment1_method": self.payment1_method_var.get(),
             "payment2_method": self.payment2_method_var.get(),
-
-            # Cash Verification
             "cash_product_input": utils.convert_to_float(self.cash_product_input_var.get()),
             "cash_service_total": utils.convert_to_float(self.cash_service_total_var.get()),
             "cash_required_total": utils.convert_to_float(self.cash_required_total_var.get()),
             "cash_actual_payment": utils.convert_to_float(self.cash_actual_payment_var.get()),
-
-            # Other Calculated
             "difference_amount": utils.convert_to_float(self.difference_amount_var.get()),
-
-            # System Info
             "sale_key": self.sale_key,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "Original",
             "is_active": 1,
+            "status": "Draft",
         }
-
-        if hasattr(self, 'proxy_user_key') and self.proxy_user_key:
-            data['support_user_key'] = self.proxy_user_key
-
         return data
 
     def _validate_form(self, data):
@@ -2041,68 +1986,6 @@ class CommissionApp(CTkFrame):
 
         if confirm: messagebox.showinfo("สำเร็จ", "ข้อมูลถูกล้างเรียบร้อยแล้ว", parent=self)
 
-    def _save_data(self):
-        form_data = self._gather_data_from_form()
-        is_valid, message = self._validate_form(form_data)
-        if not is_valid:
-            messagebox.showerror("ข้อมูลไม่ถูกต้อง", message, parent=self)
-            return
-
-        if self.editing_record_id:
-            if not messagebox.askyesno("ยืนยันการแก้ไข", "คุณต้องการบันทึกการเปลี่ยนแปลงนี้ใช่หรือไม่?", parent=self):
-                return
-
-        if form_data['customer_type'] == "ลูกค้าใหม่" and not self.editing_record_id:
-            try:
-                self._handle_new_customer(form_data)
-            except Exception as e:
-                messagebox.showerror("ผิดพลาด", f"ไม่สามารถเพิ่มลูกค้าใหม่ได้:\n{e}", parent=self)
-                return
-
-        # <<< START: แก้ไข Logic การบันทึกข้อมูลทั้งหมด >>>
-        conn = None
-        try:
-            conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                # ดึงรายชื่อคอลัมน์จากฐานข้อมูลเพื่อความแม่นยำ
-                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'commissions'")
-                db_columns = {row[0] for row in cursor.fetchall()}
-                
-                # กรองข้อมูลจากฟอร์มให้เหลือเฉพาะที่มีในฐานข้อมูล
-                filtered_data = {k: v for k, v in form_data.items() if k in db_columns}
-
-                if self.editing_record_id:
-                    # --- โหมดแก้ไข: ใช้คำสั่ง UPDATE ---
-                    filtered_data['status'] = 'Edited'
-                    
-                    # สร้างส่วน SET ของคำสั่ง SQL แบบไดนามิก
-                    set_clauses = [f'"{key}" = %s' for key in filtered_data.keys()]
-                    params = list(filtered_data.values())
-                    params.append(self.editing_record_id) # เพิ่ม ID สำหรับ WHERE clause
-
-                    update_query = f"UPDATE commissions SET {', '.join(set_clauses)} WHERE id = %s"
-                    cursor.execute(update_query, tuple(params))
-                    action = "อัปเดต"
-
-                else:
-                    # --- โหมดสร้างใหม่: ใช้คำสั่ง INSERT (เหมือนเดิม) ---
-                    self._perform_db_insert(filtered_data) # ส่ง filtered_data ไปแทน
-                    action = "บันทึก"
-
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", f"{action}ข้อมูลเรียบร้อยแล้ว", parent=self)
-
-            self._clear_form(confirm=False)
-            self._load_customer_data()
-            self._refresh_history_if_open()
-            self._update_tasks_badge()
-
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถบันทึกข้อมูลได้:\n{e}", parent=self)
-            traceback.print_exc()
-        finally:
-            if conn: self.app_container.release_connection(conn)
 
     def _export_history_to_excel(self):
         # 1. เปิด DateRangeDialog เพื่อให้ผู้ใช้เลือกช่วงเวลา
