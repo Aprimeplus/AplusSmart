@@ -1,8 +1,8 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
                                CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkEntry,
-                               CTkOptionMenu, CTkRadioButton, CTkTabview)
+                               CTkOptionMenu, CTkRadioButton, CTkTabview, CTkCheckBox)
 from tkinter import messagebox
 import pandas as pd
 from datetime import datetime
@@ -10,10 +10,14 @@ import psycopg2.errors
 import psycopg2.extras
 import traceback
 import utils
-# แก้ไขบรรทัด Import ให้เป็นแบบนี้
-from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
-                               CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkEntry,
-                               CTkOptionMenu, CTkRadioButton, CTkTabview, CTkCheckBox) # ✅ เพิ่ม CTkCheckBox ตรงนี้
+import os
+
+# เพิ่ม matplotlib สำหรับกราฟ
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib
+matplotlib.use('TkAgg')
+
 # --- นำเข้า Class ที่จำเป็น ---
 from history_windows import SOPopupWindow
 from daily_report_widget import DailyReportWidget
@@ -35,6 +39,9 @@ class SalesManagerScreen(CTkFrame):
         self.sale_theme = self.app_container.THEME.get("sale", {"bg": "white", "primary": "#3B82F6"})
         
         self.pg_engine = self.app_container.pg_engine
+        
+        # ตัวแปรสำหรับ Filter กราฟ
+        self._init_chart_filters()
         
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1) 
@@ -61,6 +68,14 @@ class SalesManagerScreen(CTkFrame):
         # ตั้งค่าหน้าแรกที่เปิดขึ้นมา
         self.tab_view.set("🗳️ รายการรออนุมัติ (SM Approval)")
 
+    def _init_chart_filters(self):
+        """สร้างตัวแปรสำหรับ Filter กราฟ"""
+        now = datetime.now()
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
+                           "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.chart_month_var = tk.StringVar(value=self.thai_months[now.month - 1])
+        self.chart_year_var = tk.StringVar(value=str(now.year + 543))
+
     def _create_header(self):
         header_frame = CTkFrame(self, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10,0))
@@ -80,6 +95,7 @@ class SalesManagerScreen(CTkFrame):
     def _refresh_all_tabs(self):
         """รีโหลดข้อมูลทุกแท็บ"""
         self._load_approval_data() # รีโหลดหน้าอนุมัติ
+        self._update_rejection_chart() # รีโหลดกราฟ
         
         if hasattr(self, 'daily_report_widget'):
             self.daily_report_widget.load_report_data()
@@ -89,38 +105,291 @@ class SalesManagerScreen(CTkFrame):
         self._load_master_data() # รีโหลด Master Tab
 
     # =========================================================================
-    # ✅ NEW TAB: SM APPROVAL (รายการที่รอการอนุมัติ)
+    # ✅ NEW TAB: SM APPROVAL พร้อม Dashboard กราฟ
     # =========================================================================
     def _create_approval_tab(self, parent):
+        """สร้างแท็บรออนุมัติ แบ่งเป็น Dashboard 40% + List 60%"""
         parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_rowconfigure(0, weight=4)  # Dashboard 40%
+        parent.grid_rowconfigure(1, weight=6)  # List 60%
 
-        # --- ส่วนตัวกรองและค้นหา ---
-        header_frame = CTkFrame(parent, fg_color="transparent")
-        header_frame.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+        # ========== ส่วนบน 40%: Dashboard กราฟ ==========
+        dashboard_container = CTkFrame(parent, fg_color="#F3F4F6", corner_radius=10)
+        dashboard_container.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="nsew")
+        dashboard_container.grid_columnconfigure(0, weight=1)
+        dashboard_container.grid_rowconfigure(1, weight=1)
+
+        # Header + Filters
+        chart_header = CTkFrame(dashboard_container, fg_color="transparent")
+        chart_header.grid(row=0, column=0, sticky="ew", padx=15, pady=10)
         
-        CTkLabel(header_frame, text="SO ที่รอการตรวจสอบ:", font=self.label_font).pack(side="left", padx=5)
+        CTkLabel(chart_header, text="📊 สถิติการตีกลับงานรายบุคคล", 
+                font=CTkFont(size=16, weight="bold")).pack(side="left")
 
-        # ✅ เพิ่มช่อง Search (ดึงสไตล์มาจากหน้า Master)
+        filter_frame = CTkFrame(chart_header, fg_color="transparent")
+        filter_frame.pack(side="right")
+        
+        # ✅ ปุ่ม Export Excel
+        CTkButton(filter_frame, 
+                 text="📥 Export Excel",
+                 width=120,
+                 height=32,
+                 fg_color="#16A34A",
+                 hover_color="#15803D",
+                 font=CTkFont(size=12, weight="bold"),
+                 command=self._export_rejection_to_excel).pack(side="left", padx=(0, 10))
+        
+        CTkLabel(filter_frame, text="รอบเดือน:", font=CTkFont(size=12)).pack(side="left", padx=5)
+        CTkOptionMenu(filter_frame, variable=self.chart_month_var, values=self.thai_months, 
+                      width=110, height=32,
+                      command=lambda e: self._update_rejection_chart()).pack(side="left", padx=3)
+        
+        years = [str(y + 543) for y in range(datetime.now().year - 1, datetime.now().year + 2)]
+        CTkOptionMenu(filter_frame, variable=self.chart_year_var, values=years, 
+                      width=90, height=32,
+                      command=lambda e: self._update_rejection_chart()).pack(side="left", padx=3)
+
+        # พื้นที่กราฟ
+        self.chart_area = CTkFrame(dashboard_container, fg_color="white", corner_radius=8)
+        self.chart_area.grid(row=1, column=0, padx=15, pady=(5, 15), sticky="nsew")
+
+        # ========== ส่วนล่าง 60%: รายการ SO ==========
+        list_container = CTkFrame(parent, fg_color="transparent")
+        list_container.grid(row=1, column=0, padx=10, pady=(5, 10), sticky="nsew")
+        list_container.grid_columnconfigure(0, weight=1)
+        list_container.grid_rowconfigure(1, weight=1)
+
+        # Search Bar
+        search_frame = CTkFrame(list_container, fg_color="#F3F4F6", corner_radius=8, height=60)
+        search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        search_frame.grid_propagate(False)
+        
+        CTkLabel(search_frame, text="🗳️ รายการรออนุมัติ", 
+                font=CTkFont(size=14, weight="bold")).pack(side="left", padx=20)
+
+        search_right = CTkFrame(search_frame, fg_color="transparent")
+        search_right.pack(side="right", padx=20)
+        
         self.approval_search_var = tk.StringVar()
         self.approval_search_entry = CTkEntry(
-            header_frame, 
-            placeholder_text="ค้นหาเลขที่ SO หรือชื่อลูกค้า...", 
+            search_right, 
+            placeholder_text="🔍 ค้นหา SO หรือชื่อลูกค้า...", 
             width=300,
+            height=36,
             textvariable=self.approval_search_var
         )
-        self.approval_search_entry.pack(side="left", padx=20)
+        self.approval_search_entry.pack(side="left", padx=(0, 8))
         self.approval_search_entry.bind("<Return>", lambda e: self._load_approval_data())
 
-        CTkButton(header_frame, text="🔍 ค้นหา", width=80, command=self._load_approval_data).pack(side="left", padx=5)
-        CTkButton(header_frame, text="🔄 รีเฟรช", width=80, fg_color="gray", command=self._load_approval_data).pack(side="left", padx=5)
+        CTkButton(search_right, text="ค้นหา", width=80, height=36,
+                  command=self._load_approval_data).pack(side="left", padx=3)
+        CTkButton(search_right, text="🔄 รีเฟรช", width=80, height=36, fg_color="gray",
+                  command=self._load_approval_data).pack(side="left", padx=3)
         
-        # --- ส่วนแสดงผล ---
-        self.approval_results_frame = CTkScrollableFrame(parent, label_text="รายการรออนุมัติ (Sale -> Manager)")
-        self.approval_results_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        # รายการ SO
+        self.approval_results_frame = CTkScrollableFrame(list_container, 
+                                                         fg_color="white",
+                                                         corner_radius=8)
+        self.approval_results_frame.grid(row=1, column=0, sticky="nsew")
         self.approval_results_frame.grid_columnconfigure(0, weight=1)
 
-        self.after(200, self._load_approval_data)
+        # โหลดข้อมูลครั้งแรก
+        self.after(200, lambda: [self._update_rejection_chart(), self._load_approval_data()])
+
+    def _update_rejection_chart(self):
+        """วาดกราฟแท่งแนวนอนแสดงจำนวนการตีกลับของแต่ละ Sale"""
+        # ล้างกราฟเก่า
+        for widget in self.chart_area.winfo_children():
+            widget.destroy()
+
+        try:
+            # ✅ ตั้งค่าฟอนต์ภาษาไทยสำหรับ Matplotlib
+            try:
+                plt.rcParams['font.family'] = 'TH Sarabun New'
+            except:
+                try:
+                    plt.rcParams['font.family'] = 'Tahoma'
+                except:
+                    plt.rcParams['font.family'] = 'sans-serif'
+            
+            # ดึงข้อมูล
+            month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
+            year_val = int(self.chart_year_var.get()) - 543
+
+            query = """
+                SELECT u.sale_name, COUNT(c.id) as reject_count
+                FROM commissions c
+                JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE c.status = 'Rejected by SM' 
+                  AND c.commission_month = %s 
+                  AND c.commission_year = %s
+                  AND c.is_active = 1
+                GROUP BY u.sale_name
+                ORDER BY reject_count ASC
+            """
+            
+            df = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
+
+            if df.empty:
+                # ไม่มีข้อมูล - ✅ ตัวอักษรใหญ่ขึ้น
+                empty_frame = CTkFrame(self.chart_area, fg_color="transparent")
+                empty_frame.pack(expand=True, pady=30)
+                
+                CTkLabel(empty_frame, text="✅", 
+                        font=CTkFont(size=48)).pack()
+                CTkLabel(empty_frame, 
+                        text="ไม่มีข้อมูลการตีกลับในรอบเดือนนี้",
+                        font=CTkFont(size=15, weight="bold"),
+                        text_color="#16A34A").pack(pady=(5, 0))
+                return
+
+            # วาดกราฟ - ✅ ปรับขนาดให้ใหญ่ขึ้น
+            num_sales = len(df)
+            fig_height = max(2.8, min(5.5, num_sales * 0.6))
+            
+            fig, ax = plt.subplots(figsize=(9.5, fig_height), dpi=100)
+            
+            # วาดแท่ง - ✅ แท่งหนาขึ้น
+            bars = ax.barh(df['sale_name'], df['reject_count'], 
+                          color='#FB923C', height=0.65)
+            
+            # ตั้งค่ากราฟ - ✅ เพิ่มขนาดตัวอักษร
+            ax.set_title(f"จำนวนงานที่ถูกตีกลับ (รอบ {self.chart_month_var.get()} {self.chart_year_var.get()})",
+                        fontweight='bold', fontsize=16, pad=15)
+            ax.set_xlabel("จำนวนครั้ง", fontsize=14, fontweight='bold')
+            ax.set_ylabel("เซลล์", fontsize=14, fontweight='bold')
+            
+            # ✅ ปรับขนาดตัวเลขบนแกน
+            ax.tick_params(axis='both', which='major', labelsize=13)
+            
+            # ✅ บังคับให้แกน X เป็นจำนวนเต็ม
+            ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+            
+            # Grid - ✅ เส้น Grid หนาขึ้น
+            ax.grid(axis='x', alpha=0.3, linestyle='--', linewidth=1.2)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_linewidth(1.5)
+            ax.spines['bottom'].set_linewidth(1.5)
+
+            # แสดงตัวเลขบนแท่ง - ✅ เพิ่มขนาดและความหนา
+            for bar in bars:
+                width = bar.get_width()
+                if width > 0:
+                    ax.text(width + 0.15, bar.get_y() + bar.get_height()/2,
+                           f'{int(width)} ครั้ง',
+                           va='center', 
+                           fontsize=13,
+                           fontweight='bold')
+
+            plt.tight_layout(pad=1.5)
+            
+            # แสดงกราฟ
+            canvas = FigureCanvasTkAgg(fig, master=self.chart_area)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+            
+        except Exception as e:
+            print(f"Chart Error: {traceback.format_exc()}")
+            CTkLabel(self.chart_area, 
+                    text=f"⚠️ เกิดข้อผิดพลาดในการโหลดกราฟ",
+                    font=CTkFont(size=14, weight="bold"),
+                    text_color="#DC2626").pack(expand=True, pady=20)
+
+    def _export_rejection_to_excel(self):
+        """Export ข้อมูลการตีกลับเป็น Excel พร้อมรายละเอียด"""
+        try:
+            month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
+            year_val = int(self.chart_year_var.get()) - 543
+            
+            # Query ข้อมูลรายละเอียดการตีกลับ
+            query = """
+                SELECT 
+                    u.sale_name as "ชื่อเซลล์",
+                    c.so_number as "เลขที่ SO",
+                    c.customer_name as "ชื่อลูกค้า",
+                    c.sales_service_amount as "ยอดขาย (บาท)",
+                    c.rejection_reason as "เหตุผลที่ตีกลับ",
+                    TO_CHAR(c.timestamp::timestamp, 'DD/MM/YYYY HH24:MI') as "วันที่ส่ง SO"
+                FROM commissions c
+                JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE c.status = 'Rejected by SM' 
+                  AND c.commission_month = %s 
+                  AND c.commission_year = %s
+                  AND c.is_active = 1
+                ORDER BY u.sale_name, c.timestamp DESC
+            """
+            
+            df_detail = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
+            
+            if df_detail.empty:
+                messagebox.showinfo("แจ้งเตือน", 
+                    f"ไม่มีข้อมูลการตีกลับในรอบ {self.chart_month_var.get()} {self.chart_year_var.get()}")
+                return
+            
+            # สรุปจำนวนครั้งต่อคน
+            summary_df = df_detail.groupby('ชื่อเซลล์').size().reset_index(name='จำนวนครั้งที่ถูกตีกลับ')
+            summary_df = summary_df.sort_values('จำนวนครั้งที่ถูกตีกลับ', ascending=False)
+            
+            # เลือกที่บันทึกไฟล์
+            default_filename = f"รายงานการตีกลับ_{self.chart_month_var.get()}_{self.chart_year_var.get()}.xlsx"
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                initialfile=default_filename,
+                title="บันทึกรายงานการตีกลับ"
+            )
+            
+            if not file_path:
+                return  # ยกเลิก
+            
+            # สร้าง Excel Writer
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                # Sheet 1: สรุป
+                summary_df.to_excel(writer, sheet_name='สรุป', index=False)
+                
+                # Sheet 2: รายละเอียดทั้งหมด
+                df_detail.to_excel(writer, sheet_name='รายละเอียด', index=False)
+                
+                # ปรับความกว้างคอลัมน์
+                workbook = writer.book
+                
+                # Sheet สรุป
+                worksheet1 = writer.sheets['สรุป']
+                worksheet1.column_dimensions['A'].width = 25
+                worksheet1.column_dimensions['B'].width = 25
+                
+                # Sheet รายละเอียด
+                worksheet2 = writer.sheets['รายละเอียด']
+                worksheet2.column_dimensions['A'].width = 25  # ชื่อเซลล์
+                worksheet2.column_dimensions['B'].width = 20  # SO
+                worksheet2.column_dimensions['C'].width = 30  # ลูกค้า
+                worksheet2.column_dimensions['D'].width = 18  # ยอดขาย
+                worksheet2.column_dimensions['E'].width = 50  # เหตุผล
+                worksheet2.column_dimensions['F'].width = 20  # วันที่
+                
+                # จัดรูปแบบ Header
+                from openpyxl.styles import Font, PatternFill, Alignment
+                
+                header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+                header_font = Font(bold=True, color="FFFFFF", size=12)
+                
+                for ws in [worksheet1, worksheet2]:
+                    for cell in ws[1]:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+            
+            messagebox.showinfo("สำเร็จ", 
+                f"Export ข้อมูลเรียบร้อย!\n\nจำนวนรายการ: {len(df_detail)} รายการ\nบันทึกที่: {file_path}")
+            
+            # เปิดไฟล์
+            if messagebox.askyesno("เปิดไฟล์", "ต้องการเปิดไฟล์ Excel หรือไม่?"):
+                os.startfile(file_path)
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Export Failed: {str(e)}")
+            print(f"Export Error: {traceback.format_exc()}")
 
     def _load_approval_data(self):
         """ดึงรายการรออนุมัติ พร้อมระบบค้นหา"""
@@ -141,23 +410,37 @@ class SalesManagerScreen(CTkFrame):
 
             # ✅ ถ้ามีการพิมพ์ค้นหา ให้เพิ่มเงื่อนไข SQL
             if search_txt:
-                term = search_txt.replace("SO", "") # ตัดคำว่า SO ออกถ้ามี เพื่อความแม่นยำ
+                term = search_txt.replace("SO", "")
                 query += " AND (c.so_number ILIKE %s OR c.customer_name ILIKE %s)"
                 params.extend([f"%{term}%", f"%{term}%"])
 
-            query += " ORDER BY c.timestamp ASC" # เรียงตามลำดับงานที่ส่งมาก่อน
+            query += " ORDER BY c.timestamp ASC"
             
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
 
             if df.empty:
-                msg = "ไม่พบรายการที่ตรงกับเงื่อนไขการค้นหา" if search_txt else "ไม่มีรายการรออนุมัติในขณะนี้"
-                CTkLabel(self.approval_results_frame, text=msg).pack(pady=30)
+                # Empty State
+                empty_frame = CTkFrame(self.approval_results_frame, fg_color="transparent")
+                empty_frame.pack(expand=True, pady=50)
+                
+                icon = "✅" if not search_txt else "🔍"
+                CTkLabel(empty_frame, text=icon, font=CTkFont(size=48)).pack(pady=(0, 10))
+                
+                msg = "ไม่มีรายการรออนุมัติในขณะนี้" if not search_txt else "ไม่พบรายการที่ตรงกับคำค้นหา"
+                CTkLabel(empty_frame, text=msg,
+                        font=CTkFont(size=14),
+                        text_color="#6B7280").pack()
                 return
 
             for _, row in df.iterrows():
                 self._create_so_card(self.approval_results_frame, row.to_dict(), is_approval_mode=True)
+                
         except Exception as e:
             print(f"Load Approval Error: {e}")
+            CTkLabel(self.approval_results_frame,
+                    text=f"⚠️ เกิดข้อผิดพลาด: {str(e)[:100]}",
+                    font=CTkFont(size=12),
+                    text_color="#DC2626").pack(pady=20)
 
     # =========================================================================
     # TAB 1: DAILY REPORT WIDGET
@@ -275,7 +558,7 @@ class SalesManagerScreen(CTkFrame):
         so_id = so_data['id']
         so_number = so_data['so_number']
         status = so_data.get('status', 'N/A')
-        amount = so_data.get('sales_service_amount', 0)
+        amount = so_data.get('sales_service_amount', 0) or 0
 
         status_colors = {
             'PO In Progress': '#E0F2FE', 'Approved': '#DCFCE7', 'Paid': '#D1FAE5',
@@ -284,49 +567,65 @@ class SalesManagerScreen(CTkFrame):
         }
         bg_color = status_colors.get(status, "#FFFFFF")
 
-        card = CTkFrame(parent, border_width=1, corner_radius=8, fg_color=bg_color)
-        card.pack(fill="x", padx=5, pady=5)
+        card = CTkFrame(parent, border_width=2, border_color="#E5E7EB",
+                       corner_radius=10, fg_color=bg_color, height=70)
+        card.pack(fill="x", padx=8, pady=6)
+        card.pack_propagate(False)
         
-        info_text = f"SO: {so_number} | ลูกค้า: {so_data.get('customer_name')} | ยอด: {amount:,.2f} | เซลส์: {so_data.get('sale_name')}\nสถานะ: {status}"
-        CTkLabel(card, text=info_text, font=self.entry_font, text_color="black", justify="left").pack(side="left", padx=15, pady=10)
+        # ข้อมูล
+        info_frame = CTkFrame(card, fg_color="transparent")
+        info_frame.pack(side="left", fill="both", expand=True, padx=15, pady=10)
+        
+        line1 = f"📋 SO: {so_number}  |  👤 {so_data.get('customer_name', '-')}"
+        CTkLabel(info_frame, text=line1, 
+                font=CTkFont(size=13, weight="bold"),
+                anchor="w").pack(anchor="w")
+        
+        line2 = f"🎯 เซลล์: {so_data.get('sale_name', '-')}  |  💰 {amount:,.2f} บาท  |  📌 {status}"
+        CTkLabel(info_frame, text=line2,
+                font=CTkFont(size=12),
+                text_color="#6B7280",
+                anchor="w").pack(anchor="w", pady=(3, 0))
 
+        # ปุ่ม
         btn_frame = CTkFrame(card, fg_color="transparent")
-        btn_frame.pack(side="right", padx=10, pady=5)
+        btn_frame.pack(side="right", padx=12, pady=10)
 
-        # ✅ ถ้าอยู่ในโหมดอนุมัติ ให้โชว์ปุ่ม "อนุมัติ" เป็นอันดับแรก
         if is_approval_mode:
-            CTkButton(btn_frame, text="✅ อนุมัติ", width=90, fg_color="#16A34A", hover_color="#15803D",
-                      command=lambda: self._approve_so(so_id, so_number)).pack(side="left", padx=2)
+            CTkButton(btn_frame, text="✅ อนุมัติ", width=85, height=32,
+                      fg_color="#16A34A", hover_color="#15803D",
+                      font=CTkFont(size=12, weight="bold"),
+                      command=lambda: self._approve_so(so_id, so_number)).pack(side="left", padx=3)
 
-        # ปุ่มแก้ไข (SM แก้ได้ทุกใบ)
-        CTkButton(btn_frame, text="🛠️ แก้ไข", width=90, fg_color="#4F46E5", hover_color="#4338CA",
-                  command=lambda: self._open_so_editor_for_sm(so_number)).pack(side="left", padx=2)
+        CTkButton(btn_frame, text="🛠️ แก้ไข", width=80, height=32,
+                  fg_color="#4F46E5", hover_color="#4338CA",
+                  font=CTkFont(size=12, weight="bold"),
+                  command=lambda: self._open_so_editor_for_sm(so_number)).pack(side="left", padx=3)
 
-        # ปุ่มตีกลับ (ตีกลับได้ทุกใบ ยกเว้นที่ Cancelled หรือตีกลับไปแล้ว)
         if status not in ['Cancelled', 'Rejected by SM']:
-            CTkButton(btn_frame, text="❌ ตีกลับ", width=90, fg_color="#DC2626", hover_color="#B91C1C",
-                      command=lambda: self._reject_so(so_id, so_number)).pack(side="left", padx=2)
+            CTkButton(btn_frame, text="❌ ตีกลับ", width=80, height=32,
+                      fg_color="#DC2626", hover_color="#B91C1C",
+                      font=CTkFont(size=12, weight="bold"),
+                      command=lambda: self._reject_so(so_id, so_number)).pack(side="left", padx=3)
 
-    # ✅ ฟังก์ชันอนุมัติ SO (Workflow: SM -> PU)
+    # ✅ ฟังก์ชันอนุมัติ SO
     def _approve_so(self, so_id, so_number):
-        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการอนุมัติ SO: {so_number} เพื่อส่งต่อให้ฝ่ายจัดซื้อใช่หรือไม่?"):
+        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการอนุมัติ SO: {so_number} ใช่หรือไม่?"):
             return
 
-        conn = None # ✅ เตรียมตัวแปร conn
+        conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # ✅ เปลี่ยนสถานะเป็น 'Pending PU' เพื่อส่งต่อให้ฝ่ายจัดซื้อ
                 cursor.execute("""
                     UPDATE commissions 
                     SET status = 'Pending PU', 
                         approver_sale_manager_key = %s, 
                         approval_date_sale_manager = CURRENT_TIMESTAMP,
-                        claim_timestamp = NULL -- รีเซ็ตเป็น NULL เพื่อให้ PU คนอื่นกดรับงานได้
+                        claim_timestamp = NULL
                     WHERE id = %s
                 """, (self.user_key, so_id))
                 
-                # แจ้งเตือนฝ่ายจัดซื้อ
                 cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Staff' AND status = 'Active'")
                 pu_keys = [row[0] for row in cursor.fetchall()]
                 
@@ -336,12 +635,12 @@ class SalesManagerScreen(CTkFrame):
                         VALUES (%s, %s, FALSE, %s)
                     """, (pu_key, f"มี SO ใหม่ ({so_number}) ผ่านการอนุมัติแล้ว รอคุณ Claim งาน", so_id))
 
-            conn.commit() # ✅ ยืนยันการบันทึก
+            conn.commit()
             messagebox.showinfo("สำเร็จ", f"อนุมัติ SO: {so_number} เรียบร้อยแล้ว")
             self._refresh_all_tabs()
             
         except Exception as e:
-            if conn: conn.rollback() # ✅ ถ้าพลาดให้ยกเลิก
+            if conn: conn.rollback()
             messagebox.showerror("Error", f"Approve Failed: {e}")
         finally:
             if conn: self.app_container.release_connection(conn)
@@ -380,7 +679,6 @@ class SalesManagerScreen(CTkFrame):
             finally:
                 if conn: self.app_container.release_connection(conn)
 
-        # เรียกเปิด Dialog
         SORejectionDialog(self, so_number, save_rejection)
 
     def _open_so_editor_for_sm(self, so_number):
@@ -388,7 +686,8 @@ class SalesManagerScreen(CTkFrame):
             self.so_popup.focus()
             return
         try:
-            so_df = pd.read_sql_query("SELECT * FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", self.pg_engine, params=(so_number,))
+            so_df = pd.read_sql_query("SELECT * FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1", 
+                                     self.pg_engine, params=(so_number,))
             if so_df.empty:
                 messagebox.showerror("Error", "ไม่พบข้อมูล SO")
                 return
@@ -451,6 +750,7 @@ class SalesManagerScreen(CTkFrame):
             'relocation_cost_vat_option': tk.StringVar(value="VAT")
         })
 
+
 class SORejectionDialog(CTkToplevel):
     def __init__(self, master, so_number, on_confirm_callback):
         super().__init__(master)
@@ -461,7 +761,8 @@ class SORejectionDialog(CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.attributes("-topmost", True) 
 
-        CTkLabel(self, text=f"ระบุเหตุผลที่ตีกลับ SO: {so_number}", font=CTkFont(size=16, weight="bold")).pack(pady=15)
+        CTkLabel(self, text=f"ระบุเหตุผลที่ตีกลับ SO: {so_number}", 
+                font=CTkFont(size=16, weight="bold")).pack(pady=15)
 
         self.reasons = [
             "เลขที่ใบสั่งขาย (SO) ไม่ถูกต้อง",
@@ -478,20 +779,22 @@ class SORejectionDialog(CTkToplevel):
 
         for reason in self.reasons:
             var = tk.BooleanVar(value=False)
-            # ✅ ตอนนี้จะเรียกใช้ CTkCheckBox ได้แล้วเพราะเรา Import มาแล้ว
             cb = CTkCheckBox(container, text=reason, variable=var, font=CTkFont(size=13))
             cb.pack(anchor="w", pady=5)
             self.check_vars.append((var, reason))
 
-        CTkLabel(self, text="อื่นๆ / ระบุเพิ่มเติม:", font=CTkFont(size=13, weight="bold")).pack(anchor="w", padx=30, pady=(15, 5))
+        CTkLabel(self, text="อื่นๆ / ระบุเพิ่มเติม:", 
+                font=CTkFont(size=13, weight="bold")).pack(anchor="w", padx=30, pady=(15, 5))
         self.other_reason_entry = CTkEntry(self, placeholder_text="พิมพ์เหตุผลเพิ่มเติมที่นี่...", width=380)
         self.other_reason_entry.pack(padx=30, pady=(0, 20))
 
         btn_frame = CTkFrame(self, fg_color="transparent")
         btn_frame.pack(fill="x", padx=30, pady=10)
         
-        CTkButton(btn_frame, text="ยกเลิก", fg_color="gray", width=100, command=self.destroy).pack(side="left", padx=5)
-        CTkButton(btn_frame, text="ตกลง (ตีกลับ)", fg_color="#DC2626", hover_color="#B91C1C", width=100, command=self._on_confirm).pack(side="right", padx=5)
+        CTkButton(btn_frame, text="ยกเลิก", fg_color="gray", width=100, 
+                 command=self.destroy).pack(side="left", padx=5)
+        CTkButton(btn_frame, text="ตกลง (ตีกลับ)", fg_color="#DC2626", hover_color="#B91C1C", 
+                 width=100, command=self._on_confirm).pack(side="right", padx=5)
 
     def _on_confirm(self):
         selected_reasons = [text for var, text in self.check_vars if var.get()]

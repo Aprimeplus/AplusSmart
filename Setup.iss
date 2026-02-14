@@ -2,7 +2,7 @@
 
 ; --- START: กำหนดค่าคงที่ทั้งหมดไว้ที่นี่เพื่อง่ายต่อการแก้ไข ---
 #define MyAppName "A+Smart"
-#define MyAppVersion "39.3 "
+#define MyAppVersion "39.5 "
 #define MyAppPublisher "APrime Plus Co., Ltd."
 #define MyAppURL "https://www.aprimeplus.com/"
 #define MyAppExeName "A+ Smart Solution.exe"
