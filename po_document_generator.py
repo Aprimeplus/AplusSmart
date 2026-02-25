@@ -19,7 +19,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
-
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, FrameBreak
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
@@ -572,17 +572,17 @@ def register_thai_fonts():
 def generate_transport_fee_pdf(so_header_data, transport_data_list):
     """
     สร้างใบสรุปค่าขนส่ง (Transportation Expense Record)
-    Version: แก้ไขแล้ว - แสดงข้อมูลถูกต้อง + วันที่จ่ายช่องว่าง + หมายเหตุไม่รวมทะเบียน
-    + ชื่อบริษัทผู้จัดส่งตรงกับระบบ
+    ✅ พิมพ์เฉพาะรายการที่มีค่าใช้จ่าย > 0 เท่านั้น
     """
+
     register_thai_fonts()
     
     so_number = so_header_data.get('so_number', 'Unknown')
     save_path = filedialog.asksaveasfilename(
-        defaultextension=".pdf", 
+        defaultextension=".pdf",
         initialfile=f"Transport_Fee_{so_number}.pdf"
     )
-    if not save_path: 
+    if not save_path:
         return
 
     styles = getSampleStyleSheet()
@@ -591,32 +591,51 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
     st_val_center = ParagraphStyle('VC', parent=styles['Normal'], fontName='THSarabunNew-Bold', fontSize=11, alignment=TA_CENTER)
     st_val_left = ParagraphStyle('VL', parent=styles['Normal'], fontName='THSarabunNew-Bold', fontSize=11, alignment=TA_LEFT)
 
-    def P(text, style=st_val_center): 
+    def P(text, style=st_val_center):
         val = str(text).strip()
         if not val or val.lower() in ['none', 'null', 'nan', 'false', '0', '0.0']:
             return Paragraph("-", style)
         return Paragraph(val, style)
-    
-    def fmt_num(v): 
+
+    def fmt_num(v):
         try:
             return f"{float(v):,.2f}"
         except:
             return "0.00"
 
-    doc = BaseDocTemplate(save_path, pagesize=A4, leftMargin=1*cm, rightMargin=1*cm, topMargin=1*cm, bottomMargin=1*cm)
+    doc = BaseDocTemplate(
+        save_path,
+        pagesize=A4,
+        leftMargin=1*cm,
+        rightMargin=1*cm,
+        topMargin=1*cm,
+        bottomMargin=1*cm
+    )
+
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id='normal')
     doc.addPageTemplates([PageTemplate(id='OneCol', frames=frame)])
-    
+
     story = []
-    story.append(Paragraph(f"<b>ใบสรุปค่าขนส่ง (Transportation Expense Record)</b>", st_header))
+    story.append(Paragraph("<b>ใบสรุปค่าขนส่ง (Transportation Expense Record)</b>", st_header))
     story.append(Spacer(1, 0.5*cm))
 
     curr_date = datetime.now().strftime('%d/%m/%Y')
+
     info_table = Table([
-        [Paragraph(f"<b>SO Number:</b> {so_number}", st_norm), Paragraph(f"<b>วันที่พิมพ์:</b> {curr_date}", st_norm)],
-        [Paragraph(f"<b>ลูกค้า:</b> {so_header_data.get('customer_name', '-')}", st_norm), Paragraph(f"<b>ผู้จัดทำ/Sale:</b> {so_header_data.get('sale_name', '-')}", st_norm)]
+        [
+            Paragraph(f"<b>SO Number:</b> {so_number}", st_norm),
+            Paragraph(f"<b>วันที่พิมพ์:</b> {curr_date}", st_norm)
+        ],
+        [
+            Paragraph(f"<b>ลูกค้า:</b> {so_header_data.get('customer_name', '-')}", st_norm),
+            Paragraph(f"<b>ผู้จัดทำ/Sale:</b> {so_header_data.get('sale_name', '-')}", st_norm)
+        ]
     ], colWidths=[12*cm, 7*cm])
-    info_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')]))
+
+    info_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP')
+    ]))
+
     story.append(info_table)
     story.append(Spacer(1, 0.5*cm))
 
@@ -625,59 +644,64 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
     blue = colors.HexColor("#DDEBF7")
 
     for raw in transport_data_list:
+
         configs = [
             {
                 'title': 'ค่าย้ายของ (เข้าโกดัง)',
                 'cost': float(raw.get('stock_cost') or 0),
                 'driver': raw.get('stock_driver', '-'),
                 'plate': raw.get('stock_plate', '-'),
-                'note': raw.get('stock_notes', '-'),  
+                'note': raw.get('stock_notes', '-'),
                 'vat': str(raw.get('stock_vat') or 'CASH').upper(),
                 'date': raw.get('stock_date'),
                 'wht': str(raw.get('stock_wht') or 'ไม่มีหัก'),
-                'supplier_company': raw.get('stock_supplier', '-')  # ✅ ใช้ชื่อบริษัทจริง
+                'supplier_company': raw.get('stock_supplier', '-')
             },
             {
                 'title': 'ค่าขนส่ง (ส่งหน้างาน)',
                 'cost': float(raw.get('site_cost') or 0),
                 'driver': raw.get('site_driver', '-'),
                 'plate': raw.get('site_plate', '-'),
-                'note': raw.get('site_notes', '-'),  
+                'note': raw.get('site_notes', '-'),
                 'vat': str(raw.get('site_vat') or 'CASH').upper(),
                 'date': raw.get('site_date'),
                 'wht': str(raw.get('site_wht') or 'ไม่มีหัก'),
-                'supplier_company': raw.get('site_supplier', '-')  # ✅ ใช้ชื่อบริษัทจริง
+                'supplier_company': raw.get('site_supplier', '-')
             }
         ]
 
         for cfg in configs:
+
             cost = cfg['cost']
+
+            # ✅ ถ้าไม่มีค่าใช้จ่าย ไม่ต้องพิมพ์
+            if cost <= 0:
+                continue
+
             is_vat = (cfg['vat'] == 'VAT')
             vat_amt = cost * 0.07 if is_vat else 0
+
             wht_str = cfg['wht']
             wht_rate = 0.01 if '1' in wht_str else (0.03 if '3' in wht_str else 0)
+
             net_paid = cost + vat_amt - (cost * wht_rate)
 
             grand_total_cost += cost
             grand_total_paid += net_paid
 
-            # หมายเหตุไม่รวมทะเบียน
             note_str = cfg['note']
             full_remark = note_str if note_str != '-' else "-"
 
-            # วันที่จัดส่ง
-            s_date = cfg['date']
             s_date_str = "-"
-            if s_date:
-                try: 
-                    if isinstance(s_date, str): 
-                        s_date_str = datetime.strptime(s_date[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
-                    else: 
-                        s_date_str = s_date.strftime("%d/%m/%Y")
-                except: 
+            if cfg['date']:
+                try:
+                    if isinstance(cfg['date'], str):
+                        s_date_str = datetime.strptime(cfg['date'][:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+                    else:
+                        s_date_str = cfg['date'].strftime("%d/%m/%Y")
+                except:
                     pass
 
-            # Table Top
             t_top = Table([
                 [
                     Paragraph("PO NUMBER", st_val_center),
@@ -687,11 +711,12 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
                 ],
                 [
                     P(raw.get('po_number')),
-                    P(cfg['supplier_company']),  # ✅ แสดงชื่อบริษัท
+                    P(cfg['supplier_company']),
                     P(cfg['driver']),
                     P(cfg['plate'])
                 ]
-            ], colWidths=[3*cm, 6*cm, 5*cm, 5*cm], rowHeights=[0.7*cm, 0.9*cm])
+            ], colWidths=[3*cm, 6*cm, 5*cm, 5*cm])
+
             t_top.setStyle(TableStyle([
                 ('GRID', (0,0), (-1,-1), 0.5, colors.black),
                 ('BACKGROUND', (0,0), (-1,0), blue),
@@ -699,7 +724,6 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
                 ('ALIGN', (0,0), (-1,-1), 'CENTER')
             ]))
 
-            # Table Bottom
             chk_v = "[ / ] vat" if is_vat else "[   ] vat"
             chk_w1 = "[ / ] 1%" if wht_rate == 0.01 else "[   ] 1%"
             chk_w3 = "[ / ] 3%" if wht_rate == 0.03 else "[   ] 3%"
@@ -731,37 +755,44 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
                     Paragraph(full_remark, st_val_left),
                     '', '', '', ''
                 ]
-            ], colWidths=[3*cm, 3.5*cm, 2*cm, 3*cm, 4.5*cm, 3*cm], rowHeights=[0.7*cm, 1.2*cm, 0.7*cm, 0.7*cm])
+            ], colWidths=[3*cm, 3.5*cm, 2*cm, 3*cm, 4.5*cm, 3*cm])
+
             t_bot.setStyle(TableStyle([
                 ('GRID', (0,0), (-1,-1), 0.5, colors.black),
                 ('BACKGROUND', (0,0), (-1,0), blue),
                 ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                 ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('SPAN', (1,2), (-1,2)), ('ALIGN', (1,2), (-1,2), 'LEFT'),
-                ('SPAN', (1,3), (-1,3)), ('ALIGN', (1,3), (-1,3), 'LEFT')
+                ('SPAN', (1,2), (-1,2)),
+                ('ALIGN', (1,2), (-1,2), 'LEFT'),
+                ('SPAN', (1,3), (-1,3)),
+                ('ALIGN', (1,3), (-1,3), 'LEFT')
             ]))
 
             story.extend([t_top, t_bot, Spacer(1, 0.5*cm)])
 
-    # Total
-    t_total = Table([
-        [
-            Paragraph("<b>ยอดรวมค่าขนส่ง</b>", st_norm),
-            P(fmt_num(grand_total_cost)),
-            '', '', P(fmt_num(grand_total_paid))
-        ]
-    ], colWidths=[3*cm, 3.5*cm, 2*cm, 3*cm, 7.5*cm], rowHeights=[0.8*cm])
+    # ✅ แสดง Total เฉพาะเมื่อมีรายการ
+    if grand_total_cost > 0:
+        t_total = Table([
+            [
+                Paragraph("<b>ยอดรวมค่าขนส่ง</b>", st_norm),
+                P(fmt_num(grand_total_cost)),
+                '',
+                '',
+                P(fmt_num(grand_total_paid))
+            ]
+        ], colWidths=[3*cm, 3.5*cm, 2*cm, 3*cm, 7.5*cm])
 
-    t_total.setStyle(TableStyle([
-        ('BOX', (0,0), (-1,-1), 1, colors.black),           # รอบด้าน
-        ('LINEBEFORE', (1,0), (1,0), 0.5, colors.black),    # เส้นระหว่างช่องยอดรวม
-        ('LINEBEFORE', (4,0), (4,0), 0.5, colors.black),    # เส้นระหว่างช่องชำระจริง
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('ALIGN', (0,0), (0,0), 'RIGHT'),
-        ('RIGHTPADDING', (0,0), (0,0), 10)
-    ]))
-    story.append(Spacer(1, 0.2*cm))
-    story.append(t_total)
+        t_total.setStyle(TableStyle([
+            ('BOX', (0,0), (-1,-1), 1, colors.black),
+            ('LINEBEFORE', (1,0), (1,0), 0.5, colors.black),
+            ('LINEBEFORE', (4,0), (4,0), 0.5, colors.black),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('ALIGN', (0,0), (0,0), 'RIGHT'),
+            ('RIGHTPADDING', (0,0), (0,0), 10)
+        ]))
+
+        story.append(Spacer(1, 0.2*cm))
+        story.append(t_total)
 
     try:
         doc.build(story)

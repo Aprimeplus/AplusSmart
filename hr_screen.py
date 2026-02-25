@@ -1161,16 +1161,44 @@ class HRScreen(CTkFrame):
         v_scroll.grid(row=0, column=1, sticky='ns')
         tree.configure(yscrollcommand=v_scroll.set)
         
+    def _navigate_payout_month(self, direction):
+        """ฟังก์ชันอัจฉริยะสำหรับคำนวณเดือนเดินหน้า/ถอยหลัง"""
+        current_month_str = self.payout_month_var.get()
+        current_year_str = self.payout_year_var.get()
+
+        # ถ้าเลือก "ทุกเดือน" หรือ "ทุกปี" อยู่ ให้ตั้งต้นที่เดือน/ปี ปัจจุบัน
+        if current_month_str == "ทุกเดือน" or current_year_str == "ทุกปี":
+            now = datetime.now()
+            m = now.month
+            y = now.year
+        else:
+            m = self.thai_month_map[current_month_str]
+            y = int(current_year_str)
+
+        # คำนวณเลื่อนเดือน
+        if direction == "prev":
+            m -= 1
+            if m < 1:
+                m = 12
+                y -= 1
+        elif direction == "next":
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+
+        # อัปเดตค่ากลับไปที่ Dropdown
+        self.payout_month_var.set(self.thai_months[m - 1])
+        self.payout_year_var.set(str(y))
+
+        # โหลดข้อมูลใหม่ทันที
+        self._load_payout_history()
+
     def _payout_prev_page(self):
-        if self.history_current_page > 0:
-            self.history_current_page -= 1
-            self._load_payout_history()
+        self._navigate_payout_month("prev")
 
     def _payout_next_page(self):
-        total_pages = (self.history_total_rows + self.history_rows_per_page - 1) // self.history_rows_per_page
-        if self.history_current_page < total_pages - 1:
-            self.history_current_page += 1
-            self._load_payout_history()
+        self._navigate_payout_month("next")
 
     def _create_edit_data_tab(self, parent_tab):
         """สร้าง UI สำหรับหน้า Master Edit SO/PO"""
@@ -1334,52 +1362,41 @@ class HRScreen(CTkFrame):
         """
         ตรวจสอบว่า Tab ไหนถูกเลือก (ทั้ง Tab หลักและ Tab ย่อย) และโหลดข้อมูลตามความเหมาะสม
         """
-        # 1. เช็คว่าอยู่หมวดหมู่ไหน
         main_tab = self.main_tab_view.get()
-        
         selected_sub_tab = ""
         
-        # 2. เช็ค Tab ย่อยตามหมวดหมู่
         if main_tab == "📊 วิเคราะห์ (Analysis)":
             selected_sub_tab = self.analysis_tabs.get()
-            
             if selected_sub_tab == "ภาพรวม (Dashboard)" and not self._dashboard_loaded:
                 self._initial_load_dashboard(); self._dashboard_loaded = True
             elif selected_sub_tab == "เป้าการขาย" and not self._sales_target_loaded:
                 self._initial_load_sales_target(); self._sales_target_loaded = True
             
-            # Refresh เมื่อกลับมาคลิกซ้ำ
             if selected_sub_tab == "ภาพรวม (Dashboard)": self._update_dashboard()
             elif selected_sub_tab == "เป้าการขาย": self._update_sales_target_dashboard()
 
         elif main_tab == "⚙️ จัดการ (Management)":
             selected_sub_tab = self.management_tabs.get()
-            
             if selected_sub_tab == "ผู้ใช้งาน" and not self._users_loaded:
                 self._populate_users_table(); self._users_loaded = True
             elif selected_sub_tab == "บันทึกระบบ (Log)" and not self._audit_log_loaded:
                 self._populate_audit_log_table(); self._audit_log_loaded = True
-            
             elif selected_sub_tab == "จัดการ SO ยกเลิก":
                 self._load_cancelled_so_history()
-            # Refresh
+            
             if selected_sub_tab == "ผู้ใช้งาน": self._populate_users_table()
             elif selected_sub_tab == "บันทึกระบบ (Log)": self._populate_audit_log_table()
             elif selected_sub_tab == "จัดการ SO ยกเลิก": self._load_cancelled_so_history()
 
         elif main_tab == "⌨️ คีย์แทน (Data Entry)":
             selected_sub_tab = self.entry_tabs.get()
-            
             if selected_sub_tab == "แทนเซลส์" and not self._sales_mode_loaded:
                 try:
                     from sales_proxy_screen import SalesProxyScreen
                     self.sales_proxy_screen_instance = SalesProxyScreen(
-                        master=self.sales_mode_tab,
-                        app_container=self.app_container,
-                        proxy_user_key=self.user_key,
-                        proxy_user_name=self.user_name,
-                        user_role=self.user_role,
-                        role_to_proxy="Sale"
+                        master=self.sales_mode_tab, app_container=self.app_container,
+                        proxy_user_key=self.user_key, proxy_user_name=self.user_name,
+                        user_role=self.user_role, role_to_proxy="Sale"
                     )
                     self.sales_proxy_screen_instance.grid(row=0, column=0, sticky="nsew")
                     self._sales_mode_loaded = True
@@ -1389,10 +1406,8 @@ class HRScreen(CTkFrame):
                 try:
                     from purchasing_proxy_screen import PurchasingProxyScreen
                     self.pu_proxy_screen_instance = PurchasingProxyScreen(
-                        master=self.pu_mode_tab,
-                        app_container=self.app_container,
-                        proxy_user_key=self.user_key,
-                        proxy_user_name=self.user_name,
+                        master=self.pu_mode_tab, app_container=self.app_container,
+                        proxy_user_key=self.user_key, proxy_user_name=self.user_name,
                         role_to_proxy="Purchasing Staff"
                     )
                     self.pu_proxy_screen_instance.pack(fill="both", expand=True)
@@ -1410,36 +1425,61 @@ class HRScreen(CTkFrame):
                 self._load_payout_history(); self._payout_history_loaded = True
             
             # Refresh
-            if selected_sub_tab == "2. คำนวณ & จ่าย": self._on_sale_selected_for_process()
+            if selected_sub_tab == "2. คำนวณ & จ่าย": 
+                # 🔥 [จุดแก้ที่ 1] บังคับให้ Dropdown ชื่อเซลส์ เปลี่ยนเป็นคนที่เพิ่งตรวจเสร็จ
+                if hasattr(self, 'last_verified_sale') and self.last_verified_sale in self.active_sales_keys:
+                    self.selected_sale_for_process.set(self.last_verified_sale)
+                self._on_sale_selected_for_process()
+                
             elif selected_sub_tab == "3. ประวัติการจ่าย": self._load_payout_history()
 
     def _show_calculation_details(self):
-        """แสดงรายละเอียดการคำนวณในหน้าต่างใหม่"""
+        """แสดงรายละเอียดการคำนวณในหน้าต่างใหม่ (ฉบับกันตาย เปิดได้ 100%)"""
         
-        # ตรวจสอบว่ามีผลลัพธ์หรือไม่
         if not hasattr(self, 'latest_commission_result') or not self.latest_commission_result:
             messagebox.showinfo("ไม่มีข้อมูล", "กรุณากด 'คำนวณขั้นสุดท้าย' ก่อนดูรายละเอียด", parent=self)
             return
 
-        # ดึง DataFrame จากผลลัพธ์
-        debug_df = self.latest_commission_result.get('debug_df')
-        so_breakdown_df = self.latest_commission_result.get('so_breakdown_df')
+        # 1. ดึงข้อมูลที่ได้จากการคำนวณออกมา
+        debug_data = self.latest_commission_result.get('debug_df')
+        breakdown_data = self.latest_commission_result.get('so_breakdown_df')
         
-        # ถ้าไม่มีข้อมูลใน DataFrame แสดงว่าการคำนวณอาจมีปัญหา
-        if debug_df is None or debug_df.empty:
-             messagebox.showwarning("ไม่พบข้อมูล", "ไม่พบรายละเอียดการคำนวณ (อาจเกิดจากเงื่อนไขไม่ผ่าน หรือ Error)", parent=self)
-             return
+        # 2. บังคับแปลงข้อมูลขั้นตอน (Debug) ให้เป็น DataFrame เสมอ (แก้ปัญหา Error List)
+        if isinstance(debug_data, pd.DataFrame) and not debug_data.empty:
+            debug_df = debug_data
+        elif isinstance(debug_data, list) and len(debug_data) > 0:
+            debug_df = pd.DataFrame(debug_data)
+        else:
+            # ถ้าไม่มีมาให้เลย ให้สร้างข้อความจำลอง
+            debug_df = pd.DataFrame([{"รายการ": "ข้อมูลขั้นตอนการคำนวณ", "ค่า": "กรุณาดูรายละเอียดในแท็บ SO Breakdown"}])
 
+        # 3. บังคับแปลงข้อมูลราย SO (Breakdown) ให้เป็น DataFrame เสมอ
+        if isinstance(breakdown_data, pd.DataFrame) and not breakdown_data.empty:
+            so_breakdown_df = breakdown_data
+        elif isinstance(breakdown_data, list) and len(breakdown_data) > 0:
+            so_breakdown_df = pd.DataFrame(breakdown_data)
+        else:
+            # 🔥 ไม้ตาย: ถ้าใน logic ลืมส่งตารางกลับมา ให้ดึงข้อมูลดิบ (current_comm_df) ไปโชว์แทนเลย!
+            if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
+                so_breakdown_df = self.current_comm_df.copy()
+            else:
+                so_breakdown_df = pd.DataFrame()
+
+        # 4. ดึงชื่อแผนแล้วเรียกเปิด Popup
         sale_key = self.selected_sale_for_process.get()
         plan_name = self.sales_user_info.get(sale_key, {}).get('plan', 'Unknown Plan')
         
-        # เปิดหน้าต่างแสดงผล
-        CalculationDetailViewer(
-            master=self, 
-            debug_df=debug_df, 
-            so_breakdown_df=so_breakdown_df, 
-            plan_name=plan_name
-        )
+        try:
+            from hr_windows import CalculationDetailViewer
+            CalculationDetailViewer(
+                master=self, 
+                debug_df=debug_df, 
+                so_breakdown_df=so_breakdown_df, 
+                plan_name=plan_name
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างรายละเอียดได้: {e}", parent=self)
+            traceback.print_exc()
 
     def _trial_export_data(self):
         """
@@ -1535,7 +1575,7 @@ class HRScreen(CTkFrame):
         ComparisonHistoryWindow(master=self, app_container=self.app_container)
 
     def _create_payout_history_tab(self, parent_tab):
-        """(เวอร์ชันปรับปรุง) สร้าง Layout สำหรับหน้าประวัติการจ่ายเงิน"""
+        """(เวอร์ชันปรับปรุง) สร้าง Layout สำหรับหน้าประวัติการจ่ายเงิน (เปลี่ยนเป็นเลื่อนเดือน)"""
         parent_tab.grid_columnconfigure(0, weight=1)
         parent_tab.grid_rowconfigure(2, weight=1) # แถวที่ 2 (ตาราง) จะขยายได้
 
@@ -1565,15 +1605,18 @@ class HRScreen(CTkFrame):
         CTkButton(filter_container, text="ค้นหา", command=self._load_payout_history).pack(side="left", padx=(0, 5))
         CTkButton(filter_container, text="ล้างค่า", command=self._reset_payout_filters, fg_color="gray").pack(side="left")
 
-        # --- Frame สำหรับ Pagination ---
+        # --- Frame สำหรับเปลี่ยนเดือน (แทนที่ Pagination เดิม) ---
         pagination_frame = CTkFrame(parent_tab, fg_color="transparent")
         pagination_frame.grid(row=1, column=0, padx=10, pady=0, sticky="ew")
 
-        self.payout_prev_button = CTkButton(pagination_frame, text="<<", command=self._payout_prev_page, width=50, state="disabled")
+        # เปลี่ยนปุ่มเป็นเลื่อนเดือน (เอา state="disabled" ออก เพื่อให้กดได้ตลอด)
+        self.payout_prev_button = CTkButton(pagination_frame, text="◀ เดือนก่อนหน้า", command=self._payout_prev_page, width=120)
         self.payout_prev_button.pack(side="left")
-        self.payout_page_label = CTkLabel(pagination_frame, text="Page 1 / 1")
+        
+        self.payout_page_label = CTkLabel(pagination_frame, text="รอบบิล: ทุกเดือน", font=self.label_font_bold, text_color=self.theme["primary"])
         self.payout_page_label.pack(side="left", expand=True)
-        self.payout_next_button = CTkButton(pagination_frame, text=">>", command=self._payout_next_page, width=50, state="disabled")
+        
+        self.payout_next_button = CTkButton(pagination_frame, text="เดือนถัดไป ▶", command=self._payout_next_page, width=120)
         self.payout_next_button.pack(side="right")
         
         # --- Frame สำหรับแสดงตาราง ---
@@ -1634,8 +1677,12 @@ class HRScreen(CTkFrame):
             query = f"{base_query} WHERE {where_clause} ORDER BY log.commission_year DESC, log.commission_month DESC, log.timestamp DESC"
             
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
-            
             self._create_payout_history_table(df)
+
+            display_text = f"รอบบิล: {selected_month}"
+            if selected_year != "ทุกปี": display_text += f" ปี {selected_year}"
+            if hasattr(self, 'payout_page_label'):
+                self.payout_page_label.configure(text=display_text)
 
         except Exception as e:
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการโหลดประวัติ: {e}", parent=self)
@@ -2142,129 +2189,121 @@ class HRScreen(CTkFrame):
         try:
             today = datetime.now()
             current_year = today.year
-            
-            # params จะเก็บค่าที่จะเอาไปแทนใน %s (ต้องเรียงลำดับให้ถูก: Date มาก่อน Sale Key)
             params = []
-            
             date_filter_clauses = []
             target_multiplier = 1.0 
             
             # =========================================================
-            # 1. จัดการเรื่องวันที่ (Date Filter)
+            # 1. จัดการเรื่องวันที่ (ใส่ ::timestamp บังคับแปลง Type ป้องกัน Error Text)
             # =========================================================
             if period == "กำหนดช่วงเวลาเอง...":
                 if hasattr(self, 'custom_target_start') and self.custom_target_start:
-                    
                     s_date = self.custom_target_start
                     e_date = self.custom_target_end
                     
-                    # ตรวจสอบและแปลง String -> Datetime
                     if isinstance(s_date, str):
                         try: s_date = datetime.strptime(s_date, "%d/%m/%Y")
                         except ValueError: s_date = datetime.strptime(s_date, "%Y-%m-%d")
-                    
                     if isinstance(e_date, str):
                         try: e_date = datetime.strptime(e_date, "%d/%m/%Y")
                         except ValueError: e_date = datetime.strptime(e_date, "%Y-%m-%d")
 
-                    # บังคับเวลา Start/End ให้ครอบคลุมทั้งวัน
-                    start_str = s_date.strftime("%Y-%m-%d 00:00:00")
-                    end_str = e_date.strftime("%Y-%m-%d 23:59:59")
+                    start_str = s_date.strftime("%Y-%m-%d")
+                    end_str = e_date.strftime("%Y-%m-%d")
                     
-                    # ใส่เงื่อนไข SQL และ Params
-                    date_filter_clauses.append("c.bill_date BETWEEN %s AND %s")
-                    params.append(start_str)
-                    params.append(end_str)
+                    date_filter_clauses.append("c.timestamp::date BETWEEN %s::date AND %s::date")
+                    params.extend([start_str, end_str])
                     
-                    # คำนวณตัวคูณเป้าหมาย
                     days_diff = (e_date - s_date).days + 1
                     target_multiplier = max(0.03, days_diff / 30.0)
                 else:
-                    # Fallback
-                    date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
+                    date_filter_clauses.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
                     params.append(today.month)
-                    date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                    date_filter_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                     params.append(current_year)
             
             elif period == "เดือนนี้":
-                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
                 params.append(today.month)
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(current_year)
                 target_multiplier = 1.0
 
             elif period == "ปีนี้":
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(current_year)
                 target_multiplier = 12.0 
                 
             elif period in ["Q1", "Q2", "Q3", "Q4"]:
                 quarters = {"Q1": (1,2,3), "Q2": (4,5,6), "Q3": (7,8,9), "Q4": (10,11,12)}
                 months = quarters.get(period)
-                date_filter_clauses.append(f"EXTRACT(MONTH FROM c.bill_date) IN ({','.join(map(str, months))})")
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                date_filter_clauses.append(f"EXTRACT(MONTH FROM c.timestamp::timestamp) IN ({','.join(map(str, months))})")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(current_year)
                 target_multiplier = 3.0 
                 
             elif period in self.thai_month_map:
                 month_num = self.thai_month_map[period]
-                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
                 params.append(month_num)
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(current_year)
                 target_multiplier = 1.0
                 
             else: # Fallback
-                date_filter_clauses.append("EXTRACT(MONTH FROM c.bill_date) = %s")
+                date_filter_clauses.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
                 params.append(today.month)
-                date_filter_clauses.append("EXTRACT(YEAR FROM c.bill_date) = %s")
+                date_filter_clauses.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(current_year)
                 
             date_filter_sql = " AND ".join(date_filter_clauses)
+            
+            # =========================================================
+            # 2. กรองสถานะ
+            # =========================================================
             status_condition = "c.status NOT IN ('Draft', 'Cancelled', 'Rejected by SM', 'Rejected by HR', 'Original', 'Edited')"
             
             # =========================================================
-            # 2. [แก้ไข] จัดการกรองพนักงาน (Multi-select Support)
+            # 3. จัดการกรองพนักงาน
             # =========================================================
             sale_filter_clause = ""
-            
-            # ตรวจสอบตัวแปร selected_sales_filter (List) ที่มาจาก Dialog
             if hasattr(self, 'selected_sales_filter') and self.selected_sales_filter:
-                # สร้าง Placeholder ตามจำนวนคน เช่น %s, %s, %s
-                placeholders = ','.join(['%s'] * len(self.selected_sales_filter))
-                sale_filter_clause = f" AND su.sale_key IN ({placeholders})"
-                
-                # เพิ่ม sale_key ของทุกคนลงใน params (ต่อท้ายวันที่)
+                placeholders = ','.join(["REPLACE(LOWER(%s), ' ', '')"] * len(self.selected_sales_filter))
+                sale_filter_clause = f" AND REPLACE(LOWER(su.sale_key), ' ', '') IN ({placeholders})"
                 params.extend(self.selected_sales_filter) 
-                
-            # (Fallback) รองรับตัวแปรเดิม custom_target_sale เผื่อกรณีเลือกแบบเก่า
             elif hasattr(self, 'custom_target_sale') and self.custom_target_sale != "ทั้งหมด":
-                 sale_filter_clause = " AND su.sale_key = %s"
+                 sale_filter_clause = " AND REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(%s), ' ', '')"
                  params.append(self.custom_target_sale)
 
             # =========================================================
-            # 3. Query
+            # 4. Query หลัก (ล้างช่องว่างด้วย REPLACE ธรรมดา ลดปัญหา Error)
             # =========================================================
             query = f"""
                 SELECT 
                     su.sale_name, 
                     su.sale_key, 
-                    COALESCE(su.sales_target, 0) * {target_multiplier} as sales_target, 
-                    COALESCE(SUM(c.sales_service_amount), 0) as total_sales,
+                    COALESCE(su.sales_target, 0) * %s AS sales_target, 
+                    COALESCE(SUM(
+                        COALESCE(c.sales_service_amount, 0) + 
+                        COALESCE(c.cutting_drilling_fee, 0) + 
+                        COALESCE(c.other_service_fee, 0)
+                    ), 0) AS total_sales,
                     COALESCE(SUM(CASE WHEN COALESCE(c.difference_amount, 0) < -1 THEN ABS(c.difference_amount) ELSE 0 END), 0) as total_outstanding
                 FROM sales_users su
-                LEFT JOIN commissions c ON su.sale_key = c.sale_key
+                LEFT JOIN commissions c ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
                                      AND c.is_active = 1
                                      AND {status_condition}
                                      AND {date_filter_sql} 
-                WHERE su.role = 'Sale' 
-                  AND su.status = 'Active' 
+                WHERE su.status = 'Active'
                   {sale_filter_clause}
-                GROUP BY su.sale_name, su.sale_key, su.sales_target
+                GROUP BY su.sale_name, su.sale_key, su.sales_target, su.role
+                HAVING (su.role = 'Sale' OR COALESCE(SUM(c.sales_service_amount), 0) > 0)
                 ORDER BY su.sale_name ASC;
             """
             
-            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+            final_params = [target_multiplier] + params
+            
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(final_params))
             
             # Clean data
             df['sales_target'] = df['sales_target'].fillna(0)
@@ -2277,7 +2316,7 @@ class HRScreen(CTkFrame):
             print(f"Error getting sales vs target data: {e}") 
             messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self)
             traceback.print_exc() 
-            return pd.DataFrame(columns=['sale_name', 'sales_target', 'total_sales', 'total_outstanding'])
+            return pd.DataFrame(columns=['sale_name', 'sale_key', 'sales_target', 'total_sales', 'total_outstanding'])
 
     def _create_sales_vs_target_chart(self, parent_frame, data_df):
         import matplotlib.colors as mcolors
@@ -2552,80 +2591,143 @@ class HRScreen(CTkFrame):
         # เรียกใช้ฟังก์ชันที่มีอยู่แล้วซึ่งทำหน้าที่โหลดและวาดกราฟ
         self._update_dashboard()
 
-    def _get_sales_by_employee_data(self, period): # <-- parameter ถูกต้องแล้ว
+    def _get_sales_by_employee_data(self, period):
         try:
-            # --- START: สร้าง logic การกรองใหม่ ---
             today = datetime.now()
             current_year = today.year
             params = []
-            
-            # 1. สร้าง WHERE clause สำหรับ commission period
-            commission_filter_clauses = []
-            if period == "เดือนนี้":
-                commission_filter_clauses.append("c.commission_month = %s")
+            date_filter_clauses = []
+            target_multiplier = 1.0 
+
+            # =========================================================
+            # 1. จัดการเรื่องวันที่ (ใช้ ::date เพื่อความชัวร์ 100%)
+            # =========================================================
+            if period == "กำหนดช่วงเวลาเอง...":
+                if hasattr(self, 'custom_target_start') and self.custom_target_start:
+                    s_date = self.custom_target_start
+                    e_date = self.custom_target_end
+
+                    if isinstance(s_date, str):
+                        try: s_date = datetime.strptime(s_date, "%d/%m/%Y")
+                        except ValueError: s_date = datetime.strptime(s_date, "%Y-%m-%d")
+
+                    if isinstance(e_date, str):
+                        try: e_date = datetime.strptime(e_date, "%d/%m/%Y")
+                        except ValueError: e_date = datetime.strptime(e_date, "%Y-%m-%d")
+
+                    start_str = s_date.strftime("%Y-%m-%d")
+                    end_str = e_date.strftime("%Y-%m-%d")
+
+                    date_filter_clauses.append('c."timestamp"::date BETWEEN %s::date AND %s::date')
+                    params.extend([start_str, end_str])
+
+                    days_diff = (e_date - s_date).days + 1
+                    target_multiplier = max(0.03, days_diff / 30.0)
+                else:
+                    date_filter_clauses.append('EXTRACT(MONTH FROM c."timestamp"::date) = %s')
+                    params.append(today.month)
+                    date_filter_clauses.append('EXTRACT(YEAR FROM c."timestamp"::date) = %s')
+                    params.append(current_year)
+
+            elif period == "เดือนนี้":
+                date_filter_clauses.append('EXTRACT(MONTH FROM c."timestamp"::date) = %s')
                 params.append(today.month)
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append('EXTRACT(YEAR FROM c."timestamp"::date) = %s')
                 params.append(current_year)
+                target_multiplier = 1.0
+
             elif period == "ปีนี้":
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append('EXTRACT(YEAR FROM c."timestamp"::date) = %s')
                 params.append(current_year)
-            
-            # --- START: เพิ่ม Logic ของ Q1-Q4 ตรงนี้ ---
-            elif period == "Q1":
-                commission_filter_clauses.append("c.commission_month IN (1, 2, 3)")
-                commission_filter_clauses.append("c.commission_year = %s")
+                target_multiplier = 12.0
+
+            elif period in ["Q1", "Q2", "Q3", "Q4"]:
+                quarters = {"Q1": (1, 2, 3), "Q2": (4, 5, 6), "Q3": (7, 8, 9), "Q4": (10, 11, 12)}
+                months = quarters.get(period)
+                date_filter_clauses.append(f'EXTRACT(MONTH FROM c."timestamp"::date) IN ({",".join(["%s"] * len(months))})')
+                params.extend(months)
+                date_filter_clauses.append('EXTRACT(YEAR FROM c."timestamp"::date) = %s')
                 params.append(current_year)
-            elif period == "Q2":
-                commission_filter_clauses.append("c.commission_month IN (4, 5, 6)")
-                commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year)
-            elif period == "Q3":
-                commission_filter_clauses.append("c.commission_month IN (7, 8, 9)")
-                commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year)
-            elif period == "Q4":
-                commission_filter_clauses.append("c.commission_month IN (10, 11, 12)")
-                commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year)
-            # --- END: สิ้นสุด Logic Q1-Q4 ---
-            
+                target_multiplier = 3.0
+
             elif period in self.thai_month_map:
                 month_num = self.thai_month_map[period]
-                commission_filter_clauses.append("c.commission_month = %s")
+                date_filter_clauses.append('EXTRACT(MONTH FROM c."timestamp"::date) = %s')
                 params.append(month_num)
-                commission_filter_clauses.append("c.commission_year = %s")
-                params.append(current_year) # กรองตามปีปัจจุบัน
-            else: # Fallback (เหมือน "เดือนนี้")
-                commission_filter_clauses.append("c.commission_month = %s")
-                params.append(today.month)
-                commission_filter_clauses.append("c.commission_year = %s")
+                date_filter_clauses.append('EXTRACT(YEAR FROM c."timestamp"::date) = %s')
                 params.append(current_year)
-                
-            commission_filter_sql = " AND ".join(commission_filter_clauses)
-            # --- END ---
+                target_multiplier = 1.0
 
+            else:
+                date_filter_clauses.append('EXTRACT(MONTH FROM c."timestamp"::date) = %s')
+                params.append(today.month)
+                date_filter_clauses.append('EXTRACT(YEAR FROM c."timestamp"::date) = %s')
+                params.append(current_year)
+
+            date_filter_sql = " AND ".join(date_filter_clauses)
+
+            # =========================================================
+            # 2. กรองสถานะ
+            # =========================================================
+            status_condition = """
+                c.status NOT IN ('Draft', 'Cancelled', 'Rejected by SM', 'Rejected by HR', 'Original', 'Edited')
+            """
+
+            # =========================================================
+            # 3. จัดการกรองพนักงาน
+            # =========================================================
+            sale_filter_clause = ""
+            if hasattr(self, 'selected_sales_filter') and self.selected_sales_filter:
+                placeholders = ",".join(["%s"] * len(self.selected_sales_filter))
+                sale_filter_clause = f" AND REGEXP_REPLACE(LOWER(su.sale_key), '\s+', '', 'g') IN ({placeholders})"
+                
+                cleaned_keys = [key.replace(" ", "").lower() for key in self.selected_sales_filter]
+                params.extend(cleaned_keys)
+
+            elif hasattr(self, 'custom_target_sale') and self.custom_target_sale != "ทั้งหมด":
+                sale_filter_clause = " AND REGEXP_REPLACE(LOWER(su.sale_key), '\s+', '', 'g') = REGEXP_REPLACE(LOWER(%s), '\s+', '', 'g')"
+                params.append(self.custom_target_sale)
+
+            # =========================================================
+            # 4. Query หลัก (🔥 ไม้ตาย: ล้างช่องว่างทุกรูปแบบด้วย REGEXP_REPLACE)
+            # =========================================================
             query = f"""
                 SELECT 
                     su.sale_name, 
                     su.sale_key, 
-                    su.sales_target, 
-                    COALESCE(SUM(c.sales_service_amount), 0) as total_sales
+                    COALESCE(su.sales_target, 0) * %s AS sales_target, 
+                    -- ดึงยอดขายและค่าบริการทั้งหมดมารวมกันให้ครบเหมือน SO Grand Total
+                    COALESCE(SUM(c.sales_service_amount + COALESCE(c.cutting_drilling_fee, 0) + COALESCE(c.other_service_fee, 0)), 0) AS total_sales,
+                    COALESCE(SUM(CASE WHEN COALESCE(c.difference_amount, 0) < -1 THEN ABS(c.difference_amount) ELSE 0 END), 0) AS total_outstanding
                 FROM sales_users su
-                LEFT JOIN commissions c ON su.sale_key = c.sale_key
-                                     AND c.is_active = 1
-                                     AND {commission_filter_sql}
-                WHERE su.role = 'Sale' AND su.status = 'Active'
-                GROUP BY su.sale_name, su.sale_key, su.sales_target
-                HAVING COALESCE(SUM(c.sales_service_amount), 0) > 0
-                ORDER BY su.sale_name, total_sales DESC;
+                -- 🔥 จุดที่ทำให้รอด: ใช้ REGEXP_REPLACE กวาดล้างอักขระขยะทุกตัวก่อน JOIN
+                LEFT JOIN commissions c 
+                    ON REGEXP_REPLACE(LOWER(su.sale_key), '\s+', '', 'g') = REGEXP_REPLACE(LOWER(c.sale_key), '\s+', '', 'g')
+                    AND c.is_active = 1
+                    AND {status_condition}
+                    AND {date_filter_sql}
+                WHERE su.status = 'Active'
+                    {sale_filter_clause}
+                GROUP BY su.sale_name, su.sale_key, su.sales_target, su.role
+                HAVING (su.role = 'Sale' OR COALESCE(SUM(c.sales_service_amount), 0) > 0)
+                ORDER BY su.sale_name ASC;
             """
-            
-            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params)) 
+
+            final_params = [target_multiplier] + params
+
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(final_params))
+
+            df['sales_target'] = df['sales_target'].fillna(0)
+            df['total_sales'] = df['total_sales'].fillna(0)
+            df['total_outstanding'] = df['total_outstanding'].fillna(0)
+
             return df
+
         except Exception as e:
-            messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลยอดขายตามพนักงานได้: {e}", parent=self)
+            print(f"Error getting sales vs target data: {e}")
+            messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลเป้าหมายการขายได้: {e}", parent=self)
             traceback.print_exc()
-            return pd.DataFrame(columns=['sale_name', 'sale_key', 'sales_target', 'total_sales'])
+            return pd.DataFrame(columns=['sale_name', 'sale_key', 'sales_target', 'total_sales', 'total_outstanding'])
 
     def _create_sales_by_employee_chart(self, parent_frame, data_df):
         if hasattr(self, 'sales_chart_canvas') and self.sales_chart_canvas:
@@ -3313,129 +3415,11 @@ class HRScreen(CTkFrame):
             print(traceback.format_exc())
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูลได้: {e}", parent=self)
             
-    def _finalize_comparison(self):
-        if self.comparison_df is None or self.comparison_df.empty:
-            messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลการเปรียบเทียบที่จะยืนยัน", parent=self)
-            return
-
-        good_statuses = ["ผ่านเกณฑ์"]
-        df_to_finalize = self.comparison_df[self.comparison_df['สถานะ'].isin(good_statuses)].copy()
-
-        if df_to_finalize.empty:
-            messagebox.showinfo("ไม่พบรายการ", "ไม่พบรายการที่ 'ผ่านเกณฑ์' ที่จะส่งต่อได้ในขณะนี้", parent=self)
-            return
-        
-        self._save_comparison_to_log()
-
-        records_to_update = []
-        for index, row in df_to_finalize.iterrows():
-            so_number = row['เลขที่ SO']
-            
-            full_row_data = self.comparison_df.loc[self.comparison_df['เลขที่ SO'] == so_number].iloc[0]
-
-            sales_db_pure = full_row_data.get('ยอดขาย/บริการ (ระบบ)', 0)
-            sales_uploaded = full_row_data.get('ยอดขาย (Express)', 0)
-            cost_db = full_row_data.get('ต้นทุน (ระบบ)', 0)
-            cost_uploaded = full_row_data.get('ต้นทุน (Express)', 0)
-            
-            sales_db_pure_cleaned = utils.convert_to_float(sales_db_pure)
-            sales_uploaded_cleaned = utils.convert_to_float(sales_uploaded)
-            cost_db_cleaned = utils.convert_to_float(cost_db)
-            cost_uploaded_cleaned = utils.convert_to_float(cost_uploaded)
-
-            # <<< ส่วนที่แก้ไข >>>
-            so_record_from_db = self.db_df[self.db_df['so_number'] == so_number]
-            sale_source = 'system'
-            cost_source = 'system'
-            
-            if not so_record_from_db.empty:
-                record = so_record_from_db.iloc[0]
-                sale_source = record.get('hr_sale_source') if pd.notna(record.get('hr_sale_source')) else 'system'
-                cost_source = record.get('hr_cost_source') if pd.notna(record.get('hr_cost_source')) else 'system'
-
-            if sale_source == 'express':
-                final_sale = sales_uploaded_cleaned
-            else:
-                final_sale = sales_db_pure_cleaned
-
-            if cost_source == 'express':
-                final_cost = cost_uploaded_cleaned
-            else:
-                final_cost = cost_db_cleaned
-            # <<< สิ้นสุดส่วนที่แก้ไข >>>
-
-            final_gp = final_sale - final_cost
-            final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
-
-            so_record = self.db_df[self.db_df['so_number'] == so_number]
-            if not so_record.empty:
-                record_id = so_record.iloc[0]['id']
-                records_to_update.append((
-                    int(record_id),
-                    final_sale,
-                    final_cost,
-                    final_gp,
-                    final_margin
-                ))
-
-        if not records_to_update:
-            messagebox.showinfo("ไม่พบรายการ", "ไม่สามารถหา ID ของรายการที่ต้องการอัปเดตได้", parent=self)
-            return
-
-        msg = (f"คุณต้องการยืนยันข้อมูลสำหรับ {len(records_to_update)} รายการที่ผ่านเกณฑ์ใช่หรือไม่?\n\n"
-               f"การกระทำนี้จะอัปเดตสถานะและบันทึกยอดขาย/ต้นทุนสุดท้ายเข้าระบบ เพื่อให้พร้อมสำหรับประมวลผลค่าคอมมิชชั่นต่อไป")
-
-        if not messagebox.askyesno("ยืนยันการส่งต่อข้อมูล", msg, parent=self):
-            return
-
-        conn = None
-        try:
-            conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                update_query = """
-                    UPDATE commissions 
-                    SET 
-                        status = 'HR Verified', 
-                        final_sales_amount = data.final_sale,
-                        final_cost_amount = data.final_cost,
-                        final_gp = data.final_gp,
-                        final_margin = data.final_margin
-                    FROM (VALUES %s) AS data(record_id, final_sale, final_cost, final_gp, final_margin)
-                    WHERE commissions.id = data.record_id;
-                """
-                psycopg2.extras.execute_values(
-                    cursor,
-                    update_query,
-                    records_to_update,
-                    template="(%s::int, %s::float, %s::float, %s::float, %s::float)",
-                    page_size=100
-                )
-                updated_rows = cursor.rowcount
-            conn.commit()
-            
-            messagebox.showinfo("สำเร็จ", f"อัปเดตข้อมูล {updated_rows} รายการเป็น 'HR Verified' เรียบร้อยแล้ว", parent=self)
-
-            self._refresh_comparison_view()
-
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการยืนยันข้อมูล: {e}", parent=self)
-            traceback.print_exc()
-        finally:
-            if conn: self.app_container.release_connection(conn)
-
-    # hr_screen.py (เพิ่มฟังก์ชันนี้เข้าไปในคลาส HRScreen)
-
     def _verify_passed_sos(self):
-        """
-        (เวอร์ชันปรับปรุง) ยืนยัน SO ที่ 'ผ่านเกณฑ์' ทั้งหมด โดยการดึงข้อมูลล่าสุดจาก DB
-        มาคำนวณใหม่ทั้งหมดก่อนทำการอัปเดต เพื่อความถูกต้อง 100%
-        """
         if self.comparison_df is None or self.comparison_df.empty:
             messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลการเปรียบเทียบที่จะยืนยัน", parent=self)
             return
 
-        # 1. รวบรวม SO ที่ 'ผ่านเกณฑ์'
         df_to_verify = self.comparison_df[self.comparison_df['สถานะ'] == 'ผ่านเกณฑ์']
         so_numbers_to_verify = tuple(df_to_verify['เลขที่ SO'].tolist())
 
@@ -3443,42 +3427,36 @@ class HRScreen(CTkFrame):
             messagebox.showinfo("ไม่พบรายการ", "ไม่พบรายการที่ 'ผ่านเกณฑ์' ที่จะยืนยันได้ในขณะนี้", parent=self)
             return
 
-        # 2. ถามเพื่อยืนยันการทำงาน
+        selected_month = getattr(self, 'current_comparison_month', None)
+        selected_year = getattr(self, 'current_comparison_year', None)
+
+        if not selected_month or not selected_year:
+            messagebox.showerror("Error", "ไม่สามารถระบุเดือนที่กำลังเปรียบเทียบได้ โปรดเริ่มการเปรียบเทียบใหม่", parent=self)
+            return
+
         msg = (f"คุณต้องการยืนยันข้อมูลสำหรับ {len(so_numbers_to_verify)} รายการที่ผ่านเกณฑ์ใช่หรือไม่?\n\n"
-               f"โปรแกรมจะดึงข้อมูลล่าสุดมาคำนวณใหม่ทั้งหมดก่อนบันทึก")
+               f"โปรแกรมจะดึงข้อมูลล่าสุดมาคำนวณใหม่ และจัดรอบค่าคอมเป็น {selected_month}/{selected_year} ก่อนบันทึก")
         if not messagebox.askyesno("ยืนยันข้อมูล", msg, parent=self):
             return
 
         records_to_update = []
         conn = None
         try:
-            # 3. Query ข้อมูลล่าสุดของ SO ที่เลือกจาก DB
             conn = self.app_container.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 placeholders = ', '.join(['%s'] * len(so_numbers_to_verify))
-                
-                # Query ที่สมบูรณ์เพื่อดึงทั้งข้อมูล SO และต้นทุนล่าสุดจาก PO Items
                 query = f"""
-                    SELECT
-                        c.*, 
-                        -- 3. นำยอดรวมสินค้า มาลบกับ ยอดรวมส่วนลด
-                        (COALESCE(po_items.total_item_cost, 0) - COALESCE(po_discounts.total_bill_discount, 0)) as cogs_db
+                    SELECT c.*, (COALESCE(po_items.total_item_cost, 0) - COALESCE(po_discounts.total_bill_discount, 0)) as cogs_db
                     FROM commissions c
                     LEFT JOIN (
-                        -- 1. รวมยอดราคาสินค้าทั้งหมด (จะได้ 5,737)
-                        SELECT 
-                            p.so_number,
-                            SUM(COALESCE(poi.total_price, 0)) as total_item_cost
+                        SELECT p.so_number, SUM(COALESCE(poi.total_price, 0)) as total_item_cost
                         FROM purchase_orders p
                         LEFT JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
                         WHERE p.status = 'Approved' AND p.so_number IN ({placeholders})
                         GROUP BY p.so_number
                     ) po_items ON c.so_number = po_items.so_number
                     LEFT JOIN (
-                        -- 2. รวมยอดส่วนลดท้ายบิลทั้งหมด (จะได้ 37)
-                        SELECT
-                            so_number,
-                            SUM(COALESCE(bill_discount, 0)) as total_bill_discount
+                        SELECT so_number, SUM(COALESCE(bill_discount, 0)) as total_bill_discount
                         FROM purchase_orders
                         WHERE status = 'Approved' AND so_number IN ({placeholders})
                         GROUP BY so_number
@@ -3488,53 +3466,147 @@ class HRScreen(CTkFrame):
                 cursor.execute(query, so_numbers_to_verify * 3)
                 latest_so_data = cursor.fetchall()
 
-                # 4. วนลูปคำนวณค่าสุดท้ายใหม่ทั้งหมดด้วย Logic ล่าสุด
                 for row_data in latest_so_data:
-                    # คำนวณ Final Sales (รายรับรวม)
                     final_sale = (float(row_data.get('sales_service_amount', 0) or 0) +
                                   float(row_data.get('cutting_drilling_fee', 0) or 0) +
                                   float(row_data.get('other_service_fee', 0) or 0))
                     
-                    # Final Cost คือ cogs_db ที่เราดึงมาใหม่ล่าสุด
                     final_cost = float(row_data.get('cogs_db', 0) or 0)
-
                     final_gp = final_sale - final_cost
                     final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
                     
-                    records_to_update.append((
-                        int(row_data['id']),
-                        final_sale,
-                        final_cost,
-                        final_gp,
-                        final_margin
-                    ))
+                    records_to_update.append((int(row_data['id']), final_sale, final_cost, final_gp, final_margin))
 
             if not records_to_update:
-                messagebox.showerror("ผิดพลาด", "ไม่สามารถเตรียมข้อมูลสำหรับอัปเดตได้ (อาจไม่พบข้อมูลล่าสุดใน DB)", parent=self)
+                messagebox.showerror("ผิดพลาด", "ไม่สามารถเตรียมข้อมูลสำหรับอัปเดตได้", parent=self)
                 return
 
-            # 5. อัปเดตฐานข้อมูล (Bulk Update)
             with conn.cursor() as cursor:
-                update_query = """
+                update_query = f"""
                     UPDATE commissions SET 
                         status = 'HR Verified', 
                         final_sales_amount = data.final_sale,
                         final_cost_amount = data.final_cost,
                         final_gp = data.final_gp,
                         final_margin = data.final_margin,
-                        payout_id = NULL
+                        payout_id = NULL,
+                        commission_month = {selected_month},
+                        commission_year = {selected_year}
                     FROM (VALUES %s) AS data(record_id, final_sale, final_cost, final_gp, final_margin)
                     WHERE commissions.id = data.record_id;
                 """
-                psycopg2.extras.execute_values(
-                    cursor, update_query, records_to_update,
-                    template="(%s::int, %s::float, %s::float, %s::float, %s::float)",
-                    page_size=100
-                )
+                psycopg2.extras.execute_values(cursor, update_query, records_to_update,
+                    template="(%s::int, %s::float, %s::float, %s::float, %s::float)", page_size=100)
                 updated_rows = cursor.rowcount
             conn.commit()
             
-            messagebox.showinfo("สำเร็จ", f"ยืนยันข้อมูล {updated_rows} รายการเรียบร้อยแล้ว", parent=self)
+            # 🔥 [จุดแก้ที่ 4] จำชื่อเซลส์และเดือนที่ทำเสร็จ
+            self.last_verified_period = f"{self.thai_months[int(selected_month)-1]} {int(selected_year)+543}"
+            self.last_verified_sale = self.current_comparison_salesperson
+
+            messagebox.showinfo("สำเร็จ", f"ยืนยันข้อมูล {updated_rows} รายการเรียบร้อยแล้ว\n(อัปเดตรอบค่าคอมเป็นเดือน {selected_month}/{selected_year})", parent=self)
+            self._refresh_comparison_view()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+
+    def _verify_passed_sos(self):
+        if self.comparison_df is None or self.comparison_df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลการเปรียบเทียบที่จะยืนยัน", parent=self)
+            return
+
+        df_to_verify = self.comparison_df[self.comparison_df['สถานะ'] == 'ผ่านเกณฑ์']
+        so_numbers_to_verify = tuple(df_to_verify['เลขที่ SO'].tolist())
+
+        if not so_numbers_to_verify:
+            messagebox.showinfo("ไม่พบรายการ", "ไม่พบรายการที่ 'ผ่านเกณฑ์' ที่จะยืนยันได้ในขณะนี้", parent=self)
+            return
+
+        selected_month = getattr(self, 'current_comparison_month', None)
+        selected_year = getattr(self, 'current_comparison_year', None)
+
+        if not selected_month or not selected_year:
+            messagebox.showerror("Error", "ไม่สามารถระบุเดือนที่กำลังเปรียบเทียบได้ โปรดเริ่มการเปรียบเทียบใหม่", parent=self)
+            return
+
+        msg = (f"คุณต้องการยืนยันข้อมูลสำหรับ {len(so_numbers_to_verify)} รายการที่ผ่านเกณฑ์ใช่หรือไม่?\n\n"
+               f"โปรแกรมจะดึงข้อมูลล่าสุดมาคำนวณใหม่ และจัดรอบค่าคอมเป็น {selected_month}/{selected_year} ก่อนบันทึก")
+        if not messagebox.askyesno("ยืนยันข้อมูล", msg, parent=self):
+            return
+
+        records_to_update = []
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                placeholders = ', '.join(['%s'] * len(so_numbers_to_verify))
+                query = f"""
+                    SELECT c.*, (COALESCE(po_items.total_item_cost, 0) - COALESCE(po_discounts.total_bill_discount, 0)) as cogs_db
+                    FROM commissions c
+                    LEFT JOIN (
+                        SELECT p.so_number, SUM(COALESCE(poi.total_price, 0)) as total_item_cost
+                        FROM purchase_orders p
+                        LEFT JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
+                        WHERE p.status = 'Approved' AND p.so_number IN ({placeholders})
+                        GROUP BY p.so_number
+                    ) po_items ON c.so_number = po_items.so_number
+                    LEFT JOIN (
+                        SELECT so_number, SUM(COALESCE(bill_discount, 0)) as total_bill_discount
+                        FROM purchase_orders
+                        WHERE status = 'Approved' AND so_number IN ({placeholders})
+                        GROUP BY so_number
+                    ) po_discounts ON c.so_number = po_discounts.so_number
+                    WHERE c.so_number IN ({placeholders}) AND c.is_active = 1
+                """
+                cursor.execute(query, so_numbers_to_verify * 3)
+                latest_so_data = cursor.fetchall()
+
+                for row_data in latest_so_data:
+                    final_sale = (float(row_data.get('sales_service_amount', 0) or 0) +
+                                  float(row_data.get('cutting_drilling_fee', 0) or 0) +
+                                  float(row_data.get('other_service_fee', 0) or 0))
+                    
+                    final_cost = float(row_data.get('cogs_db', 0) or 0)
+                    final_gp = final_sale - final_cost
+                    final_margin = (final_gp / final_sale) * 100 if final_sale != 0 else 0
+                    
+                    records_to_update.append((int(row_data['id']), final_sale, final_cost, final_gp, final_margin))
+
+            if not records_to_update:
+                messagebox.showerror("ผิดพลาด", "ไม่สามารถเตรียมข้อมูลสำหรับอัปเดตได้", parent=self)
+                return
+
+            with conn.cursor() as cursor:
+                update_query = f"""
+                    UPDATE commissions SET 
+                        status = 'HR Verified', 
+                        final_sales_amount = data.final_sale,
+                        final_cost_amount = data.final_cost,
+                        final_gp = data.final_gp,
+                        final_margin = data.final_margin,
+                        payout_id = NULL,
+                        commission_month = {selected_month},
+                        commission_year = {selected_year}
+                    FROM (VALUES %s) AS data(record_id, final_sale, final_cost, final_gp, final_margin)
+                    WHERE commissions.id = data.record_id;
+                """
+                psycopg2.extras.execute_values(cursor, update_query, records_to_update,
+                    template="(%s::int, %s::float, %s::float, %s::float, %s::float)", page_size=100)
+                updated_rows = cursor.rowcount
+            conn.commit()
+            
+            # 🔥 [เพิ่มตรงนี้] สร้างตัวแปรเก็บรอบที่เพิ่งตรวจสอบเสร็จ
+            month_name = self.thai_months[int(selected_month) - 1]
+            year_buddhist = int(selected_year) + 543
+            self.app_container.last_verified_period = f"{month_name} {year_buddhist}"
+            self.app_container.last_verified_sale = so_numbers_to_verify[0] # เก็บเป็นเบาะแสไว้ (ไม่ใช้ก็ไม่เป็นไร)
+
+            messagebox.showinfo("สำเร็จ", f"ยืนยันข้อมูล {updated_rows} รายการเรียบร้อยแล้ว\n(อัปเดตรอบค่าคอมเป็นเดือน {selected_month}/{selected_year})", parent=self)
             self._refresh_comparison_view()
 
         except Exception as e:
@@ -3936,7 +4008,6 @@ class HRScreen(CTkFrame):
         
 
     def _on_sale_selected_for_process(self, sale_key=None):
-        """เมื่อเลือกพนักงานขาย จะค้นหางวดที่มีข้อมูล 'ที่ยังไม่เคยจ่าย' มาให้คำนวณ"""
         if sale_key is None:
             sale_key = self.selected_sale_for_process.get()
         if not sale_key: return
@@ -3944,13 +4015,12 @@ class HRScreen(CTkFrame):
         for widget in self.process_result_frame.winfo_children(): widget.destroy()
         
         try:
-            # --- จุดที่แก้ไข: เพิ่มเงื่อนไข AND payout_id IS NULL ---
             query = """
                 SELECT DISTINCT commission_year, commission_month 
                 FROM commissions 
                 WHERE sale_key = %s AND status = 'HR Verified' AND is_active = 1
                 AND payout_id IS NULL 
-                ORDER BY commission_year DESC, commission_month DESC
+                ORDER BY CAST(commission_year AS INTEGER) DESC, CAST(commission_month AS INTEGER) DESC
             """
             df_periods = pd.read_sql_query(query, self.pg_engine, params=(sale_key,))
 
@@ -3960,15 +4030,22 @@ class HRScreen(CTkFrame):
                 CTkLabel(self.process_result_frame, text=f"ไม่พบข้อมูลที่ 'Verified' และยังไม่ได้จ่ายเงินสำหรับ: {sale_key}").pack(pady=20)
                 return
 
-            period_options = [f"{self.thai_months[month-1]} {year+543}" for year, month in zip(df_periods['commission_year'], df_periods['commission_month'])]
+            period_options = [f"{self.thai_months[int(month)-1]} {int(year)+543}" for year, month in zip(df_periods['commission_year'], df_periods['commission_month'])]
             self.process_period_menu.configure(values=period_options, state="normal")
-            self.process_period_var.set(period_options[0])
+            
+            target_period = period_options[0] 
+            
+            # 🔥 [จุดแก้ที่ 2] อ่านจาก self.last_verified_period ให้ตรงกันเป๊ะๆ
+            last_verified = getattr(self, 'last_verified_period', None)
+            if last_verified and last_verified in period_options:
+                target_period = last_verified
+                
+            self.process_period_var.set(target_period)
             self._calculate_commission_for_period()
 
         except Exception as e:
             messagebox.showerror("DB Error", f"เกิดข้อผิดพลาดในการค้นหางวดข้อมูล: {e}", parent=self)
-    
-    
+            traceback.print_exc()
 
     def _calculate_commission_for_period(self, selected_period=None):
         if selected_period is None:
@@ -4240,33 +4317,32 @@ class HRScreen(CTkFrame):
             val = default_fees.get(plan_name, 0.0)
             self.operating_fee_entry.insert(0, f"{val:,.2f}")
 
-        # --- Row 4: ยอดขายขั้นต่ำ (เพิ่มใหม่ตรงนี้) ---
+        # --- Row 4: ยอดขายขั้นต่ำ ---
         CTkLabel(input_frame, text="ยอดขายขั้นต่ำ:", font=self.label_font).grid(row=4, column=0, padx=10, pady=10, sticky="w")
         self.min_sales_entry = NumericEntry(input_frame, placeholder_text="500,000")
         self.min_sales_entry.grid(row=4, column=1, padx=10, pady=10, sticky="ew")
         
-        # ตั้งค่า Default (Plan D = 750,000, อื่นๆ = 500,000)
         default_min_sales = 750000 if plan_name == 'Plan D' else 500000
         self.min_sales_entry.insert(0, f"{default_min_sales:,.0f}")
 
-        # --- Row 5: (+) Incentive (ขยับลงมา) ---
+        # --- Row 5: (+) Incentive ---
         CTkLabel(input_frame, text="(+) Incentive:", font=self.label_font).grid(row=5, column=0, padx=10, pady=10, sticky="w")
         self.incentive_entry = NumericEntry(input_frame, placeholder_text="0.00")
         self.incentive_entry.grid(row=5, column=1, padx=10, pady=10, sticky="ew")
 
-        # --- Row 6: (-) หัก ค่าใช้จ่ายอื่นๆ (ขยับลงมา) ---
+        # --- Row 6: (-) หัก ค่าใช้จ่ายอื่นๆ ---
         CTkLabel(input_frame, text="(-) หัก ค่าใช้จ่ายอื่นๆ:", font=self.label_font).grid(row=6, column=0, padx=10, pady=10, sticky="w")
         self.deduction_entry = NumericEntry(input_frame, placeholder_text="0.00")
         self.deduction_entry.grid(row=6, column=1, padx=10, pady=10, sticky="ew")
         if auto_deduction_value > 0:
             self.deduction_entry.insert(0, f"{auto_deduction_value:,.2f}")
 
-        # --- Row 7: หมายเหตุ (ขยับลงมา) ---
+        # --- Row 7: หมายเหตุ ---
         CTkLabel(input_frame, text="หมายเหตุ/Incentive อื่นๆ:", font=self.label_font).grid(row=7, column=0, padx=10, pady=10, sticky="w")
         self.payout_notes_entry = CTkTextbox(input_frame, height=80)
         self.payout_notes_entry.grid(row=7, column=1, padx=10, pady=10, sticky="ew")
         
-        # --- Row 8: ปุ่มกด (ขยับลงมา) ---
+        # --- Row 8: ปุ่มกด ---
         calc_button_frame = CTkFrame(input_frame, fg_color="transparent")
         calc_button_frame.grid(row=8, column=0, columnspan=2, pady=10, padx=10, sticky="ew")
         calc_button_frame.grid_columnconfigure((0, 1), weight=1)
@@ -4276,10 +4352,22 @@ class HRScreen(CTkFrame):
         self.detail_button = CTkButton(calc_button_frame, text="แสดงการคิดแบบละเอียด", command=self._show_calculation_details)
         self.detail_button.grid(row=0, column=1, padx=(5, 0), pady=10, sticky="ew")
 
-        if not self.initial_commission_result.get('debug_df', pd.DataFrame()).empty:
+        # =================================================================
+        # 🔥 แก้ไข Error: ตรวจสอบความมีอยู่ของข้อมูลอย่างปลอดภัย
+        # =================================================================
+        debug_data = self.initial_commission_result.get('debug_df')
+        has_data = False
+        
+        if isinstance(debug_data, pd.DataFrame) and not debug_data.empty:
+            has_data = True
+        elif isinstance(debug_data, (list, dict)) and len(debug_data) > 0:
+            has_data = True
+
+        if has_data:
             self.detail_button.configure(state="normal")
         else:
             self.detail_button.configure(state="disabled")
+        # =================================================================
 
         # พื้นที่แสดงตารางสรุป
         self.final_summary_frame = CTkFrame(self.process_result_frame, fg_color="transparent")

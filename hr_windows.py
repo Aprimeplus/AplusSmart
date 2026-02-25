@@ -399,7 +399,7 @@ class HRVerificationWindow(CTkToplevel):
     
 
     def _populate_po_cards(self):
-        """สร้างการ์ดสำหรับ PO แต่ละใบ (ฉบับแก้ไข: ปุ่มกดไปหน้า EditPOWindowByHR ตัวใหม่)"""
+        """สร้างการ์ดสำหรับ PO แต่ละใบ (ฉบับแก้ไข: ใช้หน้าต่าง Master แบบเดียวกับ HR)"""
         # ล้างการ์ดเก่า
         for widget in self.po_container_frame.winfo_children():
             if isinstance(widget, ctk.CTkLabel) and "ใบสั่งซื้อ" in widget.cget("text"):
@@ -429,16 +429,17 @@ class HRVerificationWindow(CTkToplevel):
             action_frame = ctk.CTkFrame(po_card, fg_color="transparent")
             action_frame.grid(row=0, column=1, padx=10, pady=5, sticky="e")
 
-            # [🔥 จุดแก้ไขสำคัญ] เปลี่ยน command ให้เรียก EditPOWindowByHR
+            # 🔥 จุดแก้ไข: เรียก PurchaseDetailWindow แทน (หน้าต่าง Master ของ HR/PU)
+            from history_windows import PurchaseDetailWindow
             edit_button = ctk.CTkButton(
                 action_frame, 
                 text="ดูรายละเอียด / แก้ไข", 
                 width=150,
-                command=lambda po_id=row['id']: EditPOWindowByHR(
+                command=lambda po_id=row['id']: PurchaseDetailWindow(
                     self.master, 
                     self.app_container, 
                     int(po_id), 
-                    on_close_callback=self._update_all_calculations_and_ui
+                    on_save_callback=self._update_all_calculations_and_ui
                 )
             )
             edit_button.pack(pady=2, padx=2)
@@ -2514,6 +2515,7 @@ class PayoutCalculationViewer(CTkToplevel):
     def _populate_so_breakdown_tab(self, tab, df):
         """
         แสดงรายการ SO (Breakdown) แบบ Robust พร้อมสีและ Format
+        (อัปเดต: ให้รองรับชื่อคอลัมน์ใหม่ๆ จาก Business Logic ทุก Plan)
         """
         self._clear_frame(tab)
 
@@ -2531,12 +2533,12 @@ class PayoutCalculationViewer(CTkToplevel):
 
         df_display = df.copy()
 
-        # Smart Column Mapping
+        # 🔥 [จุดแก้ไข] เพิ่มคำพ้องความหมายให้ครอบคลุมทุก Plan ('ยอดขายรวม', 'ต้นทุนสินค้า', 'กำไรสุทธิ')
         col_mapping = {
             'so_number': ['so_number', 'เลขที่ SO', 'SO Number'],
-            'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า'],
-            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost'],
-            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)'],
+            'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า', 'ยอดขายรวม'],
+            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost', 'ต้นทุนสินค้า', 'ต้นทุนรวม'],
+            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)', 'กำไรสุทธิ'],
             'margin': ['margin', 'Margin (%)', 'final_margin', 'Margin %'],
             'status': ['status', 'Status', 'สถานะ'],
             'multiplier': ['cost_multiplier', 'ตัวคูณ']
@@ -2551,7 +2553,7 @@ class PayoutCalculationViewer(CTkToplevel):
                 else:
                     df_display[target_col] = df_display[found_col]
             else:
-                # [🔥 จุดแก้ไขสำคัญ] ถ้าหา 'multiplier' ไม่เจอ ให้ Default เป็น 1.03 (สำหรับ Plan A ส่วนใหญ่)
+                # Default Multiplier 1.03 ถ้าหาไม่เจอ
                 if target_col == 'multiplier':
                      df_display[target_col] = 1.03 
                 else:
@@ -2622,6 +2624,10 @@ class PayoutCalculationViewer(CTkToplevel):
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
+        
+        # ผูก Double Click เปิดดู SO Detail (ถ้ามี)
+        if hasattr(self, '_on_so_row_double_click'):
+            tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e))
 
     def _open_so_list_viewer(self):
         PayoutDetailWindow(master=self, app_container=self.app_container, payout_id=self.payout_id)
@@ -2720,10 +2726,11 @@ class CalculationDetailViewer(CTkToplevel):
 
     def _populate_so_breakdown_tab(self, tab, df):
         """
-        แสดงรายการ SO (Breakdown) พร้อมคูณ 1.03 และแบ่งสี
+        แสดงรายการ SO (Breakdown) แบบ Robust พร้อมสีและ Format
+        (อัปเดต: ให้รองรับชื่อคอลัมน์ใหม่ๆ จาก Business Logic ทุก Plan)
         """
         self._clear_frame(tab)
-        
+
         tab.grid_rowconfigure(0, weight=1)
         tab.grid_columnconfigure(0, weight=1)
 
@@ -2736,15 +2743,14 @@ class CalculationDetailViewer(CTkToplevel):
             ctk.CTkLabel(tree_frame, text="ไม่พบข้อมูลรายละเอียด SO").pack(pady=20)
             return
 
-        # 1. เตรียมข้อมูล
         df_display = df.copy()
 
-        # 2. Smart Mapping
+        # 🔥 [จุดแก้ไข] เพิ่มคำพ้องความหมายให้ครอบคลุมทุก Plan ('ยอดขายรวม', 'ต้นทุนสินค้า', 'กำไรสุทธิ')
         col_mapping = {
             'so_number': ['so_number', 'เลขที่ SO', 'SO Number'],
-            'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า'],
-            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost'],
-            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)'],
+            'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า', 'ยอดขายรวม'],
+            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost', 'ต้นทุนสินค้า', 'ต้นทุนรวม'],
+            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)', 'กำไรสุทธิ'],
             'margin': ['margin', 'Margin (%)', 'final_margin', 'Margin %'],
             'status': ['status', 'Status', 'สถานะ'],
             'multiplier': ['cost_multiplier', 'ตัวคูณ']
@@ -2761,21 +2767,22 @@ class CalculationDetailViewer(CTkToplevel):
             else:
                 # Default Multiplier 1.03 ถ้าหาไม่เจอ
                 if target_col == 'multiplier':
-                    df_display[target_col] = 1.03
+                     df_display[target_col] = 1.03 
                 else:
                     df_display[target_col] = 0.0 if target_col not in ['so_number', 'status'] else '-'
 
-        # 3. คำนวณคูณต้นทุน
+        # --- คำนวณต้นทุนรวมตัวคูณ และตั้งชื่อหัวข้อ ---
         cost_header = "ต้นทุน (Net)"
+        
         if df_display['multiplier'].max() > 1.001:
             max_mult = df_display['multiplier'].max()
             percent_add = int((max_mult - 1) * 100)
             cost_header = f"ต้นทุน (+{percent_add}%)"
-            
-            # [🔥 FIX] คูณตัวเลขให้เห็นชัดๆ
-            df_display['cost'] = df_display['cost'] * df_display['multiplier']
 
-        # 4. คำนวณ Profit/Margin ใหม่จากตัวเลขที่คูณแล้ว
+            # คูณตัวเลขต้นทุนจริงๆ
+            df_display['cost'] = df_display['cost'] * df_display['multiplier']
+        
+        # คำนวณ Profit/Margin สดๆ อีกรอบ
         df_display['profit'] = df_display['sales'] - df_display['cost']
         df_display['margin'] = df_display.apply(
             lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
@@ -2783,26 +2790,24 @@ class CalculationDetailViewer(CTkToplevel):
 
         final_columns = ['so_number', 'sales', 'cost', 'profit', 'margin', 'status']
         header_labels = {
-            'so_number': 'เลขที่ SO', 'sales': 'ยอดขาย', 
-            'cost': cost_header, # ชื่อหัวข้อเปลี่ยนตามจริง
+            'so_number': 'เลขที่ SO', 'sales': 'ยอดขาย', 'cost': cost_header,
             'profit': 'กำไร', 'margin': 'Margin %', 'status': 'สถานะ'
         }
 
         style = ttk.Style(self)
         style.theme_use("clam")
-        
-        # Font settings
         header_font = ("Tahoma", 11, "bold")
         content_font = ("Tahoma", 11)
-        style.configure("Live.Treeview.Heading", font=header_font, background="#F97316", foreground="white", relief="flat") # สีส้มให้รู้ว่าเป็น Live
-        style.configure("Live.Treeview", rowheight=30, font=content_font)
 
-        tree = ttk.Treeview(tree_frame, columns=final_columns, show="headings", style="Live.Treeview")
+        style.configure("Breakdown.Treeview.Heading", font=header_font, background="#3B82F6", foreground="white", relief="flat")
+        style.configure("Breakdown.Treeview", rowheight=30, font=content_font)
+
+        tree = ttk.Treeview(tree_frame, columns=final_columns, show="headings", style="Breakdown.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
 
-        # Tags สี
         tree.tag_configure('Normal', background='#DCFCE7', foreground='#166534')      
         tree.tag_configure('Below Tier', background='#FEE2E2', foreground='#991B1B')  
+        tree.tag_configure('Paid', background='#E0E7FF', foreground='#3730A3')        
         tree.tag_configure('Default', background='white')
 
         for col in final_columns:
@@ -2817,6 +2822,7 @@ class CalculationDetailViewer(CTkToplevel):
             tag = 'Default'
             if any(x in status_val for x in ['Normal', 'ผ่านเกณฑ์', '>=10']): tag = 'Normal'
             elif any(x in status_val for x in ['Below', 'ต่ำกว่า', '<']): tag = 'Below Tier'
+            elif 'Paid' in status_val: tag = 'Paid'
 
             values.append(row['so_number'])
             values.append(f"{row['sales']:,.2f}")
@@ -2831,8 +2837,9 @@ class CalculationDetailViewer(CTkToplevel):
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
         
-        # ผูก Double Click เปิดดู SO Detail
-        tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e))
+        # ผูก Double Click เปิดดู SO Detail (ถ้ามี)
+        if hasattr(self, '_on_so_row_double_click'):
+            tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e))
 
     def _on_so_row_double_click(self, event):
         tree = event.widget
@@ -2985,32 +2992,27 @@ class SODetailViewer(CTkToplevel):
         self._add_detail_row(f5, 5, 'สถานะล่าสุด', so_data.get('status'))
     
     def _on_po_row_double_click(self, event):
-        """จัดการเมื่อดับเบิลคลิกที่แถว PO (ฉบับแก้ไข: เปิดหน้า EditPOWindowByHR ตัวใหม่)"""
+        """จัดการเมื่อดับเบิลคลิกที่แถว PO (ฉบับแก้ไข: สั่งเปิดหน้าต่างเลย ไม่ต้องสร้างปุ่ม)"""
         tree = event.widget
         selected_item_iid = tree.focus()
         if not selected_item_iid:
             return
         
         try:
-            # ดึงค่าจากแถวที่เลือก (สมมติ column 0 คือ id ที่เราซ่อนไว้ หรือ column แรกที่มีค่า id)
-            # หมายเหตุ: ต้องมั่นใจว่าใน _display_po_details คุณใส่ id ไว้เป็นค่าแรกสุดใน values
             item_values = tree.item(selected_item_iid, "values")
-            
-            # แปลงค่า ID เป็น Int
             po_id = int(float(item_values[0])) 
             
-            # [🔥 จุดแก้ไขสำคัญ] เรียกใช้ EditPOWindowByHR
-            EditPOWindowByHR(
+            # 🔥 จุดแก้ไข: สั่งเปิดหน้าต่าง PurchaseDetailWindow ขึ้นมาทันที
+            from history_windows import PurchaseDetailWindow
+            PurchaseDetailWindow(
                 self.master, 
                 self.app_container, 
                 po_id,
-                # เมื่อปิดหน้าต่างย่อย ให้รีโหลดข้อมูลในหน้าจอนี้ด้วย
-                on_close_callback=self._load_and_display_data 
+                on_save_callback=self._load_and_display_data 
             )
             
         except (IndexError, ValueError, TclError) as e:
             print(f"Could not get PO ID from selected row: {e}")
-            # กรณี Error อาจจะลองแจ้งเตือน หรือข้ามไป
 
     def _display_po_details(self, po_df):
         po_frame = CTkFrame(self.main_frame, corner_radius=10)

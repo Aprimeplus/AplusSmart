@@ -22,6 +22,44 @@ matplotlib.use('TkAgg')
 from history_windows import SOPopupWindow
 from daily_report_widget import DailyReportWidget
 
+class ToastNotification(CTkToplevel):
+    """หน้าต่างแจ้งเตือนมุมขวาล่าง เด้งโชว์แล้วหายไปเอง (ไม่บล็อกการทำงาน)"""
+    def __init__(self, master, title, message, duration=10000, color="#16A34A"):
+        super().__init__(master)
+        
+        # ลบกรอบหน้าต่างออก (ไร้ขอบ)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True) # ให้อยู่บนสุดเสมอ
+        
+        # ตั้งค่าสีและ Layout
+        self.configure(fg_color=color)
+        
+        # จัดข้อความ
+        CTkLabel(self, text=title, font=CTkFont(size=14, weight="bold"), text_color="white").pack(padx=20, pady=(10, 2), anchor="w")
+        CTkLabel(self, text=message, font=CTkFont(size=12), text_color="white", justify="left").pack(padx=20, pady=(0, 10), anchor="w")
+
+        self.update_idletasks()
+        width = self.winfo_reqwidth()
+        height = self.winfo_reqheight()
+
+        # คำนวณตำแหน่งมุมขวาล่างของหน้าจอ
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        
+        # วางที่มุมขวาล่าง (ห่างขอบนิดหน่อย)
+        x = screen_width - width - 30
+        y = screen_height - height - 60 
+        
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        
+        # ทำให้คลิกที่แจ้งเตือนแล้วหายไปทันที (เผื่อไม่อยากรอ 10 วิ)
+        self.bind("<Button-1>", lambda e: self.destroy())
+        for child in self.winfo_children():
+            child.bind("<Button-1>", lambda e: self.destroy())
+
+        # ตั้งเวลาทำลายตัวเอง (10 วินาที = 10000 ms)
+        self.after(duration, self.destroy)
+
 class SalesManagerScreen(CTkFrame):
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None):
         super().__init__(master)
@@ -67,6 +105,83 @@ class SalesManagerScreen(CTkFrame):
         
         # ตั้งค่าหน้าแรกที่เปิดขึ้นมา
         self.tab_view.set("🗳️ รายการรออนุมัติ (SM Approval)")
+
+        self.known_pending_so_ids = set() # เก็บ ID ของ SO ที่เคยแจ้งเตือนไปแล้ว
+        self.reminder_timer_count = 0     # ตัวนับเวลาสำหรับเตือนทุก 10 นาที
+        self.noti_job_id = None
+        
+        # เริ่มทำงานระบบ Noti เบื้องหลัง (หน่วงเวลา 3 วินาทีหลังเปิดหน้าจอ)
+        self.after(3000, self._start_notification_system)
+        
+        # ดักจับตอนปิดหน้าจอให้หยุด Noti ด้วย
+        self.bind("<Destroy>", self._on_destroy)
+    
+    def _start_notification_system(self):
+        """ลูปตรวจสอบ Noti ทุกๆ 1 นาที"""
+        self._check_pending_approvals()
+        
+        # ลูปเรียกตัวเองทุกๆ 60 วินาที (60,000 ms)
+        self.noti_job_id = self.after(60000, self._start_notification_system)
+
+    def _check_pending_approvals(self):
+        """เช็ค DB ว่ามี SO ใหม่ หรือต้องทวงงานหรือไม่"""
+        try:
+            query = """
+                SELECT id, so_number, customer_name 
+                FROM commissions 
+                WHERE status = 'Pending Sale Manager Approval' AND is_active = 1
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+            
+            current_pending_ids = set(df['id'].tolist())
+            pending_count = len(current_pending_ids)
+            
+            # 1. เช็คว่ามี SO "ใหม่" เข้ามาหรือไม่ (ID ที่เพิ่งโผล่มาใหม่)
+            new_so_ids = current_pending_ids - self.known_pending_so_ids
+            
+            if new_so_ids:
+                # มีงานใหม่เข้า! เด้งแจ้งเตือนแบบ 10 วินาที (สีเขียว/ฟ้า)
+                new_count = len(new_so_ids)
+                ToastNotification(
+                    self.winfo_toplevel(), 
+                    title="🔔 มี SO ใหม่รออนุมัติ!", 
+                    message=f"มีคำขออนุมัติ SO เข้ามาใหม่จำนวน {new_count} รายการ\nกรุณาตรวจสอบในแท็บ 'รายการรออนุมัติ'",
+                    duration=10000, 
+                    color="#2563EB" # สีฟ้า
+                )
+                # อัปเดตรายการที่รู้จักแล้ว และรีเฟรชตารางโชว์งานใหม่
+                self.known_pending_so_ids = current_pending_ids
+                
+                # --- ย้ายบรรทัดนี้ไปไว้ใน after() เพื่อไม่ให้ขัดจังหวะ ---
+                self.after(100, self._load_approval_data)
+                
+            # 2. ระบบทวงงาน (Reminder) ถ้ายังมีงานค้าง
+            elif pending_count > 0:
+                self.reminder_timer_count += 1
+                
+                # เช็คทุก 1 นาที ดังนั้น 10 รอบ = 10 นาที
+                if self.reminder_timer_count >= 10: 
+                    ToastNotification(
+                        self.winfo_toplevel(), 
+                        title="⚠️ แจ้งเตือนงานค้าง!", 
+                        message=f"คุณยังมี SO รอการอนุมัติค้างอยู่ {pending_count} รายการ",
+                        duration=10000, 
+                        color="#EA580C" # สีส้ม
+                    )
+                    self.reminder_timer_count = 0 # รีเซ็ตตัวนับ
+            else:
+                # ไม่มีงานค้างเลย รีเซ็ตเวลา
+                self.reminder_timer_count = 0
+                self.known_pending_so_ids.clear()
+                
+        except Exception as e:
+            print(f"Noti System Error: {e}")
+
+    def _on_destroy(self, event):
+        """หยุด Loop เมื่อปิดหน้าจอ"""
+        if hasattr(event, 'widget') and event.widget is self:
+            if self.noti_job_id:
+                self.after_cancel(self.noti_job_id)
 
     def _init_chart_filters(self):
         """สร้างตัวแปรสำหรับ Filter กราฟ"""
@@ -216,6 +331,7 @@ class SalesManagerScreen(CTkFrame):
             month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
             year_val = int(self.chart_year_var.get()) - 543
 
+            # เอาบรรทัด AND u.manager_key ออกไป
             query = """
                 SELECT u.sale_name, COUNT(c.id) as reject_count
                 FROM commissions c
@@ -229,6 +345,7 @@ class SalesManagerScreen(CTkFrame):
             """
             
             df = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
+            
 
             if df.empty:
                 # ไม่มีข้อมูล - ✅ ตัวอักษรใหญ่ขึ้น

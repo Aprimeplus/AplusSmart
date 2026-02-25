@@ -15,6 +15,7 @@ from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 import utils
 from export_utils import DateRangeDialog
 from tkinter import ttk
+from daily_report_widget import DailyReportWidget
 
 class PaymentUpdateWindow(CTkToplevel):
     """หน้าต่าง Pop-up สำหรับอัปเดตข้อมูลการชำระเงินโดยเฉพาะ"""
@@ -679,27 +680,37 @@ class SubmitSODialog(CTkToplevel):
     def _confirm_submission(self):
         selected_records = [(so_id, data) for var, so_id, data in self.checkbox_list if var.get() == 1]
         if not selected_records: return
-        if not messagebox.askyesno("ยืนยัน", f"ส่ง SO จำนวน {len(selected_records)} รายการให้ผู้จัดการอนุมัติ?"): return
+        if not messagebox.askyesno("ยืนยัน", f"ส่ง SO จำนวน {len(selected_records)} รายการให้ผู้จัดการอนุมัติ?", parent=self): return
         
         ids = tuple(r[0] for r in selected_records)
+        conn = None
         try:
-            with self.app_container.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    # 1. เปลี่ยนสถานะ
-                    cursor.execute("UPDATE commissions SET status = 'Pending Sale Manager Approval' WHERE id IN %s", (ids,))
-                    # 2. ✅ แก้ไข: ดึง Sale Manager มาแจ้งเตือน
-                    cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sale Manager' AND status = 'Active'")
-                    sm_keys = [row[0] for row in cursor.fetchall()]
-                    notif_data = []
-                    for _, data in selected_records:
-                        for sm_key in sm_keys:
-                            notif_data.append((sm_key, f"SO ใหม่รออนุมัติ: {data['so_number']}", False, data['id']))
-                    if notif_data:
-                        psycopg2.extras.execute_values(cursor, "INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES %s", notif_data)
-            messagebox.showinfo("สำเร็จ", "ส่งรายการให้ผู้จัดการเรียบร้อยแล้ว")
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # 1. เปลี่ยนสถานะ
+                cursor.execute("UPDATE commissions SET status = 'Pending Sale Manager Approval' WHERE id IN %s", (ids,))
+                # 2. ✅ แก้ไข: ดึง Sale Manager มาแจ้งเตือน
+                cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sale Manager' AND status = 'Active'")
+                sm_keys = [row[0] for row in cursor.fetchall()]
+                notif_data = []
+                for _, data in selected_records:
+                    for sm_key in sm_keys:
+                        notif_data.append((sm_key, f"SO ใหม่รออนุมัติ: {data['so_number']}", False, data['id']))
+                if notif_data:
+                    psycopg2.extras.execute_values(cursor, "INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES %s", notif_data)
+            
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "ส่งรายการให้ผู้จัดการเรียบร้อยแล้ว", parent=self)
             self.commission_app._update_tasks_badge()
             self.destroy()
-        except Exception as e: messagebox.showerror("Error", str(e))
+            
+        except Exception as e: 
+            if conn: conn.rollback()
+            messagebox.showerror("Error", str(e), parent=self)
+        finally:
+            # สำคัญที่สุด: คืน Connection กลับเข้า Pool
+            if conn: 
+                self.app_container.release_connection(conn)
 
 class CommissionApp(CTkFrame):
     def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None, create_default_header=True):
@@ -708,7 +719,7 @@ class CommissionApp(CTkFrame):
         self.app_container = app_container
         self.sale_key = sale_key or "UNKNOWN_SALE_KEY"
         self.sale_name = sale_name or "Unknown Sales User"
-        self.user_role = user_role # <--- เพิ่มบรรทัดนี้
+        self.user_role = user_role 
         self.theme = app_container.THEME["sale"]
         self.pg_engine = app_container.pg_engine
         self.show_logout_button = show_logout_button
@@ -737,13 +748,28 @@ class CommissionApp(CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         
-        # 2. สร้าง Header และวางในแถวที่ 0 (ถ้าจำเป็น)
+        # 2. สร้าง Header และวางในแถวที่ 0
         if create_default_header:
             self._create_header()
 
-        # 3. สร้าง Scrollable Container และวางในแถวที่ 1
-        self.scrollable_main_container = CTkScrollableFrame(self, fg_color="transparent")
-        self.scrollable_main_container.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        # ==========================================================
+        # 🔥 แก้ไขตรงนี้: สร้าง Tabview สำหรับแยกฟอร์ม และ Daily Report
+        # ==========================================================
+        self.main_tabview = CTkTabview(self, corner_radius=10, fg_color="transparent")
+        self.main_tabview.grid(row=1, column=0, padx=20, pady=(0, 10), sticky="nsew")
+
+        # สร้าง 2 แท็บ
+        self.tab_form = self.main_tabview.add("📝 สร้าง/แก้ไข Sales Order")
+        self.tab_report = self.main_tabview.add("📊 รายงานประจำวัน (Daily Report)")
+
+        self.tab_form.grid_columnconfigure(0, weight=1)
+        self.tab_form.grid_rowconfigure(0, weight=1)
+        self.tab_report.grid_columnconfigure(0, weight=1)
+        self.tab_report.grid_rowconfigure(0, weight=1)
+
+        # 3. เอา Scrollable Container ย้ายไปใส่ใน self.tab_form (แท็บที่ 1)
+        self.scrollable_main_container = CTkScrollableFrame(self.tab_form, fg_color="transparent")
+        self.scrollable_main_container.pack(fill="both", expand=True)
 
         # 4. กำหนด Layout ภายใน Scrollable Container
         self.scrollable_main_container.grid_columnconfigure(0, weight=1, uniform="group1")
@@ -768,6 +794,17 @@ class CommissionApp(CTkFrame):
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
 
+        # ==========================================================
+        # 🔥 9. เรียก DailyReportWidget มาวางใน แท็บที่ 2 (tab_report)
+        # ==========================================================
+        # (อย่าลืม import DailyReportWidget ไว้ที่ส่วนบนสุดของไฟล์ commission_app.py ด้วยนะครับ)
+        self.daily_report_view = DailyReportWidget(
+            self.tab_report, 
+            app_container=self.app_container,
+            sale_key_filter=self.sale_key  # ส่งรหัสเซลส์คนนี้ไปกรองตาราง
+        )
+        self.daily_report_view.pack(fill="both", expand=True)
+
     def _open_my_tasks_window(self):
         if self.tasks_window is None or not self.tasks_window.winfo_exists():
             self.tasks_window = SalesTasksWindow(self, app_container=self.app_container, sale_key=self.sale_key)
@@ -775,19 +812,27 @@ class CommissionApp(CTkFrame):
             self.tasks_window.focus()
 
     def _update_tasks_badge(self):
+        conn = None
         try:
-            with self.app_container.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    # ✅ เพิ่ม 'Draft' ในการนับจำนวนงานที่ค้างใน My Tasks
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM commissions 
-                        WHERE sale_key = %s 
-                        AND status IN ('Draft', 'Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Defer Requested') 
-                        AND is_active = 1
-                    """, (self.sale_key,))
-                    total = cursor.fetchone()[0]
-            if hasattr(self, 'tasks_button'): self.tasks_button.configure(text=f"งานของฉัน 🔔 ({total})")
-        except: pass
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # ✅ เพิ่ม 'Draft' ในการนับจำนวนงานที่ค้างใน My Tasks
+                cursor.execute("""
+                    SELECT COUNT(*) FROM commissions 
+                    WHERE sale_key = %s 
+                    AND status IN ('Draft', 'Original', 'Edited', 'Rejected by SM', 'Rejected by HR', 'Defer Requested') 
+                    AND is_active = 1
+                """, (self.sale_key,))
+                total = cursor.fetchone()[0]
+                
+            if hasattr(self, 'tasks_button') and self.tasks_button.winfo_exists(): 
+                self.tasks_button.configure(text=f"งานของฉัน 🔔 ({total})")
+        except Exception as e: 
+            print(f"Error update tasks badge: {e}")
+        finally:
+            # สำคัญที่สุด: คืน Connection กลับเข้า Pool
+            if conn: 
+                self.app_container.release_connection(conn)
 
     def _start_polling(self):
         self._update_tasks_badge()
@@ -913,11 +958,8 @@ class CommissionApp(CTkFrame):
                     # 1. ยกเลิก Record เดิม (ทำให้เป็น Inactive)
                     cursor.execute("UPDATE commissions SET is_active = 0 WHERE id = %s", (self.editing_record_id,))
                     
-                    # 2. ปรับสถานะใบใหม่ (ถ้าเซลส์แก้ ให้ส่งไปรอ SM อนุมัติทันที)
-                    if self.user_role == 'Sale':
-                        form_data['status'] = 'Pending Sale Manager Approval'
-                    else:
-                        form_data['status'] = 'Edited'
+                    # 2. ปรับสถานะใบใหม่ (🔥 แก้ไข: ให้เป็น Edited เสมอ รอเซลส์ไปกด "นำส่ง" เองทีหลัง)
+                    form_data['status'] = 'Edited'
                     form_data['original_id'] = self.editing_record_id
                 else:
                     form_data['status'] = 'Draft'

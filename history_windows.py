@@ -940,9 +940,9 @@ class PurchaseDetailWindow(CTkToplevel):
             except (ValueError, TypeError, KeyError):
                 pass
 
-        # 2. ดึงค่าอื่นๆ (ปรับปรุงให้ปลอดภัยขึ้น: ใช้ .get() และเช็ค None)
+        # 2. ดึงค่าอื่นๆ
         try:
-            # Helper function เพื่อดึงค่าอย่างปลอดภัย (ถ้าหาไม่เจอให้เป็น 0)
+            # Helper function เพื่อดึงค่าอย่างปลอดภัย
             def get_val(key):
                 entry = self.po_entries.get(key)
                 return entry.get_value() if entry and entry.winfo_exists() else 0.0
@@ -950,29 +950,27 @@ class PurchaseDetailWindow(CTkToplevel):
             def get_opt(key, default="CASH"):
                 obj = self.po_entries.get(key)
                 if obj:
-                    # ถ้าเป็น StringVar ให้ดึงค่าเลย ไม่ต้องเช็ค winfo_exists
-                    if isinstance(obj, tk.StringVar):
-                        return obj.get()
-                    # ถ้าเป็น Widget (OptionMenu) ค่อยเช็ค
-                    elif hasattr(obj, 'winfo_exists') and obj.winfo_exists():
-                        return obj.get()
+                    if isinstance(obj, tk.StringVar): return obj.get()
+                    elif hasattr(obj, 'winfo_exists') and obj.winfo_exists(): return obj.get()
                 return default
 
             bill_discount = get_val('bill_discount')
             
-            # Shipping Info
-            shipping_stock = get_val('shipping_to_stock_cost')
+            # --- Shipping Info ---
+            raw_shipping_stock = get_val('shipping_to_stock_cost')
             shipping_stock_vat_type = get_opt('shipping_to_stock_vat_type')
-            shipping_stock_wht_type = get_opt('shipping_to_stock_wht_type', 'ไม่มีหัก')
-            
-            shipping_site = get_val('shipping_to_site_cost')
-            shipping_site_vat_type = get_opt('shipping_to_site_vat_type')
-            shipping_site_wht_type = get_opt('shipping_to_site_wht_type', 'ไม่มีหัก')
+            shipper_stock = get_opt('shipping_to_stock_shipper') # 🔥 ดึงผู้จัดส่ง (Stock)
 
-            # [🔥 แก้ไข] ค่าย้าย: ดึงอย่างปลอดภัย ถ้าไม่มี Widget ก็ถือว่าเป็น 0
-            relocation_cost = get_val('relocation_cost') 
-            
-            # [🔥 แก้ไข] ค่าตัด/เจาะ
+            raw_shipping_site = get_val('shipping_to_site_cost')
+            shipping_site_vat_type = get_opt('shipping_to_site_vat_type')
+            shipper_site = get_opt('shipping_to_site_shipper')   # 🔥 ดึงผู้จัดส่ง (Site)
+
+            # --- Relocation Info ---
+            raw_relocation_cost = get_val('relocation_cost') 
+            # ค่าย้าย: ดูจาก Delivery Type หลักของ PO (เพราะหน้านี้ไม่มี Dropdown แยก)
+            main_delivery_type = self.po_data.get('delivery_type', '')
+
+            # --- Cutting Info ---
             cutting_cost = get_val('cutting_cost')
             cutting_vat_type = get_opt('cutting_vat_type')
             cutting_wht_type = get_opt('cutting_wht_type', 'No')
@@ -984,41 +982,47 @@ class PurchaseDetailWindow(CTkToplevel):
             print(f"Recalc Error (Data Fetch): {e}")
             return 
 
-        # 3. คำนวณต้นทุนรวม (Net PO Cost)
-        # สูตร: (ค่าสินค้า - ส่วนลด) + ค่าตัด/เจาะ
-        product_base_cost = total_cost - bill_discount
-        net_po_cost = product_base_cost + cutting_cost
+        # =========================================================================
+        # 🟢 [LOGIC ใหม่] กรองยอดที่จะจ่ายให้ซัพพลายเออร์เท่านั้น
+        # =========================================================================
+        
+        # 1. ค่าส่งเข้า Stock: จ่ายซัพฯ เฉพาะเมื่อเลือก "ซัพพลายเออร์จัดส่ง"
+        payable_shipping_stock = raw_shipping_stock if shipper_stock == 'ซัพพลายเออร์จัดส่ง' else 0.0
+        
+        # 2. ค่าส่งเข้า Site: จ่ายซัพฯ เฉพาะเมื่อเลือก "ซัพพลายเออร์จัดส่ง"
+        payable_shipping_site = raw_shipping_site if shipper_site == 'ซัพพลายเออร์จัดส่ง' else 0.0
+        
+        # 3. ค่าย้าย: จ่ายซัพฯ เฉพาะเมื่อ Delivery Type หลักเป็น "ซัพพลายเออร์จัดส่ง"
+        payable_relocation = raw_relocation_cost if main_delivery_type == 'ซัพพลายเออร์จัดส่ง' else 0.0
 
-        # อัปเดต Label ต้นทุน (แสดงยอดรวมทั้งหมด)
+        # =========================================================================
+
+        # 3. คำนวณต้นทุนรวม (Net PO Cost) *เพื่อแสดงผล*
+        # (ตรงนี้ยังโชว์ยอดเต็มรวมค่ารถทุกอย่าง เพื่อให้รู้ต้นทุนจริงของโปรเจกต์)
+        product_base_cost = total_cost - bill_discount
+        
+        # 🔥 [แก้ตรงนี้] ตัดค่ารถออกจากการคำนวณต้นทุนสินค้า
+        net_po_cost_display = product_base_cost + cutting_cost 
+
+        # อัปเดต Label ต้นทุน
         if hasattr(self, 'total_cost_label') and self.total_cost_label.winfo_exists():
-            self.total_cost_label.configure(text=f"{net_po_cost:,.2f}")
+            self.total_cost_label.configure(text=f"{net_po_cost_display:,.2f}")
         
         if hasattr(self, 'total_weight_label') and self.total_weight_label.winfo_exists():
             self.total_weight_label.configure(text=f"{total_weight:,.2f} kg")
 
-        # 4. คำนวณการแสดงผล VAT/WHT ของส่วนเสริม
-        # (Shipping)
-        stock_vat_amount = shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
-        site_vat_amount = shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
+        # 4. คำนวณ VAT/WHT (ใช้ยอดที่ Payable เท่านั้นมาคิดภาษีในบิลนี้)
         
-        # อัปเดต Display VAT ขนส่ง (ถ้ามีช่องแสดง)
+        # (Shipping VAT Display - แสดงตามยอดจริงของช่องนั้นๆ)
+        stock_vat_display = raw_shipping_stock * 0.07 if shipping_stock_vat_type == 'VAT' else 0.0
+        site_vat_display = raw_shipping_site * 0.07 if shipping_site_vat_type == 'VAT' else 0.0
+        
         if self.po_entries.get("shipping_to_stock_vat_display"): 
-            utils.set_entry_text(self.po_entries["shipping_to_stock_vat_display"], f"{stock_vat_amount:,.2f}")
+            utils.set_entry_text(self.po_entries["shipping_to_stock_vat_display"], f"{stock_vat_display:,.2f}")
         if self.po_entries.get("shipping_to_site_vat_display"): 
-            utils.set_entry_text(self.po_entries["shipping_to_site_vat_display"], f"{site_vat_amount:,.2f}")
+            utils.set_entry_text(self.po_entries["shipping_to_site_vat_display"], f"{site_vat_display:,.2f}")
         
-        stock_wht_rate = 0.01 if '1' in shipping_stock_wht_type else 0.03 if '3' in shipping_stock_wht_type else 0
-        site_wht_rate = 0.01 if '1' in shipping_site_wht_type else 0.03 if '3' in shipping_site_wht_type else 0
-        
-        shipping_stock_wht_amount = shipping_stock * stock_wht_rate
-        shipping_site_wht_amount = shipping_site * site_wht_rate
-        
-        if self.po_entries.get("shipping_to_stock_wht_display"): 
-            utils.set_entry_text(self.po_entries["shipping_to_stock_wht_display"], f"{shipping_stock_wht_amount:,.2f}")
-        if self.po_entries.get("shipping_to_site_wht_display"): 
-            utils.set_entry_text(self.po_entries["shipping_to_site_wht_display"], f"{shipping_site_wht_amount:,.2f}")
-
-        # (Cutting)
+        # (Cutting VAT/WHT)
         cutting_vat_amount = cutting_cost * 0.07 if cutting_vat_type == 'VAT' else 0.0
         if self.po_entries.get("cutting_vat_display"): 
             utils.set_entry_text(self.po_entries["cutting_vat_display"], f"{cutting_vat_amount:,.2f}")
@@ -1028,33 +1032,48 @@ class PurchaseDetailWindow(CTkToplevel):
         if self.po_entries.get("cutting_wht_display"): 
             utils.set_entry_text(self.po_entries["cutting_wht_display"], f"{cutting_wht_amount:,.2f}")
 
-        # 5. คำนวณยอดที่ต้องจ่ายซัพพลายเออร์ (Grand Total)
-        # สูตร: ฐานภาษีสินค้า + VAT สินค้า - WHT สินค้า + ค่าขนส่ง (ถ้ามี) + ค่าย้าย
+        # 5. คำนวณยอดที่ต้องจ่ายซัพพลายเออร์ (Grand Total) จริงๆ
+        # สูตร: (สินค้า + ค่าบริการที่ซัพเก็บ) + VAT - WHT
         
-        # ฐานสำหรับคิด VAT (สินค้า - ส่วนลด)
+        # ฐานภาษี (สินค้า)
         base_for_tax = product_base_cost 
         
-        # บวกค่าขนส่งเข้าฐาน VAT ถ้าเป็นประเภท VAT (เฉพาะที่จ่ายซัพฯ)
-        if shipping_stock_vat_type == 'VAT': base_for_tax += shipping_stock
-        if shipping_site_vat_type == 'VAT': base_for_tax += shipping_site
-
-        # คำนวณ VAT/WHT รวม
+        # บวกค่าขนส่งเข้าฐาน VAT (เฉพาะส่วนที่จ่ายซัพฯ และเป็น VAT)
+        if shipping_stock_vat_type == 'VAT': base_for_tax += payable_shipping_stock
+        if shipping_site_vat_type == 'VAT': base_for_tax += payable_shipping_site
+        # (ถ้าค่าตัดมี VAT ก็รวมด้วย แต่มันแยกคิดข้างล่าง หรือรวมตรงนี้แล้วแต่ระบบเก่า)
+        # ตามโค้ดเดิม ค่าตัดแยกคิดต่างหาก หรือรวม? 
+        # ปกติค่าตัดรวมใน PO เดียวกัน ถ้าซัพฯ ทำ
+        
+        # คำนวณ VAT รวมของ PO นี้
         vat_amount_total = base_for_tax * 0.07 if hasattr(self, 'vat_checkbox') and self.vat_checkbox.get() == 1 else 0.0
-        wht_amount_products = base_for_tax * 0.03 if hasattr(self, 'wht_checkbox') and self.wht_checkbox.get() == 1 else 0.0
+        
+        # รวม VAT ค่าตัด (ถ้ามี)
+        vat_amount_total += cutting_vat_amount
 
-        if wht_entry and wht_entry.winfo_exists(): wht_entry.set(wht_amount_products)
+        # คำนวณ WHT รวม
+        wht_amount_products = base_for_tax * 0.03 if hasattr(self, 'wht_checkbox') and self.wht_checkbox.get() == 1 else 0.0
+        
+        # รวม WHT ค่าขนส่ง (เฉพาะที่จ่ายซัพ)
+        stock_wht_rate = 0.01 if '1' in get_opt('shipping_to_stock_wht_type') else 0.03 if '3' in get_opt('shipping_to_stock_wht_type') else 0
+        site_wht_rate = 0.01 if '1' in get_opt('shipping_to_site_wht_type') else 0.03 if '3' in get_opt('shipping_to_site_wht_type') else 0
+        
+        total_wht_deduction = wht_amount_products + (payable_shipping_stock * stock_wht_rate) + (payable_shipping_site * site_wht_rate) + cutting_wht_amount
+
+        if wht_entry and wht_entry.winfo_exists(): wht_entry.set(total_wht_deduction)
         if vat_entry and vat_entry.winfo_exists(): vat_entry.set(vat_amount_total)
 
         # ส่วนที่ไม่มี VAT (และต้องจ่ายซัพฯ)
         non_vat_payable = 0.0
-        if shipping_stock_vat_type == 'CASH': non_vat_payable += shipping_stock
-        if shipping_site_vat_type == 'CASH': non_vat_payable += shipping_site
-        non_vat_payable += relocation_cost
-
-        total_wht_deduction = wht_amount_products + shipping_stock_wht_amount + shipping_site_wht_amount
+        if shipping_stock_vat_type == 'CASH': non_vat_payable += payable_shipping_stock
+        if shipping_site_vat_type == 'CASH': non_vat_payable += payable_shipping_site
+        non_vat_payable += payable_relocation # ค่าย้ายที่จ่ายซัพ
         
-        # ยอดสุทธิ
-        grand_total = base_for_tax + vat_amount_total - total_wht_deduction + non_vat_payable
+        # ยอดสุทธิที่ต้องจ่าย (Grand Total)
+        # = (สินค้า + ค่ารถที่ซัพเก็บ) + VAT - WHT + ค่าตัด + ค่ารถ(Cash)
+        # (ต้องระวังอย่าบวกซ้ำ)
+        
+        grand_total = (base_for_tax + non_vat_payable + cutting_cost) + vat_amount_total - total_wht_deduction
         
         if hasattr(self, 'grand_total_label') and self.grand_total_label.winfo_exists():
             self.grand_total_label.configure(text=f"{grand_total:,.2f}")
@@ -2718,12 +2737,13 @@ class SOPopupWindow(CTkToplevel):
         calc_vars = [
             'sales_vat_calc_var', 'cutting_drilling_vat_calc_var',
             'other_service_fee_vat_calc_var', 'shipping_vat_calc_var',
-            'card_fee_vat_calc_var', 'relocation_vat_calc_var'
+            'card_fee_vat_calc_var', 'relocation_vat_calc_var',
+            'payment_total_var', 'so_grand_total_var', 'difference_amount_var',
+            'cash_required_total_var', 'so_vs_payment_result_var', 'cash_verification_result_var'
         ]
         for var_name in calc_vars:
-            self.so_shared_vars[var_name] = tk.StringVar(value="0.00")
-        
-        # -----------------------------------------------------------------------
+            if var_name not in self.so_shared_vars:
+                self.so_shared_vars[var_name] = tk.StringVar(value="0.00" if "result" not in var_name else "-")
 
         self.title(f"ข้อมูล Sales Order (SO: {sales_data.get('so_number', 'N/A')})")
         self.geometry("700x750")
@@ -2888,6 +2908,7 @@ class SOPopupWindow(CTkToplevel):
         w_vars = self.so_shared_vars
         w_widgets = self.popup_widgets
 
+        # Helper สำหรับดึงค่าตัวเลขจาก Entry
         def get_float_from_entry(entry_key):
             entry_widget = w_widgets.get(entry_key)
             if entry_widget and entry_widget.winfo_exists():
@@ -2896,69 +2917,84 @@ class SOPopupWindow(CTkToplevel):
             return 0.0
 
         # --- 1. ดึงข้อมูลตัวเลขจากฟอร์ม ---
+        sales_amt = get_float_from_entry('sales_amount_entry')
+        cutting_fee = get_float_from_entry('cutting_drilling_fee_entry')
+        other_fee = get_float_from_entry('other_service_fee_entry')
+        shipping_cost = get_float_from_entry('shipping_cost_entry')
+        relocation_cost = get_float_from_entry('relocation_cost_entry')
+        card_fee = get_float_from_entry('credit_card_fee_entry')
+        transfer_fee = get_float_from_entry('transfer_fee_entry')
         wht = get_float_from_entry('wht_fee_entry')
-        
-        # --- 2. แยกรายการที่ต้องคิด VAT ---
-        total_vatable_revenue = 0.0
-        total_cashable_services_and_fees = 0.0
-        
+        coupons = get_float_from_entry('coupon_value_entry')
+
+        # --- 2. คำนวณ VAT ให้แต่ละรายการ ---
         items_to_process = [
-            (get_float_from_entry('sales_amount_entry'), w_vars['sales_service_vat_option'].get(), w_vars['sales_vat_calc_var']),
-            (get_float_from_entry('cutting_drilling_fee_entry'), w_vars['cutting_drilling_fee_vat_option'].get(), w_vars['cutting_drilling_vat_calc_var']),
-            (get_float_from_entry('other_service_fee_entry'), w_vars['other_service_fee_vat_option'].get(), w_vars['other_service_vat_calc_var']),
-            (get_float_from_entry('shipping_cost_entry'), w_vars['shipping_vat_option_var'].get(), w_vars['shipping_vat_calc_var']),
-            (get_float_from_entry('credit_card_fee_entry'), w_vars['credit_card_fee_vat_option_var'].get(), w_vars['card_fee_vat_calc_var']),
-            (get_float_from_entry('relocation_cost_entry'), w_vars['relocation_cost_vat_option'].get(), w_vars['relocation_vat_calc_var'])
+            (sales_amt, w_vars.get('sales_service_vat_option'), w_vars.get('sales_vat_calc_var')),
+            (cutting_fee, w_vars.get('cutting_drilling_fee_vat_option'), w_vars.get('cutting_drilling_vat_calc_var')),
+            (other_fee, w_vars.get('other_service_fee_vat_option'), w_vars.get('other_service_vat_calc_var')),
+            (shipping_cost, w_vars.get('shipping_vat_option_var'), w_vars.get('shipping_vat_calc_var')),
+            (card_fee, w_vars.get('credit_card_fee_vat_option_var'), w_vars.get('card_fee_vat_calc_var')),
+            (relocation_cost, w_vars.get('relocation_cost_vat_option'), w_vars.get('relocation_vat_calc_var'))
         ]
 
-        for amount, option, vat_display_var in items_to_process:
-            item_vat = 0.0
-            if option == "VAT":
-                total_vatable_revenue += amount
-                item_vat = amount * 0.07 
-            else: 
-                total_cashable_services_and_fees += amount
+        total_vat = 0.0
+        total_cashable_services = 0.0
+
+        for amount, option_var, display_var in items_to_process:
+            if not option_var: continue
             
-            vat_display_var.set(f"VAT: {item_vat:,.2f}")
-                
-        # --- 3. คำนวณยอดที่ต้องชำระฝั่งโอน (Final Grand Total VAT) ---
-        # สูตร: (ยอดที่คิด VAT * 1.07) - หัก ณ ที่จ่าย
-        final_grand_total = (total_vatable_revenue * 1.07) - wht
+            item_vat = 0.0
+            if option_var.get() == "VAT":
+                item_vat = amount * 0.07
+                total_vat += item_vat
+            else:
+                total_cashable_services += amount
+            
+            if display_var:
+                display_var.set(f"VAT: {item_vat:,.2f}")
+
+        # --- 3. คำนวณยอดรวมที่ต้องชำระ (Grand Total) อย่างถูกต้อง ---
+        subtotal = sales_amt + cutting_fee + other_fee + shipping_cost + relocation_cost + card_fee + transfer_fee
+        final_grand_total = (subtotal + total_vat) - coupons - wht
+
         w_vars['so_grand_total_var'].set(f"{final_grand_total:,.2f}")
 
-        # --- 4. [🔥 จุดแก้ไขหลัก] คำนวณส่วนต่างการโอน (ไม่เอาเงินสดมาบวก) ---
+        # --- 4. คำนวณส่วนต่างการโอน ---
         payment1 = get_float_from_entry('payment1_amount_entry')
         payment2 = get_float_from_entry('payment2_amount_entry')
+        total_payment = payment1 + payment2
+        w_vars['payment_total_var'].set(f"{total_payment:,.2f}")
         
-        # ผลต่าง = ยอดที่โอนจริง - ยอดเต็มบิลที่ต้องออก VAT
-        so_vs_payment_diff = (payment1 + payment2) - final_grand_total
+        # ยอดโอน - ยอดที่ต้องจ่าย 
+        so_vs_payment_diff = total_payment - final_grand_total
         w_vars['difference_amount_var'].set(f"{so_vs_payment_diff:,.2f}")
 
-        # --- 5. อัปเดต UI แสดงผลส่วนต่าง VAT ---
+        # --- 5. อัปเดต Label สีเขียว/แดง ---
         def set_check_result(label_widget_key, var, diff_val, plus_text, minus_text):
             label_widget_ref = w_widgets.get(label_widget_key)
             if not (label_widget_ref and label_widget_ref.winfo_exists()): return
+            
             color_map = {"-": ("gray85", "black"), "ok": ("#BBF7D0", "#15803D"), "bad": ("#FECACA", "#B91C1C")}
+            
             if abs(diff_val) < 0.01: state, text = "ok", "ถูกต้อง"
             elif diff_val > 0: state, text = "ok", f"{plus_text} (+{abs(diff_val):,.2f})"
             else: state, text = "bad", f"{minus_text} ({abs(diff_val):,.2f})"
+            
             var.set(text)
-            label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1], text=text)
+            label_widget_ref.configure(fg_color=color_map[state][0], text_color=color_map[state][1])
 
         set_check_result('so_check_display', w_vars.get('so_vs_payment_result_var'), so_vs_payment_diff, "ยอดโอนเกิน", "ยอดโอนขาด")
 
-        # --- 6. คำนวณยอดเงินสด (แยกต่างหาก) ---
+        # --- 6. คำนวณยอดเงินสด (Cash) ---
         cash_product_val = get_float_from_entry('cash_product_input_entry')
-        
-        # ยอดที่ต้องชำระเงินสด = ยอดสินค้าหน้างาน + ยอดบริการที่เลือกเป็น CASH
-        cash_required_total = cash_product_val + total_cashable_services_and_fees
+        cash_required_total = cash_product_val + total_cashable_services
         w_vars['cash_required_total_var'].set(f"{cash_required_total:,.2f}")
         
         actual_cash_payment = get_float_from_entry('cash_actual_payment_entry')
         cash_diff = actual_cash_payment - cash_required_total
         
         set_check_result('cash_check_display', w_vars.get('cash_verification_result_var'), cash_diff, "เงินสดเกิน", "เงินสดขาด")
-        
+
     def _populate_so_form(self, data):
         if not self.winfo_exists(): return
 
@@ -2985,16 +3021,13 @@ class SOPopupWindow(CTkToplevel):
             elif isinstance(widget_or_var, CTkOptionMenu):
                 widget_or_var.set(str(value) if pd.notna(value) and value else widget_or_var.cget("values")[0])
 
-        # --- [เพิ่มส่วนนี้] Logic: ดึงข้อมูลเก่ามาใส่ ถ้าข้อมูลใหม่ว่างเปล่า ---
-        # เพื่อป้องกันไม่ให้ข้อมูลเก่าหาย หรือแสดงหน้าจอว่างๆ
+        # --- Logic: ดึงข้อมูลเก่ามาใส่ ถ้าข้อมูลใหม่ว่างเปล่า ---
         val_p1_date = data.get('payment1_date')
         val_p2_date = data.get('payment2_date')
         
-        # ถ้าไม่มีวันที่ 1 และ 2 เลย (เป็นข้อมูลเก่า) ให้เอาวันที่หลัก (payment_date) มาใส่ช่อง 1 แทน
         if pd.isna(val_p1_date) and pd.isna(val_p2_date):
             val_p1_date = data.get('payment_date')
             
-        # ทำแบบเดียวกันกับยอดเงิน (Amount)
         def to_float_safe(x):
             try:
                 return float(x) if x is not None else 0.0
@@ -3005,14 +3038,10 @@ class SOPopupWindow(CTkToplevel):
         val_p2_amt = to_float_safe(data.get('payment2_amount'))
         total_pay_db = to_float_safe(data.get('total_payment_amount'))
 
-        # เงื่อนไข: ถ้า (P1 เป็น 0) และ (P2 เป็น 0) แต่ (ยอดรวมใน DB มีค่ามากกว่า 0)
-        # แสดงว่าข้อมูลรายย่อยหาย -> ให้กู้คืนโดยเอายอดรวมมาใส่ P1 ทันที
         if val_p1_amt == 0 and val_p2_amt == 0 and total_pay_db > 0:
              val_p1_amt = total_pay_db
-             # ถ้าวันที่ P1 หายด้วย ให้ใช้วันที่หลัก (Payment Date) มาใส่แทน
              if pd.isna(val_p1_date):
                  val_p1_date = data.get('payment_date')
-        # -----------------------------------------------------------
 
         key_map = {
             'bill_date': 'bill_date_selector', 'customer_name': 'customer_name_entry', 'customer_id': 'customer_id_entry',
@@ -3020,12 +3049,7 @@ class SOPopupWindow(CTkToplevel):
             'other_service_fee': 'other_service_fee_entry', 'shipping_cost': 'shipping_cost_entry', 'delivery_date': 'delivery_date_selector',
             'credit_card_fee': 'credit_card_fee_entry', 'transfer_fee': 'transfer_fee_entry', 'wht_3_percent': 'wht_fee_entry',
             'brokerage_fee': 'brokerage_fee_entry', 'coupons': 'coupon_value_entry', 'giveaways': 'giveaway_value_entry',
-            
-            # เราจัดการ Manual เองด้านล่าง ลบออกจาก Map อัตโนมัติก็ได้ หรือใส่ไว้แต่ระวังทับ
-            # 'payment1_date': 'payment1_date_selector', ...
-            
             'cash_product_input': 'cash_product_input_entry', 'cash_actual_payment': 'cash_actual_payment_entry',
-            
             'sales_service_vat_option': 'sales_service_vat_option', 'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
             'other_service_fee_vat_option': 'other_service_fee_vat_option', 'shipping_vat_option': 'shipping_vat_option_var',
             'credit_card_fee_vat_option': 'credit_card_fee_vat_option_var', 'so_grand_total': 'so_grand_total_var',
@@ -3061,10 +3085,10 @@ class SOPopupWindow(CTkToplevel):
         
         self.update_idletasks()
         self._so_update_final_calculations()
-
+    
     def _save_so_changes(self):
         """
-        บันทึกข้อมูล SO (ฉบับแก้ไข: ป้องกันยอดโอนเขียนทับยอดเงินสด)
+        บันทึกข้อมูล SO (อัปเดตการคำนวณ Grand Total ก่อนบันทึกให้ตรงกับหน้าจอ)
         """
         if self.sales_data is None: 
             messagebox.showerror("ข้อผิดพลาด", "ไม่มีข้อมูล SO ให้บันทึก", parent=self)
@@ -3078,22 +3102,19 @@ class SOPopupWindow(CTkToplevel):
             'customer_name_entry': 'customer_name', 'customer_id_entry': 'customer_id', 'credit_term_entry': 'credit_term',
             'pickup_location_entry': 'pickup_location', 'pickup_rego_entry': 'pickup_registration',
             'bill_date_selector': 'bill_date', 'delivery_date_selector': 'delivery_date', 
-            
             'payment1_date_selector': 'payment1_date', 'payment2_date_selector': 'payment2_date',
             'payment1_amount_entry': 'payment1_amount', 'payment2_amount_entry': 'payment2_amount',
-            
             'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
             'sales_amount_entry': 'sales_service_amount', 'cutting_drilling_fee_entry': 'cutting_drilling_fee',
             'other_service_fee_entry': 'other_service_fee', 'shipping_cost_entry': 'shipping_cost',
-            'relocation_cost_entry': 'relocation_cost', 
-            'credit_card_fee_entry': 'credit_card_fee',
+            'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
             'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
             'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
             'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
             'cash_actual_payment_entry': 'cash_actual_payment'
         }
 
-        # 2. Loop เก็บข้อมูลและจัดการค่าตัวเลข
+        # 2. Loop เก็บข้อมูล
         for widget_key, data_key in key_map.items():
             value = None
             if widget_key in self.popup_widgets:
@@ -3137,10 +3158,13 @@ class SOPopupWindow(CTkToplevel):
             if var_key in self.so_shared_vars: 
                 updated_data[data_key] = self.so_shared_vars[var_key].get()
 
-        # 4. คำนวณ Grand Total ใหม่เดี๋ยวนั้น
+        # 4. คำนวณ Grand Total (อิงตามหน้าจอเป๊ะๆ)
         def calc_vat(amount, option_key):
             opt = updated_data.get(option_key, 'No VAT')
             return (amount * 0.07) if opt == 'VAT' else 0.0
+
+        def is_cash(option_key):
+            return updated_data.get(option_key, 'No VAT') != 'VAT'
 
         sales = updated_data.get('sales_service_amount', 0.0)
         cutting = updated_data.get('cutting_drilling_fee', 0.0)
@@ -3152,28 +3176,37 @@ class SOPopupWindow(CTkToplevel):
         coupons = updated_data.get('coupons', 0.0)
         wht = updated_data.get('wht_3_percent', 0.0)
 
+        # คำนวณ VAT
         vat_sum = (calc_vat(sales, 'sales_service_vat_option') + 
                    calc_vat(cutting, 'cutting_drilling_fee_vat_option') + 
                    calc_vat(other, 'other_service_fee_vat_option') + 
                    calc_vat(shipping, 'shipping_vat_option') + 
+                   calc_vat(relocation, 'relocation_cost_vat_option') +
                    calc_vat(card_fee, 'credit_card_fee_vat_option'))
 
+        # ยอดรวม
         grand_total_calc = (sales + cutting + other + shipping + relocation + card_fee + transfer_fee + vat_sum) - coupons - wht
-        updated_data['cash_required_total'] = grand_total_calc
-
-        # 5. คำนวณยอดชำระโอน (Total Paid)
+        
+        # 5. คำนวณยอดชำระโอน
         p1 = updated_data.get('payment1_amount', 0.0)
         p2 = updated_data.get('payment2_amount', 0.0)
         total_paid = p1 + p2
         updated_data['total_payment_amount'] = total_paid
-        
-        # --- [แก้ไข] ลบบรรทัดที่เคยทับค่าเงินสดออก เพื่อใช้ค่าจาก entry โดยตรง ---
-        # ยอด 'cash_actual_payment' จะถูกดึงมาจาก widget ในขั้นตอนที่ 2 แล้ว
-
-        # 6. คำนวณส่วนต่างโอน
         updated_data['difference_amount'] = total_paid - grand_total_calc
 
-        # 7. จัดการวันที่จ่าย (Payment Date)
+        # 6. คำนวณยอดเงินสด
+        cash_product_input = updated_data.get('cash_product_input', 0.0)
+        cash_services = (
+            (sales if is_cash('sales_service_vat_option') else 0) +
+            (cutting if is_cash('cutting_drilling_fee_vat_option') else 0) +
+            (other if is_cash('other_service_fee_vat_option') else 0) +
+            (shipping if is_cash('shipping_vat_option') else 0) +
+            (relocation if is_cash('relocation_cost_vat_option') else 0) +
+            (card_fee if is_cash('credit_card_fee_vat_option') else 0)
+        )
+        updated_data['cash_required_total'] = cash_product_input + cash_services
+
+        # 7. จัดการวันที่จ่าย
         p1_date = updated_data.get('payment1_date')
         p2_date = updated_data.get('payment2_date')
         main_payment_date = None
@@ -3184,7 +3217,12 @@ class SOPopupWindow(CTkToplevel):
         elif p2_date: main_payment_date = p2_date
         updated_data['payment_date'] = main_payment_date
 
-        # --- บันทึกลงฐานข้อมูล ---
+        # =====================================================================
+        # เริ่มกระบวนการบันทึก
+        # =====================================================================
+        success = False      
+        error_message = None 
+
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
@@ -3203,22 +3241,27 @@ class SOPopupWindow(CTkToplevel):
                     cursor.execute("""
                         INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
                         VALUES (%s, %s, %s, %s, %s, NOW())
-                    """, ('Edit SO (Fix Cash Calc)', 'commissions', so_id, self.app_container.current_user_key, "Saved with correct cash payment value"))
+                    """, ('Edit SO (Fix Cash Calc)', 'commissions', so_id, self.app_container.current_user_key, "Saved with corrected calculations"))
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูล SO และการชำระเงินเรียบร้อยแล้ว", parent=self)
-            
-            if self.on_save_callback:
-                self.on_save_callback()
-            
-            self.destroy()
-
+            success = True 
+        
         except Exception as e:
             if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            error_message = str(e) 
             traceback.print_exc()
+        
         finally:
             if conn: self.app_container.release_connection(conn)
+
+        if success:
+            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูล SO และการชำระเงินเรียบร้อยแล้ว", parent=self)
+            if self.on_save_callback: 
+                self.on_save_callback()
+            self.destroy()
+            
+        elif error_message:
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด:\n{error_message}", parent=self)
             
 class SOReassignmentDialog(CTkToplevel):
     """
@@ -3718,26 +3761,31 @@ class TransportEditDialog(CTkToplevel):
         
         cut_rem = str(self.cutting_note.get()).strip()
         
-        # 2. เตรียม Log
-        changes_log = []
+        # 2. เตรียม Log และข้อมูลเดิม
         user = self.app_container.current_user_key
         po_num = self.old_data.get('po_number', '-')
 
-        # คำนวณส่วนต่าง
+        # คำนวณค่าเดิม (Old Values)
         old_stock_cost = float(self.old_data.get('shipping_to_stock_cost') or 0)
         old_site_cost = float(self.old_data.get('shipping_to_site_cost') or 0)
         old_cut_cost = float(self.old_data.get('cutting_cost') or 0)
+
+        # [🔥 จุดสำคัญ 1] ดึงประเภทการจัดส่งจากข้อมูลเดิม เพื่อใช้ตรวจสอบเงื่อนไข
+        delivery_type = self.old_data.get('delivery_type', '')
 
         if not messagebox.askyesno("ยืนยัน", f"ยืนยันบันทึกการแก้ไข PO: {po_num}?"): return
 
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
-                # คำนวณยอดสุทธิ (Net Logic)
+                # ฟังก์ชันคำนวณยอดสุทธิ (Net Logic: Base + VAT - WHT)
                 def calc_net(base, vat, wht):
                     v = base * 0.07 if vat == 'VAT' else 0
-                    w = 0.01 if wht == '1%' else (0.03 if wht == '3%' else 0)
-                    return (base + v) - (base * w)
+                    # แปลง WHT text เป็นตัวเลข
+                    w_rate = 0.0
+                    if wht == '1%': w_rate = 0.01
+                    elif wht == '3%': w_rate = 0.03
+                    return (base + v) - (base * w_rate)
 
                 # ดึง Vat/Wht เดิม
                 o_stock_v = self.old_data.get('shipping_to_stock_vat_type')
@@ -3747,9 +3795,12 @@ class TransportEditDialog(CTkToplevel):
                 o_cut_v = self.old_data.get('cutting_vat_type')
                 o_cut_w = self.old_data.get('cutting_wht_type')
 
+                # ค่า Vat/Wht ใหม่ (สำหรับ Cutting ที่แก้ได้ในหน้านี้)
                 n_cut_v = self.cut_vat_var.get()
                 n_cut_w = self.cut_wht_var.get()
 
+                # คำนวณ Net เดิม vs ใหม่
+                # (สมมติ Vat/Wht ขนส่งไม่เปลี่ยนในหน้านี้ ใช้ค่าเดิม o_stock_v/w)
                 old_net_stock = calc_net(old_stock_cost, o_stock_v, o_stock_w)
                 new_net_stock = calc_net(new_stock_cost, o_stock_v, o_stock_w)
                 
@@ -3759,7 +3810,26 @@ class TransportEditDialog(CTkToplevel):
                 old_net_cut = calc_net(old_cut_cost, o_cut_v, o_cut_w)
                 new_net_cut = calc_net(new_cut_cost, n_cut_v, n_cut_w)
 
-                diff_grand_total = (new_net_stock - old_net_stock) + (new_net_site - old_net_site) + (new_net_cut - old_net_cut)
+                # =================================================================
+                # [🔥 จุดสำคัญ 2] คำนวณส่วนต่างที่จะไปกระทบ Grand Total (ยอดจ่ายซัพ)
+                # =================================================================
+                
+                transport_diff = 0.0
+                
+                # ถ้าเป็น "ซัพพลายเออร์จัดส่ง" -> ส่วนต่างค่ารถจะไปกระทบยอดจ่ายรวม
+                if delivery_type == "ซัพพลายเออร์จัดส่ง":
+                    transport_diff = (new_net_stock - old_net_stock) + (new_net_site - old_net_site)
+                else:
+                    # ถ้าไม่ใช่ซัพส่ง (เช่น รับเอง, เอกชน) -> ค่ารถไม่เกี่ยวกับยอดจ่ายซัพ
+                    transport_diff = 0.0
+
+                # ค่าตัด (Cutting) กระทบ Grand Total เสมอ (ตาม Logic เดิม)
+                cutting_diff = (new_net_cut - old_net_cut)
+
+                # ส่วนต่างสุทธิที่จะไปบวก/ลบ ใน Grand Total
+                diff_grand_total = transport_diff + cutting_diff
+                
+                # ส่วนต่าง Total Cost (เฉพาะค่าของ+ค่าบริการ ไม่เกี่ยวกับว่าใครจ่าย)
                 diff_total_cost = (new_cut_cost - old_cut_cost) 
 
                 # 5. Update SQL (อัปเดตทุกฟิลด์ให้ครบ)
@@ -3792,7 +3862,7 @@ class TransportEditDialog(CTkToplevel):
 
                 # Log
                 cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, NOW())", 
-                               ('Edit PO Transport', 'purchase_orders', self.po_id, user, "Updated Transport/Cutting details"))
+                               ('Edit PO Transport', 'purchase_orders', self.po_id, user, f"Updated Transport/Cutting (Diff GT: {diff_grand_total})"))
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)

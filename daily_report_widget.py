@@ -8,11 +8,12 @@ from custom_widgets import DateSelector
 from daily_report_dashboard import DailyDashboard
 
 class DailyReportWidget(CTkFrame):
-    def __init__(self, master, app_container, **kwargs):
+    def __init__(self, master, app_container, sale_key_filter=None, **kwargs):
         super().__init__(master, **kwargs)
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
         self.current_df = None
+        self.sale_key_filter = sale_key_filter
         
         # --- 1. สร้าง Tabview เพื่อแยกหน้า Report และ Dashboard ---
         # ใช้สีฟ้า (#3B82F6) เป็นสีหลักของปุ่มแท็บที่เลือก
@@ -73,7 +74,7 @@ class DailyReportWidget(CTkFrame):
             "so_number": ("SO Number", 90, "center"),
             "po_number": ("PO Number", 90, "center"),
             "customer_name": ("ชื่อลูกค้า", 160, "w"),
-            "sales_booking": ("ยอดจอง", 80, "e"),
+            "sales_booking": ("ยอดขาย", 80, "e"),
             "total_paid": ("ชำระแล้ว", 80, "e"),
             "credit_balance": ("ยอดค้าง", 80, "e"),
             "payment_status": ("ตรวจสอบยอด", 100, "center"),
@@ -132,6 +133,7 @@ class DailyReportWidget(CTkFrame):
         for i in self.tree.get_children(): self.tree.delete(i)
             
         try:
+            # ตัด ORDER BY ออกจาก base_query ก่อน เพื่อเอามาเติมทีหลัง
             query = """
                 SELECT 
                     c.so_number, 
@@ -159,10 +161,19 @@ class DailyReportWidget(CTkFrame):
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
                 LEFT JOIN sales_users pu ON c.user_key = pu.sale_key
                 WHERE date(c.timestamp) = %s AND c.is_active = 1
-                ORDER BY c.so_number ASC
             """
             
-            df = pd.read_sql_query(query, self.pg_engine, params=(date_str,))
+            params = [date_str]
+
+            # 🔥 เพิ่มเงื่อนไขกรองเฉพาะ Sale (เช็คว่ามีตัวแปร sale_key_filter หรือไม่)
+            if getattr(self, 'sale_key_filter', None):
+                query += " AND c.sale_key = %s"
+                params.append(self.sale_key_filter)
+
+            # ปิดท้ายด้วย ORDER BY
+            query += " ORDER BY c.so_number ASC"
+            
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
             print(f"[DEBUG] พบข้อมูลทั้งหมด: {len(df)} แถว") 
 
             if not df.empty:
@@ -219,7 +230,7 @@ class DailyReportWidget(CTkFrame):
                     row['customer_name'],
                     f"{booking:,.2f}",
                     f"{paid:,.2f}",
-                    f"{credit_display:,.2f}", # <--- แก้ไขจุดนี้: เปลี่ยนจาก credit เป็น credit_display
+                    f"{credit_display:,.2f}", 
                     status_text,
                     d_date_str,
                     row['pickup_location'] or "-",
