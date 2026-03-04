@@ -274,6 +274,32 @@ class CostBenchmarkScreen(CTkFrame):
             pass
 
     def _auto_calculate_sheet(self, row_idx):
+        # =================================================================
+        # 🟢 [เพิ่มใหม่] ระบบคำนวณสูตรอัตโนมัติ (คล้าย Excel)
+        # สแกนทุกช่อง ถ้าพิมพ์ = นำหน้า ให้คำนวณผลลัพธ์แล้วแทนที่กลับลงตาราง
+        # =================================================================
+        try:
+            row_data = self.sheet.get_row_data(row_idx)
+            for c_idx, cell_val in enumerate(row_data):
+                val_str = str(cell_val).strip()
+                # ตรวจสอบว่าขึ้นต้นด้วย = และมีสมการตามหลัง
+                if val_str.startswith('=') and len(val_str) > 1:
+                    try:
+                        # ลบ = และลูกน้ำออก เพื่อให้คำนวณได้
+                        expr = val_str[1:].replace(',', '')
+                        
+                        # คำนวณผลลัพธ์ (ใช้ eval แบบปลอดภัย ไม่ให้เรียกฟังก์ชันระบบ)
+                        result = eval(expr, {"__builtins__": None}, {})
+                        
+                        # ถ้าผลลัพธ์เป็นตัวเลข ให้ใส่กลับลงไปในช่องเดิมเลย
+                        if isinstance(result, (int, float)):
+                            self.sheet.set_cell_data(row_idx, c_idx, f"{float(result):.2f}", redraw=False)
+                    except Exception:
+                        pass # ถ้าผู้ใช้พิมพ์สูตรผิด (เช่น =100+) ให้มองข้ามไป ไม่ต้องแจ้ง Error
+        except Exception:
+            pass
+        # =================================================================
+
         def get_val(col_name):
             try:
                 val = self.sheet.get_cell_data(row_idx, self.columns.index(col_name))
@@ -338,7 +364,7 @@ class CostBenchmarkScreen(CTkFrame):
                 num_str = "".join([c for c in val_str if c.isdigit() or c == '.'])
                 if num_str: set_val(col_percent, f"{num_str}%", is_text=True)
 
-        # 4. คำนวณสูตร
+        # 4. คำนวณสูตรหลักของระบบ
         qty = get_val("จำนวน")
         weight_per_unit = get_val("น้ำหนัก/เส้น")
         cost_per_unit = get_val("ต้นทุน/เส้น")
