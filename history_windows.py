@@ -2739,7 +2739,8 @@ class SOPopupWindow(CTkToplevel):
             'other_service_fee_vat_calc_var', 'shipping_vat_calc_var',
             'card_fee_vat_calc_var', 'relocation_vat_calc_var',
             'payment_total_var', 'so_grand_total_var', 'difference_amount_var',
-            'cash_required_total_var', 'so_vs_payment_result_var', 'cash_verification_result_var'
+            'cash_required_total_var', 'so_vs_payment_result_var', 'cash_verification_result_var',
+            'cash_service_total_var'  # 🟢 เพิ่มตัวแปรนี้เข้ามาบรรทัดนี้ครับ!
         ]
         for var_name in calc_vars:
             if var_name not in self.so_shared_vars:
@@ -2927,7 +2928,7 @@ class SOPopupWindow(CTkToplevel):
         wht = get_float_from_entry('wht_fee_entry')
         coupons = get_float_from_entry('coupon_value_entry')
 
-        # --- 2. คำนวณ VAT ให้แต่ละรายการ ---
+        # --- 2. คัดแยกยอด VAT กับ ยอด CASH ---
         items_to_process = [
             (sales_amt, w_vars.get('sales_service_vat_option'), w_vars.get('sales_vat_calc_var')),
             (cutting_fee, w_vars.get('cutting_drilling_fee_vat_option'), w_vars.get('cutting_drilling_vat_calc_var')),
@@ -2937,26 +2938,27 @@ class SOPopupWindow(CTkToplevel):
             (relocation_cost, w_vars.get('relocation_cost_vat_option'), w_vars.get('relocation_vat_calc_var'))
         ]
 
-        total_vat = 0.0
-        total_cashable_services = 0.0
+        total_vatable_base = 0.0  
+        total_vat = 0.0           
+        total_cashable_services = 0.0 
 
         for amount, option_var, display_var in items_to_process:
             if not option_var: continue
             
             item_vat = 0.0
             if option_var.get() == "VAT":
+                total_vatable_base += amount
                 item_vat = amount * 0.07
                 total_vat += item_vat
             else:
-                total_cashable_services += amount
+                # ถ้าระบุเป็น CASH (หรือ NO VAT) จะถูกบวกเก็บไว้ที่นี่
+                total_cashable_services += amount 
             
             if display_var:
                 display_var.set(f"VAT: {item_vat:,.2f}")
 
-        # --- 3. คำนวณยอดรวมที่ต้องชำระ (Grand Total) อย่างถูกต้อง ---
-        subtotal = sales_amt + cutting_fee + other_fee + shipping_cost + relocation_cost + card_fee + transfer_fee
-        final_grand_total = (subtotal + total_vat) - coupons - wht
-
+        # --- 3. คำนวณยอดรวมที่ต้องชำระโอน (Grand Total ฝั่ง VAT) ---
+        final_grand_total = (total_vatable_base + total_vat + transfer_fee) - coupons - wht
         w_vars['so_grand_total_var'].set(f"{final_grand_total:,.2f}")
 
         # --- 4. คำนวณส่วนต่างการโอน ---
@@ -2965,11 +2967,10 @@ class SOPopupWindow(CTkToplevel):
         total_payment = payment1 + payment2
         w_vars['payment_total_var'].set(f"{total_payment:,.2f}")
         
-        # ยอดโอน - ยอดที่ต้องจ่าย 
         so_vs_payment_diff = total_payment - final_grand_total
         w_vars['difference_amount_var'].set(f"{so_vs_payment_diff:,.2f}")
 
-        # --- 5. อัปเดต Label สีเขียว/แดง ---
+        # --- 5. อัปเดต Label สีเขียว/แดง (โอนขาด/เกิน) ---
         def set_check_result(label_widget_key, var, diff_val, plus_text, minus_text):
             label_widget_ref = w_widgets.get(label_widget_key)
             if not (label_widget_ref and label_widget_ref.winfo_exists()): return
@@ -2985,11 +2986,18 @@ class SOPopupWindow(CTkToplevel):
 
         set_check_result('so_check_display', w_vars.get('so_vs_payment_result_var'), so_vs_payment_diff, "ยอดโอนเกิน", "ยอดโอนขาด")
 
-        # --- 6. คำนวณยอดเงินสด (Cash) ---
+        # --- 6. คำนวณยอดเงินสด (Cash) 🟢 แก้ไข: เพิ่มการแสดงผลยอดรวมบริการเงินสด ---
+        
+        # แสดงยอดรวมค่าบริการที่ติ๊ก "CASH" ทั้งหมด ออกมาที่หน้าจอ
+        w_vars['cash_service_total_var'].set(f"{total_cashable_services:,.2f}")
+        
         cash_product_val = get_float_from_entry('cash_product_input_entry')
+        
+        # ยอดเงินสดที่ต้องจ่ายทั้งหมด = ค่าสินค้าเงินสด + ค่าบริการเงินสด
         cash_required_total = cash_product_val + total_cashable_services
         w_vars['cash_required_total_var'].set(f"{cash_required_total:,.2f}")
         
+        # ตรวจสอบส่วนต่างเงินสด
         actual_cash_payment = get_float_from_entry('cash_actual_payment_entry')
         cash_diff = actual_cash_payment - cash_required_total
         
@@ -3158,14 +3166,7 @@ class SOPopupWindow(CTkToplevel):
             if var_key in self.so_shared_vars: 
                 updated_data[data_key] = self.so_shared_vars[var_key].get()
 
-        # 4. คำนวณ Grand Total (อิงตามหน้าจอเป๊ะๆ)
-        def calc_vat(amount, option_key):
-            opt = updated_data.get(option_key, 'No VAT')
-            return (amount * 0.07) if opt == 'VAT' else 0.0
-
-        def is_cash(option_key):
-            return updated_data.get(option_key, 'No VAT') != 'VAT'
-
+        # --- 4. 🟢 แก้ไข: คำนวณยอด Grand Total โดยแยก VAT/CASH ออกจากกัน ---
         sales = updated_data.get('sales_service_amount', 0.0)
         cutting = updated_data.get('cutting_drilling_fee', 0.0)
         other = updated_data.get('other_service_fee', 0.0)
@@ -3176,16 +3177,29 @@ class SOPopupWindow(CTkToplevel):
         coupons = updated_data.get('coupons', 0.0)
         wht = updated_data.get('wht_3_percent', 0.0)
 
-        # คำนวณ VAT
-        vat_sum = (calc_vat(sales, 'sales_service_vat_option') + 
-                   calc_vat(cutting, 'cutting_drilling_fee_vat_option') + 
-                   calc_vat(other, 'other_service_fee_vat_option') + 
-                   calc_vat(shipping, 'shipping_vat_option') + 
-                   calc_vat(relocation, 'relocation_cost_vat_option') +
-                   calc_vat(card_fee, 'credit_card_fee_vat_option'))
+        def get_vatable_base(amount, option_key):
+            """คืนค่าจำนวนเงินเฉพาะถ้าเลือกเป็น VAT"""
+            opt = updated_data.get(option_key, 'No VAT')
+            return amount if opt == 'VAT' else 0.0
 
-        # ยอดรวม
-        grand_total_calc = (sales + cutting + other + shipping + relocation + card_fee + transfer_fee + vat_sum) - coupons - wht
+        def is_cash(option_key):
+            """เช็คว่าเลือกเป็น CASH หรือไม่"""
+            return updated_data.get(option_key, 'No VAT') != 'VAT'
+
+        # รวมเฉพาะยอดฐานที่เป็น VAT
+        vatable_base_sum = (
+            get_vatable_base(sales, 'sales_service_vat_option') +
+            get_vatable_base(cutting, 'cutting_drilling_fee_vat_option') +
+            get_vatable_base(other, 'other_service_fee_vat_option') +
+            get_vatable_base(shipping, 'shipping_vat_option') +
+            get_vatable_base(relocation, 'relocation_cost_vat_option') +
+            get_vatable_base(card_fee, 'credit_card_fee_vat_option')
+        )
+        
+        vat_sum = vatable_base_sum * 0.07
+
+        # คำนวณยอดรวมโอน (เอาเฉพาะฐาน VAT + VAT + โอน - คูปอง - WHT)
+        grand_total_calc = (vatable_base_sum + vat_sum + transfer_fee) - coupons - wht
         
         # 5. คำนวณยอดชำระโอน
         p1 = updated_data.get('payment1_amount', 0.0)
@@ -3194,7 +3208,7 @@ class SOPopupWindow(CTkToplevel):
         updated_data['total_payment_amount'] = total_paid
         updated_data['difference_amount'] = total_paid - grand_total_calc
 
-        # 6. คำนวณยอดเงินสด
+        # 6. คำนวณยอดเงินสด (รวมเฉพาะรายการที่เป็น CASH)
         cash_product_input = updated_data.get('cash_product_input', 0.0)
         cash_services = (
             (sales if is_cash('sales_service_vat_option') else 0) +

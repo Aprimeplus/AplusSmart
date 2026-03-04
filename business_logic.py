@@ -17,32 +17,17 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
     if additional_deductions is None: additional_deductions = {}
     total_additional_deductions = sum(additional_deductions.values())
 
-    # ==================================================================================
-    # HELPER: ฟังก์ชันสำหรับเตรียมข้อมูลและคำนวณกำไรสุทธิ (Core Logic)
-    # ==================================================================================
-   
     def prepare_and_calculate_profit(df):
-        # 1. Fill NA ให้ครบทุกฟิลด์ที่ต้องใช้
+        # 1. Fill NA ให้ครบทุกฟิลด์
         cols_to_fix = [
             'sales_service_amount', 'final_cost_amount', 'giveaways', 'brokerage_fee', 
             'difference_amount', 'payment_before_vat', 'payment_no_vat', 
-            
-            # --- [SO Revenue Fields] ---
-            'shipping_cost',       # รายได้ค่าขนส่ง (Site)
-            'relocation_cost',     # รายได้ค่าย้าย (Stock) จาก Delivery Note
-            'so_cutting_rev',      # รายได้ค่าตัด (Revenue)
-            'so_service_rev',      # รายได้บริการอื่นๆ (Revenue)
-            
-            # --- [PO Cost Fields] (แก้ชื่อให้ตรงกับ DB) ---
-            'shipping_to_site_cost',   # <--- แก้จาก po_shipping_site_cost
-            'shipping_to_stock_cost',  # <--- แก้จาก po_shipping_stock_cost
-            'po_cutting_cost',        # PO: ค่าตัด
-            'po_service_cost'         # PO: ค่าบริการ
+            'shipping_cost', 'relocation_cost', 'so_cutting_rev', 'so_service_rev', 
+            'shipping_to_site_cost', 'shipping_to_stock_cost', 'po_cutting_cost', 'po_service_cost'
         ]
         
         for col in cols_to_fix:
-            if col not in df.columns: 
-                df[col] = 0.0
+            if col not in df.columns: df[col] = 0.0
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
         # 2. จัดการ Multiplier
@@ -53,69 +38,62 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
              df['cost_multiplier'] = 1.03
 
         # =========================================================
-        # [🔥 MATCHING LOGIC - ปรับปรุงตามตาราง] 
+        # [🔥 MATCHING LOGIC] 
         # =========================================================
         
-        # 1. คู่ค่าส่งเข้าไซต์ (Site): จับคู่ชนกัน
-        # รายรับ (shipping_cost) vs รายจ่าย (shipping_to_site_cost)
-        deduct_site_shipping = (df['shipping_to_site_cost'] - df['shipping_cost']).clip(lower=0)
+        # --- A. คำนวณส่วนต่างค่าขนส่ง (Excess Cost) ---
+        total_shipping_revenue = df['shipping_cost'] + df['relocation_cost']
+        total_shipping_cost = df['shipping_to_site_cost'] + df['shipping_to_stock_cost']
         
-        # 2. คู่ค่าย้ายเข้าสต็อก (Stock): จับคู่ชนกัน
-        # รายรับ (relocation_cost) vs รายจ่าย (shipping_to_stock_cost)
-        deduct_stock_shipping = (df['shipping_to_stock_cost'] - df['relocation_cost']).clip(lower=0)
+        # Logic: ถ้าขาดทุน (ต้นทุน > รายรับ) ให้เก็บยอดขาดทุนไว้หักกำไร
+        deduct_shipping_total = (total_shipping_cost - total_shipping_revenue).clip(lower=0)
         
-        # 3. คู่ค่าตัด/เจาะ: จับคู่ชนกัน
+        # บันทึกค่าลง DataFrame
+        df['excess_stock_shipping'] = deduct_shipping_total 
+        df['excess_site_shipping'] = 0.0 
+
+        # ค่าตัด/ค่าบริการ
         deduct_cutting = (df['po_cutting_cost'] - df['so_cutting_rev']).clip(lower=0)
-        
-        # 4. คู่ค่าบริการอื่นๆ: จับคู่ชนกัน
         deduct_service = (df['po_service_cost'] - df['so_service_rev']).clip(lower=0)
 
-        # --- คำนวณต้นทุนสินค้าหลัก (Main Cost Calculation) ---
-        # ต้องหักต้นทุนพิเศษออกจาก "ต้นทุนรวมใน PO" ก่อนนำไปคูณ 1.03
-        adjusted_po_cost = df['final_cost_amount'] - df['po_cutting_cost'] - df['po_service_cost']
-        adjusted_po_cost = adjusted_po_cost.clip(lower=0)
+        # --- B. คำนวณต้นทุนสินค้า (Main Cost Calculation) ---
+        # [จุดสำคัญ 1]: เรายังคงรวมค่ารถไว้ในต้นทุน เพื่อให้คูณ 1.03 ตามปกติ
+        product_cost_base = (df['final_cost_amount'] 
+                             - df['po_cutting_cost'] 
+                             - df['po_service_cost']).clip(lower=0)
 
-        # คำนวณต้นทุนรวม Margin (Cost * 1.03)
-        main_cost_calculated = (adjusted_po_cost * df['cost_multiplier'])
+        # ต้นทุนรวม Margin 3% (รวมค่ารถ * 1.03 แล้ว)
+        total_cost_calculated = product_cost_base * df['cost_multiplier']
         
-        # --- คำนวณกำไรสุทธิ (Final Profit) ---
-        # Profit = ยอดขายสินค้า - ต้นทุนสินค้า(x1.03) + ผลต่างโอน - (ส่วนต่างค่าขนส่ง/ค่าบริการต่างๆ)
-        df['profit'] = (df['sales_service_amount'] - main_cost_calculated) \
-                       + df['difference_amount'] \
-                       - deduct_site_shipping \
-                       - deduct_stock_shipping \
-                       - deduct_cutting \
-                       - deduct_service
+        # --- C. คำนวณกำไรสุทธิ (Final Profit) ---
+        # [จุดสำคัญ 2]: เพิ่ม - deduct_shipping_total เพื่อหักยอดขาดทุน 500 บาทออกจากกำไร
+        # สูตร: Profit = ยอดขาย - ต้นทุนรวม(x1.03) + ผลต่างโอน - (ส่วนต่างค่ารถที่ขาดทุน) - ...
+        
+        df['profit'] = (df['sales_service_amount'] - total_cost_calculated) \
+                        + df['difference_amount'] \
+                        - deduct_shipping_total \
+                        - deduct_cutting \
+                        - deduct_service
         
         # คำนวณ Margin %
         df['margin'] = (df['profit'] / df['sales_service_amount'].replace(0, np.nan)) * 100
         df['margin'] = df['margin'].fillna(0)
 
-        # [🔥 เพิ่ม] บันทึกค่า Excess ลง DataFrame เพื่อให้ Plan อื่นเรียกใช้ทำ Report ได้
-        df['excess_site_shipping'] = deduct_site_shipping
-        df['excess_stock_shipping'] = deduct_stock_shipping
-
-        # --- Debug Print (แสดงผลเมื่อมีการหักลบยอด) ---
-        check_sum = deduct_site_shipping.sum() + deduct_stock_shipping.sum() + deduct_cutting.sum() + deduct_service.sum()
-        if check_sum > 0:
+        # --- Debug Print ---
+        if deduct_shipping_total.sum() > 0 or deduct_cutting.sum() > 0:
             print("\n" + "="*60)
-            print(f"🤖 SYSTEM MATCHING REPORT: รายการที่มีการหักลบต้นทุนส่วนเกิน")
+            print(f"🤖 SYSTEM DEBUG: หักส่วนต่างค่ารถเพิ่ม (On Top of Cost)")
             print("="*60)
-            temp_df = df[ (deduct_site_shipping > 0) | (deduct_stock_shipping > 0) | (deduct_cutting > 0) | (deduct_service > 0)]
-            
+            temp_df = df[(deduct_shipping_total > 0) | (deduct_cutting > 0)]
             for index, row in temp_df.iterrows():
                 print(f"📄 SO: {row.get('so_number', 'N/A')}")
-                if deduct_site_shipping[index] > 0:
-                    print(f"   🚚 ค่ารถ Site (Excess): จ่าย {row['shipping_to_site_cost']:,.2f} - รับ {row['shipping_cost']:,.2f} = หักกำไร {deduct_site_shipping[index]:,.2f}")
-                if deduct_stock_shipping[index] > 0:
-                    print(f"   🏭 ค่าย้าย Stock (Excess): จ่าย {row['shipping_to_stock_cost']:,.2f} - รับ {row['relocation_cost']:,.2f} = หักกำไร {deduct_stock_shipping[index]:,.2f}")
-                if deduct_cutting[index] > 0:
-                    print(f"   ✂️ ค่าตัด (Excess): จ่าย {row['po_cutting_cost']:,.2f} - รับ {row['so_cutting_rev']:,.2f} = หักกำไร {deduct_cutting[index]:,.2f}")
+                if deduct_shipping_total[index] > 0:
+                     print(f"   🚚 ค่ารถ (Excess): ขาดทุน {deduct_shipping_total[index]:,.2f} -> หักออกจากกำไรเพิ่ม")
+                print(f"   💰 Profit สุทธิ: {row['profit']:,.2f}")
                 print("-" * 60)
             print("\n")
 
         return df
-
     # ==================================================================================
     # PLAN A
     # ==================================================================================

@@ -1,3 +1,4 @@
+from matplotlib._api import define_aliases
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from customtkinter import CTkFrame, CTkLabel, CTkButton, CTkEntry, CTkFont, CTkScrollableFrame , CTkTabview
@@ -12,6 +13,7 @@ class DailyReportWidget(CTkFrame):
         super().__init__(master, **kwargs)
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
+        self.sale_key_filter = sale_key_filter
         self.current_df = None
         self.sale_key_filter = sale_key_filter
         
@@ -120,7 +122,10 @@ class DailyReportWidget(CTkFrame):
         
         # สร้าง Instance ของ DailyDashboard และวางลงใน tab_dashboard
         # โดยส่ง self.app_container เพื่อให้ dashboard เข้าถึงฐานข้อมูลได้
-        self.dashboard_view = DailyDashboard(self.tab_dashboard, self.app_container)
+        self.dashboard_view = DailyDashboard(
+            self.tab_dashboard, 
+            self.app_container
+        )
         self.dashboard_view.pack(fill="both", expand=True)
         
     def load_report_data(self):
@@ -169,7 +174,6 @@ class DailyReportWidget(CTkFrame):
             if getattr(self, 'sale_key_filter', None):
                 query += " AND c.sale_key = %s"
                 params.append(self.sale_key_filter)
-
             # ปิดท้ายด้วย ORDER BY
             query += " ORDER BY c.so_number ASC"
             
@@ -332,3 +336,4 @@ class DailyReportWidget(CTkFrame):
         except Exception as e:
             messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการบันทึกไฟล์: {e}")
             print(e)
+

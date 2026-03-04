@@ -25,8 +25,8 @@ from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 from simple_async import SimpleAsyncHelper, show_loading_message, hide_loading_message
 from purchasing_windows import SOFinderDialog
 from daily_report_widget import DailyReportWidget
-
-
+from cost_benchmark import CostBenchmarkScreen
+from dashboard_cost import DashboardCostScreen
 
 
 
@@ -1121,6 +1121,7 @@ class PurchasingScreen(CTkFrame):
         self.tasks_window = None
         self.product_management_window = None
         self.polling_job_id = None
+        
 
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(1, weight=1)
 
@@ -1143,6 +1144,25 @@ class PurchasingScreen(CTkFrame):
         
         self.daily_report = DailyReportWidget(report_tab, self.app_container)
         self.daily_report.pack(fill="both", expand=True)
+
+        self.tab_view.add("เทียบราคา (Cost Benchmark)")
+        benchmark_tab = self.tab_view.tab("เทียบราคา (Cost Benchmark)")
+        benchmark_tab.grid_columnconfigure(0, weight=1)
+        benchmark_tab.grid_rowconfigure(0, weight=1)
+        
+        # ดึงหน้าจอจาก cost_benchmark.py มาฝังในแท็บนี้
+        self.cost_benchmark_view = CostBenchmarkScreen(benchmark_tab, self.app_container)
+        self.cost_benchmark_view.pack(fill="both", expand=True)
+
+        self.tab_view.add("Dashboard เทียบราคา")
+        dashboard_cost_tab = self.tab_view.tab("Dashboard เทียบราคา")
+        dashboard_cost_tab.grid_columnconfigure(0, weight=1)
+        dashboard_cost_tab.grid_rowconfigure(0, weight=1)
+        
+        # ดึงหน้าจอ Dashboard มาฝัง
+        self.dashboard_cost_view = DashboardCostScreen(dashboard_cost_tab, self.app_container)
+        self.dashboard_cost_view.pack(fill="both", expand=True)
+        # ==========================================================
 
         self._load_supplier_data()
         self._load_product_master_data()

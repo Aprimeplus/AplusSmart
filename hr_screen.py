@@ -651,222 +651,6 @@ class HRScreen(CTkFrame):
             print(f"Error fetching special services: {e}")
             return pd.DataFrame()
             
-    def _calculate_commission_for_period(self, selected_period=None):
-        if selected_period is None:
-            selected_period = self.process_period_var.get()
-        
-        sale_key = self.selected_sale_for_process.get()
-        if not selected_period or not sale_key or "-" in selected_period:
-            return
-
-        # แยกเดือนและปี
-        month_name, year_be_str = selected_period.split()
-        month_num = self.thai_month_map[month_name]
-        year_ad = int(year_be_str) - 543
-
-        # บันทึกค่างวดไว้ใช้ตอน Save
-        self.current_period_text = selected_period
-        self.selected_month = month_num
-        self.selected_year = year_ad
-
-        # ดึงข้อมูล Plan และ Target
-        plan_info = self.sales_user_info.get(sale_key, {})
-        plan = plan_info.get('plan', 'Plan A')
-        sales_target = float(plan_info.get('target', 0.0))
-
-        # เคลียร์หน้าจอและแสดง Loading
-        for widget in self.process_result_frame.winfo_children(): widget.destroy()
-        loading = self._show_loading(self.process_result_frame)
-
-        try:
-            # --- ดึงข้อมูล Commissions (รวมยอดตกค้าง) ---
-            query_comm = """
-                SELECT c.*, COALESCE(po_costs.total_po_shipping_cost, 0) as total_po_shipping_cost
-                FROM commissions c
-                LEFT JOIN (
-                    SELECT so_number, SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0)) as total_po_shipping_cost
-                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
-                ) po_costs ON c.so_number = po_costs.so_number
-                WHERE c.sale_key = %s 
-                    AND c.status = 'HR Verified' 
-                    AND c.payout_id IS NULL
-                    AND c.is_active = 1
-                    AND (
-                        (c.commission_year < %s) 
-                        OR 
-                        (c.commission_year = %s AND c.commission_month <= %s)
-                    )
-            """
-            
-            params = (sale_key, year_ad, year_ad, month_num)
-            
-            self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
-
-            # บันทึก ID ของ SO ที่จะถูกประมวลผล
-            self.current_so_ids = self.current_comm_df['id'].tolist()
-            
-            # ==============================================================================
-            # [🔥 NEW] ดึงยอดค่าตัด/ค่าบริการ มาเติมใส่ DataFrame (Reconciliation Logic)
-            # ==============================================================================
-            if not self.current_comm_df.empty:
-                # เรียกใช้ Helper Function ที่เพิ่มไปในขั้นตอนก่อนหน้า
-                so_ids_list = self.current_comm_df['id'].tolist()
-                
-                # ดึงข้อมูลจากฟังก์ชัน _get_special_service_amounts
-                special_amounts_df = self._get_special_service_amounts(so_ids_list)
-                
-                if not special_amounts_df.empty:
-                    # Merge ข้อมูลเข้ากับ comm_df หลัก โดยใช้ 'id' เป็นตัวเชื่อม
-                    # ใช้ self.current_comm_df แทน comm_df ตามบริบทของฟังก์ชันนี้
-                    self.current_comm_df = pd.merge(
-                        self.current_comm_df, 
-                        special_amounts_df[['id', 'so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']], 
-                        on='id', 
-                        how='left'
-                    )
-                    
-                    # เติม 0 ในช่องที่ว่าง (กรณีไม่มีข้อมูล) เพื่อป้องกัน Error ตอนคำนวณ
-                    cols_to_fill = ['so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']
-                    for col in cols_to_fill:
-                        if col in self.current_comm_df.columns:
-                            self.current_comm_df[col] = self.current_comm_df[col].fillna(0)
-            # ==============================================================================
-
-            self.current_total_sales = self.current_comm_df['final_sales_amount'].sum()
-            self.current_total_cost = self.current_comm_df['final_cost_amount'].sum()
-
-            if self.current_comm_df.empty:
-                loading.destroy()
-                CTkLabel(self.process_result_frame, text="ไม่พบข้อมูลในงวดที่เลือก").pack(pady=20)
-                return
-            
-            # ==============================================================================
-            # เริ่มการคำนวณ Auto Deduction (หักค่าใช้จ่ายอื่นๆ อัตโนมัติ)
-            # ==============================================================================
-            print("\n" + "="*25)
-            print("### DEBUG: Auto-Deduction Calculation ###")
-
-            # --- ส่วนที่ 1: ส่วนต่างค่าขนส่ง (Shipping) ---
-            print("-" * 15)
-            print("Part 1: Shipping Cost Difference")
-            total_so_shipping = self.current_comm_df['shipping_cost'].sum()
-            total_po_shipping = self.current_comm_df['total_po_shipping_cost'].sum()
-            shipping_deduction = 0.0
-            
-            if total_po_shipping > total_so_shipping:
-                shipping_diff = total_po_shipping - total_so_shipping
-                shipping_deduction = (shipping_diff / 0.2) * 0.0175
-                print(f"  - Difference (PO > SO): {shipping_diff:,.2f}")
-                print(f"  - Shipping Deduction = {shipping_deduction:,.2f}")
-            else:
-                print("  - Condition not met. Shipping Deduction = 0.00")
-
-            # --- ส่วนที่ 2: ส่วนต่างนายหน้า (Brokerage) ---
-            print("-" * 15)
-            print("Part 2: Brokerage Difference")
-            total_brokerage = self.current_comm_df['brokerage_fee'].sum()
-            total_difference = self.current_comm_df['difference_amount'].sum() # ยอดโอนขาด/เกิน
-            difference_deduction = 0.0
-            diff_base = total_brokerage - total_difference
-            
-            if diff_base < 0:
-                positive_diff = abs(diff_base)
-                difference_deduction = (positive_diff / 0.2) * 0.0175
-                print(f"  - Brokerage ({total_brokerage}) < Difference ({total_difference})")
-                print(f"  - Difference Deduction = {difference_deduction:,.2f}")
-            else:
-                print("  - Condition not met. Difference Deduction = 0.00")
-
-            # --- [เพิ่มใหม่] ส่วนที่ 3: การตลาด (คูปอง + ของแถม) ---
-            print("-" * 15)
-            print("Part 3: Marketing Cost (Coupon + Giveaways)")
-            
-            total_coupon = self.current_comm_df['coupons'].sum()
-            total_giveaways = self.current_comm_df['giveaways'].sum()
-            total_marketing = total_coupon + total_giveaways
-            marketing_deduction = 0.0
-
-            if total_marketing > 0:
-                marketing_deduction = (total_marketing / 0.2) * 0.0175
-                print(f"  - Total Coupon: {total_coupon:,.2f}")
-                print(f"  - Total Giveaways: {total_giveaways:,.2f}")
-                print(f"  - Marketing Sum: {total_marketing:,.2f}")
-                print(f"  - Marketing Deduction = {marketing_deduction:,.2f}")
-            else:
-                print("  - No Coupon or Giveaways found.")
-
-            # --- 4. รวมยอดหักอัตโนมัติทั้งหมด ---
-            final_auto_deduction = shipping_deduction + difference_deduction + marketing_deduction
-
-            print("-" * 15)
-            print(f"  - FINAL AUTO DEDUCTION: {final_auto_deduction:,.2f}")
-            print("="*25 + "\n")
-            # ==============================================================================
-
-            df_for_calc = self.current_comm_df.copy()
-            
-            # แปลงค่าว่างเป็น 0.0
-            df_for_calc['final_sales_amount'] = pd.to_numeric(df_for_calc['final_sales_amount'], errors='coerce').fillna(0.0)
-            df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
-            
-            # จัดการค่าดำเนินการ (Operating Fee)
-            default_operating_fee = 0.0
-            default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
-            standard_plan_fee = default_fees.get(plan, 0.0)
-
-            try:
-                # ลองดึงค่าจากช่องกรอกเดิม (ถ้ามี)
-                if hasattr(self, 'operating_fee_entry') and self.operating_fee_entry and self.operating_fee_entry.winfo_exists():
-                    fee_str = self.operating_fee_entry.get()
-                    if fee_str.strip() == "":
-                        default_operating_fee = 0.0
-                    else:
-                        default_operating_fee = utils.convert_to_float(fee_str)
-                else:
-                    # ถ้าเปลี่ยนหน้ามาใหม่ ใช้ค่า Default
-                    default_operating_fee = standard_plan_fee
-
-            except (AttributeError, Exception):
-                default_operating_fee = standard_plan_fee
-            
-            # --- ส่งคำนวณค่าคอมมิชชั่น ---
-            if plan in ['Plan A', 'Plan B', 'Plan C', 'Plan D']:
-                self.initial_commission_result = business_logic.calculate_monthly_commission(
-                    plan_name=plan,
-                    comm_df=df_for_calc,
-                    sales_target=sales_target,
-                    operating_fee=default_operating_fee,
-                    incentives=None,
-                    additional_deductions=None
-                )
-            else:
-                self.initial_commission_result = {'type': 'error', 'message': f'ไม่รู้จัก Plan: {plan}'}
-
-            self.latest_commission_result = self.initial_commission_result
-
-            # --- แสดงผลลัพธ์ ---
-            loading.destroy()
-            result_type = self.initial_commission_result.get('type')
-
-            if result_type in ['no_commission', 'error']:
-                message = self.initial_commission_result.get('message', 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ')
-                CTkLabel(self.process_result_frame, text=message, font=self.label_font, text_color="orange", wraplength=600).pack(pady=30, padx=20)
-            else:
-                if result_type == 'summary_plan_a':
-                    self.commission_details_df = self.initial_commission_result.get('details')
-                else:
-                    self.commission_details_df = None
-                
-                # สร้างหน้าจอ Input พร้อมค่าที่คำนวณได้
-                self._create_hr_input_interface(
-                    auto_deduction_value=final_auto_deduction, # ส่งค่ายอดรวมที่คิดได้ไปแสดง
-                    default_operating_fee_to_display=default_operating_fee 
-                )
-
-        except Exception as e:
-            if loading.winfo_exists(): loading.destroy()
-            traceback.print_exc()
-            messagebox.showerror("Calculation Error", f"เกิดข้อผิดพลาดในการคำนวณ: {e}", parent=self)
 
     def _cancel_so_logic(self, so_number, reason):
         """Logic การยกเลิก SO + PO + Noti + Log"""
@@ -4075,13 +3859,29 @@ class HRScreen(CTkFrame):
         loading = self._show_loading(self.process_result_frame)
 
         try:
-            # --- ดึงข้อมูล Commissions (รวมยอดตกค้าง) ---
+            # ==============================================================================
+            # 🔥 [จุดแก้ไขสำคัญ 1] ปรับ SQL Query ให้ดึงข้อมูล Cost แยกประเภทให้ครบถ้วน
+            # ==============================================================================
             query_comm = """
-                SELECT c.*, COALESCE(po_costs.total_po_shipping_cost, 0) as total_po_shipping_cost
+                SELECT 
+                    c.*, 
+                    -- ดึงค่าแยกย่อยออกมา เพื่อให้ Business Logic นำไปจับคู่คำนวณ Excess ได้ถูกต้อง
+                    COALESCE(po_costs.shipping_to_stock_cost, 0) as shipping_to_stock_cost,
+                    COALESCE(po_costs.shipping_to_site_cost, 0) as shipping_to_site_cost,
+                    COALESCE(po_costs.po_cutting_cost, 0) as po_cutting_cost,
+                    COALESCE(po_costs.po_service_cost, 0) as po_service_cost
                 FROM commissions c
                 LEFT JOIN (
-                    SELECT so_number, SUM(COALESCE(shipping_to_stock_cost, 0) + COALESCE(shipping_to_site_cost, 0)) as total_po_shipping_cost
-                    FROM purchase_orders WHERE status = 'Approved' GROUP BY so_number
+                    SELECT 
+                        so_number, 
+                        -- รวมยอดแยกตามประเภท (จาก PO ที่สถานะ != Cancelled)
+                        SUM(COALESCE(shipping_to_stock_cost, 0)) as shipping_to_stock_cost,
+                        SUM(COALESCE(shipping_to_site_cost, 0)) as shipping_to_site_cost,
+                        SUM(COALESCE(cutting_cost, 0)) as po_cutting_cost,
+                        0 as po_service_cost 
+                    FROM purchase_orders 
+                    WHERE status != 'Cancelled'  -- <-- นับรวม PO ทุกใบที่ไม่ยกเลิก
+                    GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
                 WHERE c.sale_key = %s 
                     AND c.status = 'HR Verified' 
@@ -4101,30 +3901,23 @@ class HRScreen(CTkFrame):
             # บันทึก ID ของ SO ที่จะถูกประมวลผล
             self.current_so_ids = self.current_comm_df['id'].tolist()
             
-            # ==============================================================================
-            # [🔥 NEW] ดึงยอดค่าตัด/ค่าบริการ มาเติมใส่ DataFrame (Reconciliation Logic)
-            # ==============================================================================
+            # Reconciliation Logic (เหมือนเดิม)
             if not self.current_comm_df.empty:
-                # เรียกใช้ Helper Function ที่เพิ่มไปในขั้นตอนก่อนหน้า
                 so_ids_list = self.current_comm_df['id'].tolist()
                 special_amounts_df = self._get_special_service_amounts(so_ids_list)
                 
                 if not special_amounts_df.empty:
-                    # Merge ข้อมูลเข้ากับ comm_df หลัก โดยใช้ 'id' เป็นตัวเชื่อม
-                    # ใช้ self.current_comm_df แทน comm_df ตามบริบทของฟังก์ชันนี้
                     self.current_comm_df = pd.merge(
                         self.current_comm_df, 
                         special_amounts_df[['id', 'so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']], 
                         on='id', 
                         how='left'
                     )
-                    
-                    # เติม 0 ในช่องที่ว่าง (กรณีไม่มีข้อมูล) เพื่อป้องกัน Error ตอนคำนวณ
+                    # เติม 0 ในช่องที่ว่าง
                     cols_to_fill = ['so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']
                     for col in cols_to_fill:
                         if col in self.current_comm_df.columns:
                             self.current_comm_df[col] = self.current_comm_df[col].fillna(0)
-            # ==============================================================================
 
             self.current_total_sales = self.current_comm_df['final_sales_amount'].sum()
             self.current_total_cost = self.current_comm_df['final_cost_amount'].sum()
@@ -4134,97 +3927,51 @@ class HRScreen(CTkFrame):
                 CTkLabel(self.process_result_frame, text="ไม่พบข้อมูลในงวดที่เลือก").pack(pady=20)
                 return
             
-            # ==============================================================================
-            # เริ่มการคำนวณ Auto Deduction (หักค่าใช้จ่ายอื่นๆ อัตโนมัติ)
-            # ==============================================================================
-            print("\n" + "="*25)
-            print("### DEBUG: Auto-Deduction Calculation ###")
-
-            # --- ส่วนที่ 1: ส่วนต่างค่าขนส่ง (Shipping) ---
-            print("-" * 15)
-            print("Part 1: Shipping Cost Difference")
-            total_so_shipping = self.current_comm_df['shipping_cost'].sum()
-            total_po_shipping = self.current_comm_df['total_po_shipping_cost'].sum()
-            shipping_deduction = 0.0
+            # --- Auto Deduction Calculation (เพื่อโชว์บนหน้าจอ HR) ---
+            # 🔥 [จุดแก้ไขสำคัญ 2] คำนวณยอดหักตาม Logic ใหม่ (รวมยอด Shipping)
+            total_so_shipping = self.current_comm_df['shipping_cost'].sum() + self.current_comm_df['relocation_cost'].sum()
+            total_po_shipping = self.current_comm_df['shipping_to_stock_cost'].sum() + self.current_comm_df['shipping_to_site_cost'].sum()
             
+            shipping_deduction = 0.0
             if total_po_shipping > total_so_shipping:
                 shipping_diff = total_po_shipping - total_so_shipping
                 shipping_deduction = (shipping_diff / 0.2) * 0.0175
-                print(f"  - Difference (PO > SO): {shipping_diff:,.2f}")
-                print(f"  - Shipping Deduction = {shipping_deduction:,.2f}")
-            else:
-                print("  - Condition not met. Shipping Deduction = 0.00")
-
-            # --- ส่วนที่ 2: ส่วนต่างนายหน้า (Brokerage) ---
-            print("-" * 15)
-            print("Part 2: Brokerage Difference")
+            
+            # Brokerage / Marketing Deduction (คงเดิม)
             total_brokerage = self.current_comm_df['brokerage_fee'].sum()
-            total_difference = self.current_comm_df['difference_amount'].sum() # ยอดโอนขาด/เกิน
+            total_difference = self.current_comm_df['difference_amount'].sum()
             difference_deduction = 0.0
             diff_base = total_brokerage - total_difference
-            
             if diff_base < 0:
-                positive_diff = abs(diff_base)
-                difference_deduction = (positive_diff / 0.2) * 0.0175
-                print(f"  - Brokerage ({total_brokerage}) < Difference ({total_difference})")
-                print(f"  - Difference Deduction = {difference_deduction:,.2f}")
-            else:
-                print("  - Condition not met. Difference Deduction = 0.00")
+                difference_deduction = (abs(diff_base) / 0.2) * 0.0175
 
-            # --- [เพิ่มใหม่] ส่วนที่ 3: การตลาด (คูปอง + ของแถม) ---
-            print("-" * 15)
-            print("Part 3: Marketing Cost (Coupon + Giveaways)")
-            
-            total_coupon = self.current_comm_df['coupons'].sum()
-            total_giveaways = self.current_comm_df['giveaways'].sum()
-            total_marketing = total_coupon + total_giveaways
-            marketing_deduction = 0.0
+            total_marketing = self.current_comm_df['coupons'].sum() + self.current_comm_df['giveaways'].sum()
+            marketing_deduction = (total_marketing / 0.2) * 0.0175 if total_marketing > 0 else 0.0
 
-            if total_marketing > 0:
-                marketing_deduction = (total_marketing / 0.2) * 0.0175
-                print(f"  - Total Coupon: {total_coupon:,.2f}")
-                print(f"  - Total Giveaways: {total_giveaways:,.2f}")
-                print(f"  - Marketing Sum: {total_marketing:,.2f}")
-                print(f"  - Marketing Deduction = {marketing_deduction:,.2f}")
-            else:
-                print("  - No Coupon or Giveaways found.")
-
-            # --- 4. รวมยอดหักอัตโนมัติทั้งหมด ---
             final_auto_deduction = shipping_deduction + difference_deduction + marketing_deduction
 
-            print("-" * 15)
-            print(f"  - FINAL AUTO DEDUCTION: {final_auto_deduction:,.2f}")
-            print("="*25 + "\n")
-            # ==============================================================================
-
+            # เตรียม Dataframe ส่งไปคำนวณจริง
             df_for_calc = self.current_comm_df.copy()
-            
-            # แปลงค่าว่างเป็น 0.0
             df_for_calc['final_sales_amount'] = pd.to_numeric(df_for_calc['final_sales_amount'], errors='coerce').fillna(0.0)
             df_for_calc['total_revenue'] = df_for_calc['final_sales_amount']
             
-            # จัดการค่าดำเนินการ (Operating Fee)
+            # ค่าดำเนินการ
             default_operating_fee = 0.0
             default_fees = {'Plan A': 25000.00, 'Plan B': 100000.00, 'Plan C': 100000.00, 'Plan D': 750000.00}
             standard_plan_fee = default_fees.get(plan, 0.0)
 
             try:
-                # ลองดึงค่าจากช่องกรอกเดิม (ถ้ามี)
                 if hasattr(self, 'operating_fee_entry') and self.operating_fee_entry and self.operating_fee_entry.winfo_exists():
                     fee_str = self.operating_fee_entry.get()
-                    if fee_str.strip() == "":
-                        default_operating_fee = 0.0
-                    else:
-                        default_operating_fee = utils.convert_to_float(fee_str)
+                    default_operating_fee = utils.convert_to_float(fee_str) if fee_str.strip() else 0.0
                 else:
-                    # ถ้าเปลี่ยนหน้ามาใหม่ ใช้ค่า Default
                     default_operating_fee = standard_plan_fee
-
-            except (AttributeError, Exception):
+            except:
                 default_operating_fee = standard_plan_fee
             
             # --- ส่งคำนวณค่าคอมมิชชั่น ---
             if plan in ['Plan A', 'Plan B', 'Plan C', 'Plan D']:
+                # 🔥 ส่งข้อมูลที่ครบถ้วน (มี column แยกย่อยครบ) ไปให้ Business Logic
                 self.initial_commission_result = business_logic.calculate_monthly_commission(
                     plan_name=plan,
                     comm_df=df_for_calc,

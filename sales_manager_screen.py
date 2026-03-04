@@ -200,12 +200,22 @@ class SalesManagerScreen(CTkFrame):
         button_frame = CTkFrame(header_frame, fg_color="transparent")
         button_frame.pack(side="right", padx=10)
         
+        # 🟢 [เพิ่มตรงนี้] ปุ่ม Export ข้อมูลแบบมี Popup
+        CTkButton(button_frame, text="📥 Export Data SO", 
+                  fg_color="#10B981", hover_color="#059669", font=CTkFont(weight="bold"),
+                  command=self._open_sm_export_dialog).pack(side="left", padx=(0, 10))
+        
         CTkButton(button_frame, text="🔄 Refresh All", command=self._refresh_all_tabs).pack(side="left", padx=5)
         
         CTkButton(button_frame, text="ออกจากระบบ", command=self.app_container.show_login_screen, 
                   fg_color="transparent", border_color="#D32F2F", 
                   text_color="#D32F2F", border_width=2, 
                   hover_color="#FFEBEE").pack(side="left", padx=5)
+
+    # 🟢 [เพิ่มฟังก์ชันนี้เข้าไปในคลาส SalesManagerScreen ด้วย]
+    def _open_sm_export_dialog(self):
+        """เรียกเปิดหน้าต่าง Popup สำหรับ Export"""
+        SMExportDialog(self, self.app_container)
 
     def _refresh_all_tabs(self):
         """รีโหลดข้อมูลทุกแท็บ"""
@@ -312,201 +322,143 @@ class SalesManagerScreen(CTkFrame):
         self.after(200, lambda: [self._update_rejection_chart(), self._load_approval_data()])
 
     def _update_rejection_chart(self):
-        """วาดกราฟแท่งแนวนอนแสดงจำนวนการตีกลับของแต่ละ Sale"""
-        # ล้างกราฟเก่า
+        """วาดกราฟแท่งแนวนอนแสดงจำนวนการตีกลับของแต่ละ Sale (KPI)"""
         for widget in self.chart_area.winfo_children():
             widget.destroy()
 
         try:
-            # ✅ ตั้งค่าฟอนต์ภาษาไทยสำหรับ Matplotlib
             try:
                 plt.rcParams['font.family'] = 'TH Sarabun New'
             except:
-                try:
-                    plt.rcParams['font.family'] = 'Tahoma'
-                except:
-                    plt.rcParams['font.family'] = 'sans-serif'
+                plt.rcParams['font.family'] = 'Tahoma'
             
-            # ดึงข้อมูล
             month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
             year_val = int(self.chart_year_var.get()) - 543
 
-            # เอาบรรทัด AND u.manager_key ออกไป
+            # 🟢 แก้ไขคิวรี่: ใช้ SUM(sm_reject_count) ดึงยอดตีกลับสะสมทั้งหมดของเดือนนั้น
             query = """
-                SELECT u.sale_name, COUNT(c.id) as reject_count
+                SELECT u.sale_name, SUM(COALESCE(c.sm_reject_count, 0)) as reject_count
                 FROM commissions c
                 JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.status = 'Rejected by SM' 
-                  AND c.commission_month = %s 
+                WHERE c.commission_month = %s 
                   AND c.commission_year = %s
                   AND c.is_active = 1
+                  AND c.sm_reject_count > 0
                 GROUP BY u.sale_name
                 ORDER BY reject_count ASC
             """
             
             df = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
             
-
             if df.empty:
-                # ไม่มีข้อมูล - ✅ ตัวอักษรใหญ่ขึ้น
                 empty_frame = CTkFrame(self.chart_area, fg_color="transparent")
                 empty_frame.pack(expand=True, pady=30)
-                
-                CTkLabel(empty_frame, text="✅", 
-                        font=CTkFont(size=48)).pack()
-                CTkLabel(empty_frame, 
-                        text="ไม่มีข้อมูลการตีกลับในรอบเดือนนี้",
-                        font=CTkFont(size=15, weight="bold"),
-                        text_color="#16A34A").pack(pady=(5, 0))
+                CTkLabel(empty_frame, text="✅", font=CTkFont(size=48)).pack()
+                CTkLabel(empty_frame, text="ไม่มีข้อมูลความผิดพลาดในรอบเดือนนี้ (KPI ดีเยี่ยม)",
+                        font=CTkFont(size=15, weight="bold"), text_color="#16A34A").pack(pady=(5, 0))
                 return
 
-            # วาดกราฟ - ✅ ปรับขนาดให้ใหญ่ขึ้น
             num_sales = len(df)
             fig_height = max(2.8, min(5.5, num_sales * 0.6))
             
             fig, ax = plt.subplots(figsize=(9.5, fig_height), dpi=100)
+            bars = ax.barh(df['sale_name'], df['reject_count'], color='#EF4444', height=0.65) # เปลี่ยนสีเป็นแดงสถิติ KPI
             
-            # วาดแท่ง - ✅ แท่งหนาขึ้น
-            bars = ax.barh(df['sale_name'], df['reject_count'], 
-                          color='#FB923C', height=0.65)
-            
-            # ตั้งค่ากราฟ - ✅ เพิ่มขนาดตัวอักษร
-            ax.set_title(f"จำนวนงานที่ถูกตีกลับ (รอบ {self.chart_month_var.get()} {self.chart_year_var.get()})",
+            ax.set_title(f"KPI สถิติความผิดพลาด (รอบ {self.chart_month_var.get()} {self.chart_year_var.get()})",
                         fontweight='bold', fontsize=16, pad=15)
-            ax.set_xlabel("จำนวนครั้ง", fontsize=14, fontweight='bold')
+            ax.set_xlabel("จำนวนครั้งที่ถูกตีกลับสะสม", fontsize=14, fontweight='bold')
             ax.set_ylabel("เซลล์", fontsize=14, fontweight='bold')
             
-            # ✅ ปรับขนาดตัวเลขบนแกน
             ax.tick_params(axis='both', which='major', labelsize=13)
-            
-            # ✅ บังคับให้แกน X เป็นจำนวนเต็ม
             ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
             
-            # Grid - ✅ เส้น Grid หนาขึ้น
             ax.grid(axis='x', alpha=0.3, linestyle='--', linewidth=1.2)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             ax.spines['left'].set_linewidth(1.5)
             ax.spines['bottom'].set_linewidth(1.5)
 
-            # แสดงตัวเลขบนแท่ง - ✅ เพิ่มขนาดและความหนา
             for bar in bars:
                 width = bar.get_width()
                 if width > 0:
                     ax.text(width + 0.15, bar.get_y() + bar.get_height()/2,
-                           f'{int(width)} ครั้ง',
-                           va='center', 
-                           fontsize=13,
-                           fontweight='bold')
+                           f'{int(width)} ครั้ง', va='center', fontsize=13, fontweight='bold')
 
             plt.tight_layout(pad=1.5)
-            
-            # แสดงกราฟ
             canvas = FigureCanvasTkAgg(fig, master=self.chart_area)
             canvas.draw()
             canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
             
         except Exception as e:
             print(f"Chart Error: {traceback.format_exc()}")
-            CTkLabel(self.chart_area, 
-                    text=f"⚠️ เกิดข้อผิดพลาดในการโหลดกราฟ",
-                    font=CTkFont(size=14, weight="bold"),
-                    text_color="#DC2626").pack(expand=True, pady=20)
 
     def _export_rejection_to_excel(self):
-        """Export ข้อมูลการตีกลับเป็น Excel พร้อมรายละเอียด"""
+        """Export ข้อมูลสถิติ KPI การตีกลับเป็น Excel"""
         try:
             month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
             year_val = int(self.chart_year_var.get()) - 543
             
-            # Query ข้อมูลรายละเอียดการตีกลับ
+            # 🟢 อัปเดตคิวรี่: ดึงข้อมูล SO ที่มีประวัติเคยถูกตีกลับ
             query = """
                 SELECT 
                     u.sale_name as "ชื่อเซลล์",
                     c.so_number as "เลขที่ SO",
                     c.customer_name as "ชื่อลูกค้า",
                     c.sales_service_amount as "ยอดขาย (บาท)",
-                    c.rejection_reason as "เหตุผลที่ตีกลับ",
-                    TO_CHAR(c.timestamp::timestamp, 'DD/MM/YYYY HH24:MI') as "วันที่ส่ง SO"
+                    c.sm_reject_count as "จำนวนครั้งที่ถูกตีกลับ",
+                    c.rejection_reason as "เหตุผลล่าสุดที่ถูกตีกลับ"
                 FROM commissions c
                 JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.status = 'Rejected by SM' 
-                  AND c.commission_month = %s 
+                WHERE c.commission_month = %s 
                   AND c.commission_year = %s
                   AND c.is_active = 1
-                ORDER BY u.sale_name, c.timestamp DESC
+                  AND c.sm_reject_count > 0
+                ORDER BY u.sale_name ASC, c.sm_reject_count DESC
             """
             
             df_detail = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
             
             if df_detail.empty:
-                messagebox.showinfo("แจ้งเตือน", 
-                    f"ไม่มีข้อมูลการตีกลับในรอบ {self.chart_month_var.get()} {self.chart_year_var.get()}")
+                messagebox.showinfo("แจ้งเตือน", f"ไม่มีสถิติการตีกลับในรอบ {self.chart_month_var.get()} {self.chart_year_var.get()}")
                 return
             
-            # สรุปจำนวนครั้งต่อคน
-            summary_df = df_detail.groupby('ชื่อเซลล์').size().reset_index(name='จำนวนครั้งที่ถูกตีกลับ')
+            # สร้างหน้าสรุป KPI รวบยอด
+            summary_df = df_detail.groupby('ชื่อเซลล์')['จำนวนครั้งที่ถูกตีกลับ'].sum().reset_index()
             summary_df = summary_df.sort_values('จำนวนครั้งที่ถูกตีกลับ', ascending=False)
             
-            # เลือกที่บันทึกไฟล์
-            default_filename = f"รายงานการตีกลับ_{self.chart_month_var.get()}_{self.chart_year_var.get()}.xlsx"
+            default_filename = f"KPI_รายงานการตีกลับ_{self.chart_month_var.get()}_{self.chart_year_var.get()}.xlsx"
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".xlsx",
                 filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
                 initialfile=default_filename,
-                title="บันทึกรายงานการตีกลับ"
+                title="บันทึกรายงานสถิติ KPI การตีกลับ"
             )
             
-            if not file_path:
-                return  # ยกเลิก
+            if not file_path: return
             
-            # สร้าง Excel Writer
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                # Sheet 1: สรุป
-                summary_df.to_excel(writer, sheet_name='สรุป', index=False)
+                summary_df.to_excel(writer, sheet_name='สรุป KPI รายบุคคล', index=False)
+                df_detail.to_excel(writer, sheet_name='รายละเอียด SO ที่ผิดพลาด', index=False)
                 
-                # Sheet 2: รายละเอียดทั้งหมด
-                df_detail.to_excel(writer, sheet_name='รายละเอียด', index=False)
-                
-                # ปรับความกว้างคอลัมน์
-                workbook = writer.book
-                
-                # Sheet สรุป
-                worksheet1 = writer.sheets['สรุป']
-                worksheet1.column_dimensions['A'].width = 25
+                # จัด Format Excel
+                worksheet1 = writer.sheets['สรุป KPI รายบุคคล']
+                worksheet1.column_dimensions['A'].width = 30
                 worksheet1.column_dimensions['B'].width = 25
                 
-                # Sheet รายละเอียด
-                worksheet2 = writer.sheets['รายละเอียด']
-                worksheet2.column_dimensions['A'].width = 25  # ชื่อเซลล์
-                worksheet2.column_dimensions['B'].width = 20  # SO
-                worksheet2.column_dimensions['C'].width = 30  # ลูกค้า
-                worksheet2.column_dimensions['D'].width = 18  # ยอดขาย
-                worksheet2.column_dimensions['E'].width = 50  # เหตุผล
-                worksheet2.column_dimensions['F'].width = 20  # วันที่
+                worksheet2 = writer.sheets['รายละเอียด SO ที่ผิดพลาด']
+                worksheet2.column_dimensions['A'].width = 25
+                worksheet2.column_dimensions['B'].width = 20
+                worksheet2.column_dimensions['C'].width = 35
+                worksheet2.column_dimensions['D'].width = 18
+                worksheet2.column_dimensions['E'].width = 25
+                worksheet2.column_dimensions['F'].width = 50
                 
-                # จัดรูปแบบ Header
-                from openpyxl.styles import Font, PatternFill, Alignment
-                
-                header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-                header_font = Font(bold=True, color="FFFFFF", size=12)
-                
-                for ws in [worksheet1, worksheet2]:
-                    for cell in ws[1]:
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-            
-            messagebox.showinfo("สำเร็จ", 
-                f"Export ข้อมูลเรียบร้อย!\n\nจำนวนรายการ: {len(df_detail)} รายการ\nบันทึกที่: {file_path}")
-            
-            # เปิดไฟล์
-            if messagebox.askyesno("เปิดไฟล์", "ต้องการเปิดไฟล์ Excel หรือไม่?"):
-                os.startfile(file_path)
+            messagebox.showinfo("สำเร็จ", f"Export ข้อมูล KPI เรียบร้อย!\nบันทึกที่: {file_path}")
+            if os.name == 'nt': os.startfile(file_path)
                 
         except Exception as e:
             messagebox.showerror("Error", f"Export Failed: {str(e)}")
-            print(f"Export Error: {traceback.format_exc()}")
+            print(traceback.format_exc())
 
     def _load_approval_data(self):
         """ดึงรายการรออนุมัติ พร้อมระบบค้นหา"""
@@ -764,16 +716,17 @@ class SalesManagerScreen(CTkFrame):
 
     def _reject_so(self, so_id, so_number):
         """เปิดหน้าต่างเลือกเหตุผลการตีกลับ"""
-        
         def save_rejection(reason):
             conn = None
             try:
                 conn = self.app_container.get_connection()
                 with conn.cursor() as cursor:
+                    # 🟢 แก้ไขตรงนี้: เพิ่ม sm_reject_count = COALESCE(sm_reject_count, 0) + 1
                     cursor.execute("""
                         UPDATE commissions 
                         SET status = 'Rejected by SM', 
-                            rejection_reason = %s 
+                            rejection_reason = %s,
+                            sm_reject_count = COALESCE(sm_reject_count, 0) + 1 
                         WHERE id = %s
                     """, (reason, so_id))
                     
@@ -787,7 +740,7 @@ class SalesManagerScreen(CTkFrame):
                         """, (res[0], f"SO: {so_number} ถูกตีกลับ: {reason}", so_id))
                 
                 conn.commit()
-                messagebox.showinfo("สำเร็จ", f"ตีกลับ SO: {so_number} เรียบร้อยแล้ว")
+                messagebox.showinfo("สำเร็จ", f"ตีกลับ SO: {so_number} เรียบร้อยแล้ว\nระบบบันทึกสถิติความผิดพลาด +1 ครั้ง")
                 self._refresh_all_tabs()
                 
             except Exception as e:
@@ -927,3 +880,144 @@ class SORejectionDialog(CTkToplevel):
         final_reason = ", ".join(selected_reasons)
         self.on_confirm_callback(final_reason)
         self.destroy()
+
+class SMExportDialog(CTkToplevel):
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.pg_engine = app_container.pg_engine
+        
+        self.title("📥 Export ข้อมูล SO ตามรอบคอมมิชชั่น")
+        self.geometry("450x420") # ขยายความสูงหน้าต่างนิดหน่อยเผื่อที่ให้ข้อความ
+        self.grid_columnconfigure(0, weight=1)
+        self.attributes("-topmost", True)
+
+        # --- 1. เตรียมข้อมูล Dropdown ---
+        now = datetime.now()
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
+                            "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
+        
+        current_year_be = now.year + 543
+        self.years = [str(y) for y in range(current_year_be - 2, current_year_be + 2)]
+        
+        self.sales_list = ["ทั้งหมด (All Sales)"]
+        self.sale_mapping = {}
+        self._load_sales_users()
+
+        # --- 2. ตัวแปรเก็บค่าที่เลือก ---
+        self.selected_year = tk.StringVar(value=str(current_year_be))
+        self.selected_month = tk.StringVar(value=self.thai_months[now.month - 1])
+        self.selected_sale = tk.StringVar(value="ทั้งหมด (All Sales)")
+
+        # --- 3. สร้าง UI ---
+        # หัวข้อหลัก (ปรับ pady ด้านล่างให้ชิดข้อความ Note มากขึ้น)
+        CTkLabel(self, text="เลือกเงื่อนไขเพื่อ Export ข้อมูล", font=CTkFont(size=16, weight="bold")).pack(pady=(20, 5))
+        
+        # 🟢 [เพิ่มตรงนี้] ข้อความ Note อธิบายเพิ่มเติม
+        CTkLabel(self, text="* Export Report เพื่อตรวจสอบค่าคอมมิชชั่น ประจำงวด", 
+                 font=CTkFont(size=12), text_color="gray50").pack(pady=(0, 15))
+
+        form_frame = CTkFrame(self, fg_color="transparent")
+        form_frame.pack(fill="x", padx=40)
+        form_frame.grid_columnconfigure(1, weight=1)
+
+        # เปลี่ยนคำให้ชัดเจนขึ้นว่าเป็น "รอบคิดคอมมิชชั่น"
+        CTkLabel(form_frame, text="รอบคอมมิชชั่น (ปี พ.ศ.):", font=CTkFont(size=14)).grid(row=0, column=0, sticky="w", pady=10)
+        CTkOptionMenu(form_frame, variable=self.selected_year, values=self.years).grid(row=0, column=1, sticky="ew", padx=(10, 0))
+
+        CTkLabel(form_frame, text="รอบคอมมิชชั่น (เดือน):", font=CTkFont(size=14)).grid(row=1, column=0, sticky="w", pady=10)
+        CTkOptionMenu(form_frame, variable=self.selected_month, values=self.thai_months).grid(row=1, column=1, sticky="ew", padx=(10, 0))
+
+        # Sale
+        CTkLabel(form_frame, text="พนักงานขาย:", font=CTkFont(size=14)).grid(row=2, column=0, sticky="w", pady=10)
+        CTkOptionMenu(form_frame, variable=self.selected_sale, values=self.sales_list).grid(row=2, column=1, sticky="ew", padx=(10, 0))
+
+        # ปุ่มกด
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=40, pady=30)
+        
+        CTkButton(btn_frame, text="ยกเลิก", fg_color="gray", width=120, command=self.destroy).pack(side="left")
+        CTkButton(btn_frame, text="📥 Export Excel", fg_color="#10B981", hover_color="#059669", 
+                  width=120, command=self._execute_export).pack(side="right")
+    def _load_sales_users(self):
+        """ดึงรายชื่อเซลส์ทั้งหมดมาใส่ใน Dropdown"""
+        try:
+            df = pd.read_sql_query("SELECT sale_key, sale_name FROM sales_users WHERE role = 'Sale' ORDER BY sale_key", self.pg_engine)
+            for _, row in df.iterrows():
+                display_name = f"[{row['sale_key']}] {row['sale_name']}"
+                self.sales_list.append(display_name)
+                self.sale_mapping[display_name] = row['sale_key'] # เก็บ mapping ไว้ค้นหา
+        except Exception as e:
+            print(f"Error loading sales users: {e}")
+
+    def _execute_export(self):
+        # 1. แปลงค่าจาก Dropdown เป็นค่าสำหรับ Database
+        month_num = self.month_map[self.selected_month.get()]
+        year_ad = int(self.selected_year.get()) - 543
+        sale_selection = self.selected_sale.get()
+
+        # 2. สร้าง SQL Query (เอาคอลัมน์สถานะและอัปเดตล่าสุดออก)
+        query = """
+            SELECT 
+                c.so_number AS "เลขที่ SO",
+                c.customer_name AS "ชื่อลูกค้า",
+                c.sales_service_amount AS "ยอดขาย (บาท)",
+                COALESCE(u.sale_name, c.sale_key) AS "พนักงานขาย"
+            FROM commissions c
+            LEFT JOIN sales_users u ON c.sale_key = u.sale_key
+            WHERE c.is_active = 1
+              AND c.commission_month = %s
+              AND c.commission_year = %s
+        """
+        params = [month_num, year_ad]
+
+        # ถ้าเลือกเซลส์คนใดคนหนึ่ง ให้เพิ่มเงื่อนไข
+        if sale_selection != "ทั้งหมด (All Sales)":
+            target_sale_key = self.sale_mapping[sale_selection]
+            query += " AND c.sale_key = %s"
+            params.append(target_sale_key)
+            
+        query += " ORDER BY c.so_number ASC"
+
+        # 3. ดึงข้อมูล
+        try:
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+            
+            if df.empty:
+                messagebox.showinfo("แจ้งเตือน", "ไม่พบข้อมูล SO ตามเงื่อนไขที่เลือก", parent=self)
+                return
+
+            # 4. บันทึกไฟล์
+            sale_str = "All" if sale_selection == "ทั้งหมด (All Sales)" else target_sale_key
+            default_filename = f"SO_Report_{year_ad}_{month_num:02d}_{sale_str}.xlsx"
+            
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                initialfile=default_filename,
+                title="บันทึกไฟล์ Excel",
+                parent=self
+            )
+            
+            if not file_path: return # กดยกเลิก
+            
+            # ตกแต่ง Excel เล็กน้อย (เหลือแค่ 4 คอลัมน์)
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='SO Data', index=False)
+                worksheet = writer.sheets['SO Data']
+                worksheet.column_dimensions['A'].width = 20 # SO Number
+                worksheet.column_dimensions['B'].width = 35 # Customer
+                worksheet.column_dimensions['C'].width = 18 # Sales
+                worksheet.column_dimensions['D'].width = 30 # Sale Name
+            
+            self.destroy()
+            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้ว!\n\nจำนวน: {len(df)} รายการ")
+            
+            # เปิดไฟล์ให้ดูเลย (เฉพาะ Windows)
+            if os.name == 'nt':
+                os.startfile(file_path)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            print(traceback.format_exc())

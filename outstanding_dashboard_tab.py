@@ -9,10 +9,13 @@ class OutstandingDashboardTab(ctk.CTkFrame):
     คลาสสำหรับสร้าง Tab Dashboard ติดตามยอดค้างชำระ 
     (เวอร์ชันปรับปรุง: ดึงรายชื่อ Sale ทั้งหมดมาแสดงในตัวกรอง แม้ไม่มีรายการค้าง)
     """
-    def __init__(self, master, app_container):
-        super().__init__(master, fg_color="transparent")
+    def __init__(self, master, app_container, sale_key_filter=None, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
+
+        # เก็บค่ารหัสเซลส์ไว้ใช้กรองข้อมูล
+        self.sale_key_filter = sale_key_filter
 
         # --- Fonts ---
         self.header_font = ctk.CTkFont(family="Arial", size=14, weight="bold")
@@ -67,7 +70,7 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         """
         print("Fetching all non-paid SO status data...")
         try:
-            # Query ข้อมูล
+            # 🟢 ตัด ORDER BY ออกก่อน เพื่อเอามาต่อทีหลัง
             query = """
                 SELECT 
                     c.sale_key AS "พนักงานขาย",
@@ -98,10 +101,21 @@ class OutstandingDashboardTab(ctk.CTkFrame):
                 WHERE 
                     c.status != 'Paid'
                     AND c.is_active = 1
-                    AND c.difference_amount != 0 -- ดึงเฉพาะที่มีผลต่าง
-                ORDER BY c.bill_date DESC;
+                    AND c.difference_amount != 0
             """
-            df = pd.read_sql_query(query, self.pg_engine)
+            
+            params = []
+            
+            # 🟢 [จุดสำคัญ] เพิ่มเงื่อนไขกรองเฉพาะ Sale ของตัวเอง
+            if getattr(self, 'sale_key_filter', None):
+                query += " AND c.sale_key = %s "
+                params.append(self.sale_key_filter)
+                
+            # ปิดท้ายด้วย ORDER BY
+            query += " ORDER BY c.bill_date DESC;"
+
+            # ดึงข้อมูลพร้อมส่งพารามิเตอร์
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params) if params else None)
 
             if df.empty:
                 print("No active, non-paid SO found.")
@@ -179,32 +193,30 @@ class OutstandingDashboardTab(ctk.CTkFrame):
         filter_bar = ctk.CTkFrame(parent_tab, fg_color="transparent")
         filter_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
         
-        # --- 1. Filter: พนักงานขาย ---
-        ctk.CTkLabel(filter_bar, text="พนักงานขาย:").pack(side="left", padx=(0, 5))
-        
-        # [แก้ไข] ดึงรายชื่อ Sale จาก Master Data มารวมกับคนที่มีรายการในตาราง
-        active_sales = self._fetch_all_active_sales()
-        
-        # ดึงรายชื่อคนที่มีรายการค้างอยู่ (เผื่อคนที่ Inactive ไปแล้วแต่ยังมีรายการค้าง)
-        sales_in_data = []
-        if not data_df.empty and 'พนักงานขาย' in data_df.columns:
-            sales_in_data = data_df['พนักงานขาย'].unique().tolist()
-            
-        # รวมและเรียงลำดับ
-        all_sales = sorted(list(set(active_sales + sales_in_data)))
-        sales_people = ['ทั้งหมด'] + all_sales
-        
+        # สร้างตัวแปรมารองรับไว้ก่อน (ค่าเริ่มต้นคือ "ทั้งหมด")
         sale_var = ctk.StringVar(value="ทั้งหมด")
         
-        # --- 2. Filter: สถานะ ---
+        # --- 1. Filter: พนักงานขาย ---
+        # 🟢 [จุดที่แก้ไข] เช็คว่าถ้าเป็นหน้าจอ HR (ไม่มี sale_key_filter) ค่อยแสดง Dropdown พนักงานขาย
+        if not self.sale_key_filter:
+            ctk.CTkLabel(filter_bar, text="พนักงานขาย:").pack(side="left", padx=(0, 5))
+            
+            active_sales = self._fetch_all_active_sales()
+            sales_in_data = []
+            if not data_df.empty and 'พนักงานขาย' in data_df.columns:
+                sales_in_data = data_df['พนักงานขาย'].unique().tolist()
+                
+            all_sales = sorted(list(set(active_sales + sales_in_data)))
+            sales_people = ['ทั้งหมด'] + all_sales
+            
+            ctk.CTkOptionMenu(filter_bar, variable=sale_var, values=sales_people,
+                command=lambda choice: self._filter_and_update_tab(parent_tab, data_df, choice, status_var.get())
+            ).pack(side="left", padx=5)
+
+        # --- 2. Filter: สถานะ (อันนี้แสดงทั้ง HR และ Sale) ---
         ctk.CTkLabel(filter_bar, text="สถานะ:").pack(side="left", padx=(15, 5))
         status_options = ['ทั้งหมด', 'ค้างชำระ', 'ชำระเกิน', 'ครบถ้วน']
         status_var = ctk.StringVar(value="ทั้งหมด")
-
-        # สร้าง OptionMenu
-        ctk.CTkOptionMenu(filter_bar, variable=sale_var, values=sales_people,
-            command=lambda choice: self._filter_and_update_tab(parent_tab, data_df, choice, status_var.get())
-        ).pack(side="left", padx=5)
 
         ctk.CTkOptionMenu(filter_bar, variable=status_var, values=status_options,
             command=lambda choice: self._filter_and_update_tab(parent_tab, data_df, sale_var.get(), choice)

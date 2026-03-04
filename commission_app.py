@@ -16,6 +16,7 @@ import utils
 from export_utils import DateRangeDialog
 from tkinter import ttk
 from daily_report_widget import DailyReportWidget
+from outstanding_dashboard_tab import OutstandingDashboardTab
 
 class PaymentUpdateWindow(CTkToplevel):
     """หน้าต่าง Pop-up สำหรับอัปเดตข้อมูลการชำระเงินโดยเฉพาะ"""
@@ -761,6 +762,7 @@ class CommissionApp(CTkFrame):
         # สร้าง 2 แท็บ
         self.tab_form = self.main_tabview.add("📝 สร้าง/แก้ไข Sales Order")
         self.tab_report = self.main_tabview.add("📊 รายงานประจำวัน (Daily Report)")
+        self.tab_outstanding = self.main_tabview.add("💸 ยอดค้างชำระ")
 
         self.tab_form.grid_columnconfigure(0, weight=1)
         self.tab_form.grid_rowconfigure(0, weight=1)
@@ -804,6 +806,13 @@ class CommissionApp(CTkFrame):
             sale_key_filter=self.sale_key  # ส่งรหัสเซลส์คนนี้ไปกรองตาราง
         )
         self.daily_report_view.pack(fill="both", expand=True)
+
+        self.outstanding_view = OutstandingDashboardTab(
+            self.tab_outstanding, 
+            app_container=self.app_container,
+            sale_key_filter=self.sale_key  # 🟢 ส่งรหัสเซลส์คนนี้ไปกรองตาราง
+        )
+        self.outstanding_view.pack(fill="both", expand=True)
 
     def _open_my_tasks_window(self):
         if self.tasks_window is None or not self.tasks_window.winfo_exists():

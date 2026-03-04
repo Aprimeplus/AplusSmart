@@ -2515,7 +2515,7 @@ class PayoutCalculationViewer(CTkToplevel):
     def _populate_so_breakdown_tab(self, tab, df):
         """
         แสดงรายการ SO (Breakdown) แบบ Robust พร้อมสีและ Format
-        (อัปเดต: ให้รองรับชื่อคอลัมน์ใหม่ๆ จาก Business Logic ทุก Plan)
+        (อัปเดต: รองรับชื่อคอลัมน์ใหม่จาก Business Logic และคำนวณ Margin ให้ถูกต้อง)
         """
         self._clear_frame(tab)
 
@@ -2533,45 +2533,68 @@ class PayoutCalculationViewer(CTkToplevel):
 
         df_display = df.copy()
 
-        # 🔥 [จุดแก้ไข] เพิ่มคำพ้องความหมายให้ครอบคลุมทุก Plan ('ยอดขายรวม', 'ต้นทุนสินค้า', 'กำไรสุทธิ')
+        # 🔥 [จุดแก้ไข 1] เพิ่มคำพ้องความหมายให้ครบ (ทั้งชื่อ DB และชื่อที่ใช้ใน Code)
         col_mapping = {
             'so_number': ['so_number', 'เลขที่ SO', 'SO Number'],
-            'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า', 'ยอดขายรวม'],
-            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost', 'ต้นทุนสินค้า', 'ต้นทุนรวม'],
-            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)', 'กำไรสุทธิ'],
-            'margin': ['margin', 'Margin (%)', 'final_margin', 'Margin %'],
+            # ยอดขาย: เอา sales_service_amount เป็นหลัก
+            'sales': ['sales_service_amount', 'final_sales_amount', 'ยอดขาย', 'ยอดขายสินค้า', 'ยอดขายรวม'],
+            # ต้นทุน: เอา final_cost_amount เป็นหลัก
+            'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุนรวม', 'cost'],
+            # กำไร: เอา profit เป็นหลัก
+            'profit': ['profit', 'final_gp', 'กำไร', 'กำไรสุทธิ'],
+            # Margin: เอา margin เป็นหลัก
+            'margin': ['margin', 'final_margin', 'Margin (%)', 'Margin %'],
             'status': ['status', 'Status', 'สถานะ'],
             'multiplier': ['cost_multiplier', 'ตัวคูณ']
         }
 
+        # วนลูปแปลงชื่อคอลัมน์ให้เป็นชื่อมาตรฐาน (so_number, sales, cost, ...)
         for target_col, possible_cols in col_mapping.items():
+            # หาว่ามีคอลัมน์ไหนใน df_display ที่ตรงกับ possible_cols บ้าง
             found_col = next((c for c in df_display.columns if c in possible_cols), None)
+            
             if found_col:
+                # ถ้าเจอ ให้ copy ข้อมูลมาใส่ใน target_col
                 if target_col not in ['so_number', 'status']:
+                    # แปลงเป็นตัวเลข (ลบลูกน้ำออกก่อน)
                     df_display[target_col] = df_display[found_col].astype(str).str.replace(',', '', regex=False)
                     df_display[target_col] = pd.to_numeric(df_display[target_col], errors='coerce').fillna(0)
                 else:
                     df_display[target_col] = df_display[found_col]
             else:
-                # Default Multiplier 1.03 ถ้าหาไม่เจอ
+                # ถ้าไม่เจอ ให้ใส่ค่า Default
                 if target_col == 'multiplier':
-                     df_display[target_col] = 1.03 
+                     df_display[target_col] = 1.03  # Default 1.03
+                elif target_col in ['so_number', 'status']:
+                     df_display[target_col] = '-'
                 else:
-                    df_display[target_col] = 0.0 if target_col not in ['so_number', 'status'] else '-'
+                    df_display[target_col] = 0.0
 
-        # --- คำนวณต้นทุนรวมตัวคูณ และตั้งชื่อหัวข้อ ---
+        # 🔥 [จุดแก้ไข 2] คำนวณ "ต้นทุนที่คูณ Margin แล้ว" เพื่อแสดงผล
         cost_header = "ต้นทุน (Net)"
         
+        # ตรวจสอบว่ามี multiplier > 1 หรือไม่
         if df_display['multiplier'].max() > 1.001:
             max_mult = df_display['multiplier'].max()
             percent_add = int((max_mult - 1) * 100)
             cost_header = f"ต้นทุน (+{percent_add}%)"
 
-            # คูณตัวเลขต้นทุนจริงๆ
+            # คูณตัวเลขต้นทุนให้เห็นชัดๆ (เฉพาะแสดงผล)
+            # หมายเหตุ: ใน Business Logic เขาคูณมาแล้วหรือยัง? 
+            # ปกติใน breakdown_df จาก business_logic.py ค่า 'final_cost_amount' มักจะเป็นค่าดิบ (Raw Cost)
+            # เราจึงควรคูณโชว์เพื่อให้ User เห็นยอดที่นำไปหักลบจริง
             df_display['cost'] = df_display['cost'] * df_display['multiplier']
         
-        # คำนวณ Profit/Margin สดๆ อีกรอบ
-        df_display['profit'] = df_display['sales'] - df_display['cost']
+        # 🔥 [จุดแก้ไข 3] คำนวณ Profit/Margin ใหม่สดๆ จากตัวเลขที่เตรียมไว้
+        # Profit = Sales - Cost(ที่คูณแล้ว)
+        # (หมายเหตุ: สูตรนี้เป็นการประมาณการเบื้องต้นสำหรับโชว์ในตาราง 
+        # ค่า Profit จริงๆ ที่แม่นยำที่สุดควรมาจากคอลัมน์ 'profit' ที่ business_logic คำนวณมาให้แล้ว)
+        
+        # ถ้าค่า profit เป็น 0 ทั้งหมด (แสดงว่าหาไม่เจอ) ให้ลองคำนวณเอง
+        if df_display['profit'].sum() == 0 and df_display['sales'].sum() > 0:
+             df_display['profit'] = df_display['sales'] - df_display['cost']
+        
+        # คำนวณ Margin % ใหม่เพื่อให้สอดคล้องกับตัวเลข
         df_display['margin'] = df_display.apply(
             lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
         )
@@ -2582,6 +2605,7 @@ class PayoutCalculationViewer(CTkToplevel):
             'profit': 'กำไร', 'margin': 'Margin %', 'status': 'สถานะ'
         }
 
+        # --- สร้าง Treeview ---
         style = ttk.Style(self)
         style.theme_use("clam")
         header_font = ("Tahoma", 11, "bold")
@@ -2593,19 +2617,24 @@ class PayoutCalculationViewer(CTkToplevel):
         tree = ttk.Treeview(tree_frame, columns=final_columns, show="headings", style="Breakdown.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
 
+        # Config Tags
         tree.tag_configure('Normal', background='#DCFCE7', foreground='#166534')      
         tree.tag_configure('Below Tier', background='#FEE2E2', foreground='#991B1B')  
         tree.tag_configure('Paid', background='#E0E7FF', foreground='#3730A3')        
         tree.tag_configure('Default', background='white')
 
+        # Config Columns
         for col in final_columns:
             anchor = 'center' if col in ['so_number', 'status'] else 'e'
             width = 150 if col == 'so_number' else 120
             tree.heading(col, text=header_labels.get(col, col))
             tree.column(col, width=width, anchor=anchor)
 
+        # Insert Data
         for _, row in df_display.iterrows():
             values = []
+            
+            # Determine Status Tag
             status_val = str(row['status'])
             tag = 'Default'
             if any(x in status_val for x in ['Normal', 'ผ่านเกณฑ์', '>=10']): tag = 'Normal'
@@ -2621,11 +2650,12 @@ class PayoutCalculationViewer(CTkToplevel):
             
             tree.insert("", "end", values=tuple(values), tags=(tag,))
 
+        # Scrollbar
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
         
-        # ผูก Double Click เปิดดู SO Detail (ถ้ามี)
+        # Double Click Event
         if hasattr(self, '_on_so_row_double_click'):
             tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e))
 
@@ -2727,7 +2757,7 @@ class CalculationDetailViewer(CTkToplevel):
     def _populate_so_breakdown_tab(self, tab, df):
         """
         แสดงรายการ SO (Breakdown) แบบ Robust พร้อมสีและ Format
-        (อัปเดต: ให้รองรับชื่อคอลัมน์ใหม่ๆ จาก Business Logic ทุก Plan)
+        (อัปเดต: เชื่อค่า Profit จาก Business Logic เพื่อความถูกต้องแม่นยำ)
         """
         self._clear_frame(tab)
 
@@ -2745,12 +2775,12 @@ class CalculationDetailViewer(CTkToplevel):
 
         df_display = df.copy()
 
-        # 🔥 [จุดแก้ไข] เพิ่มคำพ้องความหมายให้ครอบคลุมทุก Plan ('ยอดขายรวม', 'ต้นทุนสินค้า', 'กำไรสุทธิ')
+        # 1. Mapping Column ชื่อต่างๆ ให้เป็นมาตรฐาน
         col_mapping = {
             'so_number': ['so_number', 'เลขที่ SO', 'SO Number'],
             'sales': ['sales_service_amount', 'ยอดขาย', 'ยอดขาย (Base)', 'final_sales_amount', 'ยอดขายสินค้า', 'ยอดขายรวม'],
             'cost': ['final_cost_amount', 'ต้นทุน', 'ต้นทุน (Net)', 'cost', 'final_cost', 'ต้นทุนสินค้า', 'ต้นทุนรวม'],
-            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)', 'กำไรสุทธิ'],
+            'profit': ['profit', 'กำไร', 'final_gp', 'กำไร (Profit)', 'กำไรสุทธิ'], # <--- ค่านี้คือ 11,615.89 ที่ถูกต้อง
             'margin': ['margin', 'Margin (%)', 'final_margin', 'Margin %'],
             'status': ['status', 'Status', 'สถานะ'],
             'multiplier': ['cost_multiplier', 'ตัวคูณ']
@@ -2765,25 +2795,28 @@ class CalculationDetailViewer(CTkToplevel):
                 else:
                     df_display[target_col] = df_display[found_col]
             else:
-                # Default Multiplier 1.03 ถ้าหาไม่เจอ
                 if target_col == 'multiplier':
                      df_display[target_col] = 1.03 
                 else:
                     df_display[target_col] = 0.0 if target_col not in ['so_number', 'status'] else '-'
 
-        # --- คำนวณต้นทุนรวมตัวคูณ และตั้งชื่อหัวข้อ ---
+        # 2. คำนวณต้นทุนรวมตัวคูณ (เพื่อการแสดงผล)
         cost_header = "ต้นทุน (Net)"
-        
         if df_display['multiplier'].max() > 1.001:
             max_mult = df_display['multiplier'].max()
             percent_add = int((max_mult - 1) * 100)
             cost_header = f"ต้นทุน (+{percent_add}%)"
-
-            # คูณตัวเลขต้นทุนจริงๆ
             df_display['cost'] = df_display['cost'] * df_display['multiplier']
         
-        # คำนวณ Profit/Margin สดๆ อีกรอบ
-        df_display['profit'] = df_display['sales'] - df_display['cost']
+        # 3. 🔥 [จุดแก้ไขสำคัญ] 
+        # เดิม: df_display['profit'] = df_display['sales'] - df_display['cost']  <-- บรรทัดนี้ผิด เพราะมันไม่รู้เรื่องหัก 500
+        # ใหม่: เราจะไม่คำนวณใหม่ถ้ามีค่าอยู่แล้ว!
+        
+        # เช็คว่าถ้า Profit เป็น 0 หมด (แปลว่าไม่มีข้อมูลมา) ถึงค่อยคำนวณเอง
+        if df_display['profit'].sum() == 0 and df_display['sales'].sum() > 0:
+             df_display['profit'] = df_display['sales'] - df_display['cost']
+        
+        # แต่ Margin % คำนวณใหม่ได้ (Profit / Sales)
         df_display['margin'] = df_display.apply(
             lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
         )
@@ -2827,7 +2860,7 @@ class CalculationDetailViewer(CTkToplevel):
             values.append(row['so_number'])
             values.append(f"{row['sales']:,.2f}")
             values.append(f"{row['cost']:,.2f}")
-            values.append(f"{row['profit']:,.2f}")
+            values.append(f"{row['profit']:,.2f}") # <--- ตอนนี้จะเป็น 11,615.89 แล้ว
             values.append(f"{row['margin']:,.2f}%")
             values.append(status_val)
             
@@ -2837,7 +2870,6 @@ class CalculationDetailViewer(CTkToplevel):
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
         
-        # ผูก Double Click เปิดดู SO Detail (ถ้ามี)
         if hasattr(self, '_on_so_row_double_click'):
             tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e))
 
