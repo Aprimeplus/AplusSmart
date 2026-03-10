@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 from customtkinter import (
     CTkFrame, CTkLabel, CTkFont, CTkButton,
-    CTkOptionMenu, CTkScrollableFrame
+    CTkOptionMenu, CTkScrollableFrame, CTkComboBox  # 🟢 เพิ่ม CTkComboBox เข้ามา
 )
 import pandas as pd
 import psycopg2.extras
@@ -59,6 +59,8 @@ class DashboardCostScreen(CTkFrame):
         self.grid_rowconfigure(0, weight=1)
 
         self.raw_df = pd.DataFrame()
+        self.all_order_nos = [] 
+        self.all_sale_order_nos = [] # 🟢 เพิ่มตัวแปรเก็บรายชื่อ Sale Order No. ทั้งหมด
 
         self._build_sidebar()
         self._build_main_content()
@@ -81,21 +83,25 @@ class DashboardCostScreen(CTkFrame):
                  font=CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
                  text_color="#FFFFFF").pack(side="left", padx=10, pady=12)
 
-        # 🟢 เพิ่มตัวแปร Filter ให้ครบตามที่ต้องการ
+        # 🟢 เพิ่มตัวแปร sale_order_no เข้ามาใน Dictionary
         self.filter_vars = {
-            "pu_user":   tk.StringVar(value="All"),
-            "sale_name": tk.StringVar(value="All"),
-            "supplier":  tk.StringVar(value="All"),
-            "status":    tk.StringVar(value="All"),
-            "priority":  tk.StringVar(value="All"),
-            "select":    tk.StringVar(value="All"),
-            "year":      tk.StringVar(value="All"),
-            "month":     tk.StringVar(value="All"),
+            "order_no":      tk.StringVar(value="All"),
+            "sale_order_no": tk.StringVar(value="All"), # 🟢 เพิ่ม Sale Order No.
+            "pu_user":       tk.StringVar(value="All"),
+            "sale_name":     tk.StringVar(value="All"),
+            "supplier":      tk.StringVar(value="All"),
+            "status":        tk.StringVar(value="All"),
+            "priority":      tk.StringVar(value="All"),
+            "select":        tk.StringVar(value="All"),
+            "year":          tk.StringVar(value="All"),
+            "month":         tk.StringVar(value="All"),
         }
         self.filter_menus = {}
 
-        # 🟢 ตั้งค่าป้ายกำกับและตัวแปรผูกมัด
+        # 🟢 ตั้งค่าป้ายกำกับและตัวแปรผูกมัด (จัด Sale Order No. ให้อยู่ด้านบนคู่กัน)
         filters_config = [
+            ("🔍 Order No. (พิมพ์ค้นหา)", "order_no"),
+            ("🔍 Sale Order No. (พิมพ์ค้นหา)", "sale_order_no"), # 🟢 เพิ่มเมนู Sale Order No.
             ("ผู้ทำตาราง (PU User)", "pu_user"),
             ("ชื่อ Sale",        "sale_name"),
             ("ชื่อ Supplier",    "supplier"),
@@ -112,22 +118,51 @@ class DashboardCostScreen(CTkFrame):
                            text_color=COLORS["text_medium"])
             lbl.pack(anchor="w", padx=12, pady=(8, 1))
 
-            menu = CTkOptionMenu(
-                sidebar,
-                variable=self.filter_vars[key],
-                values=["All"],
-                width=190,
-                height=30,
-                fg_color=COLORS["filter_bg"],
-                text_color=COLORS["text_dark"],
-                button_color=COLORS["filter_border"],
-                button_hover_color=COLORS["header_blue"],
-                dropdown_fg_color=COLORS["bg_white"],
-                dropdown_text_color=COLORS["text_dark"],
-                font=CTkFont(family=FONT_FAMILY, size=12),
-                command=self._apply_filters,
-            )
-            menu.pack(fill="x", padx=12, pady=(0, 2))
+            # 🟢 ให้ Order No. และ Sale Order No. ใช้ CTkComboBox เพื่อให้พิมพ์ค้นหาได้
+            if key in ["order_no", "sale_order_no"]:
+                menu = CTkComboBox(
+                    sidebar,
+                    variable=self.filter_vars[key],
+                    values=["All"],
+                    width=190, height=30,
+                    fg_color=COLORS["bg_white"],
+                    text_color=COLORS["text_dark"],
+                    border_color=COLORS["filter_border"],
+                    button_color=COLORS["filter_border"],
+                    button_hover_color=COLORS["header_blue"],
+                    dropdown_fg_color=COLORS["bg_white"],
+                    dropdown_text_color=COLORS["text_dark"],
+                    font=CTkFont(family=FONT_FAMILY, size=12),
+                    command=self._apply_filters
+                )
+                menu.pack(fill="x", padx=12, pady=(0, 2))
+                
+                # ผูกคำสั่งแยกกันตามช่อง
+                if key == "order_no":
+                    menu.bind("<KeyRelease>", self._on_order_search)
+                else:
+                    menu.bind("<KeyRelease>", self._on_sale_order_search) # 🟢 ผูกคำสั่งค้นหา Sale Order No.
+                    
+                menu.bind("<Return>", self._apply_filters)
+                
+            else:
+                # 🟢 ตัวอื่นๆ ใช้ CTkOptionMenu (คลิกเลือกแบบเดิม)
+                menu = CTkOptionMenu(
+                    sidebar,
+                    variable=self.filter_vars[key],
+                    values=["All"],
+                    width=190, height=30,
+                    fg_color=COLORS["filter_bg"],
+                    text_color=COLORS["text_dark"],
+                    button_color=COLORS["filter_border"],
+                    button_hover_color=COLORS["header_blue"],
+                    dropdown_fg_color=COLORS["bg_white"],
+                    dropdown_text_color=COLORS["text_dark"],
+                    font=CTkFont(family=FONT_FAMILY, size=12),
+                    command=self._apply_filters,
+                )
+                menu.pack(fill="x", padx=12, pady=(0, 2))
+            
             self.filter_menus[key] = menu
 
         # Divider
@@ -141,6 +176,34 @@ class DashboardCostScreen(CTkFrame):
             corner_radius=6, height=36,
             command=self._load_data_from_db
         ).pack(fill="x", padx=12, pady=(0, 20))
+
+    # 🟢 ฟังก์ชันอัจฉริยะ สำหรับค้นหา Order No. ใน Dropdown แบบเรียลไทม์
+    def _on_order_search(self, event):
+        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return']:
+            return 
+        typed_text = self.filter_vars["order_no"].get().lower()
+        if typed_text == "" or typed_text == "all":
+            self.filter_menus["order_no"].configure(values=["All"] + self.all_order_nos)
+        else:
+            matching_orders = [order for order in self.all_order_nos if typed_text in str(order).lower()]
+            if matching_orders:
+                self.filter_menus["order_no"].configure(values=matching_orders)
+            else:
+                self.filter_menus["order_no"].configure(values=["ไม่พบข้อมูล"])
+
+    def _on_sale_order_search(self, event):
+        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return']:
+            return 
+        typed_text = self.filter_vars["sale_order_no"].get().lower()
+        if typed_text == "" or typed_text == "all":
+            self.filter_menus["sale_order_no"].configure(values=["All"] + self.all_sale_order_nos)
+        else:
+            matching_orders = [order for order in self.all_sale_order_nos if typed_text in str(order).lower()]
+            if matching_orders:
+                self.filter_menus["sale_order_no"].configure(values=matching_orders)
+            else:
+                self.filter_menus["sale_order_no"].configure(values=["ไม่พบข้อมูล"])
+
 
     # =========================================================
     # MAIN CONTENT
@@ -249,7 +312,6 @@ class DashboardCostScreen(CTkFrame):
             "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)",
         ]
 
-        # 🟢 แก้ไข Mapping ให้ดึงข้อมูล Select ได้
         self.col_source = {
             "Selec\nt":                          "Select", 
             "วันที่ขอราคา":                      "วันที่ขอราคา",
@@ -364,7 +426,6 @@ class DashboardCostScreen(CTkFrame):
     def _load_data_from_db(self):
         conn = self.app_container.get_connection()
         try:
-            # 🟢 [จุดสำคัญ] เปลี่ยนการ Query เป็นดึงมา "ทั้งหมด" เพื่อให้ Dashboard เป็นแบบส่วนกลาง
             query = "SELECT * FROM cost_benchmarks"
             df = pd.read_sql(query, conn)
 
@@ -425,21 +486,37 @@ class DashboardCostScreen(CTkFrame):
 
         # 🟢 ผูกชื่อตัวแปร Filter กับชื่อคอลัมน์ในตาราง Database
         mapping = {
-            "pu_user":   "created_by",      # ผู้ทำตาราง (PU User)
-            "sale_name": "ชื่อ Sale",
-            "supplier":  "ชื่อ Supplier",
-            "status":    "สถานะ",
-            "priority":  "PRIORITY",
-            "select":    "Select",
-            "year":      "benchmark_year",
-            "month":     "benchmark_month",
+            "order_no":      "Order No.",
+            "sale_order_no": "Sale Order No.", # 🟢 เพิ่ม Sale Order No.
+            "pu_user":       "created_by",      
+            "sale_name":     "ชื่อ Sale",
+            "supplier":      "ชื่อ Supplier",
+            "status":        "สถานะ",
+            "priority":      "PRIORITY",
+            "select":        "Select",
+            "year":          "benchmark_year",
+            "month":         "benchmark_month",
         }
         
         for key, col in mapping.items():
             vals = uniq(col)
+            
+            # เก็บ Data ทั้งหมดแยกไว้ สำหรับระบบพิมพ์ค้นหา
+            if key == "order_no":
+                self.all_order_nos = [v for v in vals if v != "All"]
+            elif key == "sale_order_no": # 🟢 เก็บของ Sale Order No. ด้วย
+                self.all_sale_order_nos = [v for v in vals if v != "All"]
+                
             self.filter_menus[key].configure(values=vals)
-            if self.filter_vars[key].get() not in vals:
-                self.filter_vars[key].set("All")
+            
+            # ถ้าค่าเดิมที่ตั้งไว้ไม่มีในลิสต์ (และไม่ใช่การค้นหาแบบอิสระ) ให้ปรับกลับเป็น All
+            if self.filter_vars[key].get() not in vals and self.filter_vars[key].get() != "All":
+                if key == "order_no" and self.filter_vars[key].get() in self.all_order_nos:
+                    pass # ปล่อยผ่านถ้าค่าที่พิมพ์อยู่มันมีในลิสต์ Data ดิบ
+                elif key == "sale_order_no" and self.filter_vars[key].get() in self.all_sale_order_nos:
+                    pass # ปล่อยผ่านสำหรับ Sale order
+                else:
+                    self.filter_vars[key].set("All")
 
     # =========================================================
     # APPLY FILTERS
@@ -454,20 +531,26 @@ class DashboardCostScreen(CTkFrame):
 
         # 🟢 กรองข้อมูลตาม Dropdown ที่เลือก
         col_map = {
-            "pu_user":   "created_by",
-            "sale_name": "ชื่อ Sale",
-            "supplier":  "ชื่อ Supplier",
-            "status":    "สถานะ",
-            "priority":  "PRIORITY",
-            "select":    "Select",
-            "year":      "benchmark_year",
-            "month":     "benchmark_month",
+            "order_no":      "Order No.",
+            "sale_order_no": "Sale Order No.", # 🟢 เพิ่ม Sale Order No.
+            "pu_user":       "created_by",
+            "sale_name":     "ชื่อ Sale",
+            "supplier":      "ชื่อ Supplier",
+            "status":        "สถานะ",
+            "priority":      "PRIORITY",
+            "select":        "Select",
+            "year":          "benchmark_year",
+            "month":         "benchmark_month",
         }
         
         for key, col in col_map.items():
             val = self.filter_vars[key].get()
-            if val != "All" and col in df.columns:
-                df = df[df[col].astype(str) == str(val)]
+            if val != "All" and val != "" and col in df.columns:
+                # 🟢 ให้ช่อง Order No. และ Sale Order No. กรองตารางแบบ เจอคำบางส่วนก็แสดงให้เลย
+                if key in ["order_no", "sale_order_no"]:
+                    df = df[df[col].astype(str).str.contains(val, case=False, na=False)]
+                else:
+                    df = df[df[col].astype(str) == str(val)]
 
         self._update_kpis(df)
         self._update_table(df)
@@ -493,8 +576,14 @@ class DashboardCostScreen(CTkFrame):
                         if "ต้นทุนรวม (รวมย้าย)" in df_active.columns else 0)
         total_sales  = (df_active["ราคาขาย รวม"].sum()
                         if "ราคาขาย รวม" in df_active.columns else 0)
-        avg_margin   = (df_active["Markup Guide (%)"].mean()
-                        if "Markup Guide (%)" in df_active.columns else 0)
+                        
+        # 🟢 [แก้ไข] คำนวณ Markup เฉลี่ย โดยไม่เอาเลข 0 มาคิด
+        if "Markup Guide (%)" in df_active.columns:
+            margin_series = pd.to_numeric(df_active["Markup Guide (%)"], errors='coerce').dropna()
+            margin_non_zero = margin_series[margin_series != 0] # ตัดเลข 0 ทิ้ง
+            avg_margin = margin_non_zero.mean() if not margin_non_zero.empty else 0
+        else:
+            avg_margin = 0
 
         self.kpi_labels["total_orders"].configure(text=f"{total_orders:,}")
         self.kpi_labels["total_qty"].configure(text=f"{total_qty:,.0f}")
@@ -506,7 +595,9 @@ class DashboardCostScreen(CTkFrame):
             else f"฿{total_sales:,.0f}")
         self.kpi_labels["avg_margin"].configure(
             text=f"{avg_margin:,.2f}%" if pd.notna(avg_margin) else "0.00%")
-
+    # =========================================================
+    # TABLE UPDATE
+    # =========================================================
     # =========================================================
     # TABLE UPDATE
     # =========================================================
@@ -584,6 +675,7 @@ class DashboardCostScreen(CTkFrame):
                 "ราคาขาย /\nกก.":                  "ราคาขาย / กก.",
             }
 
+            # 🟢 1. คำนวณผลรวม (Sum)
             for dcol, src in sum_map.items():
                 idx = cidx(dcol)
                 if idx < 0 or src not in df.columns:
@@ -601,14 +693,24 @@ class DashboardCostScreen(CTkFrame):
                 except Exception:
                     pass
 
+            # 🟢 2. คำนวณค่าเฉลี่ย (Average) แบบไม่เอาเลข 0 มาคิด
             for dcol, src in avg_map.items():
                 idx = cidx(dcol)
                 if idx < 0 or src not in df.columns:
                     continue
                 try:
+                    # แปลงข้อมูลเป็นตัวเลขและตัดค่าว่าง (NaN) ทิ้ง
                     series = pd.to_numeric(df[src], errors='coerce').dropna()
-                    if series.empty: continue
-                    m = series.mean()
+                    
+                    # กรองเอาเฉพาะตัวเลขที่ "ไม่เท่ากับ 0"
+                    series_non_zero = series[series != 0]
+                    
+                    if series_non_zero.empty: 
+                        continue
+                        
+                    # หาค่าเฉลี่ยจากข้อมูลที่ไม่มีเลข 0 แล้ว
+                    m = series_non_zero.mean()
+                    
                     if pd.notna(m):
                         if dcol in money_cols:
                             total_row[idx] = f"฿{float(m):,.2f}"

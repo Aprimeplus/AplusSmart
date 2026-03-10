@@ -1,9 +1,10 @@
 import tkinter as tk
 from tkinter import messagebox
-from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkButton, CTkOptionMenu
+from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkButton, CTkOptionMenu, CTkEntry
 import pandas as pd
 import psycopg2.extras
 from datetime import datetime
+import re
 
 # ติดตั้งด้วย: pip install tksheet
 try:
@@ -63,6 +64,12 @@ class CostBenchmarkScreen(CTkFrame):
                   
         CTkButton(btn_frame, text="🗑️ ลบบรรทัด", fg_color="#EF4444", hover_color="#DC2626",
                   command=self._delete_selected_rows).pack(side="left", padx=5)
+
+        CTkButton(btn_frame, text="🙈 ซ่อนคอลัมน์", fg_color="#F59E0B", hover_color="#D97706",
+                  command=self._hide_selected_columns).pack(side="left", padx=5)
+                  
+        CTkButton(btn_frame, text="👁️ แสดงคอลัมน์", fg_color="#8B5CF6", hover_color="#7C3AED",
+                  command=self._show_all_columns).pack(side="left", padx=5)
                   
         CTkButton(btn_frame, text="➕ เพิ่มบรรทัดใหม่",
                   command=self._add_new_row).pack(side="left", padx=5)
@@ -99,11 +106,30 @@ class CostBenchmarkScreen(CTkFrame):
         self.current_item_label.pack(pady=8, padx=15, anchor="w")
         # ================================================================== #
 
+        self.target_formula_cell = None
+        
+        self.formula_frame = CTkFrame(self, fg_color="#F8FAFC", corner_radius=8, border_width=1, border_color="#CBD5E1")
+        self.formula_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 10)) # 🟢 วางไว้แถวที่ 2
+        
+        CTkLabel(self.formula_frame, text=" 𝑓x ", font=CTkFont(family="Arial", size=18, weight="bold", slant="italic"), text_color="#16A34A").pack(side="left", padx=10, pady=5)
+        
+        self.formula_entry = CTkEntry(self.formula_frame, font=CTkFont(size=14), placeholder_text="คลิกช่องปลายทาง -> คลิกที่นี่ -> พิมพ์ = แล้วใช้เมาส์จิ้มเซลล์ในตารางได้เลย!", border_width=0, fg_color="transparent")
+        self.formula_entry.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=5)
+        
+        self.formula_entry.bind("<FocusIn>", self._on_formula_focus_in)
+        self.formula_entry.bind("<Return>", self._apply_formula_from_bar)
+        # ================================================================== #
+
         # --- 3. ตาราง ---
         table_frame = tk.Frame(self, bg="white")
-        table_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        # 🟢 เปลี่ยนจาก row=2 เป็น row=3 เพื่อหลบให้ Formula Bar
+        table_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 20)) 
         table_frame.grid_columnconfigure(0, weight=1)
         table_frame.grid_rowconfigure(0, weight=1)
+        
+        # 🟢 ปรับให้น้ำหนักการขยายหน้าจอตกอยู่ที่ row 3 (ตาราง)
+        self.grid_rowconfigure(2, weight=0) 
+        self.grid_rowconfigure(3, weight=1)
 
         if HAS_TKSHEET:
             self._build_tksheet(table_frame)
@@ -151,6 +177,7 @@ class CostBenchmarkScreen(CTkFrame):
             empty_horizontal=0,
             empty_vertical=0,
         )
+        self.sheet.extra_bindings([("cell_select", self._on_sheet_click_for_formula)])
         self.sheet.grid(row=0, column=0, sticky="nsew")
 
         self.sheet.enable_bindings((
@@ -275,27 +302,46 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _auto_calculate_sheet(self, row_idx):
         # =================================================================
-        # 🟢 [เพิ่มใหม่] ระบบคำนวณสูตรอัตโนมัติ (คล้าย Excel)
-        # สแกนทุกช่อง ถ้าพิมพ์ = นำหน้า ให้คำนวณผลลัพธ์แล้วแทนที่กลับลงตาราง
+        # 🟢 ระบบคำนวณสูตร Excel ขั้นสูง (รองรับการอ้างอิง A1, B2)
         # =================================================================
+        def col2num(col_str):
+            expn = 0
+            col_num = 0
+            for char in reversed(col_str.upper()):
+                col_num += (ord(char) - ord('A') + 1) * (26 ** expn)
+                expn += 1
+            return col_num - 1
+
         try:
             row_data = self.sheet.get_row_data(row_idx)
             for c_idx, cell_val in enumerate(row_data):
                 val_str = str(cell_val).strip()
-                # ตรวจสอบว่าขึ้นต้นด้วย = และมีสมการตามหลัง
                 if val_str.startswith('=') and len(val_str) > 1:
                     try:
-                        # ลบ = และลูกน้ำออก เพื่อให้คำนวณได้
-                        expr = val_str[1:].replace(',', '')
+                        expr = val_str[1:].replace(',', '').upper()
+                        # ค้นหาคำที่เป็น A1, B2 ในสมการ
+                        cell_refs = set(re.findall(r'[A-Z]+\d+', expr))
                         
-                        # คำนวณผลลัพธ์ (ใช้ eval แบบปลอดภัย ไม่ให้เรียกฟังก์ชันระบบ)
+                        for ref in cell_refs:
+                            match = re.match(r'([A-Z]+)(\d+)', ref)
+                            if match:
+                                c_str, r_str = match.groups()
+                                target_col = col2num(c_str)
+                                target_row = int(r_str) - 1
+                                
+                                ref_val = self.sheet.get_cell_data(target_row, target_col)
+                                if not ref_val or str(ref_val).strip() == "":
+                                    ref_val = "0"
+                                else:
+                                    ref_val = str(ref_val).replace(',', '').replace('%', '')
+                                    
+                                expr = re.sub(rf'\b{ref}\b', str(ref_val), expr)
+                        
                         result = eval(expr, {"__builtins__": None}, {})
-                        
-                        # ถ้าผลลัพธ์เป็นตัวเลข ให้ใส่กลับลงไปในช่องเดิมเลย
                         if isinstance(result, (int, float)):
                             self.sheet.set_cell_data(row_idx, c_idx, f"{float(result):.2f}", redraw=False)
                     except Exception:
-                        pass # ถ้าผู้ใช้พิมพ์สูตรผิด (เช่น =100+) ให้มองข้ามไป ไม่ต้องแจ้ง Error
+                        pass
         except Exception:
             pass
         # =================================================================
@@ -578,3 +624,112 @@ class CostBenchmarkScreen(CTkFrame):
             messagebox.showerror("Error", f"เกิดข้อผิดพลาด:\n{e}", parent=self)
         finally:
             if conn: self.app_container.release_connection(conn)
+
+    # =================================================================
+    # 🟢 ระบบสมองกลของ FORMULA BAR (ทำงานร่วมกับการคลิกเมาส์)
+    # =================================================================
+    def _num2col(self, n):
+        """แปลงตัวเลขคอลัมน์เป็นตัวอักษร (0 -> A, 1 -> B, ... 26 -> AA)"""
+        string = ""
+        n += 1
+        while n > 0:
+            n, remainder = divmod(n - 1, 26)
+            string = chr(65 + remainder) + string
+        return string
+
+    def _on_formula_focus_in(self, event):
+        """จดจำว่าผู้ใช้เลือกช่องไหนไว้เป็นปลายทาง ก่อนที่จะมาคลิกแถบสูตร"""
+        try:
+            cells = self.sheet.get_selected_cells()
+            if cells:
+                self.target_formula_cell = list(cells)[0]
+        except: pass
+
+    def _on_sheet_click_for_formula(self, event=None):
+        """เมื่อคลิกตาราง ถ้าแถบสูตรมีเครื่องหมาย = อยู่ ให้ดูดตัวเลขจากช่องมาใส่"""
+        try:
+            current_text = self.formula_entry.get()
+            if current_text.startswith("="):
+                cells = self.sheet.get_selected_cells()
+                if not cells: return
+                row, col = list(cells)[0]
+                
+                # 🟢 1. ดึงข้อมูล "ตัวเลข" จากช่องที่คลิก
+                cell_val = self.sheet.get_cell_data(row, col)
+                
+                # 🟢 2. ทำความสะอาดตัวเลข (เอาลูกน้ำกับ % ออก เพื่อให้พร้อมคำนวณ)
+                if not cell_val or str(cell_val).strip() == "":
+                    val_to_insert = "0"
+                else:
+                    val_to_insert = str(cell_val).replace(',', '').replace('%', '').strip()
+                    # ตรวจสอบว่าเป็นตัวเลขจริงๆ ไหม ถ้าไปเผลอจิ้มช่องตัวหนังสือให้ใส่เลข 0 แทน
+                    try:
+                        float(val_to_insert)
+                    except ValueError:
+                        val_to_insert = "0"
+                
+                # 🟢 3. นำ "ตัวเลข" ไปต่อท้ายใน Formula Bar
+                self.formula_entry.insert(tk.END, val_to_insert)
+                
+                # 🟢 4. ดึง Focus กลับมาที่แถบสูตร เพื่อให้พิมพ์ + - * / ต่อได้เลย
+                self.formula_entry.focus()
+                self.formula_entry.icursor(tk.END)
+        except Exception:
+            pass
+
+    def _apply_formula_from_bar(self, event=None):
+        """เมื่อกด Enter ให้นำสูตรกลับไปใส่ในตาราง และคำนวณทันที"""
+        if not self.target_formula_cell:
+            messagebox.showwarning("แจ้งเตือน", "กรุณาคลิกเลือกช่องปลายทางในตารางก่อนเริ่มพิมพ์สูตร")
+            return
+            
+        try:
+            row, col = self.target_formula_cell
+            formula = self.formula_entry.get()
+            
+            # 1. นำสูตรไปใส่ในช่องปลายทาง
+            self.sheet.set_cell_data(row, col, formula)
+            self.formula_entry.delete(0, tk.END)
+            
+            # 2. เคลียร์ความจำ และเลื่อนช่องที่เลือก (Focus) กลับไปที่ผลลัพธ์
+            self.target_formula_cell = None
+            self.sheet.select_cell(row, col)
+            
+            # 3. สั่งให้ตารางคำนวณ (ใช้ฟังก์ชัน _auto_calculate_sheet ที่เราอัปเดตไปก่อนหน้านี้)
+            self._auto_calculate_sheet(row)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"สูตรผิดพลาด: {e}")
+
+    # ------------------------------------------------------------------ #
+    # 🟢 ฟังก์ชันสำหรับซ่อน/แสดง คอลัมน์ (Columns แนวตั้ง)
+    # ------------------------------------------------------------------ #
+    def _hide_selected_columns(self):
+        if not HAS_TKSHEET: return
+        
+        # หาว่าผู้ใช้คลิกเลือกคอลัมน์ไหนไว้บ้าง
+        selected_cols = self.sheet.get_selected_columns()
+        if not selected_cols:
+            # ถ้าไม่ได้คลิกที่หัวคอลัมน์โดยตรง ให้ดึงจากช่องที่เซลล์ถูกเลือกอยู่
+            selected_cells = self.sheet.get_selected_cells()
+            if selected_cells:
+                selected_cols = list(set(c for r, c in selected_cells))
+        
+        if not selected_cols:
+            messagebox.showwarning("แจ้งเตือน", "กรุณาคลิกเลือกคอลัมน์ที่ต้องการซ่อนก่อน (คลิกที่หัวคอลัมน์ได้เลย)", parent=self)
+            return
+
+        # สั่งซ่อนคอลัมน์ (แนวตั้ง) ที่เลือก
+        self.sheet.hide_columns(list(selected_cols))
+        self.sheet.redraw()
+
+    def _show_all_columns(self):
+        if not HAS_TKSHEET: return
+        
+        # 🟢 [แก้ไขแล้ว] ใช้คำสั่ง display_columns แล้วส่งค่า "all" เข้าไป
+        self.sheet.display_columns("all")
+        
+        # (เผื่อเวอร์ชัน tksheet บางตัวไม่รองรับ "all" สามารถใช้บรรทัดล่างนี้แทนได้ครับ)
+        # self.sheet.display_columns(list(range(len(self.columns))))
+        
+        self.sheet.redraw()

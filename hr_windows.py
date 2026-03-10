@@ -120,6 +120,8 @@ class SalesDataViewerWindow(CTkToplevel):
         self._add_display_row(f4, 4, header_map.get('date_to_warehouse', 'วันที่เข้าคลัง'), self.so_data.get('date_to_warehouse'))
         self._add_display_row(f4, 5, header_map.get('date_to_customer', 'วันที่ส่งลูกค้า'), self.so_data.get('date_to_customer'))
         self._add_display_row(f4, 6, header_map.get('pickup_registration', 'ทะเบียนเข้ารับ'), self.so_data.get('pickup_registration'))
+        self._add_display_row(f4, 7, 'เงื่อนไขลงสินค้า', self.so_data.get('unloading_status'))  # 🟢 เพิ่มใหม่
+        self._add_display_row(f4, 8, 'Special Request', self.so_data.get('special_request'))
 
         # --- Section 5: ค่าธรรมเนียมและส่วนลด ---
         f5 = self._create_section_frame(self.main_frame, "ค่าธรรมเนียมและส่วนลด")
@@ -127,8 +129,9 @@ class SalesDataViewerWindow(CTkToplevel):
         self._add_display_row(f5, 2, header_map.get('transfer_fee', 'ค่าธรรมเนียมโอน'), self.so_data.get('transfer_fee'))
         self._add_display_row(f5, 3, header_map.get('wht_3_percent', 'หัก ณ ที่จ่าย 3%'), self.so_data.get('wht_3_percent'))
         self._add_display_row(f5, 4, header_map.get('brokerage_fee', 'ค่านายหน้า'), self.so_data.get('brokerage_fee'))
-        self._add_display_row(f5, 5, header_map.get('giveaways', 'ของแถม'), self.so_data.get('giveaways'))
-        self._add_display_row(f5, 6, header_map.get('coupons', 'คูปอง'), self.so_data.get('coupons'))
+        self._add_display_row(f5, 5, 'ของแถมใน SO (Vat)', self.so_data.get('giveaway_vat'))       # 🟢 แก้ไข
+        self._add_display_row(f5, 6, 'ของแถมนอก SO (No Vat)', self.so_data.get('giveaway_no_vat'))
+        self._add_display_row(f5, 7, header_map.get('coupons', 'คูปอง'), self.so_data.get('coupons'))
 
         # --- Section 6: รายละเอียดการชำระเงิน ---
         f6 = self._create_section_frame(self.main_frame, "รายละเอียดการชำระเงิน")
@@ -792,7 +795,9 @@ class HRVerificationWindow(CTkToplevel):
             'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
             'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
             'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
-            'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
+            'giveaway_vat_entry': 'giveaway_vat', 'giveaway_no_vat_entry': 'giveaway_no_vat', # 🟢 แก้ไข
+            'special_request_entry': 'special_request', # 🟢 เพิ่มใหม่
+            'cash_product_input_entry': 'cash_product_input',
             'bill_date_selector': 'bill_date',
             'delivery_date_selector': 'delivery_date', 'payment_date_selector': 'payment_date',
             'date_to_wh_selector': 'date_to_warehouse', 'date_to_customer_selector': 'date_to_customer',
@@ -800,6 +805,16 @@ class HRVerificationWindow(CTkToplevel):
             'credit_term_entry': 'credit_term', 'pickup_location_entry': 'pickup_location',
             'pickup_rego_entry': 'pickup_registration'
         }
+        
+        # (หาจุดที่เป็นส่วนดึงตัวแปรเงินสดด้านล่าง แล้วเพิ่มโค้ดดึงสถานะวิทยุตรงนี้เข้าไป)
+        # ดึงยอดเงินสด (ฝั่ง Cash)
+        cash_paid = 0.0
+        if 'cash_actual_payment_entry' in current_popup_widgets_ref:
+            cash_paid = utils.convert_to_float(current_popup_widgets_ref['cash_actual_payment_entry'].get())
+
+        # 🟢 [เพิ่มใหม่] ดึงค่าสถานะรวมลง (Radio button)
+        if 'unloading_status_var' in so_shared_vars_data:
+            updated_data['unloading_status'] = so_shared_vars_data['unloading_status_var'].get()
 
         # 2. รวบรวมข้อมูลพื้นฐานจาก Widgets
         for widget_key, data_key in key_map.items():
@@ -1323,12 +1338,13 @@ class HRVerificationWindow(CTkToplevel):
               columns_to_update = [
                   "sales_service_amount", "shipping_cost", "relocation_cost", "brokerage_fee",
                   "transfer_fee", "cutting_drilling_fee", "other_service_fee", "credit_card_fee",
-                  "wht_3_percent", "coupons", "giveaways", "total_payment_amount",
+                  "wht_3_percent", "coupons", "giveaway_vat", "giveaway_no_vat", "total_payment_amount", # 🟢 แก้ไข
                   "cash_product_input", "cash_actual_payment", "bill_date", "delivery_date",
                   "payment_date", "date_to_warehouse", "date_to_customer", "customer_name",
                   "customer_id", "credit_term", "delivery_type", "pickup_location", "pickup_registration",
                   "payment_before_vat", 
-                  "payment_no_vat"      
+                  "payment_no_vat",
+                  "special_request", "unloading_status"  # 🟢 เพิ่มใหม่
               ]
               
               set_clauses = [f"{col} = %s" for col in columns_to_update]
@@ -3008,12 +3024,15 @@ class SODetailViewer(CTkToplevel):
         f3 = self._create_detail_section_frame(self.main_frame, "ค่าจัดส่ง")
         self._add_detail_row(f3, 1, header_map.get('shipping_cost', 'ค่าขนส่ง'), so_data.get('shipping_cost'), sub_text=so_data.get('shipping_vat_option'))
         self._add_detail_row(f3, 2, header_map.get('relocation_cost', 'ค่าย้าย'), so_data.get('relocation_cost'))
+        self._add_detail_row(f3, 3, 'เงื่อนไขลงสินค้า', so_data.get('unloading_status')) # 🟢 เพิ่มใหม่
+        self._add_detail_row(f3, 4, 'Special Request', so_data.get('special_request'))
 
         # --- Section 4: ค่าธรรมเนียมและส่วนลด ---
         f4 = self._create_detail_section_frame(self.main_frame, "ค่าธรรมเนียมและส่วนลด")
         self._add_detail_row(f4, 1, header_map.get('brokerage_fee', 'ค่านายหน้า'), so_data.get('brokerage_fee'))
-        self._add_detail_row(f4, 2, header_map.get('giveaways', 'ของแถม'), so_data.get('giveaways'))
-        self._add_detail_row(f4, 3, header_map.get('coupons', 'คูปอง'), so_data.get('coupons'))
+        self._add_detail_row(f4, 2, 'ของแถมใน SO (Vat)', so_data.get('giveaway_vat'))      # 🟢 แก้ไข
+        self._add_detail_row(f4, 3, 'ของแถมนอก SO (No Vat)', so_data.get('giveaway_no_vat'))
+        self._add_detail_row(f4, 4, header_map.get('coupons', 'คูปอง'), so_data.get('coupons'))
 
         # --- Section 5: สรุปข้อมูลที่ยืนยันโดย HR ---
         f5 = self._create_detail_section_frame(self.main_frame, "สรุปข้อมูลที่ยืนยันโดย HR")

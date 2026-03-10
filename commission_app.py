@@ -145,6 +145,9 @@ class SalesTasksWindow(CTkToplevel):
         # --- Tab View ---
         self.task_tab_view = CTkTabview(self, corner_radius=10)
         self.task_tab_view.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+
+        # 🟢 [เพิ่มใหม่] 4. แท็บนำส่งแล้ว (รอดำเนินการ)
+        self.submitted_tab = self.task_tab_view.add("นำส่งแล้ว (รอดำเนินการ)")
         
         # 1. แท็บ SO ค้างชำระ
         self.payment_due_tab = self.task_tab_view.add("⚠️ SO ค้างชำระ (แก้ไขยอดโอน)")
@@ -171,6 +174,34 @@ class SalesTasksWindow(CTkToplevel):
         # Frame 3: Drafts (ใช้ Scrollable)
         self.draft_frame = CTkScrollableFrame(self.draft_tab, label_text="ดับเบิลคลิกรายการเพื่อแก้ไข/ทำต่อ")
         self.draft_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        current_date = datetime.now()
+        thai_months = ["ทั้งหมด", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        year_list = ["ทั้งหมด"] + [str(y + 543) for y in range(current_date.year - 2, current_date.year + 2)]
+
+        self.submit_search_var = tk.StringVar(value="")
+        self.submit_month_var = tk.StringVar(value="ทั้งหมด")
+        self.submit_year_var = tk.StringVar(value="ทั้งหมด")
+
+        # 1. แถบเครื่องมือ Filter ด้านบน
+        submit_filter_frame = CTkFrame(self.submitted_tab, fg_color="transparent")
+        submit_filter_frame.pack(fill="x", padx=5, pady=5)
+
+        CTkLabel(submit_filter_frame, text="🔍 ค้นหา:").pack(side="left", padx=(5, 2))
+        CTkEntry(submit_filter_frame, textvariable=self.submit_search_var, placeholder_text="SO / ชื่อลูกค้า...", width=160).pack(side="left", padx=5)
+
+        CTkLabel(submit_filter_frame, text="เดือน:").pack(side="left", padx=(10, 2))
+        CTkOptionMenu(submit_filter_frame, variable=self.submit_month_var, values=thai_months, width=100).pack(side="left", padx=5)
+
+        CTkLabel(submit_filter_frame, text="ปี:").pack(side="left", padx=(10, 2))
+        CTkOptionMenu(submit_filter_frame, variable=self.submit_year_var, values=year_list, width=80).pack(side="left", padx=5)
+
+        CTkButton(submit_filter_frame, text="ค้นหา", command=self._load_submitted_tasks, width=70, fg_color="#2563EB").pack(side="left", padx=(15, 5))
+        CTkButton(submit_filter_frame, text="ล้างค่า", command=self._clear_submit_filter, width=70, fg_color="gray").pack(side="left", padx=5)
+
+        # 2. ตารางแสดงผลด้านล่าง Filter
+        self.submitted_frame = CTkScrollableFrame(self.submitted_tab, label_text="รายการที่ส่งเข้าระบบแล้ว (กำลังรอการตรวจสอบ/จัดซื้อ)")
+        self.submitted_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
         # Frame 4: Commission Tracking
         # [สำคัญ] ใช้ CTkFrame ธรรมดา (ไม่ Scrollable) เพื่อตรึงหัวข้อ และให้ตารางมี Scrollbar ของตัวเอง
@@ -356,6 +387,14 @@ class SalesTasksWindow(CTkToplevel):
                 )
                 edit_button.pack(side="right")
 
+                copy_button = CTkButton(
+                    top_frame, 
+                    text="📋 Copy Shortnote", 
+                    width=120, fg_color="#22C55E", hover_color="#16A34A",
+                    command=lambda r=row_data.to_dict(): self._copy_so_shortnote(r)
+                )
+                copy_button.pack(side="right", padx=5)
+
                 reason_label = CTkLabel(
                     card,
                     text=balance_text,
@@ -386,8 +425,213 @@ class SalesTasksWindow(CTkToplevel):
         self._load_payment_due_tasks()
         self._load_rejected_tasks()
         self._load_draft_tasks()
+        self._load_submitted_tasks()
         self._load_commission_status()
 
+    def _load_submitted_tasks(self):
+        for widget in self.submitted_frame.winfo_children(): widget.destroy()
+        
+        # ดึงค่าจาก Filter
+        search_text = self.submit_search_var.get().strip().lower()
+        selected_month = self.submit_month_var.get()
+        selected_year = self.submit_year_var.get()
+        
+        thai_months_only = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+
+        try:
+            # Base Query
+            query = """
+                SELECT * FROM commissions 
+                WHERE sale_key = %s 
+                AND status IN ('Pending Sale Manager Approval', 'Pending PU', 'PO In Progress', 'Pending HR Approval') 
+                AND is_active = 1 
+            """
+            params = [self.sale_key]
+
+            # ต่อเติม Query ตามเงื่อนไขที่เลือก
+            if search_text:
+                query += " AND (LOWER(so_number) LIKE %s OR LOWER(customer_name) LIKE %s)"
+                params.extend([f"%{search_text}%", f"%{search_text}%"])
+
+            if selected_month != "ทั้งหมด":
+                month_num = thai_months_only.index(selected_month) + 1
+                query += " AND commission_month = %s"
+                params.append(month_num)
+
+            if selected_year != "ทั้งหมด":
+                year_num = int(selected_year) - 543 # แปลง พ.ศ. กลับเป็น ค.ศ. (ถ้าใน DB เก็บเป็น ค.ศ.)
+                query += " AND commission_year = %s"
+                params.append(year_num)
+
+            query += " ORDER BY timestamp DESC"
+
+            # Execute Query
+            df = pd.read_sql_query(query, self.app_container.pg_engine, params=tuple(params))
+            
+            if df.empty:
+                CTkLabel(self.submitted_frame, text="ไม่มีรายการรอดำเนินการ หรือ ไม่พบข้อมูลที่ค้นหา").pack(pady=20)
+                return
+                
+            for _, row in df.iterrows():
+                card = CTkFrame(self.submitted_frame, border_width=1, fg_color="#F0F9FF") 
+                card.pack(fill="x", padx=5, pady=3)
+                
+                info_frame = CTkFrame(card, fg_color="transparent")
+                info_frame.pack(side="left", fill="both", expand=True)
+                
+                info_text = f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']} | สถานะ: {row['status']}"
+                CTkLabel(info_frame, text=info_text, font=CTkFont(weight="bold")).pack(side="left", padx=10, pady=10)
+
+                btn_frame = CTkFrame(card, fg_color="transparent")
+                btn_frame.pack(side="right", padx=10)
+                
+                CTkButton(
+                    btn_frame, text="📋 Copy Shortnote", width=120, 
+                    fg_color="#22C55E", hover_color="#16A34A", 
+                    command=lambda r=row: self._copy_so_shortnote(r.to_dict())
+                ).pack(side="left", padx=2)
+
+        except Exception as e:
+            print(f"Error loading submitted tasks: {e}")
+            messagebox.showerror("Error", "ไม่สามารถโหลดรายการที่นำส่งแล้วได้", parent=self)
+
+    def _clear_submit_filter(self):
+        """ล้างค่า Filter ทั้งหมดแล้วโหลดตารางใหม่"""
+        self.submit_search_var.set("")
+        self.submit_month_var.set("ทั้งหมด")
+        self.submit_year_var.set("ทั้งหมด")
+        self._load_submitted_tasks()
+
+    def _copy_so_shortnote(self, so_data):
+        """ลอจิก Copy Shortnote (รองรับทศนิยม .86 สมบูรณ์แบบ)"""
+        if not so_data:
+            messagebox.showwarning("แจ้งเตือน", "ไม่มีข้อมูล SO สำหรับคัดลอก", parent=self)
+            return
+
+        try:
+            so_number = so_data.get('so_number', '-')
+            pickup_loc = so_data.get('pickup_location') or '-'
+            
+            # 🟢 ฟังก์ชันจัดการตัวเลข (ไม่ใช้ utils และไม่ปัดเศษทิ้ง)
+            def format_money(val):
+                try:
+                    if pd.isna(val) or val is None or str(val).strip() == '': 
+                        return "-"
+                    # ลบลูกน้ำออกและแปลงเป็น Float ตรงๆ
+                    if isinstance(val, str): 
+                        val = val.replace(',', '')
+                    v = float(val)
+                except:
+                    return "-"
+                    
+                if v <= 0: 
+                    return "-"
+                
+                # เช็คทศนิยม: ถ้ายอดกลมๆ ให้โชว์ 0 ตำแหน่ง, ถ้ามีเศษสตางค์ให้โชว์ 2 ตำแหน่ง
+                if v % 1 == 0:
+                    return f"{v:,.0f}"
+                else:
+                    return f"{v:,.2f}"
+
+            sales_amount = format_money(so_data.get('sales_service_amount'))
+            shipping_cost = format_money(so_data.get('shipping_cost'))
+            relocation_cost = format_money(so_data.get('relocation_cost'))
+            cutting_fee = format_money(so_data.get('cutting_drilling_fee'))
+            discount = format_money(so_data.get('coupons'))
+
+            def format_date(date_val):
+                if pd.notna(date_val) and date_val:
+                    try:
+                        if hasattr(date_val, 'strftime'): return date_val.strftime('%d/%m')
+                        return pd.to_datetime(date_val).strftime('%d/%m')
+                    except: return str(date_val)
+                return "-"
+
+            date_to_wh = format_date(so_data.get('date_to_warehouse'))
+            date_to_cust = format_date(so_data.get('date_to_customer'))
+
+            delivery_type = so_data.get('delivery_type') or '-'
+            order_pur_val = so_data.get('order_pur') or '-'
+            rego = so_data.get('pickup_registration') or '-'
+            
+            delivery_map = so_data.get('delivery_map') or '-'
+            contact_name = so_data.get('onsite_contact_name') or '-'
+            contact_phone = so_data.get('onsite_contact_phone') or '-'
+            vehicle_type = so_data.get('vehicle_type') or '-'
+            
+            # 🟢 นำ format_money ตัวใหม่มาครอบยอดชำระ
+            deposit_text = format_money(so_data.get('payment1_amount'))
+            full_pay_text = format_money(so_data.get('total_payment_amount'))
+            
+            remark_text = so_data.get('credit_term', 'เงินสด')
+
+            # หาตัวแปรชื่อผู้จัดทำ (รองรับทั้งหน้า Sale และ Support)
+            maker_name = so_data.get('owner_sale_name', 'Unknown')
+            if maker_name == 'Unknown' and hasattr(self, 'commission_app'):
+                maker_name = getattr(self.commission_app, 'sale_name', 'Unknown')
+
+            brokerage_fee = format_money(so_data.get('brokerage_fee'))
+            coupon_val = format_money(so_data.get('coupons'))
+            giveaway_vat = format_money(so_data.get('giveaway_vat'))
+            giveaway_no_vat = format_money(so_data.get('giveaway_no_vat'))
+            
+            # (ถ้ามีคอลัมน์ส่วนลดโปรโมชั่นแยกต่างหาก ให้ใช้ promotion_discount ถ้าไม่มีระบบจะแสดงเป็น '-')
+            discount = format_money(so_data.get('promotion_discount'))
+
+            special_req = so_data.get('special_request') or '-'
+            unloading_stat = so_data.get('unloading_status') or '-'
+
+            # สร้างเส้นคั่น
+            separator = "🔥" * 10
+
+            shortnote_text = (
+                f"เลขที่ {so_number}\n"
+                f"ยอดขาย : {sales_amount}\n"
+                f"ค่าส่ง  : {shipping_cost}\n"
+                f"ค่าย้าย : {relocation_cost}\n"
+                f"ค่าตัด : {cutting_fee}\n"
+                f"ยอดชำระ  มัดจำ {deposit_text}\n"
+                f"ยอดชำระ เต็ม {full_pay_text}\n"
+##########################################################################################################################
+                f"ค่าธรรมเนียมบัตรเครดิต :{credit_card_fee}\n"
+                f"ค่าธรรมเนียมโอน :{transfer_fee}\n"
+                f"ภาษีหัก ณ ที่จ่าย :{vat_fee}\n"
+##########################################################################################################################
+                f"ค่านายหน้า : {brokerage_fee}\n"
+                f"คูปอง : {coupon_val}\n"
+                f"ของแถมใน so (vat) : {giveaway_vat}\n"
+                f"ของแถมนอก so (no vat) : {giveaway_no_vat}\n"
+                f"{separator}\n"
+                f"วันที่ย้ายสินค้าเข้าคลัง132 : {date_to_wh}\n"
+                f"วันที่จัดส่งลูกค้า : {date_to_cust}\n"
+                f"Order Pur : {order_pur_val}\n"
+                f"Payment : {remark_text}\n"
+                f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n"
+                f"{separator}\n"
+                f"แผนที่จัดส่ง : {delivery_map}\n"
+                f"Location เข้ารับ : {pickup_loc}\n"
+                f"ประเภทรถ : {vehicle_type}\n"
+                f"เงื่อนไขลงสินค้า : {unloading_stat}\n"
+                f"ทะเบียนรถ : {rego}\n"
+                f"ชื่อผู้ติดต่อหน้างาน : {contact_name}\n"
+                f"เบอร์ติดต่อหน้างาน : {contact_phone}\n"
+                f"Special Request : {special_req}\n"
+                f"{separator}\n"
+                f"อ้างอิงจาก Aplus Smart\n"
+                f"ผู้จัดทำ: {maker_name}"
+            )
+
+            self.clipboard_clear()
+            self.clipboard_append(shortnote_text)
+            self.update() 
+
+            messagebox.showinfo("คัดลอกสำเร็จ", f"คัดลอก Shortnote ของ {so_number} แล้ว!", parent=self)
+
+        except Exception as e:
+            messagebox.showerror("ข้อผิดพลาด", f"ไม่สามารถสร้าง Shortnote ได้: {e}", parent=self)
+            import traceback
+            traceback.print_exc()
+            
     # 2. เพิ่มฟังก์ชันโหลดข้อมูล
     def _load_commission_status(self):
         """โหลดข้อมูลใส่ตารางติดตามค่าคอมฯ (เวอร์ชันสำหรับตารางที่ไม่มี Margin)"""
@@ -572,8 +816,20 @@ class SalesTasksWindow(CTkToplevel):
             for _, row in df.iterrows():
                 card = CTkFrame(self.draft_frame, border_width=1)
                 card.pack(fill="x", padx=5, pady=3)
-                CTkLabel(card, text=f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']}").pack(side="left", padx=10)
-                card.bind("<Double-1>", lambda e, r=row: self._edit_and_close(r))
+                
+                info_frame = CTkFrame(card, fg_color="transparent")
+                info_frame.pack(side="left", fill="both", expand=True)
+                CTkLabel(info_frame, text=f"SO: {row['so_number']} | ลูกค้า: {row['customer_name']}").pack(side="left", padx=10, pady=10)
+                info_frame.bind("<Double-1>", lambda e, r=row: self._edit_and_close(r))
+
+                btn_frame = CTkFrame(card, fg_color="transparent")
+                btn_frame.pack(side="right", padx=10)
+                
+                # ปุ่มคลิกแก้ไข (เพื่อความชัดเจน)
+                CTkButton(btn_frame, text="✏️ แก้ไข", width=60, command=lambda r=row: self._edit_and_close(r)).pack(side="left", padx=2)
+                
+                # ปุ่ม Copy Shortnote (สีเขียว LINE)
+                CTkButton(btn_frame, text="📋 Copy Shortnote", width=120, fg_color="#22C55E", hover_color="#16A34A", command=lambda r=row: self._copy_so_shortnote(r.to_dict())).pack(side="left", padx=2)
         except Exception as e: print(e)
             
     def _edit_and_close(self, row_data):
@@ -959,6 +1215,27 @@ class CommissionApp(CTkFrame):
             if not messagebox.askyesno("ยืนยัน", "คุณต้องการบันทึกการเปลี่ยนแปลงนี้ใช่หรือไม่?", parent=self):
                 return
 
+        # 🟢 [เพิ่มตรงนี้!] ตรวจสอบและบันทึกลูกค้าใหม่ลง Database Master ก่อน
+        if form_data.get('customer_type') == 'ลูกค้าใหม่':
+            try:
+                # 1. สั่งบันทึกลูกค้าใหม่ลงฐานข้อมูล
+                self._handle_new_customer(form_data)
+                
+                # 2. โหลดข้อมูลลูกค้าเข้า Memory ใหม่ เพื่อให้ช่องค้นหาอัปเดตทันที
+                self._load_customer_data() 
+                
+                # 3. ปรับสถานะในฟอร์มกลับไปเป็น "ลูกค้าเก่า" (เพื่อไม่ให้เซฟลูกค้าซ้ำซ้อนถ้าเผลอกดเซฟซ้ำ)
+                form_data['customer_type'] = 'ลูกค้าเก่า'
+                self.customer_type_var.set("ลูกค้าเก่า")
+                self._toggle_customer_fields()
+                
+            except ValueError as ve:
+                messagebox.showerror("รหัสลูกค้าซ้ำ", str(ve), parent=self)
+                return
+            except Exception as e:
+                messagebox.showerror("ข้อผิดพลาด", f"ไม่สามารถบันทึกลูกค้าใหม่ได้: {e}", parent=self)
+                return
+
         conn = None
         try:
             conn = self.app_container.get_connection()
@@ -967,13 +1244,13 @@ class CommissionApp(CTkFrame):
                     # 1. ยกเลิก Record เดิม (ทำให้เป็น Inactive)
                     cursor.execute("UPDATE commissions SET is_active = 0 WHERE id = %s", (self.editing_record_id,))
                     
-                    # 2. ปรับสถานะใบใหม่ (🔥 แก้ไข: ให้เป็น Edited เสมอ รอเซลส์ไปกด "นำส่ง" เองทีหลัง)
+                    # 2. ปรับสถานะใบใหม่ (ให้เป็น Edited เสมอ รอเซลส์ไปกด "นำส่ง" เองทีหลัง)
                     form_data['status'] = 'Edited'
                     form_data['original_id'] = self.editing_record_id
                 else:
                     form_data['status'] = 'Draft'
 
-                # 3. บันทึกข้อมูลลงฐานข้อมูล
+                # 3. บันทึกข้อมูล SO ลงฐานข้อมูล
                 self._perform_db_insert(form_data)
             
             conn.commit()
@@ -1011,6 +1288,8 @@ class CommissionApp(CTkFrame):
         self._populate_sales_services_frame(self.left_frame)
         self._populate_shipping_frame(self.left_frame)
         self._populate_fees_frame(self.left_frame)
+
+        self._populate_additional_details_frame(self.left_frame)
 
         self._populate_other_expenses_frame(self.right_frame)
         self._populate_payment_frame(self.right_frame)
@@ -1062,6 +1341,15 @@ class CommissionApp(CTkFrame):
         self.payment2_method_var = tk.StringVar(value="ชำระสด")
         self.delivery_type_var = tk.StringVar(value="ซัพพลายเออร์จัดส่ง")
 
+        self.delivery_map_var = tk.StringVar(value="")
+        self.onsite_contact_name_var = tk.StringVar(value="")
+        self.onsite_contact_phone_var = tk.StringVar(value="")
+        self.vehicle_type_var = tk.StringVar(value="-")
+        self.order_pur_var = tk.StringVar(value="")
+
+        self.special_request_var = tk.StringVar(value="") 
+        self.unloading_status_var = tk.StringVar(value="ไม่รวมลง")
+
     def _force_uppercase_so_number(self, *args):
         current_text = self.so_number_var.get()
         new_text = current_text.upper()
@@ -1088,7 +1376,7 @@ class CommissionApp(CTkFrame):
         widgets_to_bind_names = [
             "sales_amount_entry", "cutting_drilling_fee_entry", "other_service_fee_entry",
             "shipping_cost_entry", "credit_card_fee_entry", "transfer_fee_entry",
-            "wht_fee_entry", "coupon_value_entry", "giveaway_value_entry",
+            "wht_fee_entry", "coupon_value_entry", "giveaway_vat_entry", "giveaway_no_vat_entry",
             "brokerage_fee_entry", "payment1_amount_entry", "payment2_amount_entry",
             "cash_product_input_entry", "cash_actual_payment_entry",
             # <<< เพิ่มเติม: เพิ่ม relocation_cost_entry เข้าไปใน list นี้ >>>
@@ -1223,7 +1511,8 @@ class CommissionApp(CTkFrame):
         set_entry_value(self.wht_fee_entry, data.get('wht_3_percent'))
         set_entry_value(self.brokerage_fee_entry, data.get('brokerage_fee'))
         set_entry_value(self.coupon_value_entry, data.get('coupons'))
-        set_entry_value(self.giveaway_value_entry, data.get('giveaways'))
+        set_entry_value(self.giveaway_vat_entry, data.get('giveaway_vat'))        # 🟢 ของใหม่
+        set_entry_value(self.giveaway_no_vat_entry, data.get('giveaway_no_vat'))
         set_radio_button(self.relocation_vat_option_var, data.get('relocation_cost_vat_option'))
 
         # --- [แก้ไข] Payment Logic: จัดการยอดแยกย่อยให้ถูกต้อง ---
@@ -1258,31 +1547,50 @@ class CommissionApp(CTkFrame):
         self.payment1_method_var.set(data.get('payment1_method', 'ไม่เลือก'))
         self.payment2_method_var.set(data.get('payment2_method', 'ไม่เลือก'))
 
+        set_entry_value(self.delivery_map_entry, data.get('delivery_map'))
+        set_entry_value(self.onsite_contact_name_entry, data.get('onsite_contact_name'))
+        set_entry_value(self.onsite_contact_phone_entry, data.get('onsite_contact_phone'))
+        self.vehicle_type_var.set(data.get('vehicle_type') or '-')
+        self.order_pur_var.set(data.get('order_pur') or '')
+        self.special_request_var.set(data.get('special_request') or '-')          # 🟢 เพิ่มบรรทัดนี้
+        self.unloading_status_var.set(data.get('unloading_status', 'ไม่รวมลง'))   # 🟢 เพิ่มบรรทัดนี้
+
         self._update_final_calculations()
 
     def _load_customer_data(self):
         try:
             df = pd.read_sql("SELECT customer_name, customer_code, credit_term FROM customers ORDER BY customer_name", self.pg_engine)
             
-            # --- สร้างข้อมูลโครงสร้างใหม่ ---
             self.customer_completion_data = []
+            
             for _, row in df.iterrows():
-                display_text = f"{row['customer_code']} - {row['customer_name']}"
+                # 🟢 ดึงข้อมูลและแปลงเป็น String พร้อมตัดช่องว่างซ้าย-ขวาทิ้งให้หมด (ป้องกันปัญหาพิมพ์หาไม่เจอ)
+                raw_code = row.get('customer_code')
+                raw_name = row.get('customer_name')
+                
+                code = str(raw_code).strip() if pd.notna(raw_code) else ""
+                name = str(raw_name).strip() if pd.notna(raw_name) else ""
+                term = str(row.get('credit_term', 'เงินสด')).strip() if pd.notna(row.get('credit_term')) else "เงินสด"
+                
+                # ถ้าไม่มีทั้งชื่อและรหัส ให้ข้ามไปเลย
+                if not code and not name:
+                    continue
+                    
+                display_text = f"{code} - {name}"
+                
                 self.customer_completion_data.append({
-                    "name": row['customer_name'],
-                    "code": row['customer_code'],
-                    "term": row.get('credit_term', 'เงินสด'),
+                    "name": name,
+                    "code": code,
+                    "term": term,
                     "display": display_text
                 })
             
             # สร้าง Map สำหรับการอ้างอิงข้อมูล
             self.customer_data_map = {item['display']: item for item in self.customer_completion_data}
 
-            # <<< START: เพิ่มเติมส่วนที่ขาดไป >>>
-            # ตรวจสอบว่า widget ถูกสร้างแล้วหรือยัง ก่อนที่จะอัปเดตข้อมูลเข้าไป
+            # อัปเดตข้อมูลเข้าไปใน Dropdown/AutoComplete
             if hasattr(self, 'customer_id_entry') and self.customer_id_entry.winfo_exists():
                 self.customer_id_entry.update_completion_list(self.customer_completion_data)
-            # <<< END: สิ้นสุดการเพิ่มเติม >>>
 
         except Exception as e:
             print(f"Error loading customer data: {e}")
@@ -1291,34 +1599,32 @@ class CommissionApp(CTkFrame):
 
     def _on_customer_id_selected(self, selection_data):
         """
-        ฟังก์ชันนี้ถูกออกแบบใหม่ให้รองรับข้อมูล 2 รูปแบบ:
-        1. Dictionary: เมื่อผู้ใช้เลือกรายการจาก AutoComplete suggestion.
-        2. String (customer_code): เมื่อฟังก์ชันถูกเรียกตอนโหลดข้อมูลเก่ามาแสดง (populate_form).
+        รองรับข้อมูล 2 รูปแบบ: Dictionary (ตอนเลือกจากลิสต์) หรือ String (ตอนโหลดข้อมูลประวัติ)
         """
         customer_name = ''
         credit_term = 'เงินสด'
         customer_code = ''
 
         if isinstance(selection_data, dict):
-            # กรณีที่ 1: ผู้ใช้เลือกจาก AutoComplete (ได้ข้อมูลมาเป็น dict)
-            customer_name = selection_data.get('name', '')
-            credit_term = selection_data.get('term', 'เงินสด')
-            customer_code = selection_data.get('code', '')
+            # กรณีผู้ใช้คลิกเลือกจากรายการค้นหา
+            customer_name = selection_data.get('name', '').strip()
+            credit_term = selection_data.get('term', 'เงินสด').strip()
+            customer_code = selection_data.get('code', '').strip()
 
             self.customer_id_entry.delete(0, tk.END)
             self.customer_id_entry.insert(0, customer_code)
 
         elif isinstance(selection_data, str) and selection_data:
-            # กรณีที่ 2: โหลดข้อมูลเก่า (ได้ข้อมูลมาเป็น string ของ customer_code)
-            # เราจะค้นหาข้อมูลลูกค้าทั้งหมดจาก customer_code ที่ได้รับมา
-            customer_code_to_find = selection_data
+            # กรณีโหลดข้อมูลเก่า ให้ตัดช่องว่างทิ้งก่อนค้นหา
+            customer_code_to_find = selection_data.strip()
+            
             found_customer = next((item for item in self.customer_completion_data if item.get('code') == customer_code_to_find), None)
             
             if found_customer:
-                customer_name = found_customer.get('name', '')
-                credit_term = found_customer.get('term', 'เงินสด')
+                customer_name = found_customer.get('name', '').strip()
+                credit_term = found_customer.get('term', 'เงินสด').strip()
 
-        # --- ส่วนของการอัปเดตหน้าจอ (เหมือนเดิม) ---
+        # อัปเดตช่องชื่อลูกค้าและเครดิตให้สอดคล้องกัน
         self.customer_name_entry.configure(state="normal")
         self.customer_name_entry.delete(0, tk.END)
         self.customer_name_entry.insert(0, customer_name)
@@ -1401,6 +1707,11 @@ class CommissionApp(CTkFrame):
         self.so_number_entry = CTkEntry(credit_so_frame, textvariable=self.so_number_var)
         self.so_number_entry.grid(row=0, column=3, sticky="ew")
 
+        self.order_pur_entry = CTkEntry(frame, textvariable=self.order_pur_var, placeholder_text="ระบุ Order Pur (บังคับใส่)")
+        self._add_form_row(frame, "Order Pur: *", self.order_pur_entry, 6)
+
+        self._toggle_customer_fields()
+
         self._toggle_customer_fields()
 
     def _toggle_customer_fields(self):
@@ -1428,12 +1739,19 @@ class CommissionApp(CTkFrame):
         # --- คอลัมน์ซ้าย: ส่วนลด/รายการเพิ่มเติม ---
         discounts_frame = self._create_section_frame(details_container, "ส่วนลด/รายการเพิ่มเติม")
         discounts_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        
         self.brokerage_fee_entry = NumericEntry(discounts_frame)
         self._add_form_row(discounts_frame, "ค่านายหน้า:", self.brokerage_fee_entry, 1)
+        
         self.coupon_value_entry = NumericEntry(discounts_frame)
         self._add_form_row(discounts_frame, "คูปอง:", self.coupon_value_entry, 2)
-        self.giveaway_value_entry = NumericEntry(discounts_frame)
-        self._add_form_row(discounts_frame, "ของแถม:", self.giveaway_value_entry, 3)
+        
+        # 🟢 [แก้ไข] เปลี่ยนเป็นของแถม 2 รูปแบบ
+        self.giveaway_vat_entry = NumericEntry(discounts_frame)
+        self._add_form_row(discounts_frame, "ของแถมใน SO (Vat):", self.giveaway_vat_entry, 3)
+        
+        self.giveaway_no_vat_entry = NumericEntry(discounts_frame)
+        self._add_form_row(discounts_frame, "ของแถมนอก SO (No Vat):", self.giveaway_no_vat_entry, 4)
 
         # --- คอลัมน์ขวา: Delivery Note ---
         delivery_frame = self._create_section_frame(details_container, "Delivery Note")
@@ -1482,6 +1800,47 @@ class CommissionApp(CTkFrame):
         self._add_form_row(delivery_frame, "ทะเบียนเข้ารับ:", self.pickup_rego_entry, 7)
     # <<< END: CODE REPLACEMENT >>>
 
+    # 🟢 [เพิ่มฟังก์ชันใหม่] วาดฟอร์มรายละเอียดเพิ่มเติมหน้างาน
+    def _populate_additional_details_frame(self, parent):
+        frame = self._create_section_frame(parent, "รายละเอียดเพิ่มเติม (หน้างาน)")
+        frame.pack(fill="x", pady=(0, 10))
+        frame.grid_columnconfigure(1, weight=1)
+
+        # 1. แผนที่จัดส่ง
+        self.delivery_map_entry = CTkEntry(frame, textvariable=self.delivery_map_var)
+        self._add_form_row(frame, "แผนที่จัดส่ง:", self.delivery_map_entry, 1)
+        CTkLabel(frame, text="* หากมี - (ระบุ Google Map หรือ อำเภอ จังหวัด)", font=CTkFont(size=11, slant="italic"), text_color="gray50").grid(row=2, column=1, sticky="w", padx=15, pady=(0, 5))
+
+        # 2. ชื่อผู้ติดต่อหน้างาน
+        self.onsite_contact_name_entry = CTkEntry(frame, textvariable=self.onsite_contact_name_var)
+        self._add_form_row(frame, "ชื่อผู้ติดต่อหน้างาน:", self.onsite_contact_name_entry, 3)
+
+        # 3. เบอร์ติดต่อหน้างาน
+        self.onsite_contact_phone_entry = CTkEntry(frame, textvariable=self.onsite_contact_phone_var)
+        self._add_form_row(frame, "เบอร์ติดต่อหน้างาน:", self.onsite_contact_phone_entry, 4)
+
+        # 4. ประเภทรถ (Dropdown)
+        vehicle_options = [
+            "-", "กระบะ", "6 ล้อธรรมดา", "6 ล้อเฮียบ", "10 ล้อธรรมดา", "10 ล้อเฮียบ", 
+            "รถเทรลเลอร์", "รถเทรลเลอร์-เฮียบ", "lala มอไซ", "lala เก๋ง", 
+            "lala กระบะ", "lala กระบะตู้ทึบ","ลูกค้ารับเอง", "ฝากส่งขนส่งเอกชน-ชำระต้นทาง", "ฝากส่งขนส่งเอกชน-เก็บปลายทาง"
+        ]
+        self.vehicle_type_menu = CTkOptionMenu(frame, variable=self.vehicle_type_var, values=vehicle_options, **self.dropdown_style)
+        
+        # 🟢 [แก้ไขตรงนี้] เติม * เพื่อให้เซลส์รู้ว่าต้องเลือก
+        self._add_form_row(frame, "ประเภทรถ: *", self.vehicle_type_menu, 5)
+        # 🟢 [เพิ่มใหม่] 5. เงื่อนไขการลงสินค้า (Radio Button เลือกได้อย่างเดียว)
+        unloading_frame = CTkFrame(frame, fg_color="transparent")
+        unloading_frame.grid(row=6, column=1, padx=15, pady=4, sticky="w")
+        CTkRadioButton(unloading_frame, text="รวมลง", variable=self.unloading_status_var, value="รวมลง").pack(side="left", padx=(0, 15))
+        CTkRadioButton(unloading_frame, text="ไม่รวมลง", variable=self.unloading_status_var, value="ไม่รวมลง").pack(side="left")
+        self._add_form_row(frame, "เงื่อนไขลงสินค้า:", unloading_frame, 6)
+
+        # 🟢 [เพิ่มใหม่] 6. Special Request
+        self.special_request_entry = CTkEntry(frame, textvariable=self.special_request_var)
+        self._add_form_row(frame, "Special Request: *", self.special_request_entry, 7)
+        CTkLabel(frame, text="* บังคับใส่ (หากไม่มีให้พิมพ์ '-'หรือ 'ไม่มี')", font=CTkFont(size=11, slant="italic"), text_color="#D32F2F").grid(row=8, column=1, sticky="w", padx=15, pady=(0, 5))
+        
 
     def _populate_sales_services_frame(self, parent):
         frame = self._create_section_frame(parent, "ยอดขายและบริการ")
@@ -1526,6 +1885,7 @@ class CommissionApp(CTkFrame):
         self.card_fee_vat_var_display = CTkEntry(frame, textvariable=self.card_fee_vat_calc_var, state="readonly", fg_color="gray85"); self._add_form_row(frame, "VAT 7% (ค่าธรรมเนียม):", self.card_fee_vat_var_display, 2)
         self.transfer_fee_entry = NumericEntry(frame, placeholder_text="หากมี"); self._add_form_row(frame, "ค่าธรรมเนียมโอน:", self.transfer_fee_entry, 3)
         self.wht_fee_entry = NumericEntry(frame, placeholder_text="หากมี"); self._add_form_row(frame, "ภาษีหัก ณ ที่จ่าย:", self.wht_fee_entry, 4)
+
 
     def _populate_payment_frame(self, parent):
         frame = self._create_section_frame(parent, "รายละเอียดการโอนชำระ")
@@ -1776,7 +2136,8 @@ class CommissionApp(CTkFrame):
             "wht_3_percent": utils.convert_to_float(self.wht_fee_entry.get()),
             "brokerage_fee": utils.convert_to_float(self.brokerage_fee_entry.get()),
             "coupons": utils.convert_to_float(self.coupon_value_entry.get()),
-            "giveaways": utils.convert_to_float(self.giveaway_value_entry.get()),
+            "giveaway_vat": utils.convert_to_float(self.giveaway_vat_entry.get()),       # 🟢 แก้ไข
+            "giveaway_no_vat": utils.convert_to_float(self.giveaway_no_vat_entry.get()), # 🟢 แก้ไข
             "relocation_cost_vat_option": self.relocation_vat_option_var.get(),
             "delivery_type": self.delivery_type_var.get(),
             "pickup_location": self.pickup_location_entry.get().strip(),
@@ -1801,12 +2162,29 @@ class CommissionApp(CTkFrame):
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "is_active": 1,
             "status": "Draft",
+            "delivery_map": self.delivery_map_var.get().strip(),
+            "onsite_contact_name": self.onsite_contact_name_var.get().strip(),
+            "onsite_contact_phone": self.onsite_contact_phone_var.get().strip(),
+            "vehicle_type": self.vehicle_type_var.get(),
+            "order_pur": self.order_pur_var.get().strip(),
+            "special_request": self.special_request_var.get().strip(),   # 🟢 เพิ่มบรรทัดนี้
+            "unloading_status": self.unloading_status_var.get(),
+            
         }
         return data
 
     def _validate_form(self, data):
         if not data["so_number"] or data["so_number"] == "SO":
             return False, "กรุณากรอก 'เลขที่ใบสั่งขาย (SO)'"
+
+        if not data.get("order_pur"):
+            return False, "กรุณากรอกข้อมูลในช่อง 'Order Pur' (ในส่วนรายละเอียดการขาย) ก่อนทำการบันทึก"
+        
+        if not data.get("special_request"):
+            return False, "กรุณากรอก 'Special Request' ในส่วนรายละเอียดเพิ่มเติม (หากไม่มีให้พิมพ์ '-'หรือ 'ไม่มี')"
+        
+        if not data.get("vehicle_type") or data.get("vehicle_type") == "-":
+            return False, "กรุณาเลือก 'ประเภทรถ' ในส่วนรายละเอียดเพิ่มเติม (หน้างาน) ให้ถูกต้อง"
 
         if data['customer_type'] == "ลูกค้าใหม่":
             if not data["customer_name"] or not data["customer_id"]:
@@ -1989,7 +2367,7 @@ class CommissionApp(CTkFrame):
             "new_customer_id_entry", "new_customer_name_entry", "sales_amount_entry",
             "cutting_drilling_fee_entry", "other_service_fee_entry", "shipping_cost_entry",
             "credit_card_fee_entry", "transfer_fee_entry", "wht_fee_entry", "brokerage_fee_entry",
-            "coupon_value_entry", "giveaway_value_entry", "payment1_amount_entry",
+            "coupon_value_entry", "giveaway_vat_entry", "giveaway_no_vat_entry", "payment1_amount_entry",
             "payment2_amount_entry", "cash_product_input_entry", "cash_actual_payment_entry",
             "pickup_location_entry", "relocation_cost_entry", "pickup_rego_entry"
         ]
@@ -2030,6 +2408,13 @@ class CommissionApp(CTkFrame):
         self.payment1_method_var.set("ไม่เลือก")
         self.payment2_method_var.set("ไม่เลือก")
         self.delivery_type_var.set("ซัพพลายเออร์จัดส่ง")
+        self.delivery_map_var.set("")
+        self.onsite_contact_name_var.set("")
+        self.onsite_contact_phone_var.set("")
+        self.vehicle_type_var.set("-")
+        self.order_pur_var.set("")
+        self.special_request_var.set("")           # 🟢 เพิ่มบรรทัดนี้
+        self.unloading_status_var.set("ไม่รวมลง")
 
         self.editing_record_id = None
         self._toggle_customer_fields()

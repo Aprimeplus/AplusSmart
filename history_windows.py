@@ -133,7 +133,8 @@ class SalesDataViewerWindow(CTkToplevel):
             'bill_date', 'customer_id', 'customer_name', 'credit_term',
             'sales_service_amount', 'cutting_drilling_fee', 'other_service_fee',
             'shipping_cost', 'delivery_date', 'relocation_cost',
-            'credit_card_fee', 'brokerage_fee', 'giveaways', 'coupons',
+            'unloading_status', 'special_request', # 🟢 เพิ่มใหม่
+            'credit_card_fee', 'brokerage_fee', 'giveaway_vat', 'giveaway_no_vat', 'coupons', # 🟢 แก้ไข
             'total_payment_amount', 'payment_date'
         ]
 
@@ -2843,14 +2844,25 @@ class SOPopupWindow(CTkToplevel):
         self._add_form_row(f4, "วันที่จัดส่งลูกค้า:", DateSelector(f4, dropdown_style=self.dropdown_style), 'date_to_customer_selector', 5)
         self._add_form_row(f4, "ทะเบียนเข้ารับ:", CTkEntry(f4), 'pickup_rego_entry', 6)
 
+        if 'unloading_status_var' not in self.so_shared_vars:
+            self.so_shared_vars['unloading_status_var'] = tk.StringVar(value="ไม่รวมลง")
+        unloading_frame = CTkFrame(f4, fg_color="transparent")
+        CTkRadioButton(unloading_frame, text="รวมลง", variable=self.so_shared_vars['unloading_status_var'], value="รวมลง").pack(side="left", padx=5)
+        CTkRadioButton(unloading_frame, text="ไม่รวมลง", variable=self.so_shared_vars['unloading_status_var'], value="ไม่รวมลง").pack(side="left", padx=5)
+        self._add_form_row(f4, "เงื่อนไขลงสินค้า:", unloading_frame, 'unloading_status_radio', 7)
+        
+        self._add_form_row(f4, "Special Request:", CTkEntry(f4), 'special_request_entry', 8)
+
+        # Section 5: Fees and Discounts
         # Section 5: Fees and Discounts
         f5 = self._create_so_section_frame(parent_frame, "ค่าธรรมเนียมและส่วนลด")
         self._add_item_row_with_vat(f5, "ค่าธรรมเนียมบัตร:", 'credit_card_fee_entry', 'credit_card_fee_vat_option_var', 'card_fee_vat_calc_var', 1)
         self._add_form_row(f5, "ค่าธรรมเนียมโอน:", NumericEntry(f5), 'transfer_fee_entry', 2)
         self._add_form_row(f5, "ภาษีหัก ณ ที่จ่าย:", NumericEntry(f5), 'wht_fee_entry', 3)
         self._add_form_row(f5, "ค่านายหน้า:", NumericEntry(f5), 'brokerage_fee_entry', 4)
-        self._add_form_row(f5, "คูปอง:", NumericEntry(f5), 'coupon_value_entry', 5)
-        self._add_form_row(f5, "ของแถม:", NumericEntry(f5), 'giveaway_value_entry', 6)
+        self._add_form_row(f5, "ของแถมใน SO (Vat):", NumericEntry(f5), 'giveaway_vat_entry', 5)      # 🟢 แก้ไข
+        self._add_form_row(f5, "ของแถมนอก SO (No Vat):", NumericEntry(f5), 'giveaway_no_vat_entry', 6) # 🟢 แก้ไข
+        self._add_form_row(f5, "คูปอง:", NumericEntry(f5), 'coupon_value_entry', 7)                   # 🟢 แก้ไข (เลื่อนเป็นแถว 7)
 
         # Section 6: Payment Details [แยกวันที่ 1 และ 2]
         f6 = self._create_so_section_frame(parent_frame, "รายละเอียดการโอนชำระ")
@@ -2883,7 +2895,7 @@ class SOPopupWindow(CTkToplevel):
         widgets_to_bind_keys = [
             "sales_amount_entry", "cutting_drilling_fee_entry", "other_service_fee_entry",
             "shipping_cost_entry", "credit_card_fee_entry", "transfer_fee_entry",
-            "wht_fee_entry", "coupon_value_entry", "giveaway_value_entry",
+            "wht_fee_entry", "coupon_value_entry", "giveaway_vat_entry", "giveaway_no_vat_entry", # 🟢 แก้ไข
             "brokerage_fee_entry", "payment1_amount_entry", "payment2_amount_entry",
             "cash_product_input_entry", "cash_actual_payment_entry",
             "relocation_cost_entry" 
@@ -3056,7 +3068,12 @@ class SOPopupWindow(CTkToplevel):
             'credit_term': 'credit_term_entry', 'sales_service_amount': 'sales_amount_entry', 'cutting_drilling_fee': 'cutting_drilling_fee_entry',
             'other_service_fee': 'other_service_fee_entry', 'shipping_cost': 'shipping_cost_entry', 'delivery_date': 'delivery_date_selector',
             'credit_card_fee': 'credit_card_fee_entry', 'transfer_fee': 'transfer_fee_entry', 'wht_3_percent': 'wht_fee_entry',
-            'brokerage_fee': 'brokerage_fee_entry', 'coupons': 'coupon_value_entry', 'giveaways': 'giveaway_value_entry',
+            'brokerage_fee': 'brokerage_fee_entry', 'coupons': 'coupon_value_entry', 
+            
+            # 🟢 [แก้ไข] ลบ giveaways อันเก่าทิ้ง เหลือแค่ 2 อันใหม่
+            'giveaway_vat': 'giveaway_vat_entry', 'giveaway_no_vat': 'giveaway_no_vat_entry', 
+            'special_request': 'special_request_entry', 'unloading_status': 'unloading_status_var',
+            
             'cash_product_input': 'cash_product_input_entry', 'cash_actual_payment': 'cash_actual_payment_entry',
             'sales_service_vat_option': 'sales_service_vat_option', 'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
             'other_service_fee_vat_option': 'other_service_fee_vat_option', 'shipping_vat_option': 'shipping_vat_option_var',
@@ -3064,8 +3081,12 @@ class SOPopupWindow(CTkToplevel):
             'so_vs_payment_result': 'so_vs_payment_result_var', 'difference_amount': 'difference_amount_var',
             'cash_required_total': 'cash_required_total_var', 'cash_verification_result': 'cash_verification_result_var',
             'delivery_type': 'delivery_type_var', 'pickup_location': 'pickup_location_entry',
-            'relocation_cost': 'relocation_cost_entry', 'date_to_warehouse': 'date_to_wh_selector','payment_before_vat_entry': 'payment_before_vat', 
-            'payment_no_vat_entry': 'payment_no_vat',
+            'relocation_cost': 'relocation_cost_entry', 'date_to_warehouse': 'date_to_wh_selector',
+            
+            # 🟢 [แก้ไข] สลับเอาชื่อ Database ขึ้นก่อนให้ถูกต้อง
+            'payment_before_vat': 'payment_before_vat_entry', 
+            'payment_no_vat': 'payment_no_vat_entry',
+            
             'date_to_customer': 'date_to_customer_selector', 'pickup_registration': 'pickup_rego_entry',
             'relocation_cost_vat_option': 'relocation_cost_vat_option'
         }
@@ -3118,7 +3139,9 @@ class SOPopupWindow(CTkToplevel):
             'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
             'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
             'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
-            'giveaway_value_entry': 'giveaways', 'cash_product_input_entry': 'cash_product_input',
+            'giveaway_vat_entry': 'giveaway_vat', 'giveaway_no_vat_entry': 'giveaway_no_vat', # 🟢 แก้ไข
+            'special_request_entry': 'special_request', # 🟢 เพิ่มใหม่
+            'cash_product_input_entry': 'cash_product_input',
             'cash_actual_payment_entry': 'cash_actual_payment'
         }
 
@@ -3160,7 +3183,8 @@ class SOPopupWindow(CTkToplevel):
             'other_service_fee_vat_option': 'other_service_fee_vat_option',
             'shipping_vat_option_var': 'shipping_vat_option', 
             'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option',
-            'relocation_cost_vat_option': 'relocation_cost_vat_option'
+            'relocation_cost_vat_option': 'relocation_cost_vat_option',
+            'unloading_status_var': 'unloading_status' # 🟢 เพิ่มใหม่
         }
         for var_key, data_key in shared_vars_map.items():
             if var_key in self.so_shared_vars: 

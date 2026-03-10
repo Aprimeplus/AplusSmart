@@ -591,7 +591,7 @@ class ProductManagementWindow(CTkToplevel):
         self.entry_font = purchasing_screen_instance.entry_font
 
         self.title("จัดการข้อมูลสินค้าหลัก (Product Management)")
-        self.geometry("1000x700")
+        self.geometry("1100x700") # ขยายหน้าต่างนิดนึงเพื่อรองรับคอลัมน์หมวดหมู่
         self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -630,7 +630,7 @@ class ProductManagementWindow(CTkToplevel):
 
         CTkButton(button_frame, text="🔄", width=40, command=self.load_products).pack(side="left", padx=5)
 
-        self.search_entry = CTkEntry(self, placeholder_text="ค้นหาสินค้า (รหัส/ชื่อ)", font=self.entry_font)
+        self.search_entry = CTkEntry(self, placeholder_text="ค้นหาสินค้า (รหัส/ชื่อ/หมวดหมู่)", font=self.entry_font)
         self.search_entry.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
         self.search_entry.bind("<KeyRelease>", self._filter_products)
 
@@ -639,19 +639,22 @@ class ProductManagementWindow(CTkToplevel):
         self.tree_frame.grid_rowconfigure(0, weight=1)
         self.tree_frame.grid_columnconfigure(0, weight=1)
 
-        columns = ("id", "product_code", "product_name", "warehouse", "price", "weight")
+        # 🟢 เพิ่มคอลัมน์ category
+        columns = ("id", "product_code", "product_name", "category", "warehouse", "price", "weight")
         self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings", selectmode="browse")
 
         self.tree.heading("id", text="ID", anchor="center")
         self.tree.heading("product_code", text="รหัสสินค้า", anchor="center")
         self.tree.heading("product_name", text="ชื่อสินค้า", anchor="center")
+        self.tree.heading("category", text="หมวดหมู่", anchor="center") # 🟢
         self.tree.heading("warehouse", text="คลัง", anchor="center")
         self.tree.heading("price", text="ราคาล่าสุด", anchor="e")
         self.tree.heading("weight", text="นน.ล่าสุด", anchor="e")
 
         self.tree.column("id", width=50, anchor="center")
         self.tree.column("product_code", width=150, anchor="w")
-        self.tree.column("product_name", width=350, anchor="w")
+        self.tree.column("product_name", width=300, anchor="w")
+        self.tree.column("category", width=120, anchor="center") # 🟢
         self.tree.column("warehouse", width=100, anchor="center")
         self.tree.column("price", width=100, anchor="e")
         self.tree.column("weight", width=100, anchor="e")
@@ -674,7 +677,8 @@ class ProductManagementWindow(CTkToplevel):
 
         conn = self.app_container.get_connection()
         try:
-            cursor_query = "SELECT id, product_code, product_name, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
+            # 🟢 ดึง category มาด้วย
+            cursor_query = "SELECT id, product_code, product_name, category, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute(cursor_query)
                 products = cursor.fetchall()
@@ -686,6 +690,7 @@ class ProductManagementWindow(CTkToplevel):
                         prod['id'],
                         prod['product_code'],
                         prod['product_name'],
+                        prod['category'] or "-", # 🟢
                         prod['warehouse'],
                         price,
                         weight
@@ -703,14 +708,15 @@ class ProductManagementWindow(CTkToplevel):
 
         conn = self.app_container.get_connection()
         try:
+            # 🟢 ให้ค้นหาจาก category ได้ด้วย
             query = """
-                SELECT id, product_code, product_name, warehouse, last_unit_price, last_weight_per_unit 
+                SELECT id, product_code, product_name, category, warehouse, last_unit_price, last_weight_per_unit 
                 FROM products 
-                WHERE LOWER(product_code) LIKE %s OR LOWER(product_name) LIKE %s 
+                WHERE LOWER(product_code) LIKE %s OR LOWER(product_name) LIKE %s OR LOWER(COALESCE(category, '')) LIKE %s
                 ORDER BY product_code
             """
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                cursor.execute(query, (f"%{search_term}%", f"%{search_term}%"))
+                cursor.execute(query, (f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"))
                 products = cursor.fetchall()
                 for prod in products:
                     price = f"{prod['last_unit_price']:,.2f}" if prod['last_unit_price'] else "-"
@@ -720,6 +726,7 @@ class ProductManagementWindow(CTkToplevel):
                         prod['id'],
                         prod['product_code'],
                         prod['product_name'],
+                        prod['category'] or "-", # 🟢
                         prod['warehouse'],
                         price,
                         weight
@@ -729,24 +736,24 @@ class ProductManagementWindow(CTkToplevel):
         finally:
             if conn: self.app_container.release_connection(conn)
 
-    # --- ฟังก์ชัน Export ที่แก้ไขแล้ว (เพิ่ม ID) ---
     def _export_products(self):
         """Export ข้อมูลสินค้าทั้งหมดเป็น Excel"""
         try:
             conn = self.app_container.get_connection()
-            # [แก้ไข] เพิ่ม id ใน Query
-            query = "SELECT id, product_code, product_name, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
+            # 🟢 เพิ่ม category
+            query = "SELECT id, product_code, product_name, category, warehouse, last_unit_price, last_weight_per_unit FROM products ORDER BY product_code"
             df = pd.read_sql_query(query, conn)
             
             if df.empty:
                 messagebox.showinfo("ไม่มีข้อมูล", "ไม่พบข้อมูลสินค้าที่จะ Export", parent=self)
                 return
 
-            # [แก้ไข] เพิ่ม System_ID ในไฟล์ Excel
+            # 🟢 ตั้งชื่อคอลัมน์ หมวดหมู่
             df.rename(columns={
-                'id': 'System_ID', # คอลัมน์สำคัญ! ห้ามเปลี่ยนชื่อในไฟล์ Excel ถ้าจะใช้อัปเดต
+                'id': 'System_ID',
                 'product_code': 'รหัสสินค้า',
                 'product_name': 'ชื่อสินค้า',
+                'category': 'หมวดหมู่', # 🟢
                 'warehouse': 'คลัง',
                 'last_unit_price': 'ราคาล่าสุด',
                 'last_weight_per_unit': 'น้ำหนักล่าสุด'
@@ -769,7 +776,6 @@ class ProductManagementWindow(CTkToplevel):
         finally:
              if conn: self.app_container.release_connection(conn)
 
-    # --- ฟังก์ชัน Import ที่แก้ไขแล้ว (เช็ค ID ก่อน) ---
     def _import_products(self):
         """Import ข้อมูลสินค้าจาก Excel (Update by ID or Code, or Insert)"""
         file_path = filedialog.askopenfilename(
@@ -783,17 +789,17 @@ class ProductManagementWindow(CTkToplevel):
 
         conn = None
         try:
-            # 1. อ่านไฟล์
             if file_path.endswith('.csv'):
                 df = pd.read_csv(file_path)
             else:
                 df = pd.read_excel(file_path)
             
-            # 2. Map ชื่อคอลัมน์
+            # 🟢 เพิ่ม map ชื่อ category
             column_map = {
-                'System_ID': 'id', 'id': 'id', 'ID': 'id', # รองรับชื่อ ID หลายแบบ
+                'System_ID': 'id', 'id': 'id', 'ID': 'id',
                 'รหัสสินค้า': 'product_code', 'product_code': 'product_code', 'code': 'product_code',
                 'ชื่อสินค้า': 'product_name', 'product_name': 'product_name', 'name': 'product_name',
+                'หมวดหมู่': 'category', 'หมวดสินค้า': 'category', 'category': 'category', # 🟢
                 'คลัง': 'warehouse', 'warehouse': 'warehouse',
                 'ราคาล่าสุด': 'last_unit_price', 'last_unit_price': 'last_unit_price', 'price': 'last_unit_price',
                 'น้ำหนักล่าสุด': 'last_weight_per_unit', 'last_weight_per_unit': 'last_weight_per_unit', 'weight': 'last_weight_per_unit'
@@ -807,14 +813,18 @@ class ProductManagementWindow(CTkToplevel):
             
             df.rename(columns=rename_dict, inplace=True)
             
-            # 3. ตรวจสอบคอลัมน์ที่จำเป็น
             if 'product_code' not in df.columns or 'product_name' not in df.columns:
                 messagebox.showerror("รูปแบบไฟล์ไม่ถูกต้อง", "ไฟล์ต้องมีคอลัมน์ 'รหัสสินค้า' และ 'ชื่อสินค้า' เป็นอย่างน้อย", parent=self)
                 return
 
-            # 4. ทำความสะอาดข้อมูล
             df['product_code'] = df['product_code'].astype(str).str.strip()
             df['product_name'] = df['product_name'].astype(str).str.strip()
+            
+            if 'category' in df.columns: # 🟢
+                df['category'] = df['category'].fillna('').astype(str).str.strip()
+            else:
+                df['category'] = ''
+
             if 'warehouse' in df.columns:
                 df['warehouse'] = df['warehouse'].fillna('').astype(str).str.strip()
             else:
@@ -828,7 +838,6 @@ class ProductManagementWindow(CTkToplevel):
                 df['last_weight_per_unit'] = pd.to_numeric(df['last_weight_per_unit'], errors='coerce').fillna(0)
             else: df['last_weight_per_unit'] = 0
 
-            # 5. เริ่มกระบวนการ Import
             if not messagebox.askyesno("ยืนยันการนำเข้า", f"พบข้อมูล {len(df)} รายการ\nต้องการนำเข้าและอัปเดตข้อมูลหรือไม่?", parent=self):
                 return
 
@@ -842,42 +851,36 @@ class ProductManagementWindow(CTkToplevel):
                     name = row['product_name']
                     if not code or not name: continue
                     
+                    cat = row.get('category', '') # 🟢
                     wh = row.get('warehouse', '')
                     price = row.get('last_unit_price', 0)
                     weight = row.get('last_weight_per_unit', 0)
-                    row_id = row.get('id') # ลองดึง ID มาดู
+                    row_id = row.get('id')
 
                     target_id = None
                     
-                    # [Logic ใหม่]
-                    # 1. ถ้ามี ID มาในไฟล์ ให้ลองหาด้วย ID ก่อน
                     if pd.notna(row_id):
                         cursor.execute("SELECT id FROM products WHERE id = %s", (row_id,))
                         res = cursor.fetchone()
-                        if res:
-                            target_id = res[0]
+                        if res: target_id = res[0]
                     
-                    # 2. ถ้าไม่มี ID หรือหา ID ไม่เจอ -> ให้ลองหาด้วย Product Code
                     if not target_id:
                         cursor.execute("SELECT id FROM products WHERE product_code = %s", (code,))
                         res = cursor.fetchone()
-                        if res:
-                            target_id = res[0]
+                        if res: target_id = res[0]
 
                     if target_id:
-                        # Update (รวมถึงกรณีเปลี่ยนรหัสสินค้า ก็จะทำได้ถ้าอิงตาม ID)
                         cursor.execute("""
                             UPDATE products 
-                            SET product_code = %s, product_name = %s, warehouse = %s, last_unit_price = %s, last_weight_per_unit = %s, last_updated = NOW()
+                            SET product_code = %s, product_name = %s, category = %s, warehouse = %s, last_unit_price = %s, last_weight_per_unit = %s, last_updated = NOW()
                             WHERE id = %s
-                        """, (code, name, wh, price, weight, target_id))
+                        """, (code, name, cat, wh, price, weight, target_id)) # 🟢 เพิ่ม cat
                         updated_count += 1
                     else:
-                        # Insert
                         cursor.execute("""
-                            INSERT INTO products (product_code, product_name, warehouse, last_unit_price, last_weight_per_unit, last_updated)
-                            VALUES (%s, %s, %s, %s, %s, NOW())
-                        """, (code, name, wh, price, weight))
+                            INSERT INTO products (product_code, product_name, category, warehouse, last_unit_price, last_weight_per_unit, last_updated)
+                            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                        """, (code, name, cat, wh, price, weight)) # 🟢 เพิ่ม cat
                         inserted_count += 1
                 
                 conn.commit()
@@ -905,7 +908,8 @@ class ProductManagementWindow(CTkToplevel):
 
         conn = self.app_container.get_connection()
         try:
-            cursor_query = "SELECT id, product_code, product_name, warehouse FROM products WHERE id = %s"
+            # 🟢 ดึง category มาเพื่อนำไปใส่ในฟอร์มแก้ไข
+            cursor_query = "SELECT id, product_code, product_name, category, warehouse FROM products WHERE id = %s"
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute(cursor_query, (product_id,))
                 product_data = cursor.fetchone()
@@ -915,10 +919,8 @@ class ProductManagementWindow(CTkToplevel):
                     messagebox.showerror("ข้อผิดพลาด", "ไม่พบข้อมูลสินค้าที่เลือก", parent=self)
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถดึงข้อมูลสินค้าเพื่อแก้ไขได้: {e}", parent=self)
-            traceback.print_exc()
         finally:
-            if conn:
-                self.app_container.release_connection(conn)
+            if conn: self.app_container.release_connection(conn)
 
     def _delete_product(self):
         selected_item = self.tree.focus()
@@ -942,20 +944,12 @@ class ProductManagementWindow(CTkToplevel):
                 messagebox.showinfo("สำเร็จ", f"ลบสินค้า '{product_code}' เรียบร้อยแล้ว", parent=self)
                 self.load_products()
         except psycopg2.Error as e:
-            if conn:
-                conn.rollback()
+            if conn: conn.rollback()
             messagebox.showerror("Database Error", f"ไม่สามารถลบสินค้าได้: {e}\nอาจมีข้อมูล PO อ้างอิงถึงสินค้านี้", parent=self)
-            traceback.print_exc()
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการลบ: {e}", parent=self)
-            traceback.print_exc()
         finally:
-            if conn:
-                self.app_container.release_connection(conn)
+            if conn: self.app_container.release_connection(conn)
 
-# --- Product Edit Dialog ---
+
 class ProductEditDialog(CTkToplevel):
     def __init__(self, master, product_data, pm_window):
         super().__init__(master)
@@ -963,9 +957,21 @@ class ProductEditDialog(CTkToplevel):
         self.app_container = pm_window.app_container
         self.product_data = product_data
         self.editing_mode = product_data is not None
+        
         self.title("แก้ไขข้อมูลสินค้า" if self.editing_mode else "เพิ่มสินค้าใหม่")
-        self.geometry("400x250")
+        self.geometry("450x320") # ขยายหน้าต่างเล็กน้อย
         self.grid_columnconfigure(1, weight=1)
+
+        # 🟢 กำหนดรายการหมวดหมู่ทั้งหมดตามมาตรฐาน Express
+        self.category_list = [
+            "HDPE/PB/PVC/UPVC/PP-R (T)", "ดอกเจาะ (K)", "เครื่องจักร (M)",
+            "เครื่องใช้ไฟฟ้า (E)", "เครื่องมือช่าง (H)", "งานประปา (V)",
+            "งานไฟฟ้า (L)", "บ้านสำเร็จรูป", "ประตู (D)", "ผนัง (P)",
+            "พื้น (F)", "ไฟแป้นกลม (F)", "ไม้ (W)", "สแตนเลส (O)",
+            "สินค้าอุปโภคบริโภค (Y)", "สินค้าดัดแปรเหล็ก (Y)", "สี (C)",
+            "สุขภัณฑ์ (Z)", "หลังคา (R)", "ท่อแก๊สโซล่าเซลล์ (B)",
+            "เหล็ก (S)", "อลูมิเนียม (A)", "ฮาร์ดแวร์ (N)", "วัสดุอื่นๆ"
+        ]
 
         self._create_widgets()
         if self.editing_mode:
@@ -990,6 +996,13 @@ class ProductEditDialog(CTkToplevel):
         self.product_name_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
         row += 1
 
+        # 🟢 เปลี่ยนช่องหมวดหมู่เป็น Dropdown (CTkComboBox เพื่อให้พิมพ์ค้นหาได้ด้วย)
+        CTkLabel(self, text="หมวดหมู่:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.category_var = tk.StringVar(value="วัสดุอื่นๆ") # ค่าเริ่มต้น
+        self.category_menu = CTkComboBox(self, variable=self.category_var, values=self.category_list)
+        self.category_menu.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        row += 1
+
         CTkLabel(self, text="คลัง:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.warehouse_entry = CTkEntry(self)
         self.warehouse_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
@@ -1000,15 +1013,24 @@ class ProductEditDialog(CTkToplevel):
 
     def _populate_form(self):
         if self.product_data:
-            self.product_code_entry.insert(0, self.product_data.get('product_code', ''))
-            self.product_name_entry.insert(0, self.product_data.get('product_name', ''))
-            self.warehouse_entry.insert(0, self.product_data.get('warehouse', ''))
-            # [แก้ไข] เอาบรรทัดที่ล็อก readonly ออกแล้ว เพื่อให้แก้ไขได้
+            self.product_code_entry.insert(0, self.product_data.get('product_code') or '')
+            self.product_name_entry.insert(0, self.product_data.get('product_name') or '')
+            
+            # 🟢 เซ็ตค่าหมวดหมู่ให้ตรงกับในฐานข้อมูล (ถ้ามี)
+            cat_val = self.product_data.get('category')
+            if cat_val:
+                self.category_var.set(cat_val)
+            else:
+                self.category_var.set("วัสดุอื่นๆ") # กรณีช่องว่างให้เป็นค่า Default
+                
+            self.warehouse_entry.insert(0, self.product_data.get('warehouse') or '')
 
     def _save_product(self):
         code = self.product_code_entry.get().strip()
         name = self.product_name_entry.get().strip()
+        category = self.category_var.get().strip() # 🟢 ดึงค่าจาก Dropdown
         warehouse = self.warehouse_entry.get().strip()
+        
         if not code or not name:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณากรอกรหัสและชื่อสินค้า", parent=self)
             return
@@ -1019,18 +1041,16 @@ class ProductEditDialog(CTkToplevel):
                 if self.editing_mode:
                     product_id = self.product_data['id']
                     
-                    # [เพิ่ม] ตรวจสอบรหัสซ้ำ (กรณีเปลี่ยนรหัส)
                     cursor.execute("SELECT id FROM products WHERE product_code = %s AND id != %s", (code, product_id))
                     if cursor.fetchone():
                         messagebox.showerror("ข้อมูลซ้ำ", f"รหัสสินค้า '{code}' มีอยู่ในระบบแล้ว", parent=self)
                         return
 
-                    # [แก้ไข] อัปเดต product_code ด้วย
                     cursor.execute("""
                         UPDATE products 
-                        SET product_code = %s, product_name = %s, warehouse = %s, last_updated = %s
+                        SET product_code = %s, product_name = %s, category = %s, warehouse = %s, last_updated = %s
                         WHERE id = %s
-                    """, (code, name, warehouse, datetime.now(), product_id))
+                    """, (code, name, category, warehouse, datetime.now(), product_id))
                     
                     messagebox.showinfo("สำเร็จ", f"อัปเดตสินค้า '{name}' เรียบร้อยแล้ว", parent=self)
                 else:
@@ -1038,10 +1058,11 @@ class ProductEditDialog(CTkToplevel):
                     if cursor.fetchone():
                         messagebox.showerror("ข้อมูลซ้ำ", "รหัสสินค้านี้มีอยู่ในระบบแล้ว", parent=self)
                         return
+                        
                     cursor.execute("""
-                        INSERT INTO products (product_code, product_name, warehouse, last_updated)
-                        VALUES (%s, %s, %s, %s)
-                    """, (code, name, warehouse, datetime.now()))
+                        INSERT INTO products (product_code, product_name, category, warehouse, last_updated)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (code, name, category, warehouse, datetime.now()))
                     messagebox.showinfo("สำเร็จ", f"เพิ่มสินค้าใหม่ '{name}' เรียบร้อยแล้ว", parent=self)
             
             conn.commit()
@@ -1056,6 +1077,270 @@ class ProductEditDialog(CTkToplevel):
             messagebox.showerror("Error", f"เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}", parent=self)
         finally:
             if conn: self.app_container.release_connection(conn)
+
+## ==============================================================================
+# 🟢 ระบบจัดการซัพพลายเออร์ (Supplier Management)
+# ==============================================================================
+class SupplierManagementWindow(CTkToplevel):
+    def __init__(self, master, purchasing_screen_instance):
+        super().__init__(master)
+        self.purchasing_screen = purchasing_screen_instance
+        self.app_container = purchasing_screen_instance.app_container
+        self.user_name = purchasing_screen_instance.user_name # เก็บชื่อคนที่เพิ่ม
+
+        self.title("จัดการข้อมูลซัพพลายเออร์ (Supplier Management)")
+        self.geometry("1250x600") # 🟢 ขยายหน้าต่างให้กว้างขึ้นเพื่อรองรับคอลัมน์ใหม่
+        self.grid_rowconfigure(2, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._create_widgets()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.after(20, self.load_suppliers)
+
+        self.transient(master)
+        self.grab_set()
+
+    def on_close(self):
+        self.purchasing_screen.supplier_management_window = None
+        self.destroy()
+        # รีโหลดข้อมูลซัพฯ ในหน้าหลักใหม่
+        self.purchasing_screen._load_supplier_data()
+
+    def _create_widgets(self):
+        header_frame = CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        CTkLabel(header_frame, text="🏢 จัดการข้อมูลซัพพลายเออร์", font=CTkFont(size=18, weight="bold")).pack(side="left")
+
+        button_frame = CTkFrame(header_frame, fg_color="transparent")
+        button_frame.pack(side="right")
+        
+        CTkButton(button_frame, text="➕ เพิ่มซัพพลายเออร์", width=120, command=self._add_supplier, fg_color="#10B981", hover_color="#059669").pack(side="left", padx=5)
+        CTkButton(button_frame, text="✏️ แก้ไข", width=80, command=self._edit_supplier).pack(side="left", padx=5)
+        CTkButton(button_frame, text="🗑️ ลบ", width=60, command=self._delete_supplier, fg_color="#D32F2F", hover_color="#B71C1C").pack(side="left", padx=5)
+        CTkButton(button_frame, text="🔄", width=40, command=self.load_suppliers).pack(side="left", padx=5)
+
+        self.search_entry = CTkEntry(self, placeholder_text="🔍 ค้นหา (ชื่อ/รหัสซัพพลายเออร์/ชื่อผู้ติดต่อ)...")
+        self.search_entry.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.search_entry.bind("<KeyRelease>", self._filter_suppliers)
+
+        # --- ตารางแสดงผล ---
+        self.tree_frame = CTkFrame(self, fg_color="transparent")
+        self.tree_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        self.tree_frame.grid_rowconfigure(0, weight=1)
+        self.tree_frame.grid_columnconfigure(0, weight=1)
+
+        # 🟢 เพิ่มคอลัมน์ contact_name และ phone_number
+        columns = ("id", "supplier_name", "supplier_code", "contact_name", "phone_number", "credit_term", "bank_account_type", "created_by", "created_at")
+        self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings", selectmode="browse")
+
+        self.tree.heading("id", text="ID")
+        self.tree.heading("supplier_name", text="ชื่อซัพพลายเออร์")
+        self.tree.heading("supplier_code", text="รหัสซัพฯ")
+        self.tree.heading("contact_name", text="ชื่อผู้ติดต่อ") # 🟢
+        self.tree.heading("phone_number", text="เบอร์โทร")     # 🟢
+        self.tree.heading("credit_term", text="เครดิต (วัน)")
+        self.tree.heading("bank_account_type", text="ประเภทบัญชี")
+        self.tree.heading("created_by", text="เพิ่มโดย (ประวัติ)")
+        self.tree.heading("created_at", text="วันที่เพิ่ม")
+
+        self.tree.column("id", width=50, anchor="center")
+        self.tree.column("supplier_name", width=220, anchor="w")
+        self.tree.column("supplier_code", width=80, anchor="center")
+        self.tree.column("contact_name", width=150, anchor="w") # 🟢
+        self.tree.column("phone_number", width=120, anchor="center") # 🟢
+        self.tree.column("credit_term", width=80, anchor="center")
+        self.tree.column("bank_account_type", width=100, anchor="center")
+        self.tree.column("created_by", width=120, anchor="w")
+        self.tree.column("created_at", width=120, anchor="center")
+
+        self.tree.pack(fill="both", expand=True)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", background="#F5F5F5", rowheight=25, fieldbackground="#F5F5F5")
+        style.map('Treeview', background=[('selected', '#3B82F6')])
+        style.configure("Treeview.Heading", font=CTkFont(size=12, weight="bold"), background="#E0E0E0")
+
+        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
+        vsb.pack(side='right', fill='y')
+        self.tree.configure(yscrollcommand=vsb.set)
+
+    def load_suppliers(self, search_term=""):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # 🟢 ดึงข้อมูล contact_name และ phone_number ด้วย
+                base_query = "SELECT id, supplier_name, supplier_code, contact_name, phone_number, credit_term, bank_account_type, created_by, created_at FROM suppliers "
+                if search_term:
+                    query = base_query + "WHERE LOWER(supplier_name) LIKE %s OR LOWER(supplier_code) LIKE %s OR LOWER(contact_name) LIKE %s ORDER BY id DESC"
+                    cursor.execute(query, (f"%{search_term.lower()}%", f"%{search_term.lower()}%", f"%{search_term.lower()}%"))
+                else:
+                    query = base_query + "ORDER BY id DESC"
+                    cursor.execute(query)
+
+                for row in cursor.fetchall():
+                    dt = row['created_at'].strftime("%Y-%m-%d %H:%M") if row['created_at'] else "-"
+                    self.tree.insert("", "end", values=(
+                        row['id'], row['supplier_name'], row['supplier_code'], 
+                        row['contact_name'] or "-", row['phone_number'] or "-", # 🟢
+                        row['credit_term'], row['bank_account_type'], 
+                        row['created_by'] or "-", dt
+                    ))
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถโหลดข้อมูลซัพพลายเออร์ได้: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _filter_suppliers(self, event):
+        self.load_suppliers(self.search_entry.get().strip())
+
+    def _add_supplier(self):
+        SupplierEditDialog(self, supplier_data=None, sm_window=self)
+
+    def _edit_supplier(self):
+        selected_item = self.tree.focus()
+        if not selected_item:
+            messagebox.showwarning("เลือกรายการ", "กรุณาเลือกซัพพลายเออร์ที่ต้องการแก้ไข", parent=self)
+            return
+
+        values = self.tree.item(selected_item, 'values')
+        # 🟢 ดึงข้อมูลทั้งหมดรวมถึงชื่อผู้ติดต่อและเบอร์โทรส่งไปให้หน้า Edit
+        supp_data = {
+            'id': values[0], 'supplier_name': values[1], 'supplier_code': values[2],
+            'contact_name': values[3] if values[3] != "-" else "", 
+            'phone_number': values[4] if values[4] != "-" else "",
+            'credit_term': values[5], 'bank_account_type': values[6]
+        }
+        SupplierEditDialog(self, supplier_data=supp_data, sm_window=self)
+
+    def _delete_supplier(self):
+        selected_item = self.tree.focus()
+        if not selected_item:
+            messagebox.showwarning("เลือกรายการ", "กรุณาเลือกซัพพลายเออร์ที่ต้องการลบ", parent=self)
+            return
+
+        values = self.tree.item(selected_item, 'values')
+        sup_id, supp_name = values[0], values[1]
+
+        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการลบซัพพลายเออร์ '{supp_name}' ใช่หรือไม่?", icon="warning", parent=self):
+            return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM suppliers WHERE id = %s", (sup_id,))
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "ลบซัพพลายเออร์เรียบร้อยแล้ว", parent=self)
+            self.load_suppliers()
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Error", f"ไม่สามารถลบซัพพลายเออร์ได้ (อาจมีการอ้างอิงใน PO แล้ว): {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+class SupplierEditDialog(CTkToplevel):
+    def __init__(self, master, supplier_data, sm_window):
+        super().__init__(master)
+        self.sm_window = sm_window
+        self.app_container = sm_window.app_container
+        self.supplier_data = supplier_data
+        self.editing_mode = supplier_data is not None
+
+        self.title("แก้ไขซัพพลายเออร์" if self.editing_mode else "เพิ่มซัพพลายเออร์ใหม่")
+        self.geometry("450x400") # 🟢 ขยายความสูงหน้าต่างให้พอดีกับช่องที่เพิ่มมา
+        self.grid_columnconfigure(1, weight=1)
+
+        self._create_widgets()
+        if self.editing_mode: self._populate_form()
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.transient(master)
+        self.grab_set()
+
+    def on_close(self): self.destroy()
+
+    def _create_widgets(self):
+        CTkLabel(self, text="ชื่อซัพพลายเออร์: *").grid(row=0, column=0, padx=10, pady=(15,5), sticky="w")
+        self.name_entry = CTkEntry(self)
+        self.name_entry.grid(row=0, column=1, padx=10, pady=(15,5), sticky="ew")
+
+        CTkLabel(self, text="รหัสซัพพลายเออร์:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.code_entry = CTkEntry(self)
+        self.code_entry.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+
+        # 🟢 เพิ่มช่อง ชื่อผู้ติดต่อ
+        CTkLabel(self, text="ชื่อผู้ติดต่อ:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.contact_entry = CTkEntry(self, placeholder_text="ชื่อเซลส์ หรือ ผู้ดูแลบัญชี")
+        self.contact_entry.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+
+        # 🟢 เพิ่มช่อง เบอร์โทรศัพท์
+        CTkLabel(self, text="เบอร์โทรศัพท์:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.phone_entry = CTkEntry(self, placeholder_text="08X-XXX-XXXX")
+        self.phone_entry.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+
+        CTkLabel(self, text="เครดิตเทอม (วัน):").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        self.term_entry = CTkEntry(self)
+        self.term_entry.grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+
+        CTkLabel(self, text="ประเภทบัญชี:").grid(row=5, column=0, padx=10, pady=5, sticky="w")
+        self.bank_type_var = tk.StringVar(value="ออมทรัพย์")
+        self.bank_type_menu = CTkOptionMenu(self, variable=self.bank_type_var, values=["ออมทรัพย์", "กระแสรายวัน"])
+        self.bank_type_menu.grid(row=5, column=1, padx=10, pady=5, sticky="w")
+
+        btn_text = "บันทึกการแก้ไข" if self.editing_mode else "➕ เพิ่มซัพพลายเออร์"
+        CTkButton(self, text=btn_text, command=self._save_data).grid(row=6, column=0, columnspan=2, pady=20)
+
+    def _populate_form(self):
+        self.name_entry.insert(0, self.supplier_data.get('supplier_name', ''))
+        self.code_entry.insert(0, self.supplier_data.get('supplier_code', ''))
+        self.contact_entry.insert(0, self.supplier_data.get('contact_name', '')) # 🟢
+        self.phone_entry.insert(0, self.supplier_data.get('phone_number', ''))     # 🟢
+        self.term_entry.insert(0, self.supplier_data.get('credit_term', ''))
+        self.bank_type_var.set(self.supplier_data.get('bank_account_type', 'ออมทรัพย์'))
+
+    def _save_data(self):
+        name = self.name_entry.get().strip()
+        code = self.code_entry.get().strip()
+        contact = self.contact_entry.get().strip() # 🟢
+        phone = self.phone_entry.get().strip()     # 🟢
+        term = self.term_entry.get().strip()
+        b_type = self.bank_type_var.get()
+
+        if not name:
+            messagebox.showwarning("แจ้งเตือน", "กรุณากรอกชื่อซัพพลายเออร์", parent=self); return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                if self.editing_mode:
+                    sup_id = self.supplier_data['id']
+                    # 🟢 อัปเดตข้อมูลผู้ติดต่อและเบอร์โทร
+                    cursor.execute("""
+                        UPDATE suppliers 
+                        SET supplier_name=%s, supplier_code=%s, contact_name=%s, phone_number=%s, credit_term=%s, bank_account_type=%s
+                        WHERE id=%s
+                    """, (name, code, contact, phone, term, b_type, sup_id))
+                else:
+                    # 🟢 Insert ข้อมูลผู้ติดต่อและเบอร์โทร
+                    cursor.execute("""
+                        INSERT INTO suppliers (supplier_name, supplier_code, contact_name, phone_number, credit_term, bank_account_type, created_by, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    """, (name, code, contact, phone, term, b_type, self.sm_window.user_name))
+            
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
+            self.sm_window.load_suppliers()
+            self.on_close()
+
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
 
 # ==============================================================================
 # PurchasingScreen Main Class
@@ -1418,7 +1703,7 @@ class PurchasingScreen(CTkFrame):
                 overall_total_weight += row_final_weight
                 
                 # --- [🔥 Logic พิเศษ] EXP-0079A ไม่นำไปคิดเงินจ่ายซัพฯ ---
-                if code == 'EXP-0079A':
+                if code == '':
                     pass # ไม่บวกเข้า supplier_payable
                 else:
                     supplier_payable_product_base += row_final_price
@@ -1614,11 +1899,11 @@ class PurchasingScreen(CTkFrame):
 
         CTkButton(button_container, text="📖 ดูประวัติ PO", command=lambda: self.app_container.show_history_window(), fg_color="#64748B").pack(side="left", padx=5)
         CTkButton(button_container, text="🔧 จัดการสินค้า", command=self._open_product_management_window, fg_color="#6D28D9", hover_color="#5B21B6").pack(side="left", padx=5)
-        
+        CTkButton(button_container, text="🏢 จัดการซัพพลายเออร์", command=self._open_supplier_management_window, fg_color="#F59E0B", hover_color="#D97706").pack(side="left", padx=5)
+
         CTkButton(button_container, text="Export PDF (PO อนุมัติ)", command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
         export_button = CTkButton(button_container, text="Export Excel (PO อนุมัติ)", command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B")
         export_button.pack(side="left", padx=5)
-        CTkButton(button_container, text="(ล้างฟอร์ม PO)", command=self.handle_clear_button_press, fg_color="#E11D48").pack(side="left", padx=5)
         self.toggle_so_data_button = CTkButton(button_container, text="ดูข้อมูล SO", command=self._open_so_popup, fg_color=self.sale_theme.get("primary", "#3B82F6"))
         self.toggle_so_data_button.pack(side="left", padx=5)
         CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="right", padx=(5, 0))
@@ -1706,6 +1991,12 @@ class PurchasingScreen(CTkFrame):
                 print(f"Error updating tasks badge: {e}")
         finally:
             if conn: self.app_container.release_connection(conn)
+
+    def _open_supplier_management_window(self):
+        if not hasattr(self, 'supplier_management_window') or self.supplier_management_window is None or not self.supplier_management_window.winfo_exists():
+            self.supplier_management_window = SupplierManagementWindow(self, purchasing_screen_instance=self)
+        else:
+            self.supplier_management_window.focus()
 
     def _open_my_tasks_window(self):
         try:
@@ -2912,11 +3203,20 @@ class PurchasingScreen(CTkFrame):
         footer.pack(fill="x", expand=True, padx=10, pady=15)
         btn_config = {"corner_radius": 8, "font": (self.label_font.cget("family"), 12)}
 
+        # 🟢 [ย้ายมาไว้ที่นี่] ปุ่มล้างฟอร์ม PO วางไว้ซ้ายสุด (สีแดง)
+        CTkButton(
+            footer, text="🗑️ ล้างฟอร์ม PO", 
+            command=self.handle_clear_button_press, 
+            fg_color="transparent", border_color="#EF4444", text_color="#EF4444", border_width=2, hover_color="#FEE2E2",
+            corner_radius=8, font=(self.label_font.cget("family"), 12)
+        ).pack(side="left", padx=5)
+
+        # ปุ่มหลักอื่นๆ (พิมพ์, บันทึกร่าง, ขออนุมัติ) ให้ขยายเต็มพื้นที่ที่เหลือ
         CTkButton(footer, text="📄 พิมพ์ใบสั่งซื้อ (PO)", command=self._open_so_selection_dialog, fg_color="#7C3AED", **btn_config).pack(side="left", padx=5, expand=True, fill="x")
-        self.save_draft_button = CTkButton(footer, text="💾 บันทึกฉบับร่าง (Save Draft)", command=lambda: self._save_po('Draft'), **btn_config) # <--- เพิ่ม self.save_draft_button
+        
+        self.save_draft_button = CTkButton(footer, text="💾 บันทึกฉบับร่าง (Save Draft)", command=lambda: self._save_po('Draft'), **btn_config)
         self.save_draft_button.pack(side="left", padx=5, expand=True, fill="x")
         
-        # เปลี่ยน command ของปุ่ม "ขออนุมัติ"
         CTkButton(footer, text="📤 ขออนุมัติ...", command=self._open_submit_po_dialog, fg_color="#16A34A", **btn_config).pack(side="left", padx=5, expand=True, fill="x")
     
     def _open_po_selection_dialog(self):
