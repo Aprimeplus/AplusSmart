@@ -253,8 +253,29 @@ class SOShortnoteSearchDialog(CTkToplevel):
             vehicle_type = so_data.get('vehicle_type') or '-'
             
             # 🟢 นำ format_money ตัวใหม่มาครอบยอดชำระ
-            deposit_text = format_money(so_data.get('payment1_amount'))
-            full_pay_text = format_money(so_data.get('total_payment_amount'))
+            total_paid = so_data.get('total_payment_amount') or 0
+            difference = so_data.get('difference_amount') or 0
+            
+            try: total_val = float(str(total_paid).replace(',', ''))
+            except: total_val = 0.0
+            
+            try: diff_val = float(str(difference).replace(',', ''))
+            except: diff_val = 0.0
+
+            # คำนวณยอดเต็มที่แท้จริง
+            grand_total = total_val - diff_val
+
+            if total_val <= 0:
+                payment_display = f"ยังไม่ชำระ (ยอดที่ต้องชำระ {format_money(grand_total)})"
+            elif diff_val < -0.01:
+                # กรณีติดลบ = โอนขาด หรือ มัดจำ
+                payment_display = f"มัดจำ {format_money(total_val)} (ค้างชำระ {format_money(abs(diff_val))})"
+            elif diff_val > 0.01:
+                # กรณีเป็นบวก = โอนเกิน
+                payment_display = f"เต็มจำนวน {format_money(total_val)} (โอนเกิน {format_money(diff_val)})"
+            else:
+                # กรณีเป็น 0 = จ่ายพอดีเป๊ะ
+                payment_display = f"เต็มจำนวน {format_money(total_val)}"
             
             remark_text = so_data.get('credit_term', 'เงินสด')
 
@@ -263,26 +284,56 @@ class SOShortnoteSearchDialog(CTkToplevel):
             if maker_name == 'Unknown' and hasattr(self, 'commission_app'):
                 maker_name = getattr(self.commission_app, 'sale_name', 'Unknown')
 
+            brokerage_fee = format_money(so_data.get('brokerage_fee'))
+            coupon_val = format_money(so_data.get('coupons'))
+            giveaway_vat = so_data.get('giveaway_vat') or '-'
+            giveaway_no_vat = so_data.get('giveaway_no_vat') or '-'
+
+            credit_card_fee = format_money(so_data.get('credit_card_fee'))
+            transfer_fee = format_money(so_data.get('transfer_fee'))
+            wht_fee = format_money(so_data.get('wht_3_percent'))
+            
+            # (ถ้ามีคอลัมน์ส่วนลดโปรโมชั่นแยกต่างหาก ให้ใช้ promotion_discount ถ้าไม่มีระบบจะแสดงเป็น '-')
+            discount = format_money(so_data.get('promotion_discount'))
+
+            special_req = so_data.get('special_request') or '-'
+            unloading_stat = so_data.get('unloading_status') or '-'
+
+            # สร้างเส้นคั่น
+            separator = "🔥" * 10
+
             shortnote_text = (
                 f"เลขที่ {so_number}\n"
                 f"ยอดขาย : {sales_amount}\n"
-                f"Location เข้ารับ : {pickup_loc}\n"
                 f"ค่าส่ง  : {shipping_cost}\n"
                 f"ค่าย้าย : {relocation_cost}\n"
                 f"ค่าตัด : {cutting_fee}\n"
-                f"ส่วนลดโปรโมชั่น : {discount}\n"
+                ########################
+                f"ยอดชำระ : {payment_display}\n"
+                ############################
+                f"ค่าธรรมเนียมบัตรเครดิต : {credit_card_fee}\n"
+                f"ค่าธรรมเนียมโอน : {transfer_fee}\n"
+                f"ภาษีหัก ณ ที่จ่าย : {wht_fee}\n"
+                f"ค่านายหน้า : {brokerage_fee}\n"
+                f"คูปอง : {coupon_val}\n"
+                f"ของแถมใน so (vat) : {giveaway_vat}\n"
+                f"ของแถมนอก so (no vat) : {giveaway_no_vat}\n"
+                f"{separator}\n"
                 f"วันที่ย้ายสินค้าเข้าคลัง132 : {date_to_wh}\n"
                 f"วันที่จัดส่งลูกค้า : {date_to_cust}\n"
                 f"Order Pur : {order_pur_val}\n"
-                f"ทะเบียนรถ : {rego}\n"
-                f"ประเภทรถ : {vehicle_type}\n"
-                f"ยอดชำระ  มัดจำ {deposit_text}\n"
-                f"ยอดชำระ เต็ม {full_pay_text}\n"
                 f"Payment : {remark_text}\n"
-                f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n\n"
+                f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n"
+                f"{separator}\n"
                 f"แผนที่จัดส่ง : {delivery_map}\n"
+                f"Location เข้ารับ : {pickup_loc}\n"
+                f"ประเภทรถ : {vehicle_type}\n"
+                f"เงื่อนไขลงสินค้า : {unloading_stat}\n"
+                f"ทะเบียนรถ : {rego}\n"
                 f"ชื่อผู้ติดต่อหน้างาน : {contact_name}\n"
-                f"เบอร์ติดต่อหน้างาน : {contact_phone}\n\n"
+                f"เบอร์ติดต่อหน้างาน : {contact_phone}\n"
+                f"Special Request : {special_req}\n"
+                f"{separator}\n"
                 f"อ้างอิงจาก Aplus Smart\n"
                 f"ผู้จัดทำ: {maker_name}"
             )

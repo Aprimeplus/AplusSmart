@@ -845,46 +845,81 @@ class ProductManagementWindow(CTkToplevel):
             with conn.cursor() as cursor:
                 updated_count = 0
                 inserted_count = 0
+                skipped_count = 0 # 🟢 เพิ่มตัวนับรายการที่ข้าม
                 
                 for _, row in df.iterrows():
-                    code = row['product_code']
-                    name = row['product_name']
-                    if not code or not name: continue
+                    code = str(row.get('product_code', '')).strip()
+                    name = str(row.get('product_name', '')).strip()
                     
-                    cat = row.get('category', '') # 🟢
-                    wh = row.get('warehouse', '')
-                    price = row.get('last_unit_price', 0)
-                    weight = row.get('last_weight_per_unit', 0)
+                    # ถ้าไม่มีรหัสหรือชื่อ หรือเป็นค่าว่าง (nan) ให้ข้าม
+                    if not code or not name or str(code).lower() == 'nan' or str(name).lower() == 'nan': 
+                        continue
+                    
+                    cat = str(row.get('category', '')).strip()
+                    if str(cat).lower() == 'nan': cat = ''
+                        
+                    wh = str(row.get('warehouse', '')).strip()
+                    if str(wh).lower() == 'nan': wh = ''
+                        
+                    try: price = float(str(row.get('last_unit_price', 0)).replace(',', ''))
+                    except: price = 0.0
+                        
+                    try: weight = float(str(row.get('last_weight_per_unit', 0)).replace(',', ''))
+                    except: weight = 0.0
+                        
                     row_id = row.get('id')
 
+                    # 1. 🟢 เช็คก่อนว่ารหัสสินค้านี้ (code) มีอยู่ในระบบแล้วหรือยัง
+                    cursor.execute("SELECT id FROM products WHERE product_code = %s", (code,))
+                    existing_by_code = cursor.fetchone()
+
                     target_id = None
-                    
-                    if pd.notna(row_id):
-                        cursor.execute("SELECT id FROM products WHERE id = %s", (row_id,))
-                        res = cursor.fetchone()
-                        if res: target_id = res[0]
-                    
-                    if not target_id:
-                        cursor.execute("SELECT id FROM products WHERE product_code = %s", (code,))
-                        res = cursor.fetchone()
-                        if res: target_id = res[0]
+                    if pd.notna(row_id) and str(row_id).strip() != "" and str(row_id).lower() != "nan":
+                        try: target_id = int(float(row_id))
+                        except: pass
 
                     if target_id:
+                        # กรณีที่ 1: มี ID มาจากไฟล์ Excel (เป็นการแก้ไขข้อมูลเดิม)
+                        if existing_by_code and existing_by_code[0] != target_id:
+                            # ⚠️ ถ้ารหัสสินค้านี้ไปตรงกับ ID อื่นในระบบ จะทำให้เกิด Error ให้ข้ามบรรทัดนี้ไปเลย
+                            print(f"Skipped: รหัส {code} ซ้ำกับสินค้าอื่นในระบบ")
+                            skipped_count += 1
+                            continue
+                            
+                        # ถ้าไม่ซ้ำ ก็จัดการ UPDATE เลย
                         cursor.execute("""
                             UPDATE products 
                             SET product_code = %s, product_name = %s, category = %s, warehouse = %s, last_unit_price = %s, last_weight_per_unit = %s, last_updated = NOW()
                             WHERE id = %s
-                        """, (code, name, cat, wh, price, weight, target_id)) # 🟢 เพิ่ม cat
+                        """, (code, name, cat, wh, price, weight, target_id))
                         updated_count += 1
+                        
                     else:
-                        cursor.execute("""
-                            INSERT INTO products (product_code, product_name, category, warehouse, last_unit_price, last_weight_per_unit, last_updated)
-                            VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                        """, (code, name, cat, wh, price, weight)) # 🟢 เพิ่ม cat
-                        inserted_count += 1
+                        # กรณีที่ 2: ไม่มี ID มาจากไฟล์ Excel (เป็นรายการใหม่)
+                        if existing_by_code:
+                            # ⚠️ แต่ถ้ารหัสสินค้ามีอยู่แล้ว ให้เปลี่ยนเป็นการ UPDATE ทับของเดิมแทน (ป้องกัน Error ซ้ำซ้อน)
+                            cursor.execute("""
+                                UPDATE products 
+                                SET product_name = %s, category = %s, warehouse = %s, last_unit_price = %s, last_weight_per_unit = %s, last_updated = NOW()
+                                WHERE id = %s
+                            """, (name, cat, wh, price, weight, existing_by_code[0]))
+                            updated_count += 1
+                        else:
+                            # ถ้ารหัสไม่ซ้ำเลย ค่อย INSERT ใหม่
+                            cursor.execute("""
+                                INSERT INTO products (product_code, product_name, category, warehouse, last_unit_price, last_weight_per_unit, last_updated)
+                                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                            """, (code, name, cat, wh, price, weight))
+                            inserted_count += 1
                 
                 conn.commit()
-                messagebox.showinfo("สำเร็จ", f"นำเข้าข้อมูลเรียบร้อยแล้ว\n- เพิ่มใหม่: {inserted_count} รายการ\n- อัปเดต: {updated_count} รายการ", parent=self)
+                
+                # แสดงผลสรุป
+                msg = f"นำเข้าข้อมูลเรียบร้อยแล้ว\n- เพิ่มใหม่: {inserted_count} รายการ\n- อัปเดต: {updated_count} รายการ"
+                if skipped_count > 0:
+                    msg += f"\n\n⚠️ ข้ามรายการที่มีรหัสซ้ำ (ติด Error): {skipped_count} รายการ"
+                
+                messagebox.showinfo("สำเร็จ", msg, parent=self)
                 self.load_products()
 
         except Exception as e:

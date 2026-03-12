@@ -1,7 +1,7 @@
 from matplotlib._api import define_aliases
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from customtkinter import CTkFrame, CTkLabel, CTkButton, CTkEntry, CTkFont, CTkScrollableFrame , CTkTabview
+from customtkinter import CTkFrame, CTkLabel, CTkButton, CTkEntry, CTkFont, CTkScrollableFrame, CTkTabview, CTkOptionMenu, CTkCheckBox
 import pandas as pd
 from datetime import datetime
 import psycopg2
@@ -15,36 +15,72 @@ class DailyReportWidget(CTkFrame):
         self.pg_engine = app_container.pg_engine
         self.sale_key_filter = sale_key_filter
         self.current_df = None
-        self.sale_key_filter = sale_key_filter
         
-        # --- 1. สร้าง Tabview เพื่อแยกหน้า Report และ Dashboard ---
-        # ใช้สีฟ้า (#3B82F6) เป็นสีหลักของปุ่มแท็บที่เลือก
+        # --- ข้อมูลสำหรับ Dropdown ---
+        self.thai_months = ["ทั้งหมด", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.thai_month_map = {name: i for i, name in enumerate(self.thai_months) if name != "ทั้งหมด"}
+        
+        self.sales_list = self._fetch_user_list_by_role(['Sale'])
+        self.pu_list = self._fetch_user_list_by_role(['Purchasing', 'Purchasing Manager'])
+
+        # --- 1. สร้าง Tabview ---
         self.tabs = CTkTabview(self, segmented_button_selected_color="#3B82F6")
         self.tabs.pack(fill="both", expand=True, padx=10, pady=5)
         
-        # เพิ่มแท็บ 2 หน้าจอ
-        self.tab_report = self.tabs.add("📋 รายงานประจำวัน")
+        self.tab_report = self.tabs.add("📋 รายงานประจำวัน / สรุปยอด")
         self.tab_dashboard = self.tabs.add("📊 Dashboard ยอดขาย")
 
         # =================================================================
-        # ส่วนที่ 2: หน้ารายงานประจำวัน (Tab: 📋 รายงานประจำวัน)
+        # ส่วนที่ 2: หน้ารายงาน (Tab: 📋 รายงานประจำวัน)
         # =================================================================
         
-        # --- 2.1 Top Bar (Filter) ---
-        self.top_frame = CTkFrame(self.tab_report, fg_color="transparent")
-        self.top_frame.pack(fill="x", padx=15, pady=(15, 10))
+        # --- 2.1 Top Bar (Filter Area) ---
+        self.filter_frame = CTkFrame(self.tab_report, fg_color="#F8FAFC", border_width=1, border_color="#E2E8F0")
+        self.filter_frame.pack(fill="x", padx=15, pady=(10, 5))
         
-        CTkLabel(self.top_frame, text="รายงานประจำวัน:", font=CTkFont(size=16, weight="bold"), text_color="#374151").pack(side="left", padx=(0, 10))
+        # แถวที่ 1: วันที่ และ รอบคอม
+        row1 = CTkFrame(self.filter_frame, fg_color="transparent")
+        row1.pack(fill="x", padx=10, pady=5)
         
-        self.date_selector = DateSelector(self.top_frame)
-        self.date_selector.pack(side="left")
+        self.use_date_var = tk.BooleanVar(value=True)
+        CTkCheckBox(row1, text="กรองเฉพาะวันที่:", variable=self.use_date_var, font=CTkFont(weight="bold")).pack(side="left", padx=(0, 10))
+        self.date_selector = DateSelector(row1)
+        self.date_selector.pack(side="left", padx=(0, 20))
         self.date_selector.set_date(datetime.now()) 
+
+        CTkLabel(row1, text="|  รอบคอมมิชชั่น:", font=CTkFont(weight="bold")).pack(side="left", padx=(10, 5))
+        self.filter_month_var = tk.StringVar(value="ทั้งหมด")
+        CTkOptionMenu(row1, variable=self.filter_month_var, values=self.thai_months, width=110).pack(side="left", padx=5)
         
-        self.btn_refresh = CTkButton(self.top_frame, text="🔄 ดึงข้อมูล", width=100, fg_color="#3B82F6", hover_color="#2563EB", command=self.load_report_data)
-        self.btn_refresh.pack(side="left", padx=10)
+        current_year = datetime.now().year + 543
+        year_options = ["ทั้งหมด"] + [str(y) for y in range(current_year - 2, current_year + 2)]
+        self.filter_year_var = tk.StringVar(value="ทั้งหมด")
+        CTkOptionMenu(row1, variable=self.filter_year_var, values=year_options, width=90).pack(side="left", padx=5)
+
+        # แถวที่ 2: กรอง Sale / PU และ ปุ่ม Action
+        row2 = CTkFrame(self.filter_frame, fg_color="transparent")
+        row2.pack(fill="x", padx=10, pady=(0, 10))
+
+        CTkLabel(row2, text="เซลส์ (Sale):", font=CTkFont(weight="bold")).pack(side="left", padx=(0, 5))
+        self.filter_sale_var = tk.StringVar(value="ทั้งหมด")
+        sale_menu = CTkOptionMenu(row2, variable=self.filter_sale_var, values=["ทั้งหมด"] + self.sales_list, width=180)
+        sale_menu.pack(side="left", padx=(0, 20))
         
-        self.btn_export = CTkButton(self.top_frame, text="📂 Export Excel", width=100, fg_color="#10B981", hover_color="#059669", command=self.export_to_excel)
-        self.btn_export.pack(side="left", padx=10)
+        # 🟢 ล็อกปุ่ม Sale ถ้าระบบบังคับให้ดูได้แค่ตัวเอง (สำหรับสิทธิ์ Sale)
+        if self.sale_key_filter:
+            my_sale_name = next((s for s in self.sales_list if self.sale_key_filter in s), "ทั้งหมด")
+            self.filter_sale_var.set(my_sale_name)
+            sale_menu.configure(state="disabled")
+
+        CTkLabel(row2, text="จัดซื้อ (PU):", font=CTkFont(weight="bold")).pack(side="left", padx=(0, 5))
+        self.filter_pu_var = tk.StringVar(value="ทั้งหมด")
+        CTkOptionMenu(row2, variable=self.filter_pu_var, values=["ทั้งหมด"] + self.pu_list, width=180).pack(side="left", padx=(0, 20))
+
+        self.btn_refresh = CTkButton(row2, text="🔄 ดึงข้อมูล", width=120, fg_color="#3B82F6", hover_color="#2563EB", command=self.load_report_data)
+        self.btn_refresh.pack(side="right", padx=5)
+        
+        self.btn_export = CTkButton(row2, text="📂 Export Excel", width=120, fg_color="#10B981", hover_color="#059669", command=self.export_to_excel)
+        self.btn_export.pack(side="right", padx=5)
 
         # --- 2.2 Table Area (Treeview) ---
         self.table_frame = CTkFrame(self.tab_report, fg_color="white", corner_radius=0)
@@ -61,8 +97,9 @@ class DailyReportWidget(CTkFrame):
         self.tree_scroll_x = ttk.Scrollbar(self.table_frame, orient="horizontal")
         self.tree_scroll_x.pack(side="bottom", fill="x")
         
+        # 🟢 เพิ่ม "comm_period" (รอบคอม) เข้าไปในคอลัมน์
         self.columns = [
-            "so_number", "po_number", "customer_name", "sales_booking", 
+            "so_number", "po_number", "customer_name", "comm_period", "sales_booking", 
             "total_paid", "credit_balance", "payment_status", "delivery_date", "location", 
             "services", "prepared_by", "pu_prepared_by", "status"
         ]
@@ -76,6 +113,7 @@ class DailyReportWidget(CTkFrame):
             "so_number": ("SO Number", 90, "center"),
             "po_number": ("PO Number", 90, "center"),
             "customer_name": ("ชื่อลูกค้า", 160, "w"),
+            "comm_period": ("รอบคอมฯ", 80, "center"), # 🟢 คอลัมน์ใหม่
             "sales_booking": ("ยอดขาย", 80, "e"),
             "total_paid": ("ชำระแล้ว", 80, "e"),
             "credit_balance": ("ยอดค้าง", 80, "e"),
@@ -83,8 +121,8 @@ class DailyReportWidget(CTkFrame):
             "delivery_date": ("วันที่ส่ง", 80, "center"),
             "location": ("สถานที่ส่ง", 140, "w"),
             "services": ("ค่าบริการ", 70, "e"),
-            "prepared_by": ("Sale", 70, "center"),
-            "pu_prepared_by": ("PU", 70, "center"),
+            "prepared_by": ("Sale", 80, "center"),
+            "pu_prepared_by": ("PU", 80, "center"),
             "status": ("สถานะ", 80, "center")
         }
         
@@ -117,33 +155,34 @@ class DailyReportWidget(CTkFrame):
         self.lbl_total_booking.pack(side="right", padx=15)
 
         # =================================================================
-        # ส่วนที่ 3: หน้าแดชบอร์ดกราฟ (Tab: 📊 Dashboard ยอดขาย)
+        # ส่วนที่ 3: หน้าแดชบอร์ดกราฟ
         # =================================================================
-        
-        # สร้าง Instance ของ DailyDashboard และวางลงใน tab_dashboard
-        # โดยส่ง self.app_container เพื่อให้ dashboard เข้าถึงฐานข้อมูลได้
-        self.dashboard_view = DailyDashboard(
-            self.tab_dashboard, 
-            self.app_container
-        )
+        self.dashboard_view = DailyDashboard(self.tab_dashboard, self.app_container)
         self.dashboard_view.pack(fill="both", expand=True)
-        
-    def load_report_data(self):
-        selected_date = self.date_selector.get_date()
-        if not selected_date: return
 
-        date_str = selected_date
-        print(f"\n{'='*20} START DEBUG: {date_str} {'='*20}") 
-        
+    def _fetch_user_list_by_role(self, roles):
+        """ตัวช่วยดึงรายชื่อพนักงานจาก Database ตามสิทธิ์ (Role)"""
+        try:
+            placeholders = ', '.join(['%s'] * len(roles))
+            query = f"SELECT sale_key, sale_name FROM sales_users WHERE role IN ({placeholders}) AND status = 'Active' ORDER BY sale_key"
+            df = pd.read_sql(query, self.pg_engine, params=tuple(roles))
+            return [f"{row['sale_key']} - {row['sale_name']}" for _, row in df.iterrows()]
+        except Exception as e:
+            print(f"Error fetching user list: {e}")
+            return []
+
+    def load_report_data(self):
         for i in self.tree.get_children(): self.tree.delete(i)
             
         try:
-            # ตัด ORDER BY ออกจาก base_query ก่อน เพื่อเอามาเติมทีหลัง
-            query = """
+            # 🟢 สร้าง Query แบบ Dynamic ตาม Filter ที่เลือก
+            query_base = """
                 SELECT 
                     c.so_number, 
-                    (SELECT STRING_AGG(po.po_number, ', ') FROM purchase_orders po WHERE po.so_number = c.so_number) as po_number_list,
+                    (SELECT STRING_AGG(po.po_number, ', ') FROM purchase_orders po WHERE po.so_number = c.so_number AND po.status != 'Cancelled') as po_number_list,
                     c.customer_name, 
+                    c.commission_month,
+                    c.commission_year,
                     c.sales_service_amount, 
                     c.total_payment_amount, 
                     c.difference_amount,
@@ -165,19 +204,54 @@ class DailyReportWidget(CTkFrame):
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
                 LEFT JOIN sales_users pu ON c.user_key = pu.sale_key
-                WHERE date(c.timestamp) = %s AND c.is_active = 1
+                WHERE c.is_active = 1
             """
             
-            params = [date_str]
+            where_clauses = []
+            params = []
 
-            # 🔥 เพิ่มเงื่อนไขกรองเฉพาะ Sale (เช็คว่ามีตัวแปร sale_key_filter หรือไม่)
-            if getattr(self, 'sale_key_filter', None):
-                query += " AND c.sale_key = %s"
+            # 1. กรองตามวันที่ (ถ้าติ๊กเลือก)
+            if self.use_date_var.get() and self.date_selector.get_date():
+                date_str = self.date_selector.get_date()
+                where_clauses.append("DATE(c.timestamp) = %s")
+                params.append(date_str)
+
+            # 2. กรองรอบคอมมิชชั่น
+            month_val = self.filter_month_var.get()
+            year_val = self.filter_year_var.get()
+            if month_val != "ทั้งหมด":
+                where_clauses.append("c.commission_month = %s")
+                params.append(self.thai_month_map[month_val])
+            if year_val != "ทั้งหมด":
+                where_clauses.append("c.commission_year = %s")
+                params.append(int(year_val) - 543)
+
+            # 3. กรอง Sale
+            if self.sale_key_filter:
+                where_clauses.append("c.sale_key = %s")
                 params.append(self.sale_key_filter)
-            # ปิดท้ายด้วย ORDER BY
-            query += " ORDER BY c.so_number ASC"
+            else:
+                sale_val = self.filter_sale_var.get()
+                if sale_val != "ทั้งหมด":
+                    sale_key = sale_val.split(" - ")[0]
+                    where_clauses.append("c.sale_key = %s")
+                    params.append(sale_key)
+
+            # 4. กรอง จัดซื้อ (PU)
+            pu_val = self.filter_pu_var.get()
+            if pu_val != "ทั้งหมด":
+                pu_key = pu_val.split(" - ")[0]
+                # หางานที่ PU คนนี้สร้างในหน้า Commission หรือสร้างในหน้า PO
+                where_clauses.append("(c.user_key = %s OR EXISTS (SELECT 1 FROM purchase_orders po WHERE po.so_number = c.so_number AND po.user_key = %s))")
+                params.extend([pu_key, pu_key])
+
+            # ประกอบร่าง Query
+            if where_clauses:
+                query_base += " AND " + " AND ".join(where_clauses)
+                
+            query_base += " ORDER BY c.so_number ASC"
             
-            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+            df = pd.read_sql_query(query_base, self.pg_engine, params=tuple(params))
             print(f"[DEBUG] พบข้อมูลทั้งหมด: {len(df)} แถว") 
 
             if not df.empty:
@@ -185,11 +259,20 @@ class DailyReportWidget(CTkFrame):
                 df['final_pu_name'] = df['pu_name_comm'].fillna(df['pu_name_po'])
                 df['final_pu_name'] = df['final_pu_name'].fillna(df['user_key'].apply(lambda x: f"ID:{x}" if pd.notna(x) else "-"))
                 df['final_pu_name'] = df['final_pu_name'].fillna("-")
+                
+                # --- 🟢 Logic สร้างข้อความ "รอบคอม" ---
+                def format_comm_period(row):
+                    m = row.get('commission_month')
+                    y = row.get('commission_year')
+                    if pd.notna(m) and pd.notna(y):
+                        return f"{int(m):02d}/{int(y)+543}"
+                    return "-"
+                df['comm_period_display'] = df.apply(format_comm_period, axis=1)
             
             self.current_df = df
 
             if df.empty:
-                messagebox.showinfo("แจ้งเตือน", f"ไม่พบข้อมูล SO ของวันที่ {date_str}")
+                messagebox.showinfo("แจ้งเตือน", "ไม่พบข้อมูลที่ตรงกับเงื่อนไขการค้นหา")
                 self.update_summary(0, 0, 0, 0)
                 return
 
@@ -198,12 +281,11 @@ class DailyReportWidget(CTkFrame):
             for i, row in df.iterrows():
                 booking = float(row.get('sales_service_amount') or 0)
                 paid = float(row.get('total_payment_amount') or 0)
-                
                 diff_db = float(row.get('difference_amount') or 0)
                 
                 status_text = ""
                 status_tag = ""
-                credit_display = 0.0 # ตัวแปรนี้คือพระเอกของเรา
+                credit_display = 0.0 
                 
                 if abs(diff_db) < 1.00: 
                     status_text = "✅ ครบถ้วน"
@@ -226,12 +308,12 @@ class DailyReportWidget(CTkFrame):
                 
                 sum_booking += booking; sum_paid += paid
 
-                pu_show = row['final_pu_name']
-
+                # ลำดับข้อมูลต้องตรงกับ self.columns
                 vals = (
                     row['so_number'],
                     row['po_number_list'] or "-",
                     row['customer_name'],
+                    row['comm_period_display'], # 🟢 คอลัมน์รอบคอม
                     f"{booking:,.2f}",
                     f"{paid:,.2f}",
                     f"{credit_display:,.2f}", 
@@ -240,18 +322,16 @@ class DailyReportWidget(CTkFrame):
                     row['pickup_location'] or "-",
                     f"{service_fee:,.2f}",
                     row.get('sale_name') or row.get('sale_key'),
-                    pu_show, 
+                    row['final_pu_name'], 
                     row['status']
                 )
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
                 self.tree.insert("", "end", values=vals, tags=(tag, status_tag))
 
             self.update_summary(len(df), sum_booking, sum_paid, sum_missing)
-            print(f"{'='*20} END DEBUG {'='*20}\n")
 
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถดึงข้อมูลได้: {e}")
-            print(f"!!! CRITICAL ERROR !!! : {e}")
             import traceback
             traceback.print_exc()
 
@@ -283,15 +363,12 @@ class DailyReportWidget(CTkFrame):
         if not file_path: return
 
         try:
-            # สร้าง DataFrame ใหม่เพื่อไม่ให้กระทบอันเก่า
             export_df = self.current_df.copy()
             
-            # แปลงข้อมูลตัวเลขให้พร้อมคำนวณ (จัดการ NaN)
             export_df['sales_service_amount'] = export_df['sales_service_amount'].fillna(0)
             export_df['total_payment_amount'] = export_df['total_payment_amount'].fillna(0)
             export_df['difference_amount'] = export_df['difference_amount'].fillna(0)
             
-            # 1. สร้างคอลัมน์สถานะตรวจสอบยอด (Payment Status)
             def get_status_text(row):
                 d = row['difference_amount']
                 if abs(d) < 1: return "ครบถ้วน"
@@ -300,33 +377,29 @@ class DailyReportWidget(CTkFrame):
             
             export_df['payment_check_status'] = export_df.apply(get_status_text, axis=1)
             
-            # 2. สร้างคอลัมน์ยอดค้างชำระ (Credit Balance)
-            # โชว์เฉพาะยอดที่ขาด (ถ้าเกิน ให้เป็น 0)
             def get_credit_balance(row):
                 d = row['difference_amount']
                 return abs(d) if d < 0 else 0
             
             export_df['remaining_balance'] = export_df.apply(get_credit_balance, axis=1)
             
-            # 3. กำหนดชื่อคอลัมน์ใน Excel (Mapping)
             rename_map = {
                 "so_number": "SO Number",
                 "po_number_list": "PO Number",
                 "customer_name": "Customer Name",
+                "comm_period_display": "รอบคอมมิชชั่น", # 🟢 เพิ่มเข้าไปใน Excel ด้วย
                 "sales_service_amount": "Booking Amount",
                 "total_payment_amount": "Paid Amount",
-                "remaining_balance": "Credit Balance",     # ยอดค้าง
-                "payment_check_status": "Payment Status",  # สถานะตรวจสอบ
+                "remaining_balance": "Credit Balance",     
+                "payment_check_status": "Payment Status",  
                 "status": "System Status",
                 "final_delivery_date": "Delivery Date",
                 "pickup_location": "Location",
                 "service_total": "Service Fee",
                 "sale_name": "Sale Prepared By",
-                "final_pu_name": "PU Prepared By"          # ผู้จัดทำ PU
+                "final_pu_name": "PU Prepared By"          
             }
             
-            # เลือกเฉพาะคอลัมน์ที่มีใน Map และเรียงลำดับ
-            # (ตรวจสอบก่อนว่าคอลัมน์มีอยู่จริง เพื่อป้องกัน Error)
             cols_to_export = [k for k in rename_map.keys() if k in export_df.columns]
             export_df = export_df[cols_to_export].rename(columns=rename_map)
             
@@ -336,4 +409,3 @@ class DailyReportWidget(CTkFrame):
         except Exception as e:
             messagebox.showerror("Error", f"เกิดข้อผิดพลาดในการบันทึกไฟล์: {e}")
             print(e)
-

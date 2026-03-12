@@ -29,6 +29,7 @@ class CostBenchmarkScreen(CTkFrame):
         self.product_list = []
         self.product_sku_map = {} 
         self.supplier_code_map = {} 
+        self.product_category_map = {}
 
         # --- 1. Header & Filters ---
         header_frame = CTkFrame(self, fg_color="transparent")
@@ -150,11 +151,13 @@ class CostBenchmarkScreen(CTkFrame):
                         self.supplier_list.append(row[0])
                         self.supplier_code_map[row[0]] = row[1] or ""
 
-                cursor.execute("SELECT product_name, product_code FROM products")
+                cursor.execute("SELECT product_name, product_code, category FROM products")
                 for row in cursor.fetchall():
                     if row[0]:
                         self.product_list.append(row[0])
                         self.product_sku_map[row[0]] = row[1] or ""
+                        # 🟢 [เพิ่มใหม่] เก็บค่าหมวดหมู่คู่กับชื่อสินค้าไว้ใน Map
+                        self.product_category_map[row[0]] = row[2] or ""
         except Exception as e:
             print(f"Error loading dropdown data: {e}")
         finally:
@@ -387,10 +390,19 @@ class CostBenchmarkScreen(CTkFrame):
         # 2. Logic ดึง SKU และ Sync Supplier
         product_name = get_str("รายการสินค้า")
         if product_name in self.product_sku_map:
+            # อัปเดต SKU
             if get_str("Product SKU.") != self.product_sku_map[product_name]:
                 set_val("Product SKU.", self.product_sku_map[product_name], is_text=True)
+            
+            # 🟢 3. [เพิ่มใหม่] อัปเดต หมวดหมู่ อัตโนมัติ
+            mapped_category = self.product_category_map.get(product_name, "")
+            if get_str("หมวด") != mapped_category:
+                set_val("หมวด", mapped_category, is_text=True)
+                
         elif not product_name:
-            set_val("Product SKU.", "", is_text=True)
+            # ถ้าผู้ใช้ลบชื่อสินค้าออก ให้เคลียร์ SKU และ หมวด ให้เป็นช่องว่างด้วย
+            if get_str("Product SKU.") != "": set_val("Product SKU.", "", is_text=True)
+            if get_str("หมวด") != "": set_val("หมวด", "", is_text=True)
 
         supplier_name = get_str("ชื่อ Supplier")
         if supplier_name:

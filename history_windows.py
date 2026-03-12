@@ -2836,33 +2836,31 @@ class SOPopupWindow(CTkToplevel):
         ]
         self._add_form_row(f4, "การจัดส่ง:", CTkOptionMenu(f4, variable=self.so_shared_vars['delivery_type_var'], values=delivery_options, **self.dropdown_style), 'delivery_type_menu', 1)
         self._add_form_row(f4, "Location เข้ารับ:", CTkEntry(f4, placeholder_text="ใส่ อำเภอ, จังหวัด หรือ Google map link"), 'pickup_location_entry', 2)
-
-        # "ค่าย้าย"
         self._add_item_row_with_vat(f4, "ค่าย้าย:", 'relocation_cost_entry', 'relocation_cost_vat_option', 'relocation_vat_calc_var', 3)
-
         self._add_form_row(f4, "วันที่ย้ายเข้าคลัง:", DateSelector(f4, dropdown_style=self.dropdown_style), 'date_to_wh_selector', 4)
         self._add_form_row(f4, "วันที่จัดส่งลูกค้า:", DateSelector(f4, dropdown_style=self.dropdown_style), 'date_to_customer_selector', 5)
         self._add_form_row(f4, "ทะเบียนเข้ารับ:", CTkEntry(f4), 'pickup_rego_entry', 6)
-
+        
+        # 🟢 [เพิ่มใหม่] เงื่อนไขลงสินค้า และ Special Request
         if 'unloading_status_var' not in self.so_shared_vars:
             self.so_shared_vars['unloading_status_var'] = tk.StringVar(value="ไม่รวมลง")
         unloading_frame = CTkFrame(f4, fg_color="transparent")
         CTkRadioButton(unloading_frame, text="รวมลง", variable=self.so_shared_vars['unloading_status_var'], value="รวมลง").pack(side="left", padx=5)
         CTkRadioButton(unloading_frame, text="ไม่รวมลง", variable=self.so_shared_vars['unloading_status_var'], value="ไม่รวมลง").pack(side="left", padx=5)
         self._add_form_row(f4, "เงื่อนไขลงสินค้า:", unloading_frame, 'unloading_status_radio', 7)
-        
         self._add_form_row(f4, "Special Request:", CTkEntry(f4), 'special_request_entry', 8)
 
-        # Section 5: Fees and Discounts
         # Section 5: Fees and Discounts
         f5 = self._create_so_section_frame(parent_frame, "ค่าธรรมเนียมและส่วนลด")
         self._add_item_row_with_vat(f5, "ค่าธรรมเนียมบัตร:", 'credit_card_fee_entry', 'credit_card_fee_vat_option_var', 'card_fee_vat_calc_var', 1)
         self._add_form_row(f5, "ค่าธรรมเนียมโอน:", NumericEntry(f5), 'transfer_fee_entry', 2)
         self._add_form_row(f5, "ภาษีหัก ณ ที่จ่าย:", NumericEntry(f5), 'wht_fee_entry', 3)
         self._add_form_row(f5, "ค่านายหน้า:", NumericEntry(f5), 'brokerage_fee_entry', 4)
-        self._add_form_row(f5, "ของแถมใน SO (Vat):", NumericEntry(f5), 'giveaway_vat_entry', 5)      # 🟢 แก้ไข
-        self._add_form_row(f5, "ของแถมนอก SO (No Vat):", NumericEntry(f5), 'giveaway_no_vat_entry', 6) # 🟢 แก้ไข
-        self._add_form_row(f5, "คูปอง:", NumericEntry(f5), 'coupon_value_entry', 7)                   # 🟢 แก้ไข (เลื่อนเป็นแถว 7)
+        
+        # 🟢 [แก้ไข] เปลี่ยนของแถมเป็น CTkEntry ให้พิมพ์ตัวหนังสือได้
+        self._add_form_row(f5, "ของแถมใน SO (Vat):", CTkEntry(f5), 'giveaway_vat_entry', 5)
+        self._add_form_row(f5, "ของแถมนอก SO (No Vat):", CTkEntry(f5), 'giveaway_no_vat_entry', 6)
+        self._add_form_row(f5, "คูปอง:", NumericEntry(f5), 'coupon_value_entry', 7)                # 🟢 แก้ไข (เลื่อนเป็นแถว 7)
 
         # Section 6: Payment Details [แยกวันที่ 1 และ 2]
         f6 = self._create_so_section_frame(parent_frame, "รายละเอียดการโอนชำระ")
@@ -2895,7 +2893,7 @@ class SOPopupWindow(CTkToplevel):
         widgets_to_bind_keys = [
             "sales_amount_entry", "cutting_drilling_fee_entry", "other_service_fee_entry",
             "shipping_cost_entry", "credit_card_fee_entry", "transfer_fee_entry",
-            "wht_fee_entry", "coupon_value_entry", "giveaway_vat_entry", "giveaway_no_vat_entry", # 🟢 แก้ไข
+            "wht_fee_entry", "coupon_value_entry",
             "brokerage_fee_entry", "payment1_amount_entry", "payment2_amount_entry",
             "cash_product_input_entry", "cash_actual_payment_entry",
             "relocation_cost_entry" 
@@ -2970,7 +2968,7 @@ class SOPopupWindow(CTkToplevel):
                 display_var.set(f"VAT: {item_vat:,.2f}")
 
         # --- 3. คำนวณยอดรวมที่ต้องชำระโอน (Grand Total ฝั่ง VAT) ---
-        final_grand_total = (total_vatable_base + total_vat + transfer_fee) - coupons - wht
+        final_grand_total = (total_vatable_base + total_vat + transfer_fee) - wht
         w_vars['so_grand_total_var'].set(f"{final_grand_total:,.2f}")
 
         # --- 4. คำนวณส่วนต่างการโอน ---
@@ -3070,7 +3068,7 @@ class SOPopupWindow(CTkToplevel):
             'credit_card_fee': 'credit_card_fee_entry', 'transfer_fee': 'transfer_fee_entry', 'wht_3_percent': 'wht_fee_entry',
             'brokerage_fee': 'brokerage_fee_entry', 'coupons': 'coupon_value_entry', 
             
-            # 🟢 [แก้ไข] ลบ giveaways อันเก่าทิ้ง เหลือแค่ 2 อันใหม่
+            # 🟢 แก้ไขของแถมและหน้างาน
             'giveaway_vat': 'giveaway_vat_entry', 'giveaway_no_vat': 'giveaway_no_vat_entry', 
             'special_request': 'special_request_entry', 'unloading_status': 'unloading_status_var',
             
@@ -3083,7 +3081,6 @@ class SOPopupWindow(CTkToplevel):
             'delivery_type': 'delivery_type_var', 'pickup_location': 'pickup_location_entry',
             'relocation_cost': 'relocation_cost_entry', 'date_to_warehouse': 'date_to_wh_selector',
             
-            # 🟢 [แก้ไข] สลับเอาชื่อ Database ขึ้นก่อนให้ถูกต้อง
             'payment_before_vat': 'payment_before_vat_entry', 
             'payment_no_vat': 'payment_no_vat_entry',
             
@@ -3139,8 +3136,11 @@ class SOPopupWindow(CTkToplevel):
             'relocation_cost_entry': 'relocation_cost', 'credit_card_fee_entry': 'credit_card_fee',
             'transfer_fee_entry': 'transfer_fee', 'wht_fee_entry': 'wht_3_percent',
             'brokerage_fee_entry': 'brokerage_fee', 'coupon_value_entry': 'coupons',
-            'giveaway_vat_entry': 'giveaway_vat', 'giveaway_no_vat_entry': 'giveaway_no_vat', # 🟢 แก้ไข
-            'special_request_entry': 'special_request', # 🟢 เพิ่มใหม่
+            
+            # 🟢 [แก้ไข] ของแถม และหน้างาน
+            'giveaway_vat_entry': 'giveaway_vat', 'giveaway_no_vat_entry': 'giveaway_no_vat', 
+            'special_request_entry': 'special_request',
+            
             'cash_product_input_entry': 'cash_product_input',
             'cash_actual_payment_entry': 'cash_actual_payment'
         }
@@ -3158,7 +3158,8 @@ class SOPopupWindow(CTkToplevel):
                     value = widget.get_date()
                 elif isinstance(widget, (NumericEntry, CTkEntry)):
                     raw_val = widget.get()
-                    numeric_keywords = ['amount', 'cost', 'fee', 'wht', 'percent', 'coupons', 'giveaways', 'input', 'payment']
+                    # 🟢 [แก้ไข] ลบ giveaways ออกจาก list นี้
+                    numeric_keywords = ['amount', 'cost', 'fee', 'wht', 'percent', 'coupons', 'input', 'payment']
                     is_numeric = any(k in data_key for k in numeric_keywords)
 
                     if is_numeric:
@@ -3223,7 +3224,7 @@ class SOPopupWindow(CTkToplevel):
         vat_sum = vatable_base_sum * 0.07
 
         # คำนวณยอดรวมโอน (เอาเฉพาะฐาน VAT + VAT + โอน - คูปอง - WHT)
-        grand_total_calc = (vatable_base_sum + vat_sum + transfer_fee) - coupons - wht
+        grand_total_calc = (vatable_base_sum + vat_sum + transfer_fee) - wht
         
         # 5. คำนวณยอดชำระโอน
         p1 = updated_data.get('payment1_amount', 0.0)
@@ -3254,6 +3255,7 @@ class SOPopupWindow(CTkToplevel):
         elif p1_date: main_payment_date = p1_date
         elif p2_date: main_payment_date = p2_date
         updated_data['payment_date'] = main_payment_date
+        updated_data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # =====================================================================
         # เริ่มกระบวนการบันทึก

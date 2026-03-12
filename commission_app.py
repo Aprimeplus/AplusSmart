@@ -99,10 +99,14 @@ class PaymentUpdateWindow(CTkToplevel):
             
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
+                # 🟢 [แก้ไข] เพิ่มการอัปเดต timestamp ให้เป็นเวลาปัจจุบัน
                 cursor.execute("""
-                    UPDATE commissions SET total_payment_amount = %s, difference_amount = %s
+                    UPDATE commissions SET 
+                        total_payment_amount = %s, 
+                        difference_amount = %s,
+                        timestamp = %s
                     WHERE id = %s
-                """, (new_total_payment, new_difference, self.so_id))
+                """, (new_total_payment, new_difference, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.so_id))
             conn.commit()
 
             messagebox.showinfo("สำเร็จ", "อัปเดตยอดชำระเรียบร้อยแล้ว", parent=self)
@@ -560,8 +564,29 @@ class SalesTasksWindow(CTkToplevel):
             vehicle_type = so_data.get('vehicle_type') or '-'
             
             # 🟢 นำ format_money ตัวใหม่มาครอบยอดชำระ
-            deposit_text = format_money(so_data.get('payment1_amount'))
-            full_pay_text = format_money(so_data.get('total_payment_amount'))
+            total_paid = so_data.get('total_payment_amount') or 0
+            difference = so_data.get('difference_amount') or 0
+            
+            try: total_val = float(str(total_paid).replace(',', ''))
+            except: total_val = 0.0
+            
+            try: diff_val = float(str(difference).replace(',', ''))
+            except: diff_val = 0.0
+
+            # คำนวณยอดเต็มที่แท้จริง
+            grand_total = total_val - diff_val
+
+            if total_val <= 0:
+                payment_display = f"ยังไม่ชำระ (ยอดที่ต้องชำระ {format_money(grand_total)})"
+            elif diff_val < -0.01:
+                # กรณีติดลบ = โอนขาด หรือ มัดจำ
+                payment_display = f"มัดจำ {format_money(total_val)} (ค้างชำระ {format_money(abs(diff_val))})"
+            elif diff_val > 0.01:
+                # กรณีเป็นบวก = โอนเกิน
+                payment_display = f"เต็มจำนวน {format_money(total_val)} (โอนเกิน {format_money(diff_val)})"
+            else:
+                # กรณีเป็น 0 = จ่ายพอดีเป๊ะ
+                payment_display = f"เต็มจำนวน {format_money(total_val)}"
             
             remark_text = so_data.get('credit_term', 'เงินสด')
 
@@ -572,8 +597,12 @@ class SalesTasksWindow(CTkToplevel):
 
             brokerage_fee = format_money(so_data.get('brokerage_fee'))
             coupon_val = format_money(so_data.get('coupons'))
-            giveaway_vat = format_money(so_data.get('giveaway_vat'))
-            giveaway_no_vat = format_money(so_data.get('giveaway_no_vat'))
+            giveaway_vat = so_data.get('giveaway_vat') or '-'
+            giveaway_no_vat = so_data.get('giveaway_no_vat') or '-'
+
+            credit_card_fee = format_money(so_data.get('credit_card_fee'))
+            transfer_fee = format_money(so_data.get('transfer_fee'))
+            wht_fee = format_money(so_data.get('wht_3_percent'))
             
             # (ถ้ามีคอลัมน์ส่วนลดโปรโมชั่นแยกต่างหาก ให้ใช้ promotion_discount ถ้าไม่มีระบบจะแสดงเป็น '-')
             discount = format_money(so_data.get('promotion_discount'))
@@ -590,13 +619,12 @@ class SalesTasksWindow(CTkToplevel):
                 f"ค่าส่ง  : {shipping_cost}\n"
                 f"ค่าย้าย : {relocation_cost}\n"
                 f"ค่าตัด : {cutting_fee}\n"
-                f"ยอดชำระ  มัดจำ {deposit_text}\n"
-                f"ยอดชำระ เต็ม {full_pay_text}\n"
-##########################################################################################################################
-                f"ค่าธรรมเนียมบัตรเครดิต :{credit_card_fee}\n"
-                f"ค่าธรรมเนียมโอน :{transfer_fee}\n"
-                f"ภาษีหัก ณ ที่จ่าย :{vat_fee}\n"
-##########################################################################################################################
+                ########################
+                f"ยอดชำระ : {payment_display}\n"
+                ############################
+                f"ค่าธรรมเนียมบัตรเครดิต : {credit_card_fee}\n"
+                f"ค่าธรรมเนียมโอน : {transfer_fee}\n"
+                f"ภาษีหัก ณ ที่จ่าย : {wht_fee}\n"
                 f"ค่านายหน้า : {brokerage_fee}\n"
                 f"คูปอง : {coupon_val}\n"
                 f"ของแถมใน so (vat) : {giveaway_vat}\n"
@@ -1056,17 +1084,23 @@ class CommissionApp(CTkFrame):
         # 🔥 9. เรียก DailyReportWidget มาวางใน แท็บที่ 2 (tab_report)
         # ==========================================================
         # (อย่าลืม import DailyReportWidget ไว้ที่ส่วนบนสุดของไฟล์ commission_app.py ด้วยนะครับ)
+        current_role = str(getattr(self, 'user_role', '')).lower()
+        if current_role in ['sale support', 'sale manager', 'admin', 'director']:
+            filter_key = None
+        else:
+            filter_key = self.sale_key
+
         self.daily_report_view = DailyReportWidget(
             self.tab_report, 
             app_container=self.app_container,
-            sale_key_filter=self.sale_key  # ส่งรหัสเซลส์คนนี้ไปกรองตาราง
+            sale_key_filter=filter_key  # 🟢 เปลี่ยนมาใช้ตัวแปรที่เช็คสิทธิ์แล้ว
         )
         self.daily_report_view.pack(fill="both", expand=True)
 
         self.outstanding_view = OutstandingDashboardTab(
             self.tab_outstanding, 
             app_container=self.app_container,
-            sale_key_filter=self.sale_key  # 🟢 ส่งรหัสเซลส์คนนี้ไปกรองตาราง
+            sale_key_filter=filter_key  # 🟢 เปลี่ยนมาใช้ตัวแปรที่เช็คสิทธิ์แล้ว
         )
         self.outstanding_view.pack(fill="both", expand=True)
 
@@ -1747,10 +1781,10 @@ class CommissionApp(CTkFrame):
         self._add_form_row(discounts_frame, "คูปอง:", self.coupon_value_entry, 2)
         
         # 🟢 [แก้ไข] เปลี่ยนเป็นของแถม 2 รูปแบบ
-        self.giveaway_vat_entry = NumericEntry(discounts_frame)
+        self.giveaway_vat_entry = CTkEntry(discounts_frame)
         self._add_form_row(discounts_frame, "ของแถมใน SO (Vat):", self.giveaway_vat_entry, 3)
         
-        self.giveaway_no_vat_entry = NumericEntry(discounts_frame)
+        self.giveaway_no_vat_entry = CTkEntry(discounts_frame)
         self._add_form_row(discounts_frame, "ของแถมนอก SO (No Vat):", self.giveaway_no_vat_entry, 4)
 
         # --- คอลัมน์ขวา: Delivery Note ---
@@ -2136,8 +2170,8 @@ class CommissionApp(CTkFrame):
             "wht_3_percent": utils.convert_to_float(self.wht_fee_entry.get()),
             "brokerage_fee": utils.convert_to_float(self.brokerage_fee_entry.get()),
             "coupons": utils.convert_to_float(self.coupon_value_entry.get()),
-            "giveaway_vat": utils.convert_to_float(self.giveaway_vat_entry.get()),       # 🟢 แก้ไข
-            "giveaway_no_vat": utils.convert_to_float(self.giveaway_no_vat_entry.get()), # 🟢 แก้ไข
+            "giveaway_vat": self.giveaway_vat_entry.get().strip(),
+            "giveaway_no_vat": self.giveaway_no_vat_entry.get().strip(),
             "relocation_cost_vat_option": self.relocation_vat_option_var.get(),
             "delivery_type": self.delivery_type_var.get(),
             "pickup_location": self.pickup_location_entry.get().strip(),
