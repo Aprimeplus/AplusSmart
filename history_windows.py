@@ -35,7 +35,7 @@ def print_transport_pdf_wrapper(app_container, po_id):
             # 1. ดึงข้อมูล
             cursor.execute("SELECT * FROM purchase_orders WHERE id = %s", (po_id,))
             po_data = cursor.fetchone()
-            
+            conn.commit()
             if not po_data:
                 messagebox.showerror("Error", "ไม่พบข้อมูล PO นี้")
                 return
@@ -485,6 +485,8 @@ class PurchaseDetailWindow(CTkToplevel):
             # แปลงข้อมูลเป็น List of Dict
             self.items_data = [dict(item) for item in items_data]
             self.payments_data = [dict(payment) for payment in payments_data]
+
+            conn.commit()
 
             # --- [สำคัญ] สร้างปุ่มและหน้าจอ ---
             # ต้องสร้างปุ่มหลังจากโหลด self.po_data เสร็จแล้ว เพราะต้องเช็ค Status
@@ -2276,13 +2278,19 @@ class CommissionHistoryWindow(CTkToplevel):
         self._show_loading()
 
         try:
-            # เงื่อนไข SQL ตาม Tab
+            # 🟢 [แก้ไข] ปรับ Logic การกรอง Status ให้ครอบคลุมทุกกรณี
             if self.active_tab == "deferral":
+                # แท็บ 1: โชว์เฉพาะที่ติดเรื่องเลื่อน
                 status_condition = "c.status IN ('Defer Requested', 'Deferred')"
+            
             elif self.active_tab == "payout":
+                # แท็บ 2: โชว์เฉพาะที่ได้เงินแล้วชัวร์ๆ
                 status_condition = "c.status IN ('Paid', 'HR Verified')"
-            else: # drafts
-                status_condition = "c.status IN ('Original', 'Edited', 'Draft', 'Rejected by SM', 'Rejected by HR', 'Cancelled', 'Deferred by HR', 'Deferred by SM', 'PO Sent')"
+            
+            else: 
+                # แท็บ 3: (ร่าง/ส่งแล้ว/กำลังดำเนินการ) 
+                # ใช้ NOT IN เพื่อดึง "ทุกสถานะที่เหลือ" มาโชว์ที่นี่ให้หมด จะได้ไม่มี SO ล่องหนอีก!
+                status_condition = "c.status NOT IN ('Defer Requested', 'Deferred', 'Paid', 'HR Verified')"
 
             where_clauses = ["c.is_active = 1", status_condition]
             params = []
@@ -2401,8 +2409,11 @@ class CommissionHistoryWindow(CTkToplevel):
             elif status in ['Original', 'Draft']: tag = 'Draft'
             
             values = [row.get(col, '') for col in columns]
-            # Format วันที่และตัวเลข
-            if pd.notna(values[1]): values[1] = pd.to_datetime(values[1]).strftime('%Y-%m-%d %H:%M')
+            
+            # 🟢 ใช้วิธีที่ปลอดภัยในการจัดรูปแบบวันที่
+            # columns[1] มักจะเป็น 'timestamp' หรือ 'เวลาบันทึก'
+            values[1] = utils.format_date_safe(values[1], '%Y-%m-%d %H:%M')
+            
             if pd.notna(values[5]): values[5] = f"{float(values[5]):,.2f}"
             
             self.tree.insert("", "end", values=values, tags=(tag,), iid=str(row['id']))
@@ -3604,24 +3615,15 @@ class CancelledHistoryWindow(CTkToplevel): # <-- แก้จาก ctk.CTkTople
             # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
             for _, row in df.iterrows():
-                # Format Date
-                ts = row['timestamp']
-                
-                # ตรวจสอบว่าเป็นวันเวลาที่ถูกต้องหรือไม่
-                if pd.notna(ts):
-                    try:
-                        date_str = ts.strftime('%d/%m/%Y %H:%M')
-                    except:
-                        date_str = str(ts) # ถ้าแปลงไม่ได้จริงๆ ให้แสดงตามเดิม
-                else:
-                    date_str = "-"
+                # 🟢 ใช้ฟังก์ชันที่ปลอดภัยในการแปลง
+                date_str = utils.format_date_safe(row['timestamp'], '%d/%m/%Y %H:%M')
                 
                 values = (
                     row['so_number'],
                     row['sale_key'],
                     row['customer_name'],
                     row['rejection_reason'], 
-                    date_str,
+                    date_str, # <--- ตัวนี้จะแสดงผลถูกต้องแน่นอน
                     row['status']
                 )
                 self.tree.insert("", "end", values=values)
@@ -3778,6 +3780,8 @@ class TransportEditDialog(CTkToplevel):
                     wht_val = data.get('cutting_wht_type', 'No')
                     self.cut_wht_var.set(wht_val if wht_val in ['No','1%','3%'] else 'No')
                     self._update_cutting_summary()
+
+                conn.commit()
         except Exception as e: messagebox.showerror("Error", f"Load failed: {e}")
         finally: self.app_container.release_connection(conn)
 
@@ -4031,6 +4035,8 @@ class TransportLogViewer(CTkToplevel):
                     except: ts_str = str(row['timestamp'])
                     
                     self.tree.insert("", "end", values=(ts_str, user, po_num, str(changes).replace('\n', ' | ')))
+
+                conn.commit()
         except Exception as e: messagebox.showerror("Error", f"Load logs failed: {e}")
         finally: self.app_container.release_connection(conn)
 
@@ -4178,6 +4184,8 @@ class TransportPOSearchDialog(CTkToplevel):
                         f"{row['total_transport']:,.2f}"
                     )
                     self.tree.insert("", "end", values=vals)
+
+                conn.commit()
 
         except Exception as e:
             messagebox.showerror("Error", f"{e}")

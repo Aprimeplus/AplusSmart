@@ -985,6 +985,106 @@ class ProductManagementWindow(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
 
 
+class CategoryManagementDialog(CTkToplevel):
+    def __init__(self, master, app_container, on_update_callback=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.on_update_callback = on_update_callback
+        
+        self.title("จัดการหมวดหมู่สินค้า")
+        self.geometry("400x500")
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # ช่องเพิ่มหมวดหมู่ใหม่
+        top_frame = CTkFrame(self, fg_color="transparent")
+        top_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        self.new_cat_entry = CTkEntry(top_frame, placeholder_text="พิมพ์ชื่อหมวดหมู่ใหม่...")
+        self.new_cat_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.new_cat_entry.bind("<Return>", lambda e: self._add_category())
+        
+        CTkButton(top_frame, text="เพิ่ม", width=60, command=self._add_category).pack(side="left")
+
+        # ตารางแสดงหมวดหมู่
+        self.tree_frame = CTkFrame(self)
+        self.tree_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        self.tree_frame.grid_columnconfigure(0, weight=1)
+        self.tree_frame.grid_rowconfigure(0, weight=1)
+
+        self.tree = ttk.Treeview(self.tree_frame, columns=("id", "name"), show="headings", selectmode="browse")
+        self.tree.heading("id", text="ID")
+        self.tree.heading("name", text="ชื่อหมวดหมู่")
+        self.tree.column("id", width=50, anchor="center")
+        self.tree.column("name", width=300, anchor="w")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+
+        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=vsb.set)
+
+        # ปุ่มลบ
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, padx=10, pady=10)
+        CTkButton(btn_frame, text="ลบหมวดหมู่ที่เลือก", fg_color="#D32F2F", hover_color="#B71C1C", command=self._delete_category).pack()
+
+        self._load_categories()
+
+        self.transient(master)
+        self.grab_set()
+
+    def _load_categories(self):
+        for item in self.tree.get_children(): self.tree.delete(item)
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, category_name FROM product_categories ORDER BY category_name")
+                for row in cursor.fetchall():
+                    self.tree.insert("", "end", values=(row[0], row[1]))
+        except Exception as e: 
+            messagebox.showerror("Error", str(e), parent=self)
+        finally: 
+            if conn: # 🟢 ปัดลงมาบรรทัดใหม่
+                self.app_container.release_connection(conn)
+
+    def _add_category(self):
+        new_cat = self.new_cat_entry.get().strip()
+        if not new_cat: return
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO product_categories (category_name) VALUES (%s) ON CONFLICT DO NOTHING", (new_cat,))
+            conn.commit()
+            self.new_cat_entry.delete(0, 'end')
+            self._load_categories()
+            if self.on_update_callback: self.on_update_callback()
+        except Exception as e: 
+            messagebox.showerror("Error", str(e), parent=self)
+        finally: 
+            if conn: # 🟢 ปัดลงมาบรรทัดใหม่
+                self.app_container.release_connection(conn)
+
+    def _delete_category(self):
+        selected = self.tree.focus()
+        if not selected: return
+        cat_id = self.tree.item(selected, 'values')[0]
+        cat_name = self.tree.item(selected, 'values')[1]
+
+        if not messagebox.askyesno("ยืนยัน", f"ต้องการลบหมวดหมู่ '{cat_name}' ใช่หรือไม่?", parent=self): return
+        
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM product_categories WHERE id = %s", (cat_id,))
+            conn.commit()
+            self._load_categories()
+            if self.on_update_callback: self.on_update_callback()
+        except Exception as e: 
+            messagebox.showerror("Error", f"ไม่สามารถลบได้ (อาจมีสินค้าใช้งานอยู่):\n{e}", parent=self)
+        finally: 
+            if conn: # 🟢 ปัดลงมาบรรทัดใหม่ตรงนี้ครับ
+                self.app_container.release_connection(conn)
+
 class ProductEditDialog(CTkToplevel):
     def __init__(self, master, product_data, pm_window):
         super().__init__(master)
@@ -994,21 +1094,14 @@ class ProductEditDialog(CTkToplevel):
         self.editing_mode = product_data is not None
         
         self.title("แก้ไขข้อมูลสินค้า" if self.editing_mode else "เพิ่มสินค้าใหม่")
-        self.geometry("450x320") # ขยายหน้าต่างเล็กน้อย
+        self.geometry("500x320") # ขยายความกว้างนิดนึงรับปุ่มใหม่
         self.grid_columnconfigure(1, weight=1)
 
-        # 🟢 กำหนดรายการหมวดหมู่ทั้งหมดตามมาตรฐาน Express
-        self.category_list = [
-            "HDPE/PB/PVC/UPVC/PP-R (T)", "ดอกเจาะ (K)", "เครื่องจักร (M)",
-            "เครื่องใช้ไฟฟ้า (E)", "เครื่องมือช่าง (H)", "งานประปา (V)",
-            "งานไฟฟ้า (L)", "บ้านสำเร็จรูป", "ประตู (D)", "ผนัง (P)",
-            "พื้น (F)", "ไฟแป้นกลม (F)", "ไม้ (W)", "สแตนเลส (O)",
-            "สินค้าอุปโภคบริโภค (Y)", "สินค้าดัดแปรเหล็ก (Y)", "สี (C)",
-            "สุขภัณฑ์ (Z)", "หลังคา (R)", "ท่อแก๊สโซล่าเซลล์ (B)",
-            "เหล็ก (S)", "อลูมิเนียม (A)", "ฮาร์ดแวร์ (N)", "วัสดุอื่นๆ"
-        ]
-
+        self.category_list = ["วัสดุอื่นๆ"] # Default ชั่วคราว
+        
         self._create_widgets()
+        self._load_categories_from_db() # 🟢 โหลดข้อมูลหมวดหมู่สดๆ
+        
         if self.editing_mode:
             self._populate_form()
 
@@ -1019,51 +1112,82 @@ class ProductEditDialog(CTkToplevel):
     def on_close(self):
         self.destroy()
 
+    def _load_categories_from_db(self):
+        """ดึงรายการหมวดหมู่จาก Database มาใส่ Dropdown"""
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT category_name FROM product_categories ORDER BY category_name")
+                rows = cursor.fetchall()
+                if rows:
+                    self.category_list = [r[0] for r in rows]
+                
+            # อัปเดต Dropdown
+            if hasattr(self, 'category_menu'):
+                self.category_menu.configure(values=self.category_list)
+                # ถ้ากำลังเพิ่มสินค้าใหม่ ให้เซ็ตค่าแรกเป็น Default
+                if not self.editing_mode and self.category_list:
+                    self.category_var.set(self.category_list[0])
+                    
+        except Exception as e:
+            print(f"Error loading categories: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _open_category_manager(self):
+        """เปิดหน้าต่างจัดการหมวดหมู่"""
+        CategoryManagementDialog(self, self.app_container, on_update_callback=self._load_categories_from_db)
+
     def _create_widgets(self):
         row = 0
         CTkLabel(self, text="รหัสสินค้า:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.product_code_entry = CTkEntry(self)
-        self.product_code_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        self.product_code_entry.grid(row=row, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
         row += 1
 
         CTkLabel(self, text="ชื่อสินค้า:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.product_name_entry = CTkEntry(self)
-        self.product_name_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        self.product_name_entry.grid(row=row, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
         row += 1
 
-        # 🟢 เปลี่ยนช่องหมวดหมู่เป็น Dropdown (CTkComboBox เพื่อให้พิมพ์ค้นหาได้ด้วย)
+        # 🟢 ช่องหมวดหมู่ + ปุ่มจัดการ
         CTkLabel(self, text="หมวดหมู่:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
-        self.category_var = tk.StringVar(value="วัสดุอื่นๆ") # ค่าเริ่มต้น
+        self.category_var = tk.StringVar(value="วัสดุอื่นๆ")
         self.category_menu = CTkComboBox(self, variable=self.category_var, values=self.category_list)
         self.category_menu.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        
+        # 🟢 ปุ่มเพิ่มหมวดหมู่
+        CTkButton(self, text="⚙️ จัดการหมวดหมู่", width=100, fg_color="#64748B", hover_color="#475569", 
+                  command=self._open_category_manager).grid(row=row, column=2, padx=(0, 10), pady=5)
         row += 1
 
         CTkLabel(self, text="คลัง:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.warehouse_entry = CTkEntry(self)
-        self.warehouse_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        self.warehouse_entry.grid(row=row, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
         row += 1
 
         save_button_text = "บันทึกการแก้ไข" if self.editing_mode else "เพิ่มสินค้า"
-        CTkButton(self, text=save_button_text, command=self._save_product).grid(row=row, column=0, columnspan=2, pady=20)
+        CTkButton(self, text=save_button_text, command=self._save_product).grid(row=row, column=0, columnspan=3, pady=20)
 
     def _populate_form(self):
         if self.product_data:
             self.product_code_entry.insert(0, self.product_data.get('product_code') or '')
             self.product_name_entry.insert(0, self.product_data.get('product_name') or '')
             
-            # 🟢 เซ็ตค่าหมวดหมู่ให้ตรงกับในฐานข้อมูล (ถ้ามี)
             cat_val = self.product_data.get('category')
             if cat_val:
                 self.category_var.set(cat_val)
-            else:
-                self.category_var.set("วัสดุอื่นๆ") # กรณีช่องว่างให้เป็นค่า Default
-                
+                # ถ้ารายการเก่าไม่มีใน list ให้เพิ่มเข้าไปชั่วคราว
+                if cat_val not in self.category_list:
+                    self.category_list.append(cat_val)
+                    self.category_menu.configure(values=self.category_list)
+                    
             self.warehouse_entry.insert(0, self.product_data.get('warehouse') or '')
 
     def _save_product(self):
         code = self.product_code_entry.get().strip()
         name = self.product_name_entry.get().strip()
-        category = self.category_var.get().strip() # 🟢 ดึงค่าจาก Dropdown
+        category = self.category_var.get().strip() 
         warehouse = self.warehouse_entry.get().strip()
         
         if not code or not name:

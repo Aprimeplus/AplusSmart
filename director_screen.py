@@ -1,10 +1,10 @@
 import tkinter as tk
-from customtkinter import CTkFrame, CTkTabview, CTkLabel, CTkFont
+from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkButton
 
 # --- Import หน้าจอทั้ง 3 ส่วน ---
 from purchasing_manager_screen import PurchasingManagerScreen
 from hr_screen import HRScreen
-from sales_manager_screen import SalesManagerScreen  # ✅ เพิ่มการ Import
+from sales_manager_screen import SalesManagerScreen
 
 class DirectorScreen(CTkFrame):
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None):
@@ -15,54 +15,118 @@ class DirectorScreen(CTkFrame):
         self.user_role = user_role
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        # --- 1. Header ---
-        header_frame = CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 0))
+        # =========================================================
+        # 1. Main Containers (สลับหน้าจอไปมา)
+        # =========================================================
+        self.home_frame = CTkFrame(self, fg_color="transparent")
+        self.content_frame = CTkFrame(self, fg_color="transparent")
+
+        self._build_home_menu()
+        self.show_home() # เริ่มต้นด้วยการโชว์หน้า Home
+
+    def _build_home_menu(self):
+        """สร้างหน้าต่างเมนูหลัก (Big Picture)"""
+        self.home_frame.grid_columnconfigure(0, weight=1)
+        self.home_frame.grid_rowconfigure(1, weight=1)
+
+        # --- Header ---
+        header = CTkFrame(self.home_frame, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=30, pady=(30, 10))
         
-        title = f"Dashboard ผู้บริหารระดับสูง (Director): {self.user_name}"
-        CTkLabel(header_frame, text=title, font=CTkFont(size=22, weight="bold")).pack(side="left")
+        CTkLabel(header, text="📊 Management Dashboard", font=CTkFont(size=28, weight="bold")).pack(side="left")
+        CTkLabel(header, text=f"ยินดีต้อนรับ, {self.user_name}", font=CTkFont(size=16), text_color="gray50").pack(side="left", padx=15, pady=(8,0))
         
-        # --- 2. สร้าง Tab View (เพิ่มเป็น 3 แท็บ) ---
-        self.tab_view = CTkTabview(self, corner_radius=10, border_width=1)
-        self.tab_view.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        CTkButton(header, text="ออกจากระบบ", command=self.app_container.show_login_screen, 
+                  fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", 
+                  border_width=2, hover_color="#FFEBEE").pack(side="right")
 
-        # สร้างแท็บ
-        self.sale_tab = self.tab_view.add("ยอดขายและการอนุมัติ (Sales View)") # ✅ แท็บใหม่
-        self.purchase_tab = self.tab_view.add("จัดซื้อและค่าใช้จ่าย (Purchasing View)")
-        self.hr_tab = self.tab_view.add("พนักงานและคอมมิชชั่น (HR View)")
+        # --- Menu Container ---
+        menu_container = CTkFrame(self.home_frame, fg_color="transparent")
+        menu_container.grid(row=1, column=0, sticky="nsew", padx=30, pady=20)
+        
+        # จัดให้อยู่กึ่งกลาง
+        menu_container.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
+        menu_container.grid_rowconfigure(0, weight=1)
 
-        # --- 3. ติดตั้งหน้าจอลงในแต่ละแท็บ ---
+        # --- สไตล์ของปุ่มการ์ด ---
+        btn_kwargs = {
+            "font": CTkFont(size=20, weight="bold"),
+            "height": 180,
+            "corner_radius": 15,
+            "border_spacing": 10
+        }
 
-        # 🟢 TAB 1: Sales Manager Screen (หน้านี้จะเห็น Dashboard 40/60 ที่เราเพิ่งแก้)
-        self.sales_screen = SalesManagerScreen(
-            master=self.sale_tab,
-            app_container=self.app_container,
-            user_key=self.user_key,
-            user_name=self.user_name,
-            user_role=self.user_role
-        )
-        self.sales_screen.pack(fill="both", expand=True)
+        # 1. การ์ดฝ่ายขาย (Sales)
+        CTkButton(menu_container, text="📈\n\nฝ่ายขายและการอนุมัติ\n(Sales)", 
+                  fg_color="#2563EB", hover_color="#1D4ED8", **btn_kwargs,
+                  command=lambda: self.open_module("sales", "📈 ฝ่ายขายและการอนุมัติ")).grid(row=0, column=0, padx=15, pady=20, sticky="ew")
 
-        # 🔵 TAB 2: Purchasing Manager Screen
-        self.purchase_screen = PurchasingManagerScreen(
-            master=self.purchase_tab, 
-            app_container=self.app_container, 
-            user_key=self.user_key, 
-            user_role=self.user_role
-        )
-        self.purchase_screen.pack(fill="both", expand=True)
+        # 2. การ์ดฝ่ายจัดซื้อ (Purchasing)
+        CTkButton(menu_container, text="🛒\n\nฝ่ายจัดซื้อและสต๊อก\n(Purchasing & Inventory)", 
+                  fg_color="#059669", hover_color="#047857", **btn_kwargs,
+                  command=lambda: self.open_module("purchase", "🛒 ฝ่ายจัดซื้อและสต๊อก")).grid(row=0, column=1, padx=15, pady=20, sticky="ew")
 
-        # 🟣 TAB 3: HR Screen
-        self.hr_screen = HRScreen(
-            master=self.hr_tab,
-            app_container=self.app_container,
-            user_key=self.user_key,
-            user_name=self.user_name,
-            user_role=self.user_role
-        )
-        self.hr_screen.pack(fill="both", expand=True)
+        # 3. การ์ดฝ่ายบุคคล/บัญชี (HR & Accounting)
+        CTkButton(menu_container, text="👥\n\nฝ่ายบุคคลและคอมมิชชั่น\n(HR & Commission)", 
+                  fg_color="#7C3AED", hover_color="#6D28D9", **btn_kwargs,
+                  command=lambda: self.open_module("hr", "👥 ฝ่ายบุคคลและคอมมิชชั่น")).grid(row=0, column=2, padx=15, pady=20, sticky="ew")
 
-        # ตั้งค่าแท็บเริ่มต้น (เลือกได้ว่าจะให้เปิดหน้าไหนก่อน)
-        self.tab_view.set("ยอดขายและการอนุมัติ (Sales View)")
+    def show_home(self):
+        """แสดงหน้า Home Menu และซ่อนหน้าเนื้อหา"""
+        self.content_frame.grid_forget()
+        
+        # เคลียร์หน้าจอเดิมทิ้งเพื่อคืน Memory
+        for widget in self.content_frame.winfo_children():
+            widget.destroy()
+            
+        self.home_frame.grid(row=0, column=0, sticky="nsew")
+
+    def open_module(self, module_name, title_text):
+        """โหลดหน้าจอของแต่ละแผนกมาแสดง"""
+        self.home_frame.grid_forget()
+        self.content_frame.grid(row=0, column=0, sticky="nsew")
+        self.content_frame.grid_columnconfigure(0, weight=1)
+        self.content_frame.grid_rowconfigure(1, weight=1)
+
+        # --- Top Navigation Bar ---
+        top_bar = CTkFrame(self.content_frame, height=50, fg_color="gray90", corner_radius=0)
+        top_bar.grid(row=0, column=0, sticky="ew")
+        
+        CTkButton(top_bar, text="⬅️ กลับหน้าเมนูหลัก", font=CTkFont(weight="bold"), 
+                  fg_color="#4B5563", hover_color="#374151", height=36,
+                  command=self.show_home).pack(side="left", padx=20, pady=10)
+                  
+        CTkLabel(top_bar, text=title_text, font=CTkFont(size=18, weight="bold"), text_color="#1F2937").pack(side="left", padx=10)
+
+        # --- Module Container ---
+        module_container = CTkFrame(self.content_frame, fg_color="transparent")
+        module_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
+        # --- โหลด Class ตามที่เลือก ---
+        if module_name == "sales":
+            screen = SalesManagerScreen(
+                master=module_container,
+                app_container=self.app_container,
+                user_key=self.user_key,
+                user_name=self.user_name,
+                user_role=self.user_role
+            )
+        elif module_name == "purchase":
+            screen = PurchasingManagerScreen(
+                master=module_container, 
+                app_container=self.app_container, 
+                user_key=self.user_key, 
+                user_role=self.user_role
+            )
+        elif module_name == "hr":
+            screen = HRScreen(
+                master=module_container,
+                app_container=self.app_container,
+                user_key=self.user_key,
+                user_name=self.user_name,
+                user_role=self.user_role
+            )
+            
+        screen.pack(fill="both", expand=True)

@@ -84,7 +84,6 @@ class PaymentUpdateWindow(CTkToplevel):
             p2 = utils.convert_to_float(self.payment2_entry.get())
             new_total_payment = p1 + p2
             
-            # <<< START: แก้ไข Logic การคำนวณให้แม่นยำ >>>
             # 1. คำนวณยอดที่ต้องชำระที่แท้จริง
             original_payment = self.so_data.get('total_payment_amount', 0.0) or 0.0
             original_difference = self.so_data.get('difference_amount', 0.0) or 0.0
@@ -92,21 +91,44 @@ class PaymentUpdateWindow(CTkToplevel):
             
             # 2. คำนวณส่วนต่างใหม่ (ยอดโอนใหม่ - ยอดที่ต้องชำระ)
             new_difference = new_total_payment - actual_grand_total
-            # <<< END >>>
             
             if not messagebox.askyesno("ยืนยัน", "คุณต้องการอัปเดตยอดชำระเงินใช่หรือไม่?", parent=self):
                 return
             
+            # 3. กำหนดสถานะใหม่ (ถ้าโอนครบแล้ว หรือโอนเกิน ให้เด้งกลับไปเป็น Edited เพื่อให้เซลส์กดนำส่งใหม่)
+            current_status = self.so_data.get('status', 'Draft')
+            new_status = current_status
+            if new_difference >= 0:
+                new_status = 'Edited' # <--- เปลี่ยนตรงนี้ได้ตาม Flow ของบริษัทคุณ
+                
+            # 4. ใช้วันที่ปัจจุบันเป็นวันที่ชำระเงินงวดที่ 2
+            current_date_str = datetime.now().strftime("%Y-%m-%d")
+            
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 🟢 [แก้ไข] เพิ่มการอัปเดต timestamp ให้เป็นเวลาปัจจุบัน
+                # 🟢 [แก้ไข] อัปเดตให้ครบทุกคอลัมน์ที่เกี่ยวข้อง
                 cursor.execute("""
                     UPDATE commissions SET 
                         total_payment_amount = %s, 
+                        payment1_amount = %s,
+                        payment2_amount = %s,
+                        payment2_date = %s,
+                        payment_date = %s,
                         difference_amount = %s,
+                        status = %s,
                         timestamp = %s
                     WHERE id = %s
-                """, (new_total_payment, new_difference, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.so_id))
+                """, (
+                    new_total_payment, 
+                    p1, 
+                    p2, 
+                    current_date_str, # เก็บวันที่โอนเพิ่ม (payment2_date)
+                    current_date_str, # อัปเดตวันที่ชำระหลักด้วย
+                    new_difference, 
+                    new_status,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                    self.so_id
+                ))
             conn.commit()
 
             messagebox.showinfo("สำเร็จ", "อัปเดตยอดชำระเรียบร้อยแล้ว", parent=self)
@@ -543,16 +565,8 @@ class SalesTasksWindow(CTkToplevel):
             cutting_fee = format_money(so_data.get('cutting_drilling_fee'))
             discount = format_money(so_data.get('coupons'))
 
-            def format_date(date_val):
-                if pd.notna(date_val) and date_val:
-                    try:
-                        if hasattr(date_val, 'strftime'): return date_val.strftime('%d/%m')
-                        return pd.to_datetime(date_val).strftime('%d/%m')
-                    except: return str(date_val)
-                return "-"
-
-            date_to_wh = format_date(so_data.get('date_to_warehouse'))
-            date_to_cust = format_date(so_data.get('date_to_customer'))
+            date_to_wh = utils.format_date_safe(so_data.get('date_to_warehouse'), '%d/%m')
+            date_to_cust = utils.format_date_safe(so_data.get('date_to_customer'), '%d/%m')
 
             delivery_type = so_data.get('delivery_type') or '-'
             order_pur_val = so_data.get('order_pur') or '-'
@@ -611,7 +625,7 @@ class SalesTasksWindow(CTkToplevel):
             unloading_stat = so_data.get('unloading_status') or '-'
 
             # สร้างเส้นคั่น
-            separator = "🔥" * 10
+            separator = "-" * 10
 
             shortnote_text = (
                 f"เลขที่ {so_number}\n"
@@ -619,9 +633,7 @@ class SalesTasksWindow(CTkToplevel):
                 f"ค่าส่ง  : {shipping_cost}\n"
                 f"ค่าย้าย : {relocation_cost}\n"
                 f"ค่าตัด : {cutting_fee}\n"
-                ########################
                 f"ยอดชำระ : {payment_display}\n"
-                ############################
                 f"ค่าธรรมเนียมบัตรเครดิต : {credit_card_fee}\n"
                 f"ค่าธรรมเนียมโอน : {transfer_fee}\n"
                 f"ภาษีหัก ณ ที่จ่าย : {wht_fee}\n"
@@ -636,6 +648,7 @@ class SalesTasksWindow(CTkToplevel):
                 f"Payment : {remark_text}\n"
                 f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n"
                 f"{separator}\n"
+                f"การจัดส่ง : {delivery_type}\n"
                 f"แผนที่จัดส่ง : {delivery_map}\n"
                 f"Location เข้ารับ : {pickup_loc}\n"
                 f"ประเภทรถ : {vehicle_type}\n"
@@ -775,13 +788,12 @@ class SalesTasksWindow(CTkToplevel):
                 
                 # 2. ตั้งค่าสีและข้อความตามสถานะ
                 if status == 'Defer Requested':
-                    # กรณี HR ขอเลื่อน: สีส้ม, ปุ่มเป็น "ตอบรับ/ปฏิเสธ"
-                    card_color = "#FFF7ED" # สีส้มอ่อน
-                    reason_color = "#C2410C" # สีส้มเข้ม
-                    status_prefix = "HR ขอเลื่อนจ่าย"
-                    button_text = "ตัดสินใจ (Action)"
-                    # เรียกใช้ Dialog ใหม่ที่เราเพิ่งสร้าง
-                    button_cmd = lambda r=row: self._open_deferral_dialog(r)
+                    # 🟢 [แก้ไขใหม่] กรณีบัญชีขอเลื่อน: เซลล์กดตัดสินใจไม่ได้แล้ว ต้องรอ SM อย่างเดียว
+                    card_color = "#FFF7ED" 
+                    reason_color = "#C2410C" 
+                    status_prefix = "รอ Manager อนุมัติเลื่อนจ่าย"
+                    button_text = "รอผลตัดสินใจ" # เปลี่ยนข้อความปุ่ม
+                    button_cmd = lambda: messagebox.showinfo("รอการอนุมัติ", "รายการนี้บัญชีขอเลื่อนจ่าย\nกรุณารอ Sale Manager เป็นผู้พิจารณาอนุมัติ/ไม่อนุมัติ")
                     
                 elif 'Reject' in status:
                     card_color = "#FEF2F2" # สีแดงอ่อน
@@ -1889,7 +1901,7 @@ class CommissionApp(CTkFrame):
         self._add_item_row_with_vat(frame, "ยอดขายสินค้า/บริการ:", self.sales_amount_entry, self.sales_service_vat_option, 2)
 
         note_font = CTkFont(size=12, slant="italic")
-        note_label = CTkLabel(frame, text="หมายเหตุ: ไม่รวมค่าส่ง/ค่ารถ", font=note_font, text_color="#FF0000")
+        note_label = CTkLabel(frame, text="หมายเหตุ: ไม่รวมค่าส่ง/ค่ารถ :ยอดหลังจากหักส่วนลดแล้ว", font=note_font, text_color="#FF0000")
         note_label.grid(row=3, column=1, columnspan=2, padx=(10, 15), pady=(0, 5), sticky="w")
 
         self.sales_vat_var_display = CTkEntry(frame, textvariable=self.sales_vat_calc_var, state="readonly", fg_color="gray85")

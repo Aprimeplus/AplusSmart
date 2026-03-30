@@ -142,16 +142,26 @@ class AutoCompleteEntry(ctk.CTkEntry):
         current_text = self.var.get()
         
         # <<< START: การแก้ไข: ซ่อน Popup หากไม่มีข้อความหรือข้อความมีแต่ช่องว่าง >>>
-        # ใช้ .strip() เพื่อตรวจสอบว่ามีข้อความที่พิมพ์จริงหรือไม่ (ไม่ใช่แค่ space bar)
         if not current_text or not current_text.strip():
             self._hide_popup()
             return
         # <<< END: การแก้ไข >>>
         
-        # ใช้ fuzz.partial_ratio ในการค้นหาตามเดิม
-        results = process.extract(current_text, self._choices, scorer=fuzz.partial_ratio, limit=10)
-        self.matches = [result[0] for result in results if result[1] > 70]
+        # 🟢 [เปลี่ยน Logic การค้นหาใหม่ทั้งหมด]
+        # ใช้คำสั่ง `in` ค้นหาคำที่ซ่อนอยู่ตรงไหนก็ได้ (ไม่สนตัวพิมพ์เล็ก/ใหญ่)
+        search_term = current_text.lower().strip()
+        self.matches = []
+        
+        for choice in self._choices:
+            # ถ้าคำที่พิมพ์ มีอยู่ในชื่อสินค้า/ซัพพลายเออร์ ให้เก็บไว้ใน matches
+            if search_term in str(choice).lower():
+                self.matches.append(choice)
+                
+            # แสดงผลสูงสุดแค่ 15 รายการพอ (เพื่อไม่ให้หน้าจอรกและกระตุก)
+            if len(self.matches) >= 15: 
+                break
 
+        # ถ้าเจอข้อมูลที่ตรงกัน ให้แสดง Popup
         if self.matches:
             if self.popup is None or not self.popup.winfo_exists():
                 self._create_popup()

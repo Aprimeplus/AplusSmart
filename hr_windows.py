@@ -54,6 +54,10 @@ class SalesDataViewerWindow(CTkToplevel):
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 cursor.execute("SELECT * FROM commissions WHERE so_number = %s AND is_active = 1", (self.so_number,))
                 self.so_data = cursor.fetchone()
+            
+            # 🟢 [จุดที่ต้องเพิ่ม] สั่ง commit เพื่อล้างสถานะ Snapshot เก่าทิ้ง
+            conn.commit()
+
         except Exception as e:
             messagebox.showerror("Database Error", f"ไม่สามารถโหลดข้อมูล SO ได้: {e}", parent=self)
         finally:
@@ -1754,6 +1758,10 @@ class PayoutDetailWindow(CTkToplevel):
                 if not self.payout_log_data:
                     messagebox.showerror("Error", "ไม่พบข้อมูล Payout ID นี้", parent=self)
                     self.destroy()
+            
+            # ✅ เติมบรรทัดนี้เข้าไปครับ
+            conn.commit() 
+
         except Exception as e:
             messagebox.showerror("DB Error", f"{e}", parent=self)
         finally:
@@ -3289,6 +3297,7 @@ class EditPOWindowByHR(CTkToplevel):
             for _, item in items_df.iterrows():
                 self._add_item_row(item.to_dict())
 
+
         except Exception as e:
             messagebox.showerror("Database Error", f"เกิดข้อผิดพลาดในการโหลดข้อมูล: {e}", parent=self)
 
@@ -3658,6 +3667,8 @@ class HRCoverSheetDialog(CTkToplevel):
                     # ถ้ามีปุ่มพิมพ์ค่ารถ ให้ปิดใช้งานด้วย
                     if hasattr(self, 'print_transport_btn'):
                         self.print_transport_btn.configure(state="disabled")
+                
+                conn.commit() # 🟢 เพิ่มตรงนี้
 
         except Exception as e:
             print(f"Search error: {e}")

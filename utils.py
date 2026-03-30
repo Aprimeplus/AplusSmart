@@ -1,67 +1,88 @@
-# utils.py (ฉบับสมบูรณ์)
+# utils.py (ฉบับสมบูรณ์ จัดระเบียบใหม่)
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import pandas as pd
 import numpy as np
 import customtkinter as ctk
 from datetime import datetime
 from customtkinter import CTkFrame, CTkLabel, CTkScrollableFrame, CTkToplevel, CTkFont, CTkEntry, CTkCheckBox, CTkButton
-from tkinter import messagebox
+
+# =========================================================================
+# HELPER FUNCTIONS (ฟังก์ชันช่วยเหลือทั่วไป)
+# =========================================================================
 
 def convert_to_float(value):
+    """แปลงค่าต่างๆ ให้เป็น Float อย่างปลอดภัย"""
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
+        if value is None or value.strip() == '':
+            return 0.0
         try:
             return float(value.replace(",", ""))
         except (ValueError, TypeError):
             return 0.0
     return 0.0
 
+def format_date_safe(date_val, format_string='%d/%m/%Y'):
+    """
+    รับค่าจาก Database (ที่เป็น Date, Timestamp, String หรือ None)
+    แปลงเป็น String ตาม format_string อย่างปลอดภัย
+    """
+    if pd.isna(date_val) or date_val is None or str(date_val).strip() in ('', 'None', 'NaT'):
+        return "-"
+    
+    try:
+        dt = pd.to_datetime(date_val, errors='coerce')
+        if pd.notna(dt):
+            return dt.strftime(format_string)
+        return str(date_val)
+    except Exception:
+        return str(date_val)
+
 def set_entry_text(entry_widget, text):
-    if entry_widget and entry_widget.winfo_exists():
-        is_readonly = entry_widget.cget("state") == "readonly"
-        if is_readonly: entry_widget.configure(state="normal")
+    """ใส่ข้อความใน CTkEntry อย่างปลอดภัย รองรับกรณีที่ Widget เป็น Readonly"""
+    if not entry_widget or not hasattr(entry_widget, 'winfo_exists') or not entry_widget.winfo_exists():
+        return
+    
+    try:
+        current_state = entry_widget.cget("state")
+        if current_state == "readonly":
+            entry_widget.configure(state="normal")
+        
         entry_widget.delete(0, "end")
         entry_widget.insert(0, str(text))
-        if is_readonly: entry_widget.configure(state="readonly")
+        
+        if current_state == "readonly":
+            entry_widget.configure(state="readonly")
+    except Exception as e:
+        print(f"Error in set_entry_text for widget {entry_widget}: {e}")
 
-### START: เพิ่มฟังก์ชันใหม่นี้เข้าไปต่อท้ายไฟล์ utils.py ###
 def center_window(window: tk.Toplevel):
-    """
-    จัดตำแหน่งหน้าต่าง Toplevel (หรือ CTkToplevel) ให้อยู่ตรงกลางของหน้าต่างแม่ (master)
-    """
-    window.update_idletasks()  # บังคับให้วาด widget เพื่อให้ได้ขนาดที่ถูกต้อง
+    """จัดตำแหน่งหน้าต่างให้อยู่ตรงกลางของหน้าต่างแม่"""
+    window.update_idletasks() 
 
-    # ดึงขนาดของหน้าต่างย่อย
     window_width = window.winfo_width()
     window_height = window.winfo_height()
 
-    # ดึงขนาดและตำแหน่งของหน้าต่างแม่
     master_x = window.master.winfo_x()
     master_y = window.master.winfo_y()
     master_width = window.master.winfo_width()
     master_height = window.master.winfo_height()
 
-    # คำนวณตำแหน่ง X และ Y ที่จะทำให้หน้าต่างย่อยอยู่ตรงกลาง
     center_x = int(master_x + (master_width / 2) - (window_width / 2))
     center_y = int(master_y + (master_height / 2) - (window_height / 2))
 
-    # ตั้งค่าตำแหน่งใหม่
     window.geometry(f"+{center_x}+{center_y}")
 
-# --- ฟังก์ชัน Helper ---
-def convert_to_float(value_str):
-    if value_str is None or value_str == '':
-        return 0.0
-    try:
-        return float(str(value_str).replace(",", ""))
-    except (ValueError, TypeError):
-        return 0.0
 
-# --- คลาส Widget พิเศษ ---
+# =========================================================================
+# CUSTOM WIDGETS (วิดเจ็ตที่ปรับแต่งพิเศษ)
+# =========================================================================
+
 class FormattedNumericEntry(ctk.CTkEntry):
+    """ช่องกรอกตัวเลขแบบมีลูกน้ำ (Comma) อัตโนมัติเวลาพิมพ์"""
     def __init__(self, master, command=None, **kwargs):
         super().__init__(master, **kwargs)
         self._variable = tk.StringVar(self)
@@ -100,13 +121,19 @@ class FormattedNumericEntry(ctk.CTkEntry):
             self._variable.set(f"{num_value:,.2f}")
         except (ValueError, TypeError): self._variable.set("0.00")
 
-# --- คลาสหน้าต่าง Dialog ที่ใช้งานร่วมกัน ---
+
+# =========================================================================
+# DIALOG WINDOWS (หน้าต่าง Popup ต่างๆ)
+# =========================================================================
+
 class RejectionReasonDialog(CTkToplevel):
+    """หน้าต่างสำหรับเลือกเหตุผลเวลาตีกลับ/ปฏิเสธงาน"""
     def __init__(self, master):
         super().__init__(master)
         self.master = master
         self.title("ระบุเหตุผลที่ปฏิเสธ")
         self.geometry("500x600")
+        
         self.reasons_list = [
             "ลงสเปคสินค้าผิด SO", "ลงเสปคสินค้าผิด PO", "ลงราคาต้นทุนผิด PO", 
             "ลงราคาขายผิด SO", "ไม่แยกค่ารถ/ราคาผิด SO", "ไม่แยกค่ารถ/ราคาผิด PO", 
@@ -114,6 +141,7 @@ class RejectionReasonDialog(CTkToplevel):
         ]
         self.checkbox_vars = []
         self._reason_string = None
+        
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         
@@ -139,8 +167,8 @@ class RejectionReasonDialog(CTkToplevel):
         button_frame = CTkFrame(self, fg_color="transparent")
         button_frame.grid(row=3, column=0, padx=20, pady=10)
         
-        CTkButton(button_frame, text="ยกเลิก", command=self.destroy).pack(side="right", padx=5)
-        CTkButton(button_frame, text="ตกลง", command=self._on_confirm).pack(side="right", padx=5)
+        CTkButton(button_frame, text="ยกเลิก", command=self.destroy, fg_color="gray").pack(side="right", padx=5)
+        CTkButton(button_frame, text="ตกลง", command=self._on_confirm, fg_color="#DC2626", hover_color="#B91C1C").pack(side="right", padx=5)
         
         self.transient(master)
         self.grab_set()
@@ -148,37 +176,35 @@ class RejectionReasonDialog(CTkToplevel):
     def _on_confirm(self):
         selected_reasons = [reason_text for var, reason_text in self.checkbox_vars if var.get() == "1"]
         other_text = self.other_reason_entry.get().strip()
+        
         if other_text:
             selected_reasons.append(f"อื่นๆ: {other_text}")
+            
         if not selected_reasons:
             messagebox.showwarning("ข้อมูลไม่ครบถ้วน", "กรุณาเลือกเหตุผลอย่างน้อย 1 ข้อ", parent=self)
             return
+            
         self._reason_string = ", ".join(selected_reasons)
         self.destroy()
-    
-def set_entry_text(entry_widget, text):
-        """
-        Helper function to safely set text in a CTkEntry, handling the readonly state.
-        """
-        # ตรวจสอบว่า widget ยัง存在และใช้งานได้
-        if not entry_widget or not hasattr(entry_widget, 'winfo_exists') or not entry_widget.winfo_exists():
-            return
-        
-        try:
-            current_state = entry_widget.cget("state")
-            # หากเป็นแบบอ่านอย่างเดียว (readonly) ให้เปิดเป็นปกติก่อน
-            if current_state == "readonly":
-                entry_widget.configure(state="normal")
-            
-            # ลบข้อความเก่าและใส่ข้อความใหม่
-            entry_widget.delete(0, "end")
-            entry_widget.insert(0, str(text))
-            
-            # ทำให้กลับไปเป็นแบบอ่านอย่างเดียวเหมือนเดิม
-            if current_state == "readonly":
-                entry_widget.configure(state="readonly")
-        except Exception as e:
-            # ป้องกันโปรแกรมแครชถ้าเกิดข้อผิดพลาดที่ไม่คาดคิด
-            print(f"Error in set_entry_text for widget {entry_widget}: {e}")
 
-            
+# เพิ่มฟังก์ชันแสดง Popup แจ้งเตือนแบบน่ารักๆ ไว้ตรงนี้ด้วย เผื่อเอาไปเรียกใช้ (Optional)
+def show_loading_popup(master, message="กำลังโหลดข้อมูล..."):
+    """แสดงหน้าต่าง Loading หมุนๆ เล็กๆ ระหว่างดึงข้อมูล (เอาไปใช้ได้ทุกหน้า)"""
+    popup = CTkToplevel(master)
+    popup.geometry("300x120")
+    popup.title("โปรดรอ...")
+    center_window(popup)
+    
+    popup.overrideredirect(True) # ลบขอบ
+    popup.attributes("-topmost", True)
+    
+    frame = CTkFrame(popup, fg_color="#FFFFFF", border_width=2, border_color="#3B82F6")
+    frame.pack(fill="both", expand=True)
+    
+    lbl = CTkLabel(frame, text=message, font=CTkFont(size=14, weight="bold"), text_color="#1E3A8A")
+    lbl.pack(expand=True)
+    
+    popup.label = lbl # เก็บ ref ไว้เผื่อแก้ไขข้อความ
+    popup.update()
+    
+    return popup

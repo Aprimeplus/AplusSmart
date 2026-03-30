@@ -7,6 +7,28 @@ from customtkinter import (
 import pandas as pd
 import psycopg2.extras
 from datetime import datetime
+from tkcalendar import DateEntry, Calendar
+
+class PatchedDateEntry(DateEntry):
+    """แก้ปัญหา calendar ปิดตัวเองเมื่อกดปุ่มเลื่อนเดือน/ปี"""
+    def _on_focus_out_cal(self, event):
+        # ตรวจสอบว่า focus ไปอยู่ที่ widget ลูก (ปุ่มใน calendar) หรือไม่
+        if event.widget in self._top_cal.winfo_children():
+            return
+        # ตรวจสอบลึกลงไปอีกชั้น (ปุ่มลูกศรอาจเป็น grandchild)
+        try:
+            focused = self._top_cal.focus_get()
+            if focused and str(focused).startswith(str(self._top_cal)):
+                return
+        except Exception:
+            pass
+        super()._on_focus_out_cal(event)
+
+    def _drop_down(self):
+        super()._drop_down()
+        # rebind FocusOut ของ Calendar ภายในด้วย
+        if hasattr(self, '_top_cal') and self._top_cal:
+            self._top_cal.bind("<FocusOut>", self._on_focus_out_cal)
 
 try:
     from tksheet import Sheet
@@ -72,21 +94,21 @@ class DashboardCostScreen(CTkFrame):
     # =========================================================
     def _build_sidebar(self):
         sidebar = CTkScrollableFrame(self, fg_color=COLORS["bg_sidebar"], corner_radius=0,
-                                     border_width=0)
+                                    border_width=0)
         sidebar.grid(row=0, column=0, sticky="nsew")
 
-        # Sidebar header band
         header_band = CTkFrame(sidebar, fg_color=COLORS["sidebar_header"], corner_radius=0, height=50)
         header_band.pack(fill="x", pady=(0, 10))
         header_band.pack_propagate(False)
         CTkLabel(header_band, text="  ⚙  Filters",
-                 font=CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
-                 text_color="#FFFFFF").pack(side="left", padx=10, pady=12)
+                font=CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
+                text_color="#FFFFFF").pack(side="left", padx=10, pady=12)
 
-        # 🟢 เพิ่มตัวแปร sale_order_no เข้ามาใน Dictionary
         self.filter_vars = {
+            "date_from":     tk.StringVar(value=""),
+            "date_to":       tk.StringVar(value=""),
             "order_no":      tk.StringVar(value="All"),
-            "sale_order_no": tk.StringVar(value="All"), # 🟢 เพิ่ม Sale Order No.
+            "sale_order_no": tk.StringVar(value="All"),
             "pu_user":       tk.StringVar(value="All"),
             "sale_name":     tk.StringVar(value="All"),
             "supplier":      tk.StringVar(value="All"),
@@ -98,10 +120,70 @@ class DashboardCostScreen(CTkFrame):
         }
         self.filter_menus = {}
 
-        # 🟢 ตั้งค่าป้ายกำกับและตัวแปรผูกมัด (จัด Sale Order No. ให้อยู่ด้านบนคู่กัน)
+        date_frame = CTkFrame(sidebar, fg_color="transparent")
+        date_frame.pack(fill="x", padx=12, pady=(10, 5))
+        
+        CTkLabel(date_frame, text="📅 กรองตามช่วงวันที่ขอราคา", 
+                font=CTkFont(family=FONT_FAMILY, size=12, weight="bold"), 
+                text_color=COLORS["text_medium"]).pack(anchor="w", pady=(0, 8))
+                
+        # ✅ เปลี่ยนเป็น PatchedDateEntry (แก้ปัญหา calendar ปิดตัวเองเมื่อกดลูกศรเลื่อนเดือน/ปี)
+        from_frame = CTkFrame(date_frame, fg_color="transparent")
+        from_frame.pack(fill="x", pady=(0, 5))
+        CTkLabel(from_frame, text="ตั้งแต่:", font=CTkFont(family=FONT_FAMILY, size=11), width=40, anchor="w").pack(side="left")
+        
+        self.cal_from = PatchedDateEntry(          # ✅ เปลี่ยนจาก DateEntry → PatchedDateEntry
+            from_frame, width=15,
+            background=COLORS["header_blue"],
+            foreground='white', borderwidth=0,
+            headersbackground=COLORS["header_blue"], headersforeground='white',
+            selectbackground=COLORS["btn_blue"], selectforeground='white',
+            normalbackground=COLORS["bg_white"], normalforeground=COLORS["text_dark"],
+            weekendbackground=COLORS["bg_white"], weekendforeground=COLORS["highlight_red_fg"],
+            othermonthforeground=COLORS["text_light"], othermonthbackground=COLORS["bg_white"],
+            othermonthweforeground=COLORS["text_light"], othermonthwebackground=COLORS["bg_white"],
+            font=(FONT_FAMILY, 14),
+            date_pattern='dd/mm/yyyy', 
+            locale='th_TH',
+            showweeknumbers=False,
+            showothermonthdays=False,
+            year=datetime.now().year,
+            textvariable=self.filter_vars["date_from"]
+        )
+        self.cal_from.pack(side="left", fill="x", expand=True)
+        self.cal_from.delete(0, 'end')
+        
+        to_frame = CTkFrame(date_frame, fg_color="transparent")
+        to_frame.pack(fill="x", pady=(0, 5))
+        CTkLabel(to_frame, text="ถึง:", font=CTkFont(family=FONT_FAMILY, size=11), width=40, anchor="w").pack(side="left")
+        
+        self.cal_to = PatchedDateEntry(            # ✅ เปลี่ยนจาก DateEntry → PatchedDateEntry
+            to_frame, width=15,
+            background=COLORS["header_blue"],
+            foreground='white', borderwidth=0,
+            headersbackground=COLORS["header_blue"], headersforeground='white',
+            selectbackground=COLORS["btn_blue"], selectforeground='white',
+            normalbackground=COLORS["bg_white"], normalforeground=COLORS["text_dark"],
+            weekendbackground=COLORS["bg_white"], weekendforeground=COLORS["highlight_red_fg"],
+            othermonthforeground=COLORS["text_light"], othermonthbackground=COLORS["bg_white"],
+            othermonthweforeground=COLORS["text_light"], othermonthwebackground=COLORS["bg_white"],
+            font=(FONT_FAMILY, 14),
+            date_pattern='dd/mm/yyyy',
+            locale='th_TH',
+            showweeknumbers=False,
+            showothermonthdays=False,
+            year=datetime.now().year,
+            textvariable=self.filter_vars["date_to"]
+        )
+        self.cal_to.pack(side="left", fill="x", expand=True)
+        self.cal_to.delete(0, 'end')
+
+        self.cal_from.bind("<<DateEntrySelected>>", self._apply_filters)
+        self.cal_to.bind("<<DateEntrySelected>>", self._apply_filters)
+
         filters_config = [
             ("🔍 Order No. (พิมพ์ค้นหา)", "order_no"),
-            ("🔍 Sale Order No. (พิมพ์ค้นหา)", "sale_order_no"), # 🟢 เพิ่มเมนู Sale Order No.
+            ("🔍 Sale Order No. (พิมพ์ค้นหา)", "sale_order_no"),
             ("ผู้ทำตาราง (PU User)", "pu_user"),
             ("ชื่อ Sale",        "sale_name"),
             ("ชื่อ Supplier",    "supplier"),
@@ -114,11 +196,10 @@ class DashboardCostScreen(CTkFrame):
 
         for label_text, key in filters_config:
             lbl = CTkLabel(sidebar, text=label_text,
-                           font=CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
-                           text_color=COLORS["text_medium"])
+                        font=CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+                        text_color=COLORS["text_medium"])
             lbl.pack(anchor="w", padx=12, pady=(8, 1))
 
-            # 🟢 ให้ Order No. และ Sale Order No. ใช้ CTkComboBox เพื่อให้พิมพ์ค้นหาได้
             if key in ["order_no", "sale_order_no"]:
                 menu = CTkComboBox(
                     sidebar,
@@ -137,16 +218,14 @@ class DashboardCostScreen(CTkFrame):
                 )
                 menu.pack(fill="x", padx=12, pady=(0, 2))
                 
-                # ผูกคำสั่งแยกกันตามช่อง
                 if key == "order_no":
                     menu.bind("<KeyRelease>", self._on_order_search)
                 else:
-                    menu.bind("<KeyRelease>", self._on_sale_order_search) # 🟢 ผูกคำสั่งค้นหา Sale Order No.
+                    menu.bind("<KeyRelease>", self._on_sale_order_search)
                     
                 menu.bind("<Return>", self._apply_filters)
                 
             else:
-                # 🟢 ตัวอื่นๆ ใช้ CTkOptionMenu (คลิกเลือกแบบเดิม)
                 menu = CTkOptionMenu(
                     sidebar,
                     variable=self.filter_vars[key],
@@ -165,10 +244,8 @@ class DashboardCostScreen(CTkFrame):
             
             self.filter_menus[key] = menu
 
-        # Divider
         CTkFrame(sidebar, fg_color=COLORS["border"], height=1).pack(fill="x", padx=12, pady=15)
 
-        # Refresh button
         CTkButton(
             sidebar, text="🔄  รีเฟรชฐานข้อมูล",
             fg_color=COLORS["btn_blue"], hover_color=COLORS["btn_hover"],
@@ -227,15 +304,18 @@ class DashboardCostScreen(CTkFrame):
         # ── KPI Cards ────────────────────────────────────────
         kpi_frame = CTkFrame(main_frame, fg_color="transparent")
         kpi_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        for i in range(5):
+        
+        # 🟢 [แก้ไข] เปลี่ยนจาก range(5) เป็น range(6) เพราะเรามี 6 การ์ดแล้ว
+        for i in range(6):
             kpi_frame.grid_columnconfigure(i, weight=1)
 
         self.kpi_labels = {}
         kpi_config = [
             ("จำนวน Order รวม",        "total_orders", COLORS["kpi_blue"],   "🗂"),
+            ("ยอดขายรวม",               "total_sales",  COLORS["kpi_green"],  "📈"),
+            ("ยอด Win รวม",             "total_win",    "#10B981",            "🏆"),
             ("ปริมาณรวม (เส้น/ชิ้น)",  "total_qty",    COLORS["kpi_green"],  "📦"),
             ("ยอดซื้อรวม (ทุน)",        "total_cost",   COLORS["kpi_red"],    "💰"),
-            ("ยอดขายรวม",               "total_sales",  COLORS["kpi_green"],  "📈"),
             ("Markup เฉลี่ย",           "avg_margin",   COLORS["kpi_purple"], "📊"),
         ]
 
@@ -303,6 +383,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nราคาขาย /\nเส้น",
             "ราคาขาย /\nกก.",
             "Sum of\nราคาขาย\nรวม",
+            "Total\nWin Sales", # 🟢 เพิ่มคอลัมน์นี้ตรงกลาง
             "Average of\nMarkup\nGuide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)",
             "Sum of\nต้นทุน/เส้น",
@@ -327,6 +408,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nราคาขาย /\nเส้น":      "ราคาขาย / เส้น",
             "ราคาขาย /\nกก.":                   "ราคาขาย / กก.",
             "Sum of\nราคาขาย\nรวม":             "ราคาขาย รวม",
+            "Total\nWin Sales":                 "ราคาขาย รวม",
             "Average of\nMarkup\nGuide (%)":     "Markup Guide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":    "ต้นทุนรวม (รวมย้าย)",
             "Sum of\nต้นทุน/เส้น":              "ต้นทุน/เส้น",
@@ -338,6 +420,7 @@ class DashboardCostScreen(CTkFrame):
 
         self.money_cols = {
             "Sum of\nราคาขาย\nรวม",
+            "Total\nWin Sales",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)",
             "Average of\nราคาขาย /\nเส้น",
             "ราคาขาย /\nกก.",
@@ -373,9 +456,12 @@ class DashboardCostScreen(CTkFrame):
         self.sheet.pack(fill="both", expand=True)
 
         self.sheet.enable_bindings((
-            "single_select", "row_select",
-            "column_width_resize", "row_height_resize",
-            "arrowkeys", "copy",
+            "single_select", "drag_select", "multi_select", 
+            "row_select", "column_select", "column_width_resize",
+            "arrowkeys", "right_click_popup_menu",
+            "rc_select", "copy", "cut", "paste",
+            "delete", "undo", "edit_cell",
+            "column_drag_and_drop", # 🟢 [เพิ่มตรงนี้] คำสั่งสำหรับลากย้ายคอลัมน์
         ))
 
         self.sheet.set_options(
@@ -409,6 +495,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nราคาขาย /\nเส้น":      95,
             "ราคาขาย /\nกก.":                   80,
             "Sum of\nราคาขาย\nรวม":            110,
+            "Total\nWin Sales":                110,
             "Average of\nMarkup\nGuide (%)":    100,
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":   120,
             "Sum of\nต้นทุน/เส้น":              90,
@@ -529,6 +616,27 @@ class DashboardCostScreen(CTkFrame):
 
         df = self.raw_df.copy()
 
+        date_from_str = self.filter_vars["date_from"].get()
+        date_to_str = self.filter_vars["date_to"].get()
+
+        if date_from_str or date_to_str:
+            # แปลงคอลัมน์ "วันที่ขอราคา" ให้เป็นชนิด Date เพื่อเอามาเปรียบเทียบ
+            # สมมติว่าข้อมูลในระบบบันทึกแบบ dd/mm/yyyy
+            try:
+                temp_dates = pd.to_datetime(df["วันที่ขอราคา"], format='%d/%m/%Y', errors='coerce')
+                
+                if date_from_str:
+                    dt_from = pd.to_datetime(date_from_str, format='%d/%m/%Y')
+                    df = df[temp_dates >= dt_from]
+                    
+                if date_to_str:
+                    # ปรับให้อยู่ใน Database เดียวกัน จะได้ไม่ต้องแปลงซ้ำ
+                    temp_dates = pd.to_datetime(df["วันที่ขอราคา"], format='%d/%m/%Y', errors='coerce')
+                    dt_to = pd.to_datetime(date_to_str, format='%d/%m/%Y')
+                    df = df[temp_dates <= dt_to]
+            except Exception as e:
+                print(f"Date parsing error: {e}")
+
         # 🟢 กรองข้อมูลตาม Dropdown ที่เลือก
         col_map = {
             "order_no":      "Order No.",
@@ -577,7 +685,14 @@ class DashboardCostScreen(CTkFrame):
         total_sales  = (df_active["ราคาขาย รวม"].sum()
                         if "ราคาขาย รวม" in df_active.columns else 0)
                         
-        # 🟢 [แก้ไข] คำนวณ Markup เฉลี่ย โดยไม่เอาเลข 0 มาคิด
+        # 🟢 [เพิ่มใหม่] คำนวณหายอด Win รวม (กรองเฉพาะสถานะ WIN)
+        if "สถานะ" in df_active.columns and "ราคาขาย รวม" in df_active.columns:
+            win_df = df_active[df_active["สถานะ"].astype(str).str.strip().str.upper() == "WIN"]
+            total_win = pd.to_numeric(win_df["ราคาขาย รวม"], errors='coerce').fillna(0).sum()
+        else:
+            total_win = 0
+                        
+        # คำนวณ Markup เฉลี่ย โดยไม่เอาเลข 0 มาคิด
         if "Markup Guide (%)" in df_active.columns:
             margin_series = pd.to_numeric(df_active["Markup Guide (%)"], errors='coerce').dropna()
             margin_non_zero = margin_series[margin_series != 0] # ตัดเลข 0 ทิ้ง
@@ -587,17 +702,19 @@ class DashboardCostScreen(CTkFrame):
 
         self.kpi_labels["total_orders"].configure(text=f"{total_orders:,}")
         self.kpi_labels["total_qty"].configure(text=f"{total_qty:,.0f}")
+        
         self.kpi_labels["total_cost"].configure(
-            text=f"฿{total_cost/1_000_000:.2f}M" if total_cost >= 1_000_000
-            else f"฿{total_cost:,.0f}")
+            text=f"฿{total_cost/1_000_000:.2f}M" if total_cost >= 1_000_000 else f"฿{total_cost:,.0f}")
+            
         self.kpi_labels["total_sales"].configure(
-            text=f"฿{total_sales/1_000_000:.2f}M" if total_sales >= 1_000_000
-            else f"฿{total_sales:,.0f}")
+            text=f"฿{total_sales/1_000_000:.2f}M" if total_sales >= 1_000_000 else f"฿{total_sales:,.0f}")
+            
+        # 🟢 [เพิ่มใหม่] จัดรูปแบบตัวเลขให้การ์ด ยอด Win รวม
+        self.kpi_labels["total_win"].configure(
+            text=f"฿{total_win/1_000_000:.2f}M" if total_win >= 1_000_000 else f"฿{total_win:,.0f}")
+            
         self.kpi_labels["avg_margin"].configure(
             text=f"{avg_margin:,.2f}%" if pd.notna(avg_margin) else "0.00%")
-    # =========================================================
-    # TABLE UPDATE
-    # =========================================================
     # =========================================================
     # TABLE UPDATE
     # =========================================================
@@ -628,6 +745,13 @@ class DashboardCostScreen(CTkFrame):
 
                 val = row[src]
 
+                # 🟢 เงื่อนไข Total Win Sales
+                if dcol == "Total\nWin Sales":
+                    status_val = str(row.get("สถานะ", "")).strip().upper()
+                    if status_val != "WIN":
+                        row_data.append("")
+                        continue
+
                 is_empty = pd.isna(val) or str(val).strip() in ("", "None", "nan", "NaN", "none")
                 if is_empty:
                     row_data.append("")
@@ -641,7 +765,7 @@ class DashboardCostScreen(CTkFrame):
                         row_data.append(f"฿{float(fval):,.2f}")
                     elif dcol in pct_cols:
                         row_data.append(f"{float(fval):.2f}%")
-                    else:  # num_cols
+                    else:
                         fv = float(fval)
                         row_data.append(f"{fv:,.2f}" if fv != int(fv) else f"{int(fv):,}")
                 else:
@@ -661,12 +785,14 @@ class DashboardCostScreen(CTkFrame):
 
             sum_map = {
                 "Sum of\nราคาขาย\nรวม":            "ราคาขาย รวม",
+                "Total\nWin Sales":                "ราคาขาย รวม",
                 "Sum of\nต้นทุนรวม\n(รวมย้าย)":   "ต้นทุนรวม (รวมย้าย)",
                 "Sum of\nต้นทุน/เส้น":             "ต้นทุน/เส้น",
                 "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)": "ต้นทุนรวม (ไม่รวมย้าย)",
                 "จำนวน":                            "จำนวน",
                 "Max of\nน้ำหนัก\n/เส้น":          "น้ำหนัก/เส้น",
             }
+
             avg_map = {
                 "Average of\nMarkup\nGuide (%)":   "Markup Guide (%)",
                 "Average of\nส่วนลด 2 (%)":        "ส่วนลด 2 (%)",
@@ -675,16 +801,22 @@ class DashboardCostScreen(CTkFrame):
                 "ราคาขาย /\nกก.":                  "ราคาขาย / กก.",
             }
 
-            # 🟢 1. คำนวณผลรวม (Sum)
+            # 🟢 SUM
             for dcol, src in sum_map.items():
                 idx = cidx(dcol)
                 if idx < 0 or src not in df.columns:
                     continue
                 try:
-                    series = pd.to_numeric(df[src], errors='coerce').dropna()
+                    if dcol == "Total\nWin Sales":
+                        win_df = df[df["สถานะ"].astype(str).str.strip().str.upper() == "WIN"]
+                        series = pd.to_numeric(win_df[src], errors='coerce').dropna()
+                    else:
+                        series = pd.to_numeric(df[src], errors='coerce').dropna()
+
                     if series.empty: continue
                     val = series.sum()
                     if val == 0: continue
+
                     if dcol in money_cols:
                         total_row[idx] = f"฿{float(val):,.2f}"
                     else:
@@ -693,24 +825,20 @@ class DashboardCostScreen(CTkFrame):
                 except Exception:
                     pass
 
-            # 🟢 2. คำนวณค่าเฉลี่ย (Average) แบบไม่เอาเลข 0 มาคิด
+            # 🟢 AVG (ไม่เอา 0)
             for dcol, src in avg_map.items():
                 idx = cidx(dcol)
                 if idx < 0 or src not in df.columns:
                     continue
                 try:
-                    # แปลงข้อมูลเป็นตัวเลขและตัดค่าว่าง (NaN) ทิ้ง
                     series = pd.to_numeric(df[src], errors='coerce').dropna()
-                    
-                    # กรองเอาเฉพาะตัวเลขที่ "ไม่เท่ากับ 0"
                     series_non_zero = series[series != 0]
-                    
-                    if series_non_zero.empty: 
+
+                    if series_non_zero.empty:
                         continue
-                        
-                    # หาค่าเฉลี่ยจากข้อมูลที่ไม่มีเลข 0 แล้ว
+
                     m = series_non_zero.mean()
-                    
+
                     if pd.notna(m):
                         if dcol in money_cols:
                             total_row[idx] = f"฿{float(m):,.2f}"
@@ -724,39 +852,105 @@ class DashboardCostScreen(CTkFrame):
         self.sheet.set_sheet_data(table_data)
 
         # ── Highlight columns ──────────────────────────────────
-        green_col = "Sum of\nราคาขาย\nรวม"
+        blue_col  = "Sum of\nราคาขาย\nรวม"
+        green_col = "Total\nWin Sales"
         red_col   = "Sum of\nต้นทุนรวม\n(รวมย้าย)"
 
         try:
             self.sheet.highlight_columns(
-                columns=[self.display_columns.index(green_col)],
-                bg=COLORS["highlight_green"], fg=COLORS["highlight_green_fg"],
+                columns=[self.display_columns.index(blue_col)],
+                bg="#DBEAFE", fg="#1E40AF"
             )
         except ValueError:
             pass
+
+        try:
+            self.sheet.highlight_columns(
+                columns=[self.display_columns.index(green_col)],
+                bg="#DCFCE7", fg="#166534"
+            )
+        except ValueError:
+            pass
+
+        # 🔴 สีแดง (ต้นทุน)
         try:
             self.sheet.highlight_columns(
                 columns=[self.display_columns.index(red_col)],
-                bg=COLORS["highlight_red"], fg=COLORS["highlight_red_fg"],
+                bg=COLORS["highlight_red"],
+                fg=COLORS["highlight_red_fg"],
             )
         except ValueError:
             pass
 
         # ── Alternate row shading ──────────────────────────────
         n_data = len(table_data) - 1
+
+        skip_cols = {
+            self.display_columns.index(blue_col) if blue_col in self.display_columns else -1,
+            self.display_columns.index(green_col) if green_col in self.display_columns else -1,
+            self.display_columns.index(red_col) if red_col in self.display_columns else -1,
+        }
+
         for r in range(n_data):
             if r % 2 == 1:
-                self.sheet.highlight_rows(rows=[r], bg="#F8FAFF", fg=COLORS["text_dark"])
+                for c in range(len(self.display_columns)):
+                    if c in skip_cols:
+                        continue  # 👈 ข้ามคอลัมน์สี
+                    self.sheet.highlight_cells(
+                        row=r,
+                        column=c,
+                        bg="#F8FAFF",
+                        fg=COLORS["text_dark"]
+                    )
 
         # ── Total row highlight ────────────────────────────────
+        total_row_idx = len(table_data) - 1
+        
+        # 1. ระบายสีพื้นฐานให้แถว Total ทั้งแถวเป็นสีน้ำเงินเข้ม (สำหรับคอลัมน์ทั่วไป)
         self.sheet.highlight_rows(
-            rows=[len(table_data) - 1],
-            bg="#BFDBFE",
-            fg=COLORS["kpi_blue"],
+            rows=[total_row_idx],
+            bg="#1E3A8A",          # พื้นน้ำเงินเข้ม
+            fg="#FFFFFF",          # ตัวอักษรสีขาว
         )
+
+        # 2. ไฮไลต์ทับ "เฉพาะช่อง Total" ของคอลัมน์พิเศษ ให้เป็นสีเดียวกับคอลัมน์แต่ "เข้มกว่า"
+        try:
+            blue_idx = self.display_columns.index(blue_col)
+            self.sheet.highlight_cells(
+                row=total_row_idx, 
+                column=blue_idx, 
+                bg="#3B82F6",      # สีฟ้าเข้ม (เข้มกว่า #DBEAFE ด้านบน)
+                fg="#FFFFFF"       # อักษรสีขาวให้เห็นชัด
+            )
+        except ValueError:
+            pass
+
+        try:
+            red_idx = self.display_columns.index(red_col)
+            self.sheet.highlight_cells(
+                row=total_row_idx, 
+                column=red_idx, 
+                bg="#EF4444",      # สีแดงเข้ม (เข้มกว่า #FEE2E2 ด้านบน)
+                fg="#FFFFFF"       # อักษรสีขาว
+            )
+        except ValueError:
+            pass
+            
+        try:
+            # ช่อง Win Sales ปกติเป็นสีขาว แต่แถว Total จะให้เป็นเขียวเข้มเพื่อเน้น
+            green_idx = self.display_columns.index(green_col)
+            self.sheet.highlight_cells(
+                row=total_row_idx, 
+                column=green_idx, 
+                bg="#10B981",      # สีเขียวเข้ม
+                fg="#FFFFFF"       # อักษรสีขาว
+            )
+        except ValueError:
+            pass
 
         self.sheet.readonly_columns(
             columns=list(range(len(self.display_columns))),
             readonly=True,
         )
+
         self.sheet.redraw()
