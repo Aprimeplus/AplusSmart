@@ -313,7 +313,6 @@ class SOShortnoteSearchDialog(CTkToplevel):
                 f"วันที่จัดส่งลูกค้า : {date_to_cust}\n"
                 f"Order Pur : {order_pur_val}\n"
                 f"Payment : {remark_text}\n"
-                f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n"
                 f"{separator}\n"
                 f"การจัดส่ง : {delivery_type}\n"
                 f"แผนที่จัดส่ง : {delivery_map}\n"

@@ -14,6 +14,370 @@ try:
 except ImportError:
     HAS_TKSHEET = False
 
+# ============================================================
+# เพิ่ม class นี้ก่อน class CostBenchmarkScreen
+# ============================================================
+
+class AutoFilterManager:
+    """จัดการ AutoFilter แบบ Excel สำหรับ tksheet"""
+
+    def __init__(self, parent_screen):
+        self.screen = parent_screen
+        self._filter_values = {}       # {col_name: set of selected values}
+        self._all_values_cache = {}    # {col_name: sorted list of all values}
+        self._active_popup = None
+        self._filter_arrow_ids = {}
+
+    # ── ดึงค่าทั้งหมดในคอลัมน์ (รวม frozen + main) ──────────────
+    def _get_all_values(self, col_name):
+        screen = self.screen
+        col_offset = screen.frozen_col_count if screen.sheet_frozen else 0
+        try:
+            real_idx = screen.columns.index(col_name)
+        except ValueError:
+            return []
+
+        values = set()
+        if real_idx < col_offset and screen.sheet_frozen:
+            for r in range(screen.sheet_frozen.get_total_rows()):
+                v = str(screen.sheet_frozen.get_cell_data(r, real_idx) or "").strip()
+                if v:
+                    values.add(v)
+        else:
+            display_idx = real_idx - col_offset
+            for r in range(screen.sheet.get_total_rows()):
+                v = str(screen.sheet.get_cell_data(r, display_idx) or "").strip()
+                if v:
+                    values.add(v)
+        return sorted(values)
+
+    # ── เปิด popup filter (เรียกจาก AutoFilterManager.show_filter_popup) ──
+    def show_filter_popup(self, col_name, x_root, y_root):
+        """เปิด popup filter แบบ checkbox เหมือน Excel"""
+        self.close_popup()
+
+        all_vals = self._get_all_values(col_name)
+        self._all_values_cache[col_name] = all_vals
+        if not all_vals:
+            return
+
+        # ค่าที่เลือกอยู่ตอนนี้ (ถ้าไม่มีให้ถือว่าเลือกทั้งหมด)
+        current = self._filter_values.get(col_name, None)
+        active_set = set(current) if current is not None else set(all_vals)
+
+        import tkinter as tk
+
+        popup = tk.Toplevel(self.screen)
+        popup.overrideredirect(True)
+        popup.attributes('-topmost', True)
+        popup.configure(bg="#D1D5DB", padx=1, pady=1)
+        popup._destroyed = False
+        self._active_popup = popup
+
+        def safe_destroy():
+            if not popup._destroyed:
+                popup._destroyed = True
+                try:
+                    popup.destroy()
+                except Exception:
+                    pass
+            self._active_popup = None
+
+        popup.safe_destroy = safe_destroy
+
+        inner = tk.Frame(popup, bg="white")
+        inner.pack(fill="both", expand=True)
+
+        # ── Sort buttons ──────────────────────────────────────────
+        sort_bar = tk.Frame(inner, bg="#F9FAFB")
+        sort_bar.pack(fill="x", padx=4, pady=(4, 2))
+
+        def sort_asc():
+            self._sort_column(col_name, ascending=True)
+            safe_destroy()
+
+        def sort_desc():
+            self._sort_column(col_name, ascending=False)
+            safe_destroy()
+
+        tk.Button(sort_bar, text="↑ Sort A to Z", font=("Tahoma", 10),
+                  relief="flat", bg="#F9FAFB", fg="#1F2937", anchor="w",
+                  cursor="hand2", command=sort_asc).pack(fill="x", pady=1)
+        tk.Button(sort_bar, text="↓ Sort Z to A", font=("Tahoma", 10),
+                  relief="flat", bg="#F9FAFB", fg="#1F2937", anchor="w",
+                  cursor="hand2", command=sort_desc).pack(fill="x", pady=1)
+
+        tk.Frame(inner, bg="#E5E7EB", height=1).pack(fill="x", padx=4, pady=2)
+
+        # ── Search ────────────────────────────────────────────────
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(inner, textvariable=search_var, font=("Tahoma", 10),
+                                relief="flat", bd=5,
+                                highlightthickness=1, highlightcolor="#3B82F6",
+                                highlightbackground="#D1D5DB")
+        search_entry.pack(fill="x", padx=4, pady=2)
+        search_entry.insert(0, "🔍 ค้นหา...")
+        search_entry.bind("<FocusIn>", lambda e: search_entry.delete(0, "end")
+                          if search_entry.get().startswith("🔍") else None)
+
+        # ── Checkbox list ─────────────────────────────────────────
+        check_frame = tk.Frame(inner, bg="white")
+        check_frame.pack(fill="both", expand=True, padx=4)
+
+        canvas_c = tk.Canvas(check_frame, bg="white", highlightthickness=0, height=200)
+        sb_c = tk.Scrollbar(check_frame, orient="vertical", command=canvas_c.yview)
+        canvas_c.configure(yscrollcommand=sb_c.set)
+        sb_c.pack(side="right", fill="y")
+        canvas_c.pack(side="left", fill="both", expand=True)
+
+        check_inner = tk.Frame(canvas_c, bg="white")
+        canvas_c.create_window((0, 0), window=check_inner, anchor="nw")
+
+        check_vars = {}
+        check_widgets = []
+
+        def build_checklist(term=""):
+            for w in check_inner.winfo_children():
+                w.destroy()
+            check_widgets.clear()
+
+            filtered = [
+                v for v in all_vals
+                if term.lower() in v.lower()
+            ] if (term and not term.startswith("🔍")) else all_vals
+
+            # Select All checkbox
+            var_all = tk.BooleanVar(value=all(v in active_set for v in filtered))
+            tk.Checkbutton(
+                check_inner, text="(Select All)", variable=var_all,
+                font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
+                activebackground="#EFF6FF",
+                command=lambda: toggle_all(var_all.get(), filtered)
+            ).pack(fill="x", pady=1)
+            check_widgets.append(("__all__", var_all, filtered))
+
+            for v in filtered:
+                var = check_vars.setdefault(v, tk.BooleanVar(value=v in active_set))
+                var.set(v in active_set)
+                tk.Checkbutton(
+                    check_inner, text=v, variable=var,
+                    font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
+                    activebackground="#EFF6FF",
+                ).pack(fill="x", pady=1)
+                check_widgets.append((v, var, None))
+
+            check_inner.update_idletasks()
+            canvas_c.configure(scrollregion=canvas_c.bbox("all"))
+
+        def toggle_all(state, vals):
+            for v in vals:
+                if v in check_vars:
+                    check_vars[v].set(state)
+            if state:
+                active_set.update(vals)
+            else:
+                for v in vals:
+                    active_set.discard(v)
+
+        search_var.trace_add("write", lambda *a: build_checklist(search_var.get()))
+        build_checklist()
+
+        # ── OK / Cancel ───────────────────────────────────────────
+        btn_bar = tk.Frame(inner, bg="white")
+        btn_bar.pack(fill="x", padx=4, pady=4)
+
+        def on_ok():
+            new_sel = {v for v, var, _ in check_widgets
+                       if v != "__all__" and var.get()}
+            if new_sel == set(all_vals):
+                self._filter_values.pop(col_name, None)
+            else:
+                self._filter_values[col_name] = new_sel
+            safe_destroy()
+            self.apply_filters()
+
+        tk.Button(btn_bar, text="OK", font=("Tahoma", 10), width=8,
+                  bg="#3B82F6", fg="white", relief="flat", cursor="hand2",
+                  command=on_ok).pack(side="right", padx=(4, 0))
+        tk.Button(btn_bar, text="Cancel", font=("Tahoma", 10), width=8,
+                  bg="#F3F4F6", fg="#374151", relief="flat", cursor="hand2",
+                  command=safe_destroy).pack(side="right")
+
+        # ── Clear filter link (แสดงเฉพาะถ้า filter ทำงานอยู่) ────
+        if col_name in self._filter_values:
+            def clear_this():
+                self._filter_values.pop(col_name, None)
+                safe_destroy()
+                self.apply_filters()
+            tk.Button(inner, text=f'✕ Clear Filter From "{col_name}"',
+                      font=("Tahoma", 9), fg="#EF4444", bg="white",
+                      relief="flat", cursor="hand2", command=clear_this
+                      ).pack(anchor="w", padx=8, pady=(0, 4))
+
+        # ── วางตำแหน่ง popup ──────────────────────────────────────
+        root = self.screen.winfo_toplevel()
+        win_w = root.winfo_rootx() + root.winfo_width()
+        win_h = root.winfo_rooty() + root.winfo_height()
+        pw, ph = 240, 400
+        x = min(x_root, win_w - pw - 5)
+        y = min(y_root + 5, win_h - ph - 5)
+        popup.geometry(f"{pw}x{ph}+{x}+{y}")
+        search_entry.focus_set()
+
+        popup.bind("<FocusOut>", lambda e: self.screen.after(
+            300, lambda: safe_destroy() if not popup._destroyed and
+            self.screen.focus_get() not in popup.winfo_children() else None))
+
+    def close_popup(self):
+        if self._active_popup and not getattr(self._active_popup, '_destroyed', True):
+            try:
+                self._active_popup.safe_destroy()
+            except Exception:
+                pass
+        self._active_popup = None
+
+    # ── Apply filters (ซ่อน row ที่ไม่ตรง) ──────────────────────
+    def apply_filters(self):
+        screen = self.screen
+        col_offset = screen.frozen_col_count if screen.sheet_frozen else 0
+        rh = screen.zoom_level + 19
+
+        main_filter_map = {}
+        frozen_filter_map = {}
+
+        for col_name, vals in self._filter_values.items():
+            try:
+                real_idx = screen.columns.index(col_name)
+            except ValueError:
+                continue
+            display_idx = real_idx - col_offset
+            if display_idx < 0:
+                frozen_filter_map[real_idx] = vals
+            else:
+                main_filter_map[display_idx] = vals
+
+        total_rows = screen.sheet.get_total_rows()
+        for r in range(total_rows):
+            show = True
+            for d_idx, vals in main_filter_map.items():
+                v = str(screen.sheet.get_cell_data(r, d_idx) or "").strip()
+                if isinstance(vals, set):
+                    if v not in vals:
+                        show = False
+                        break
+                else:
+                    if v != vals:
+                        show = False
+                        break
+            if show and screen.sheet_frozen:
+                for f_idx, vals in frozen_filter_map.items():
+                    v = str(screen.sheet_frozen.get_cell_data(r, f_idx) or "").strip()
+                    if isinstance(vals, set):
+                        if v not in vals:
+                            show = False
+                            break
+                    else:
+                        if v != vals:
+                            show = False
+                            break
+            screen.sheet.row_height(r, rh if show else 0)
+            if screen.sheet_frozen:
+                screen.sheet_frozen.row_height(r, rh if show else 0)
+
+        screen.sheet.redraw()
+        if screen.sheet_frozen:
+            screen.sheet_frozen.redraw()
+
+        self._update_header_indicators()
+
+    # ── Sort column ────────────────────────────────────────────
+    def _sort_column(self, col_name, ascending=True):
+        screen = self.screen
+        col_offset = screen.frozen_col_count if screen.sheet_frozen else 0
+        try:
+            real_idx = screen.columns.index(col_name)
+        except ValueError:
+            return
+
+        total_rows = screen.sheet.get_total_rows()
+        rows_data = []
+        for r in range(total_rows):
+            main_row = list(screen.sheet.get_row_data(r))
+            frozen_row = list(screen.sheet_frozen.get_row_data(r)) if screen.sheet_frozen else []
+            rows_data.append(frozen_row + main_row)
+
+        def sort_key(row):
+            v = row[real_idx] if real_idx < len(row) else ""
+            v = str(v).strip()
+            try:
+                return (0, float(v.replace(",", "")))
+            except ValueError:
+                return (1, v.lower())
+
+        rows_data.sort(key=sort_key, reverse=not ascending)
+
+        for r, row in enumerate(rows_data):
+            if screen.sheet_frozen:
+                for c in range(col_offset):
+                    screen.sheet_frozen.set_cell_data(r, c, row[c] if c < len(row) else "", redraw=False)
+            for c in range(screen.sheet.get_total_columns()):
+                rc = c + col_offset
+                screen.sheet.set_cell_data(r, c, row[rc] if rc < len(row) else "", redraw=False)
+
+        screen.sheet.redraw()
+        if screen.sheet_frozen:
+            screen.sheet_frozen.redraw()
+
+        screen.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+        if screen.auto_save_job_id:
+            screen.after_cancel(screen.auto_save_job_id)
+        screen.auto_save_job_id = screen.after(1500, lambda: screen._save_to_db(show_msg=False))
+
+    def clear_all(self):
+        self._filter_values.clear()
+        self.apply_filters()
+
+    def has_filter(self, col_name):
+        return col_name in self._filter_values
+
+    def _update_header_indicators(self):
+        """อัพเดทสีหัวคอลัมน์เมื่อมี/ไม่มี filter"""
+        screen = self.screen
+        col_offset = screen.frozen_col_count if screen.sheet_frozen else 0
+        header_styles = screen._get_header_styles_map()
+        col_to_style = {c: (bg, fg) for (bg, fg), cols in header_styles.items() for c in cols}
+
+        for col_name in screen.columns:
+            try:
+                real_idx = screen.columns.index(col_name)
+                display_idx = real_idx - col_offset
+                if display_idx < 0:
+                    # อยู่ใน frozen — update frozen header
+                    if screen.sheet_frozen:
+                        if self.has_filter(col_name):
+                            screen.sheet_frozen.highlight_cells(
+                                row=0, column=real_idx, bg="#F59E0B", fg="white", canvas="header")
+                        else:
+                            h_bg, h_fg = col_to_style.get(col_name, ("#E5E7EB", "#111827"))
+                            screen.sheet_frozen.highlight_cells(
+                                row=0, column=real_idx, bg=h_bg, fg=h_fg, canvas="header")
+                    continue
+                if self.has_filter(col_name):
+                    screen.sheet.highlight_cells(row=0, column=display_idx,
+                                                 bg="#F59E0B", fg="white", canvas="header")
+                else:
+                    h_bg, h_fg = col_to_style.get(col_name, ("#E5E7EB", "#111827"))
+                    screen.sheet.highlight_cells(row=0, column=display_idx,
+                                                 bg=h_bg, fg=h_fg, canvas="header")
+            except Exception:
+                pass
+
+        try:
+            screen.sheet.redraw()
+            if screen.sheet_frozen:
+                screen.sheet_frozen.redraw()
+        except Exception:
+            pass
 
 class InlineSearchPopup(tk.Toplevel):
     def __init__(self, master, data_list, on_select_callback):
@@ -250,6 +614,9 @@ class CostBenchmarkScreen(CTkFrame):
         self._header_filter_values = {}
         self._active_filter_popup = None
         self._last_popup_cell = None
+        self._undo_stack = []
+        self._redo_stack = []
+        self._max_undo = 50
 
         # --- Header & Filters ---
         header_frame = CTkFrame(self, fg_color="transparent")
@@ -297,9 +664,6 @@ class CostBenchmarkScreen(CTkFrame):
                   command=self._add_new_row).pack(side="left", padx=5)
         CTkButton(btn_frame, text="⮑ แทรกบรรทัด", fg_color="#10B981", hover_color="#059669",
                   command=self._insert_selected_row).pack(side="left", padx=5)
-
-        CTkButton(btn_frame, text="🔽 ล้าง Filter", fg_color="#F59E0B", hover_color="#D97706",
-          command=self._clear_all_header_filters).pack(side="left", padx=5)
 
         self.columns = [
             "วันที่ขอราคา", "Order No.", "Sale Order No.", "รหัส Sale",
@@ -394,13 +758,37 @@ class CostBenchmarkScreen(CTkFrame):
                     settings = result[0]
                     self.hidden_cols_list = settings.get("hidden_cols", [])
                     self.custom_header_colors = settings.get("header_colors", {})
-                    # ← เพิ่ม: โหลด col widths และ frozen state
+                    
+                    # ⚠️ แก้อาการโดนบีบ: โหลด col widths และเช็คว่าพังไหม
                     saved_widths = settings.get("col_widths", {})
                     if saved_widths:
-                        self.col_widths_cache = {int(k): v for k, v in saved_widths.items()}
+                        self.col_widths_cache = {}
+                        for k, v in saved_widths.items():
+                            val = int(v) if v else 120
+                            # ถ้าคอลัมน์กว้างน้อยกว่า 40 แสดงว่าบั๊กโดนบีบ ให้รีเซ็ตเป็น 120
+                            self.col_widths_cache[int(k)] = val if val >= 40 else 120
+                            
                     saved_freeze = settings.get("frozen_col_count", 0)
                     if saved_freeze > 0:
                         self.frozen_col_count = saved_freeze
+                        
+                    saved_zoom = settings.get("zoom_level", 11)
+                    if saved_zoom != 11:
+                        self.zoom_level = saved_zoom
+                        new_row_height = int(30 * (self.zoom_level / 11.0))
+                        new_header_height = int(35 * (self.zoom_level / 11.0))
+                        self.sheet.set_options(
+                            font=("Tahoma", self.zoom_level, "normal"),
+                            header_font=("Tahoma", self.zoom_level, "bold"),
+                            row_height=new_row_height,
+                            header_height=new_header_height,
+                            auto_resize_columns=False,   # ✅ มีอยู่แล้ว — ตรวจให้แน่ใจ
+                            auto_resize_row_index=False  # ✅ เพิ่มตรงนี้
+                        )
+                        if hasattr(self, 'zoom_label'):
+                            pct = int((self.zoom_level / 11) * 100)
+                            self.zoom_label.configure(text=f"{pct}%")
+                            
         except Exception as e:
             print(f"Error loading settings: {e}")
         finally:
@@ -429,6 +817,7 @@ class CostBenchmarkScreen(CTkFrame):
             "header_colors": self.custom_header_colors,
             "col_widths": col_widths_to_save,
             "frozen_col_count": self.frozen_col_count,
+            "zoom_level": self.zoom_level, # <--- ⚠️ เพิ่มให้จำค่า Zoom ตรงนี้ครับ
         }
         settings_json = json.dumps(settings)
         conn = self.app_container.get_connection()
@@ -488,16 +877,23 @@ class CostBenchmarkScreen(CTkFrame):
             empty_vertical=0,
         )
         self.sheet.grid(row=0, column=0, sticky="nsew")
-        self._load_user_settings()  # ← โหลดก่อน เพื่อรู้ frozen_col_count
+        self._load_user_settings()
+
         self._rebind_sheet()
         self._rebind_frozen_sheet()
         self._apply_formatting(col_offset=0)
+        self.after(100, lambda: self._setup_header_filters(0))
+
         if self.hidden_cols_list:
-            self.sheet.hide_columns(self.hidden_cols_list)
-        # ← ถ้ามี frozen ที่บันทึกไว้ ให้ rebuild
+            self._apply_hidden_columns()
+
         if self.frozen_col_count > 0:
+            # ถ้ามี frozen ให้ rebuild ก่อน แล้ว restore widths จะถูกเรียกข้างใน
             self.after(100, self._rebuild_frozen_layout)
-        self.after(500, self._save_col_widths)
+        else:
+            # ไม่มี frozen — restore หลัง widget render เสร็จสมบูรณ์
+            self.after(300, self._restore_col_widths)
+
         self.after(5000, self._start_dropdown_refresh_timer)
 
     # ================================================================== #
@@ -526,7 +922,10 @@ class CostBenchmarkScreen(CTkFrame):
         actual_freeze = self.frozen_col_count + freeze_up_to if self.sheet_frozen is not None else freeze_up_to
         actual_freeze = min(actual_freeze, len(self.columns) - 1)
         self.frozen_col_count = actual_freeze
+        
+        self._save_user_settings() # <--- ⚠️ บันทึกการตรึงคอลัมน์ลง DB ทันที!
         self._rebuild_frozen_layout()
+        
         col_name = self.columns[actual_freeze - 1] if actual_freeze <= len(self.columns) else "?"
         self.save_status_label.configure(
             text=f"📌 ตรึง {actual_freeze} คอลัมน์แรก (ถึง: {col_name})",
@@ -537,6 +936,7 @@ class CostBenchmarkScreen(CTkFrame):
         if not HAS_TKSHEET:
             return
         self.frozen_col_count = 0
+        self._save_user_settings() # <--- ⚠️ บันทึกการยกเลิกตรึงลง DB ทันที!
         self._rebuild_frozen_layout()
         self.save_status_label.configure(text="✅ ยกเลิกตรึงแล้ว", text_color="#16A34A")
 
@@ -562,37 +962,28 @@ class CostBenchmarkScreen(CTkFrame):
                 for i in range(self.frozen_col_count):
                     try:
                         w = self.sheet_frozen.column_width(i)
-                        if w and w > 0:
-                            saved_widths[i] = w
-                    except Exception:
-                        pass
+                        if w and w >= 40: saved_widths[i] = w
+                    except Exception: pass
                 offset = self.frozen_col_count
                 for i in range(self.sheet.get_total_columns()):
                     try:
                         w = self.sheet.column_width(i)
-                        if w and w > 0:
-                            saved_widths[offset + i] = w
-                    except Exception:
-                        pass
+                        if w and w >= 40: saved_widths[offset + i] = w
+                    except Exception: pass
             else:
                 for i in range(self.sheet.get_total_columns()):
                     try:
                         w = self.sheet.column_width(i)
-                        if w and w > 0:
-                            saved_widths[i] = w
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                        if w and w >= 40: saved_widths[i] = w
+                    except Exception: pass
+        except Exception: pass
 
         for k, v in self.col_widths_cache.items():
-            if k not in saved_widths:
+            if k not in saved_widths and v >= 40:
                 saved_widths[k] = v
 
-        try:
-            self.table_frame.unbind("<Configure>")
-        except Exception:
-            pass
+        try: self.table_frame.unbind("<Configure>")
+        except Exception: pass
         for widget in self.table_frame.winfo_children():
             widget.destroy()
 
@@ -604,7 +995,9 @@ class CostBenchmarkScreen(CTkFrame):
         if n_freeze > 0:
             frozen_width = 40
             for i in range(n_freeze):
-                frozen_width += saved_widths.get(i, 120)
+                w = saved_widths.get(i, 120)
+                w = w if w >= 40 else 120 # ⚠️ ป้องกันความกว้างพัง
+                frozen_width += w
             frozen_width += 4
 
         if n_freeze == 0:
@@ -655,20 +1048,14 @@ class CostBenchmarkScreen(CTkFrame):
             try:
                 self.sheet_frozen.hide(canvas="x_scrollbar")
                 self.sheet_frozen.hide(canvas="y_scrollbar")
-                # ← เพิ่ม ซ่อน scrollbar ล่างสุดด้วย
-                try:
-                    self.sheet_frozen.yscrollbar.grid_remove()
-                except Exception:
-                    pass
-                try:
-                    self.sheet_frozen.xscrollbar.grid_remove()
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                try: self.sheet_frozen.yscrollbar.grid_remove()
+                except Exception: pass
+                try: self.sheet_frozen.xscrollbar.grid_remove()
+                except Exception: pass
+            except Exception: pass
+            
             self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
             self.after(10, lambda: self._hide_frozen_scrollbars())
-
 
             self.sheet = Sheet(
                 self.table_frame,
@@ -689,194 +1076,153 @@ class CostBenchmarkScreen(CTkFrame):
 
             _fw = frozen_width
             def _on_table_resize(event, fw=_fw):
-                try:
-                    self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
-                except Exception:
-                    pass
+                try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                except Exception: pass
             self.table_frame.bind("<Configure>", _on_table_resize)
             self._sync_vertical_scroll()
 
         self._rebind_sheet()
-        self._rebind_frozen_sheet()   
-        self._apply_formatting(col_offset=n_freeze)
-        if self.sheet_frozen is not None:
-            self._apply_formatting_frozen(n_freeze)
-
+        self._rebind_frozen_sheet()
         
+        self.after(10, lambda nf=n_freeze: self._apply_formatting(col_offset=nf))
+        if self.sheet_frozen is not None:
+            self.after(30, lambda nf=n_freeze: self._apply_formatting_frozen(nf))
+        self.after(50, lambda: self._setup_header_filters(n_freeze))
 
         def _restore_after_build():
+            self._restore_col_widths()
+            if hasattr(self, '_apply_hidden_columns'):
+                self._apply_hidden_columns()
+            
             try:
-                if self.sheet_frozen is not None:
-                    for i in range(n_freeze):
-                        w = saved_widths.get(i, 120)
-                        self.sheet_frozen.column_width(i, w)
-                    for i in range(len(self.columns) - n_freeze):
-                        w = saved_widths.get(n_freeze + i, 120)
-                        self.sheet.column_width(i, w)
-                    real_fw = 40
-                    for i in range(n_freeze):
-                        real_fw += saved_widths.get(i, 120)
-                    real_fw += 4
-                    self.sheet_frozen.place(x=0, y=0, width=real_fw, relheight=1.0)
-                    self.sheet.place(x=real_fw, y=0, relwidth=1.0, relheight=1.0, width=-real_fw)
-
-                    # ← เพิ่ม sync row height ให้ตรงกัน
-                    try:
-                        total_rows = max(self.sheet.get_total_rows(), self.sheet_frozen.get_total_rows())
-                        rh = int(30 * (self.zoom_level / 11.0))
-                        for r in range(total_rows):
-                            self.sheet_frozen.row_height(r, rh)
-                            self.sheet.row_height(r, rh)
-                    except Exception:
-                        pass
-
-                    def _on_table_resize_updated(event, fw=real_fw):
-                        try:
-                            self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
-                        except Exception:
-                            pass
-                    self.table_frame.bind("<Configure>", _on_table_resize_updated)
-                    self.after(200, self._hide_frozen_scrollbars)
-                    self.after(600, self._hide_frozen_scrollbars)
-                else:
-                    for i, w in saved_widths.items():
-                        try:
-                            self.sheet.column_width(i, w)
-                        except Exception:
-                            pass
+                rh = int(30 * (self.zoom_level / 11.0))
+                total_rows = max(self.sheet.get_total_rows(), self.sheet_frozen.get_total_rows())
+                for r in range(total_rows):
+                    self.sheet_frozen.row_height(r, rh)
+                    self.sheet.row_height(r, rh)
+                self.sheet_frozen.redraw()
                 self.sheet.redraw()
-                if self.sheet_frozen:
-                    self.sheet_frozen.redraw()
-            except Exception:
+            except Exception: 
                 pass
+            
+            self.after(200, self._hide_frozen_scrollbars)
+            self.after(600, self._hide_frozen_scrollbars)
+            # ✅ เพิ่ม: restore อีกรอบหลัง render เสร็จสมบูรณ์
+            self.after(500, self._restore_col_widths)
+
         self.after(150, _restore_after_build)
+        
     def _sync_vertical_scroll(self):
-        if not self.sheet_frozen:
+        if not getattr(self, "sheet_frozen", None):
             return
-        self._last_yview = -1.0
+
+        if getattr(self, '_sync_loop_id', None):
+            self.after_cancel(self._sync_loop_id)
+
+        self._last_yview_main = -1.0
+        self._last_yview_frozen = -1.0
 
         def _do_sync():
+            if not getattr(self, "sheet", None) or not getattr(self, "sheet_frozen", None):
+                return
             try:
                 if not self.sheet.winfo_exists() or not self.sheet_frozen.winfo_exists():
                     return
             except Exception:
                 return
+
             try:
-                yview = self.sheet.get_yview()
-                current_pos = yview[0] if yview else 0.0
-                if abs(current_pos - self._last_yview) > 0.0001:
-                    self._last_yview = current_pos
-                    self.sheet_frozen.yview_moveto(current_pos)
-                    try:
-                        self.sheet_frozen.MT.yview_moveto(current_pos)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            if self.frozen_col_count > 0:
-                self.after(30, _do_sync)
-        self.after(50, _do_sync)
+                try: y_main = self.sheet.get_yview()[0]
+                except Exception: y_main = self.sheet.MT.yview()[0]
+                
+                try: y_frozen = self.sheet_frozen.get_yview()[0]
+                except Exception: y_frozen = self.sheet_frozen.MT.yview()[0]
 
-        # ← เก็บ sync functions ไว้ใน self เพื่อ unbind/rebind ได้ถูกต้อง
-        def _sync_from_main(event=None):
-            self.after(20, _sync_to_frozen)
+                if abs(y_main - self._last_yview_main) > 0.0001:
+                    self._last_yview_main = y_main
+                    self._last_yview_frozen = y_main
+                    self.sheet_frozen.yview_moveto(y_main)
+                    try: self.sheet_frozen.MT.yview_moveto(y_main)
+                    except Exception: pass
 
-        def _sync_from_frozen(event=None):
-            self.after(20, _sync_to_main)
+                elif abs(y_frozen - self._last_yview_frozen) > 0.0001:
+                    self._last_yview_frozen = y_frozen
+                    self._last_yview_main = y_frozen
+                    self.sheet.yview_moveto(y_frozen)
+                    try: self.sheet.MT.yview_moveto(y_frozen)
+                    except Exception: pass
 
-        def _sync_to_frozen():
-            try:
-                if not self.sheet.winfo_exists() or not self.sheet_frozen.winfo_exists():
-                    return
-                yview = self.sheet.get_yview()
-                if yview:
-                    self.sheet_frozen.yview_moveto(yview[0])
-                    try:
-                        self.sheet_frozen.MT.yview_moveto(yview[0])
-                    except Exception:
-                        pass
             except Exception:
                 pass
 
-        def _sync_to_main():
-            try:
-                if not self.sheet.winfo_exists() or not self.sheet_frozen.winfo_exists():
-                    return
-                try:
-                    yview = self.sheet_frozen.get_yview()
-                except Exception:
-                    yview = None
-                if yview:
-                    self.sheet.yview_moveto(yview[0])
-                    try:
-                        self.sheet.MT.yview_moveto(yview[0])
-                    except Exception:
-                        pass
-                    try:
-                        self.sheet_frozen.MT.yview_moveto(yview[0])
-                    except Exception:
-                        pass
-                    self._last_yview = yview[0]
-            except Exception:
-                pass
+            if getattr(self, "frozen_col_count", 0) > 0:
+                self._sync_loop_id = self.after(20, _do_sync)
 
-        # ← unbind เก่าก่อน แล้วค่อย bind ใหม่ ป้องกัน event ซ้อนกัน
+        self._sync_loop_id = self.after(50, _do_sync)
+
+        def _sync_to_frozen(event=None):
+            try:
+                if not self.sheet.winfo_exists() or not self.sheet_frozen.winfo_exists(): return
+                pos = self.sheet.get_yview()[0]
+                self.sheet_frozen.yview_moveto(pos)
+                try: self.sheet_frozen.MT.yview_moveto(pos)
+                except Exception: pass
+                try: self.sheet_frozen.RI.yview_moveto(pos)
+                except Exception: pass
+            except Exception: pass
+
+        def _frozen_wheel(event=None):
+            try:
+                units = -3 if event.delta > 0 else 3
+                self.sheet.MT.yview_scroll(units, "units")
+            except Exception: pass
+            self.after_idle(_sync_to_frozen)
+            return "break"
+
+        def _frozen_wheel_up(event=None):
+            try: self.sheet.MT.yview_scroll(-3, "units")
+            except Exception: pass
+            self.after_idle(_sync_to_frozen)
+            return "break"
+
+        def _frozen_wheel_down(event=None):
+            try: self.sheet.MT.yview_scroll(3, "units")
+            except Exception: pass
+            self.after_idle(_sync_to_frozen)
+            return "break"
+
+        # bind main → frozen
         for widget in [self.sheet, self.sheet.MT]:
             try:
-                widget.unbind("<MouseWheel>")
-                widget.unbind("<Button-4>")
-                widget.unbind("<Button-5>")
-            except Exception:
-                pass
+                widget.bind("<MouseWheel>", lambda e: self.after_idle(_sync_to_frozen), add="+")
+                widget.bind("<Button-4>",   lambda e: self.after_idle(_sync_to_frozen), add="+")
+                widget.bind("<Button-5>",   lambda e: self.after_idle(_sync_to_frozen), add="+")
+            except Exception: pass
+        try:
+            self.sheet.RI.bind("<MouseWheel>", lambda e: self.after_idle(_sync_to_frozen), add="+")
+            self.sheet.RI.bind("<Button-4>",   lambda e: self.after_idle(_sync_to_frozen), add="+")
+            self.sheet.RI.bind("<Button-5>",   lambda e: self.after_idle(_sync_to_frozen), add="+")
+        except Exception: pass
+
+        # bind frozen → main (ใช้ unbind ก่อน)
+        frozen_widgets = [self.sheet_frozen, self.sheet_frozen.MT]
+        try: frozen_widgets.append(self.sheet_frozen.RI)
+        except Exception: pass
+        try: frozen_widgets.append(self.sheet_frozen.CH)
+        except Exception: pass
+
+        for w in frozen_widgets:
+            if not w: continue
             try:
-                widget.bind("<MouseWheel>", _sync_from_main)
-                widget.bind("<Button-4>",   _sync_from_main)
-                widget.bind("<Button-5>",   _sync_from_main)
-            except Exception:
-                pass
-
-        for widget in [self.sheet_frozen, self.sheet_frozen.MT]:
+                w.unbind("<MouseWheel>")
+                w.unbind("<Button-4>")
+                w.unbind("<Button-5>")
+            except Exception: pass
             try:
-                widget.unbind("<MouseWheel>")
-                widget.unbind("<Button-4>")
-                widget.unbind("<Button-5>")
-            except Exception:
-                pass
-            try:
-                widget.bind("<MouseWheel>", _sync_from_frozen)
-                widget.bind("<Button-4>",   _sync_from_frozen)
-                widget.bind("<Button-5>",   _sync_from_frozen)
-            except Exception:
-                pass
-
-        # ← bind RI ของ frozen ด้วย
-        try:
-            self.sheet_frozen.RI.unbind("<MouseWheel>")
-            self.sheet_frozen.RI.unbind("<Button-4>")
-            self.sheet_frozen.RI.unbind("<Button-5>")
-        except Exception:
-            pass
-        try:
-            self.sheet_frozen.RI.bind("<MouseWheel>", _sync_from_frozen)
-            self.sheet_frozen.RI.bind("<Button-4>",   _sync_from_frozen)
-            self.sheet_frozen.RI.bind("<Button-5>",   _sync_from_frozen)
-        except Exception:
-            pass
-
-        # ← bind RI ของ main ด้วย (กรณีเมาส์อยู่บน row index ฝั่ง main)
-        try:
-            self.sheet.RI.unbind("<MouseWheel>")
-            self.sheet.RI.unbind("<Button-4>")
-            self.sheet.RI.unbind("<Button-5>")
-        except Exception:
-            pass
-        try:
-            self.sheet.RI.bind("<MouseWheel>", _sync_from_main)
-            self.sheet.RI.bind("<Button-4>",   _sync_from_main)
-            self.sheet.RI.bind("<Button-5>",   _sync_from_main)
-        except Exception:
-            pass
-
+                w.bind("<MouseWheel>", _frozen_wheel)
+                w.bind("<Button-4>",   _frozen_wheel_up)
+                w.bind("<Button-5>",   _frozen_wheel_down)
+            except Exception: pass
     # ================================================================== #
     # FORMATTING
     # ================================================================== #
@@ -1030,26 +1376,6 @@ class CostBenchmarkScreen(CTkFrame):
             except ValueError:
                 return None
 
-        status_opts = [
-            "", "WIN", "STOCK",
-            "LOSE - เซลล์ไม่ทราบสาเหตุ",
-            "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
-            "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
-            "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
-            "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
-            "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
-            "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
-        ]
-        dropdown_defs = [
-            ("PRIORITY", ["", "HOT", "WARM", "COLD", "ไม่แจ้ง"], "readonly"),
-            ("สถานะ", status_opts, "readonly"),
-            ("Select", ["", "✔", "เทียบ", "เทียบเพื่อชุบ"], "readonly"),
-        ]
-        for col_name, values, state in dropdown_defs:
-            idx = get_display_idx(col_name)
-            if idx is not None:
-                self.sheet.create_dropdown("all", idx, values=values, state=state)
-
         auto_display_indices = []
         readonly_cols = self._get_auto_cols()
         for c in readonly_cols:
@@ -1080,7 +1406,6 @@ class CostBenchmarkScreen(CTkFrame):
                 except Exception:
                     pass
         
-        self._setup_header_filters(col_offset)
         self.sheet.set_options(
             grid_color="#000000", outline_color="#000000", table_bg="white", table_fg="black",
             table_grid_fg="#000000", header_bg="#D1D5DB", header_fg="#111827", header_grid_fg="#000000",
@@ -1122,30 +1447,6 @@ class CostBenchmarkScreen(CTkFrame):
                 except Exception:
                     pass
 
-        # ← เพิ่ม dropdown สำหรับคอลัมน์ที่อยู่ในฝั่ง frozen
-        status_opts = [
-            "", "WIN", "STOCK",
-            "LOSE - เซลล์ไม่ทราบสาเหตุ",
-            "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
-            "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
-            "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
-            "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
-            "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
-            "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
-        ]
-        dropdown_defs = [
-            ("PRIORITY", ["", "HOT", "WARM", "COLD", "ไม่แจ้ง"], "readonly"),
-            ("สถานะ", status_opts, "readonly"),
-            ("Select", ["", "✔", "เทียบ", "เทียบเพื่อชุบ"], "readonly"),
-        ]
-        for col_name, values, state in dropdown_defs:
-            if col_name in frozen_col_names:
-                idx = frozen_col_names.index(col_name)
-                try:
-                    self.sheet_frozen.create_dropdown("all", idx, values=values, state=state)
-                except Exception:
-                    pass
-
         # readonly สำหรับ auto cols ที่อยู่ในฝั่ง frozen
         auto_frozen_indices = []
         for col_name in auto_cols_names:
@@ -1167,66 +1468,122 @@ class CostBenchmarkScreen(CTkFrame):
         )
 
     def _setup_header_filters(self, col_offset=0):
-        self._filter_col_names = {"Order No.", "Sale Order No.", "ชื่อ Supplier", "รายการสินค้า"}
+        # ⚠️ อัปเดตรายชื่อคอลัมน์ที่อนุญาตให้กด Filter ได้ตรงนี้เลยครับ
+        self._filter_col_names = {
+            "วันที่ขอราคา", "Order No.", "Sale Order No.", "ชื่อ Supplier", "รายการสินค้า",
+            "สถานะ", "PRIORITY", "รหัส Sale", "หมวด", "QT", "Select",
+            "ส่วนลด 1 (บาท)", "ส่วนลด 1 (%)", "ส่วนลด 2 (บาท)", "ส่วนลด 2 (%)"
+        }
+        self._header_col_offset = col_offset
+
+        # ใช้การตรวจสอบ _filter_bound แทน เพื่อป้องกันการผูก Event ซ้ำซ้อนเวลาโหลดหน้าจอใหม่
+        if not getattr(self.sheet, "_filter_bound", False):
+            try:
+                self.sheet.CH.bind("<ButtonRelease-1>", 
+                    lambda e: self.after(10, lambda ev=e: self._on_header_click(ev)), add="+")
+                self.sheet._filter_bound = True
+            except Exception: pass
+
+        if self.sheet_frozen:
+            if not getattr(self.sheet_frozen, "_filter_bound", False):
+                try:
+                    self.sheet_frozen.CH.bind("<ButtonRelease-1>", 
+                        lambda e: self.after(10, lambda ev=e: self._on_frozen_header_click(ev)), add="+")
+                    self.sheet_frozen._filter_bound = True
+                except Exception: pass
+
+    def _get_col_from_header_click(self, event, sheet_widget, col_offset=0):
+        """คำนวณ display_col จากพิกัดที่แท้จริงของ Canvas (แก้บั๊คเลื่อน Scrollbar แนวนอน)"""
         try:
-            self.sheet.CH.bind("<ButtonPress-1>", self._on_header_click, add="+")
-        except Exception:
-            pass
+            # 1. ให้ tksheet คำนวณจาก Event โดยตรง (รองรับการ Scroll)
+            col = sheet_widget.identify_col(event)
+            if col is not None: return int(col)
+        except Exception: pass
+        
+        try:
+            # 2. แปลงพิกัดเมาส์ (event.x) เป็นพิกัดตารางจริงๆ (canvasx)
+            cx = sheet_widget.CH.canvasx(event.x)
+            col = sheet_widget.CH.identify_col(x=cx, allow_end=False)
+            if col is not None: return int(col)
+        except Exception: pass
+        
+        try:
+            # 3. คำนวณความกว้างคอลัมน์แบบ Manual
+            cx = sheet_widget.CH.canvasx(event.x)
+            try: row_idx_w = sheet_widget.RI.winfo_width()
+            except Exception: row_idx_w = 40 if col_offset == 0 else 0
+            
+            cx -= row_idx_w
+            if cx < 0: return None
+            
+            accum = 0
+            for c in range(sheet_widget.get_total_columns()):
+                try: w = sheet_widget.column_width(c)
+                except Exception: w = 120
+                accum += w
+                if cx < accum: return c
+        except Exception: pass
+        return None
 
     def _on_header_click(self, event=None):
         try:
-            print(f"DEBUG header click x={event.x} y={event.y}")  # ← เพิ่ม
-            
-            # ลอง identify col หลายวิธี
-            col = None
-            try:
-                col = self.sheet.CH.identify_col(x=event.x, allow_end=False)
-            except Exception as e1:
-                print(f"identify_col error: {e1}")
-                try:
-                    col = self.sheet.identify_col(event)
-                except Exception as e2:
-                    print(f"fallback identify_col error: {e2}")
-            
-            print(f"DEBUG col={col}")  # ← เพิ่ม
-            
-            if col is None:
-                return
-                
+            # ดักการลากขยายคอลัมน์ (ปรับเป็น > 3 ป้องกันเมาส์สั่นตอนคลิก)
+            if event and hasattr(self, '_header_press_x'):
+                if abs(event.x_root - self._header_press_x) > 3:
+                    return 
+
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-            real_col = int(col) + col_offset
-            if real_col >= len(self.columns):
-                return
+            display_col = self._get_col_from_header_click(event, self.sheet, col_offset)
+            if display_col is None: return
+            
+            real_col = display_col + col_offset
+            if real_col >= len(self.columns): return
             col_name = self.columns[real_col]
             
-            print(f"DEBUG col_name={col_name}, filter_cols={self._filter_col_names}")  # ← เพิ่ม
-            
-            if col_name not in self._filter_col_names:
-                return
+            if col_name not in self._filter_col_names: return
 
             if self._active_filter_popup and not getattr(self._active_filter_popup, '_destroyed', True):
                 self._active_filter_popup.safe_destroy()
                 self._active_filter_popup = None
                 return
+            self._show_header_filter_popup(col_name, display_col, event, is_frozen=False)
+        except Exception: pass
 
-            self._show_header_filter_popup(col_name, int(col), event)
-        except Exception as e:
-            print(f"_on_header_click error: {e}")
-            import traceback; traceback.print_exc()
-
-    def _show_header_filter_popup(self, col_name, display_col, event):
+    def _on_frozen_header_click(self, event=None):
         try:
-            # ดึงค่าทั้งหมดในคอลัมน์
-            all_values = sorted(set(
-                str(self.sheet.get_cell_data(r, display_col) or "").strip()
-                for r in range(self.sheet.get_total_rows())
-                if str(self.sheet.get_cell_data(r, display_col) or "").strip()
-            ))
-            if not all_values:
+            if event and hasattr(self, '_header_press_x'):
+                if abs(event.x_root - self._header_press_x) > 3:
+                    return
+
+            display_col = self._get_col_from_header_click(event, self.sheet_frozen, 0)
+            if display_col is None: return
+            if display_col >= len(self.columns): return
+            
+            col_name = self.columns[display_col]
+            if col_name not in self._filter_col_names: return
+
+            if self._active_filter_popup and not getattr(self._active_filter_popup, '_destroyed', True):
+                self._active_filter_popup.safe_destroy()
+                self._active_filter_popup = None
                 return
+            self._show_header_filter_popup(col_name, display_col, event, is_frozen=True)
+        except Exception: pass
+
+    def _show_header_filter_popup(self, col_name, display_col, event, is_frozen=False):
+        try:
+            target_sheet = self.sheet_frozen if is_frozen else self.sheet
+            
+            # ⚠️ อัปเดต: ให้ดึง "ช่องว่าง" มาทำเป็นตัวเลือก "(ว่าง)" ด้วย
+            raw_vals = set()
+            for r in range(target_sheet.get_total_rows()):
+                val = str(target_sheet.get_cell_data(r, display_col) or "").strip()
+                raw_vals.add(val if val else "(ว่าง)")
+                
+            all_values = sorted(list(raw_vals))
+            if not all_values:
+                all_values = ["(ว่าง)"]
 
             current_filter = self._header_filter_values.get(col_name)
-
             popup = tk.Toplevel(self)
             popup.overrideredirect(True)
             popup.attributes('-topmost', True)
@@ -1245,147 +1602,385 @@ class CostBenchmarkScreen(CTkFrame):
             inner = tk.Frame(popup, bg="white")
             inner.pack(fill="both", expand=True)
 
+            # Sort buttons
+            sort_bar = tk.Frame(inner, bg="#F9FAFB")
+            sort_bar.pack(fill="x", padx=4, pady=(4, 2))
+            tk.Button(sort_bar, text="↑ เรียง A → Z", font=("Tahoma", 10),
+                    relief="flat", bg="#F9FAFB", cursor="hand2", anchor="w",
+                    command=lambda: [self._sort_by_col(col_name, True), safe_destroy()]
+                    ).pack(fill="x", pady=1)
+            tk.Button(sort_bar, text="↓ เรียง Z → A", font=("Tahoma", 10),
+                    relief="flat", bg="#F9FAFB", cursor="hand2", anchor="w",
+                    command=lambda: [self._sort_by_col(col_name, False), safe_destroy()]
+                    ).pack(fill="x", pady=1)
+            tk.Frame(inner, bg="#E5E7EB", height=1).pack(fill="x", padx=4, pady=2)
+
             # Search
             search_var = tk.StringVar()
             search_entry = tk.Entry(inner, textvariable=search_var,
-                                font=("Tahoma", 11), relief="flat", bd=6,
-                                highlightthickness=1, highlightcolor="#3B82F6",
-                                highlightbackground="#D1D5DB")
-            search_entry.pack(fill="x", padx=4, pady=4)
+                                    font=("Tahoma", 10), relief="flat", bd=5,
+                                    highlightthickness=1, highlightcolor="#3B82F6")
+            search_entry.pack(fill="x", padx=4, pady=2)
             search_entry.insert(0, "🔍 ค้นหา...")
             search_entry.bind("<FocusIn>", lambda e: search_entry.delete(0, "end")
                             if search_entry.get().startswith("🔍") else None)
 
-            # Listbox
-            lb_frame = tk.Frame(inner, bg="white")
-            lb_frame.pack(fill="both", expand=True, padx=4)
+            # Checkbox list
+            check_frame = tk.Frame(inner, bg="white")
+            check_frame.pack(fill="both", expand=True, padx=4)
+            canvas_c = tk.Canvas(check_frame, bg="white", highlightthickness=0, height=200)
+            sb_c = tk.Scrollbar(check_frame, orient="vertical", command=canvas_c.yview)
+            canvas_c.configure(yscrollcommand=sb_c.set)
+            sb_c.pack(side="right", fill="y")
+            canvas_c.pack(side="left", fill="both", expand=True)
+            check_inner = tk.Frame(canvas_c, bg="white")
+            canvas_c.create_window((0, 0), window=check_inner, anchor="nw")
 
-            sb = tk.Scrollbar(lb_frame)
-            sb.pack(side="right", fill="y")
+            check_vars = {}
+            check_widgets = []
+            active_set = set(current_filter) if current_filter is not None else set(all_values)
 
-            listbox = tk.Listbox(lb_frame, font=("Tahoma", 11),
-                                selectbackground="#3B82F6", selectforeground="white",
-                                relief="flat", borderwidth=0, highlightthickness=0,
-                                height=10, yscrollcommand=sb.set, activestyle="none")
-            listbox.pack(side="left", fill="both", expand=True)
-            sb.config(command=listbox.yview)
+            def build_checklist(term=""):
+                for w in check_inner.winfo_children():
+                    w.destroy()
+                check_widgets.clear()
 
-            def fill_list(term=""):
-                listbox.delete(0, tk.END)
-                listbox.insert(tk.END, "  (ทั้งหมด)")
-                for v in all_values:
-                    if term.lower() in v.lower():
-                        listbox.insert(tk.END, f"  {v}")
-                # เลือก current
-                if not term:
-                    if current_filter:
-                        for i in range(listbox.size()):
-                            if listbox.get(i).strip() == current_filter:
-                                listbox.selection_set(i)
-                                listbox.see(i)
-                                break
-                    else:
-                        listbox.selection_set(0)
+                filtered = [v for v in all_values
+                            if term.lower() in v.lower()] \
+                        if (term and not term.startswith("🔍")) else all_values
 
-            fill_list()
+                var_all = tk.BooleanVar(value=all(v in active_set for v in filtered))
+                tk.Checkbutton(check_inner, text="(Select All)", variable=var_all,
+                            font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
+                            command=lambda: toggle_all(var_all.get(), filtered)
+                            ).pack(fill="x", pady=1)
+                check_widgets.append(("__all__", var_all, filtered))
 
-            def on_search(*args):
-                fill_list(search_var.get())
+                for v in filtered:
+                    var = check_vars.setdefault(v, tk.BooleanVar(value=v in active_set))
+                    var.set(v in active_set)
+                    tk.Checkbutton(check_inner, text=v, variable=var,
+                                font=("Tahoma", 10), bg="white", anchor="w", relief="flat"
+                                ).pack(fill="x", pady=1)
+                    check_widgets.append((v, var, None))
 
-            search_var.trace_add("write", on_search)
+                check_inner.update_idletasks()
+                canvas_c.configure(scrollregion=canvas_c.bbox("all"))
 
-            def on_select(e=None):
-                sel = listbox.curselection()
-                if not sel:
-                    return
-                val = listbox.get(sel[0]).strip()
-                if val == "(ทั้งหมด)":
+            def toggle_all(state, vals):
+                for v in vals:
+                    if v in check_vars:
+                        check_vars[v].set(state)
+                if state:
+                    active_set.update(vals)
+                else:
+                    for v in vals:
+                        active_set.discard(v)
+
+            search_var.trace_add("write", lambda *a: build_checklist(search_var.get()))
+            build_checklist()
+
+            # OK / Cancel
+            btn_bar = tk.Frame(inner, bg="white")
+            btn_bar.pack(fill="x", padx=4, pady=4)
+
+            def on_ok():
+                new_sel = {v for v, var, _ in check_widgets
+                        if v != "__all__" and var.get()}
+                if new_sel == set(all_values):
                     self._header_filter_values.pop(col_name, None)
                 else:
-                    self._header_filter_values[col_name] = val
+                    self._header_filter_values[col_name] = new_sel
                 safe_destroy()
                 self._apply_header_filters()
 
-            listbox.bind("<ButtonRelease-1>", on_select)
-            listbox.bind("<Return>", on_select)
-            search_entry.bind("<Return>", on_select)
-            search_entry.bind("<Escape>", lambda e: safe_destroy())
+            tk.Button(btn_bar, text="OK", font=("Tahoma", 10),
+                    bg="#3B82F6", fg="white", relief="flat",
+                    command=on_ok, width=8).pack(side="right", padx=(4, 0))
+            tk.Button(btn_bar, text="Cancel", font=("Tahoma", 10),
+                    bg="#F3F4F6", relief="flat",
+                    command=safe_destroy, width=8).pack(side="right")
 
-            # ปุ่ม Clear
-            btn_bar = tk.Frame(inner, bg="#F9FAFB")
-            btn_bar.pack(fill="x")
-            tk.Button(btn_bar, text="✕ ล้าง filter", font=("Tahoma", 10),
-                    fg="#EF4444", bg="#F9FAFB", relief="flat", bd=0, cursor="hand2",
-                    command=lambda: [self._header_filter_values.pop(col_name, None),
-                                    safe_destroy(), self._apply_header_filters()]
-                    ).pack(side="right", padx=8, pady=4)
+            if col_name in self._header_filter_values:
+                tk.Button(inner, text="✕ ล้าง filter", font=("Tahoma", 9),
+                        fg="#EF4444", bg="white", relief="flat",
+                        command=lambda: [self._header_filter_values.pop(col_name, None),
+                                        safe_destroy(),
+                                        self._apply_header_filters()]
+                        ).pack(anchor="w", padx=8, pady=(0, 4))
 
-            # วางตำแหน่ง
-            x = event.x_root
-            y = event.y_root + 5
             root = self.winfo_toplevel()
-            win_w = root.winfo_rootx() + root.winfo_width()
-            if x + 220 > win_w:
-                x = win_w - 225
-            popup.geometry(f"220x310+{x}+{y}")
+            x = min(event.x_root, root.winfo_rootx() + root.winfo_width() - 240 - 5)
+            y = min(event.y_root + 5, root.winfo_rooty() + root.winfo_height() - 400 - 5)
+            popup.geometry(f"240x400+{x}+{y}")
 
             self._active_filter_popup = popup
             search_entry.focus_set()
             popup.bind("<FocusOut>", lambda e: self.after(300, lambda:
-                safe_destroy() if not popup._destroyed else None))
+                    safe_destroy() if not popup._destroyed else None))
 
-        except Exception as e:
-            print(f"_show_header_filter_popup error: {e}")
+        except Exception:
+            import traceback; traceback.print_exc()
 
     def _apply_header_filters(self):
         try:
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-            filter_map = {}
-            for col_name, val in self._header_filter_values.items():
-                try:
-                    real_idx = self.columns.index(col_name)
-                    display_idx = real_idx - col_offset
-                    if display_idx >= 0:
-                        filter_map[display_idx] = val
-                except ValueError:
-                    pass
+            rh = int(30 * (self.zoom_level / 11.0)) # คำนวณความสูงตาม Zoom ไว้เผื่อกรณี Fallback
 
-            for r in range(self.sheet.get_total_rows()):
-                if not filter_map:
-                    self.sheet.row_height(r, self.zoom_level + 19)
-                    continue
-                match = all(
-                    str(self.sheet.get_cell_data(r, d_idx) or "").strip() == fval
-                    for d_idx, fval in filter_map.items()
-                )
-                self.sheet.row_height(r, self.zoom_level + 19 if match else 0)
+            # 1. จัดกลุ่ม Filter ว่าอยู่ฝั่ง Main (ขวา) หรือ Frozen (ซ้าย)
+            main_filter_map = {}    
+            frozen_filter_map = {}  
 
-            # อัพเดทสีหัวคอลัมน์
-            header_styles = self._get_header_styles_map()
-            col_to_style = {c: (bg, fg) for (bg, fg), cols in header_styles.items() for c in cols}
-            for col_name in self._filter_col_names:
+            for col_name, val_set in self._header_filter_values.items():
                 try:
                     real_idx = self.columns.index(col_name)
                     display_idx = real_idx - col_offset
                     if display_idx < 0:
-                        continue
-                    if col_name in self._header_filter_values:
-                        self.sheet.highlight_cells(row=0, column=display_idx,
-                                                bg="#F59E0B", fg="white", canvas="header")
+                        frozen_filter_map[real_idx] = val_set
                     else:
-                        h_bg, h_fg = col_to_style.get(col_name, ("#E5E7EB", "#111827"))
-                        self.sheet.highlight_cells(row=0, column=display_idx,
-                                                bg=h_bg, fg=h_fg, canvas="header")
+                        main_filter_map[display_idx] = val_set
+                except ValueError:
+                    pass
+
+            # 2. แสดง (Unhide) แถวทั้งหมดกลับมาก่อน 
+            try:
+                self.sheet.display_rows("all")
+                if self.sheet_frozen:
+                    self.sheet_frozen.display_rows("all")
+            except Exception:
+                pass # ถ้าใช้เวอร์ชันเก่ามากๆ จะข้ามไป
+
+            # 3. ตรวจสอบเงื่อนไขเพื่อหาว่า "แถวไหนบ้างที่ต้องซ่อน"
+            if main_filter_map or frozen_filter_map:
+                total_rows = self.sheet.get_total_rows()
+                rows_to_hide = []
+
+                for r in range(total_rows):
+                    match = True
+
+                    # เช็คฝั่ง Main sheet
+                    for d_idx, allowed_vals in main_filter_map.items():
+                        cell_val = str(self.sheet.get_cell_data(r, d_idx) or "").strip()
+                        if cell_val not in allowed_vals:
+                            match = False
+                            break
+
+                    # เช็คฝั่ง Frozen sheet
+                    if match and self.sheet_frozen and frozen_filter_map:
+                        for f_idx, allowed_vals in frozen_filter_map.items():
+                            cell_val = str(self.sheet_frozen.get_cell_data(r, f_idx) or "").strip()
+                            if cell_val not in allowed_vals:
+                                match = False
+                                break
+
+                    # ถ้าข้อมูลไม่ตรงกับที่กรองไว้ ให้เก็บเข้า List สำหรับซ่อน
+                    if not match:
+                        rows_to_hide.append(r)
+
+                # 4. สั่งซ่อนแถวทั้งหมดที่หาเจอพร้อมกัน (Tksheet Native)
+                if rows_to_hide:
+                    try:
+                        self.sheet.hide_rows(rows_to_hide)
+                        if self.sheet_frozen:
+                            self.sheet_frozen.hide_rows(rows_to_hide)
+                    except Exception:
+                        # Fallback สำหรับเวอร์ชั่นเก่ามากๆ
+                        for r in rows_to_hide:
+                            self.sheet.row_height(r, 0)
+                            if self.sheet_frozen:
+                                self.sheet_frozen.row_height(r, 0)
+
+            # 5. อัพเดทสีหัวคอลัมน์ที่เป็นสีส้ม (#F59E0B) เมื่อมี Filter ทำงานอยู่
+            header_styles = self._get_header_styles_map()
+            col_to_style = {c: (bg, fg) for (bg, fg), cols in header_styles.items() for c in cols}
+
+            for col_name in self._filter_col_names:
+                try:
+                    real_idx = self.columns.index(col_name)
+                    display_idx = real_idx - col_offset
+
+                    is_active = col_name in self._header_filter_values
+                    active_bg = "#F59E0B"
+                    active_fg = "white"
+
+                    if display_idx < 0:
+                        # อยู่ใน frozen
+                        if self.sheet_frozen:
+                            if is_active:
+                                self.sheet_frozen.highlight_cells(
+                                    row=0, column=real_idx,
+                                    bg=active_bg, fg=active_fg, canvas="header")
+                            else:
+                                h_bg, h_fg = col_to_style.get(col_name, ("#E5E7EB", "#111827"))
+                                self.sheet_frozen.highlight_cells(
+                                    row=0, column=real_idx,
+                                    bg=h_bg, fg=h_fg, canvas="header")
+                    else:
+                        if is_active:
+                            self.sheet.highlight_cells(
+                                row=0, column=display_idx,
+                                bg=active_bg, fg=active_fg, canvas="header")
+                        else:
+                            h_bg, h_fg = col_to_style.get(col_name, ("#E5E7EB", "#111827"))
+                            self.sheet.highlight_cells(
+                                row=0, column=display_idx,
+                                bg=h_bg, fg=h_fg, canvas="header")
                 except Exception:
                     pass
 
             self.sheet.redraw()
+            if self.sheet_frozen:
+                self.sheet_frozen.redraw()
+                
+            # Sync scroll แก้อาการหน้าจอเด้ง
+            self.after(50, self._sync_vertical_scroll)
+
         except Exception as e:
-            print(f"_apply_header_filters error: {e}")
+            print(f"Error in _apply_header_filters: {e}")
+            import traceback; traceback.print_exc()
+
+    def _on_header_press(self, event=None):
+        if event:
+            self._header_press_x = event.x_root
+            self._header_press_y = event.y_root
+            self._header_press_col_x = event.x
+
+    def _get_col_from_header_click(self, event, sheet_widget, col_offset=0):
+        """คำนวณ display_col จากพิกัดที่แท้จริงของ Canvas (แก้บั๊คเลื่อน Scrollbar แนวนอน)"""
+        # 1. ลองใช้ฟังก์ชันของ tksheet ดูก่อน
+        try:
+            col = sheet_widget.identify_col(event)
+            if col is not None: return int(col)
+        except Exception: pass
+        
+        # 2. คำนวณแบบ Manual แต่ "ต้องรวมระยะ Scroll แนวนอนด้วย (canvasx)"
+        try:
+            # ⚠️ สำคัญ: ใช้ canvasx(event.x) เพื่อหาตำแหน่งที่แท้จริงหลังเลื่อนหน้าจอ
+            cx = sheet_widget.CH.canvasx(event.x)
+            
+            # หักระยะความกว้างของ Row Index ออกก่อน (ถ้ามี)
+            try: 
+                row_idx_w = sheet_widget.RI.winfo_width()
+            except Exception: 
+                row_idx_w = 40 if col_offset == 0 else 0
+            
+            cx -= row_idx_w
+            if cx < 0: return None
+            
+            accum = 0
+            for c in range(sheet_widget.get_total_columns()):
+                try: 
+                    w = sheet_widget.column_width(c)
+                except Exception: 
+                    w = 120
+                accum += w
+                if cx < accum: 
+                    return c
+        except Exception as e: 
+            print(f"Error finding col: {e}")
+            
+        return None
+
+
+    def _sort_by_col(self, col_name, ascending=True):
+        try:
+            col_offset = self.frozen_col_count if self.sheet_frozen else 0
+            real_idx = self.columns.index(col_name)
+            total_rows = self.sheet.get_total_rows()
+            rows_data = []
+            for r in range(total_rows):
+                main_row = list(self.sheet.get_row_data(r))
+                frozen_row = list(self.sheet_frozen.get_row_data(r)) if self.sheet_frozen else []
+                rows_data.append(frozen_row + main_row)
+
+            def sort_key(row):
+                v = str(row[real_idx]).strip() if real_idx < len(row) else ""
+                try: return (0, float(v.replace(",", "")))
+                except ValueError: return (1, v.lower())
+
+            rows_data.sort(key=sort_key, reverse=not ascending)
+
+            for r, row in enumerate(rows_data):
+                if self.sheet_frozen:
+                    for c in range(col_offset):
+                        self.sheet_frozen.set_cell_data(r, c, row[c] if c < len(row) else "", redraw=False)
+                for c in range(self.sheet.get_total_columns()):
+                    rc = c + col_offset
+                    self.sheet.set_cell_data(r, c, row[rc] if rc < len(row) else "", redraw=False)
+
+            self.sheet.redraw()
+            if self.sheet_frozen: self.sheet_frozen.redraw()
+
+            if self.auto_save_job_id: self.after_cancel(self.auto_save_job_id)
+            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+        except Exception: pass
 
     def _clear_all_header_filters(self):
         self._header_filter_values = {}
         self._apply_header_filters()
+
+    def _undo(self, event=None):
+        if not self._undo_stack:
+            self.save_status_label.configure(text="⚠️ ไม่มีประวัติ Undo", text_color="#F59E0B")
+            return "break"
+        try:
+            main_now = [list(row) for row in self.sheet.get_sheet_data()]
+            frozen_now = [list(row) for row in self.sheet_frozen.get_sheet_data()] \
+                        if self.sheet_frozen else []
+            self._redo_stack.append((frozen_now, main_now))
+            frozen_data, main_data = self._undo_stack.pop()
+            self._restore_snapshot(frozen_data, main_data)
+            self.save_status_label.configure(
+                text=f"↩ Undo ({len(self._undo_stack)} ขั้นตอนเหลือ)", text_color="#6366F1")
+        except Exception as e:
+            print(f"_undo error: {e}")
+        return "break"
+
+    def _redo(self, event=None):
+        if not self._redo_stack:
+            self.save_status_label.configure(text="⚠️ ไม่มีประวัติ Redo", text_color="#F59E0B")
+            return "break"
+        try:
+            main_now = [list(row) for row in self.sheet.get_sheet_data()]
+            frozen_now = [list(row) for row in self.sheet_frozen.get_sheet_data()] \
+                        if self.sheet_frozen else []
+            self._undo_stack.append((frozen_now, main_now))
+            frozen_data, main_data = self._redo_stack.pop()
+            self._restore_snapshot(frozen_data, main_data)
+            self.save_status_label.configure(
+                text=f"↪ Redo ({len(self._redo_stack)} ขั้นตอนเหลือ)", text_color="#6366F1")
+        except Exception as e:
+            print(f"_redo error: {e}")
+        return "break"
+
+    def _restore_snapshot(self, frozen_data, main_data):
+        col_offset = self.frozen_col_count
+        target_rows = max(len(main_data), len(frozen_data))
+        current_rows = self.sheet.get_total_rows()
+        if target_rows > current_rows:
+            self.sheet.insert_rows(target_rows - current_rows)
+            if self.sheet_frozen:
+                self.sheet_frozen.insert_rows(target_rows - current_rows)
+        for r in range(target_rows):
+            if self.sheet_frozen and r < len(frozen_data):
+                for c, v in enumerate(frozen_data[r]):
+                    self.sheet_frozen.set_cell_data(r, c, v, redraw=False)
+            if r < len(main_data):
+                for c, v in enumerate(main_data[r]):
+                    self.sheet.set_cell_data(r, c, v, redraw=False)
+        for r in range(target_rows, self.sheet.get_total_rows()):
+            for c in range(self.sheet.get_total_columns()):
+                self.sheet.set_cell_data(r, c, "", redraw=False)
+            if self.sheet_frozen:
+                for c in range(col_offset):
+                    self.sheet_frozen.set_cell_data(r, c, "", redraw=False)
+        self.sheet.redraw()
+        if self.sheet_frozen:
+            self.sheet_frozen.redraw()
+        if self.auto_save_job_id:
+            self.after_cancel(self.auto_save_job_id)
+        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
 
     # ================================================================== #
     def _rebind_sheet(self):
@@ -1398,8 +1993,6 @@ class CostBenchmarkScreen(CTkFrame):
         self.sheet.bind("<Control-C>", lambda e: self.sheet.copy())
         self.sheet.bind("<Control-V>", lambda e: self.sheet.paste())
         self.sheet.bind("<<SheetModified>>", self._on_sheet_modified)
-
-        # ← Copy/Paste ทั้งบรรทัด ใช้ Ctrl+R copy, Ctrl+V paste
         self.sheet.bind("<Control-r>", self._copy_selected_rows)
         self.sheet.bind("<Control-R>", self._copy_selected_rows)
 
@@ -1411,46 +2004,37 @@ class CostBenchmarkScreen(CTkFrame):
 
         try:
             self.sheet.MT.bind("<Control-c>", lambda e: self.sheet.copy(), add="+")
-            self.sheet.MT.bind("<Control-C>", lambda e: self.sheet.copy(), add="+")
             self.sheet.MT.bind("<Control-v>", lambda e: self.sheet.paste(), add="+")
-            self.sheet.MT.bind("<Control-V>", lambda e: self.sheet.paste(), add="+")
             self.sheet.MT.bind("<Control-r>", self._copy_selected_rows, add="+")
-            self.sheet.MT.bind("<Control-R>", self._copy_selected_rows, add="+")
-        except Exception:
-            pass
+        except Exception: pass
 
-        # ← bind RI (row index canvas) สำหรับ copy/paste ทั้งบรรทัด
         try:
             self.sheet.RI.bind("<Control-c>", self._copy_selected_rows, add="+")
-            self.sheet.RI.bind("<Control-C>", self._copy_selected_rows, add="+")
             self.sheet.RI.bind("<Control-v>", self._paste_selected_rows, add="+")
-            self.sheet.RI.bind("<Control-V>", self._paste_selected_rows, add="+")
             self.sheet.RI.bind("<Control-r>", self._copy_selected_rows, add="+")
-            self.sheet.RI.bind("<Control-R>", self._copy_selected_rows, add="+")
-        except Exception:
-            pass
+        except Exception: pass
 
         self.sheet.enable_bindings((
-            "single_select", "drag_select", "multi_select",
-            "row_select", "column_select", "column_width_resize",
-            "arrowkeys", "right_click_popup_menu",
-            "rc_select", "copy", "cut", "paste",
-            "delete", "undo", "edit_cell",
-            "row_drag_and_drop",
+            "single_select", "drag_select", "multi_select", "row_select", "column_select",
+            "column_width_resize", "arrowkeys", "right_click_popup_menu", "rc_select",
+            "copy", "cut", "paste", "delete", "undo", "edit_cell", "row_drag_and_drop",
         ))
 
         self.sheet.extra_bindings([
-            ("cell_select", self._on_cell_select_combined),
             ("end_edit_cell", self._on_end_edit_combined),
             ("column_width_resize", lambda e: self._save_col_widths()),
             ("row_drag_and_drop", lambda e: self._on_row_drag_drop(e)),
         ])
 
+        # CH bind หลัง enable_bindings เท่านั้น
+        try:
+            self.sheet.CH.bind("<ButtonPress-1>", self._on_header_press, add="+")
+        except Exception: pass
+
         try:
             self.sheet.MT.bind("<ButtonRelease-1>",
-                                lambda e: self.after(50, self._update_quick_calc), add="+")
-        except Exception:
-            pass
+                            lambda e: self.after(50, self._update_quick_calc), add="+")
+        except Exception: pass
 
 
     def _rebind_frozen_sheet(self):
@@ -1460,41 +2044,26 @@ class CostBenchmarkScreen(CTkFrame):
         self.sheet_frozen.bind("<Control-MouseWheel>", self._on_ctrl_scroll)
         self.sheet_frozen.bind("<Control-Button-4>", lambda e: self._zoom(1))
         self.sheet_frozen.bind("<Control-Button-5>", lambda e: self._zoom(-1))
-
-        # ← Copy/Paste ทั้งบรรทัด
         self.sheet_frozen.bind("<Control-r>", self._copy_selected_rows)
         self.sheet_frozen.bind("<Control-R>", self._copy_selected_rows)
 
         try:
             self.sheet_frozen.MT.bind("<Control-MouseWheel>", self._on_ctrl_scroll, add="+")
-            self.sheet_frozen.MT.bind("<Control-Button-4>", lambda e: self._zoom(1), add="+")
-            self.sheet_frozen.MT.bind("<Control-Button-5>", lambda e: self._zoom(-1), add="+")
             self.sheet_frozen.MT.bind("<Control-c>", lambda e: self.sheet_frozen.copy(), add="+")
-            self.sheet_frozen.MT.bind("<Control-C>", lambda e: self.sheet_frozen.copy(), add="+")
             self.sheet_frozen.MT.bind("<Control-v>", lambda e: self.sheet_frozen.paste(), add="+")
-            self.sheet_frozen.MT.bind("<Control-V>", lambda e: self.sheet_frozen.paste(), add="+")
             self.sheet_frozen.MT.bind("<Control-r>", self._copy_selected_rows, add="+")
-            self.sheet_frozen.MT.bind("<Control-R>", self._copy_selected_rows, add="+")
-        except Exception:
-            pass
+        except Exception: pass
 
-        # ← bind RI ของ frozen sheet ด้วย
         try:
             self.sheet_frozen.RI.bind("<Control-c>", self._copy_selected_rows, add="+")
-            self.sheet_frozen.RI.bind("<Control-C>", self._copy_selected_rows, add="+")
             self.sheet_frozen.RI.bind("<Control-v>", self._paste_selected_rows, add="+")
-            self.sheet_frozen.RI.bind("<Control-V>", self._paste_selected_rows, add="+")
             self.sheet_frozen.RI.bind("<Control-r>", self._copy_selected_rows, add="+")
-            self.sheet_frozen.RI.bind("<Control-R>", self._copy_selected_rows, add="+")
-        except Exception:
-            pass
+        except Exception: pass
 
         self.sheet_frozen.enable_bindings((
-            "single_select", "drag_select", "multi_select",
-            "row_select", "column_select", "column_width_resize",
-            "arrowkeys", "right_click_popup_menu",
-            "rc_select", "copy", "cut", "paste",
-            "delete", "undo", "edit_cell",
+            "single_select", "drag_select", "multi_select", "row_select", "column_select",
+            "column_width_resize", "arrowkeys", "right_click_popup_menu", "rc_select",
+            "copy", "cut", "paste", "delete", "undo", "edit_cell",
         ))
 
         self.sheet_frozen.extra_bindings([
@@ -1503,20 +2072,35 @@ class CostBenchmarkScreen(CTkFrame):
             ("column_width_resize", lambda e: self._save_col_widths())
         ])
 
+        # CH bind หลัง enable_bindings เท่านั้น
+        try:
+            self.sheet_frozen.CH.bind("<ButtonPress-1>", self._on_header_press, add="+")
+        except Exception: pass
+
         self.sheet_frozen.bind("<<SheetModified>>", self._on_sheet_modified)
         self.sheet_frozen.bind("<Control-c>", lambda e: self.sheet_frozen.copy())
         self.sheet_frozen.bind("<Control-v>", lambda e: self.sheet_frozen.paste())
-        self.sheet_frozen.bind("<Control-C>", lambda e: self.sheet_frozen.copy())
-        self.sheet_frozen.bind("<Control-V>", lambda e: self.sheet_frozen.paste())
         self.sheet_frozen.bind("<Return>", lambda e: self._on_enter_pressed(e, is_frozen=True))
-        self.sheet_frozen.bind("<KP_Enter>", lambda e: self._on_enter_pressed(e, is_frozen=True))
 
         try:
             self.sheet_frozen.MT.bind("<ButtonPress-1>", self._capture_click_pos, add="+")
             self.sheet_frozen.MT.bind("<ButtonPress-1>", self._on_mt_click_frozen, add="+")
+            self.sheet_frozen.MT.bind("<ButtonRelease-1>",
+                                    lambda e: self.after(50, self._update_quick_calc), add="+")
+        except Exception: pass
+        
+    def _push_undo(self):
+        try:
+            main_data = [list(row) for row in self.sheet.get_sheet_data()]
+            frozen_data = [list(row) for row in self.sheet_frozen.get_sheet_data()] \
+                        if self.sheet_frozen else []
+            self._undo_stack.append((frozen_data, main_data))
+            if len(self._undo_stack) > self._max_undo:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
         except Exception:
             pass
-    
+
     def _on_row_drag_drop(self, event=None):
         print(f"DEBUG drag drop event: {event}") 
         """หลัง drag row ใน main sheet → sync ข้อมูลไป frozen sheet ด้วย"""
@@ -1571,7 +2155,6 @@ class CostBenchmarkScreen(CTkFrame):
             print(f"_reload_frozen_from_main error: {e}")
 
     def _on_mt_click_frozen(self, event=None):
-        """เหมือน _on_mt_click แต่สำหรับตารางตรึง"""
         try:
             try:
                 row = self.sheet_frozen.MT.identify_row(y=event.y, allow_end=False)
@@ -1587,16 +2170,28 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             row, col = int(row), int(col)
-            # frozen ไม่บวก offset เพราะ index เริ่มจาก 0 อยู่แล้ว
             real_col = col
             if real_col >= len(self.columns):
                 return
 
             col_name = self.columns[real_col]
+            status_opts = [
+                "WIN", "STOCK",
+                "LOSE - เซลล์ไม่ทราบสาเหตุ",
+                "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
+                "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
+                "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
+                "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
+                "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
+                "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
+            ]
             popup_cols = {
                 "รายการสินค้า": self.product_list,
                 "ชื่อ Supplier":  self.supplier_list,
                 "รหัส Sale":      self.sales_list,
+                "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
+                "สถานะ":          status_opts,
+                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
             }
 
             if col_name not in popup_cols:
@@ -1663,18 +2258,12 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _on_mt_click(self, event=None):
         try:
-            # tksheet เก็บ row/col position ใน MT canvas โดยตรง
-            # ใช้ฟังก์ชันของ MT แทน Sheet
+            # ✅ แก้: ใช้ identify จาก MT canvas โดยตรง ไม่ต้องคำนวณ pixel เอง
             try:
                 row = self.sheet.MT.identify_row(y=event.y, allow_end=False)
                 col = self.sheet.MT.identify_col(x=event.x, allow_end=False)
             except Exception:
-                try:
-                    # fallback สำหรับ version เก่ากว่า
-                    row = self.sheet.MT.get_row_at_y(event.y)
-                    col = self.sheet.MT.get_col_at_x(event.x)
-                except Exception:
-                    return
+                return
 
             if row is None or col is None:
                 return
@@ -1686,10 +2275,23 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             col_name = self.columns[real_col]
+            status_opts = [
+                "WIN", "STOCK",
+                "LOSE - เซลล์ไม่ทราบสาเหตุ",
+                "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
+                "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
+                "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
+                "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
+                "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
+                "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
+            ]
             popup_cols = {
                 "รายการสินค้า": self.product_list,
                 "ชื่อ Supplier":  self.supplier_list,
                 "รหัส Sale":      self.sales_list,
+                "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
+                "สถานะ":          status_opts,
+                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
             }
 
             if col_name not in popup_cols:
@@ -1765,16 +2367,28 @@ class CostBenchmarkScreen(CTkFrame):
             if row is None or col is None: return
             row, col = int(row), int(col)
 
-            # 🛠️ ถ้าคลิกที่ตารางตรึง ไม่ต้องบวก Col Offset 
             col_offset = 0 if is_frozen else (self.frozen_col_count if self.sheet_frozen is not None else 0)
             real_col = col + col_offset
             if real_col >= len(self.columns): return
-            
+
             col_name = self.columns[real_col]
+            status_opts = [
+                "WIN", "STOCK",
+                "LOSE - เซลล์ไม่ทราบสาเหตุ",
+                "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
+                "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
+                "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
+                "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
+                "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
+                "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
+            ]
             popup_cols = {
                 "รายการสินค้า": self.product_list,
                 "ชื่อ Supplier":  self.supplier_list,
                 "รหัส Sale":      self.sales_list,
+                "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
+                "สถานะ":          status_opts,
+                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
             }
 
             if col_name not in popup_cols:
@@ -1798,8 +2412,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             data_list = popup_cols[col_name]
             _row, _col = row, col
-            
-            # 🎯 เลือกเป้าหมายดึงข้อมูลให้ถูกตาราง
+
             target_sheet = self.sheet_frozen if is_frozen else self.sheet
             try:
                 current_val = str(target_sheet.get_cell_data(_row, _col) or "").strip()
@@ -1820,7 +2433,7 @@ class CostBenchmarkScreen(CTkFrame):
                     print(f"on_select error: {ex}")
 
             self._last_popup_cell = (_row, _col)
-            self.after(80, lambda r=_row, c=_col, dl=data_list, cv=current_val, os=on_select, fz=is_frozen: 
+            self.after(80, lambda r=_row, c=_col, dl=data_list, cv=current_val, os=on_select, fz=is_frozen:
                 self._open_popup_delayed(r, c, dl, cv, os, fz))
         except Exception as e:
             print(f"_on_cell_select_combined error: {e}")
@@ -2345,51 +2958,103 @@ class CostBenchmarkScreen(CTkFrame):
     # ================================================================== #
     def _save_col_widths(self):
         try:
+            frozen_width = 40  
             if self.sheet_frozen:
                 for i in range(self.frozen_col_count):
-                    w = self.sheet_frozen.column_width(i)
-                    if w and w > 0:
-                        self.col_widths_cache[i] = w
+                    try:
+                        w = self.sheet_frozen.column_width(i)
+                        if w and w > 0:
+                            self.col_widths_cache[i] = w
+                            frozen_width += w
+                    except IndexError: pass # <--- ซ่อนตัว Error ไว้ตรงนี้แหละครับ
+
                 for i in range(self.sheet.get_total_columns()):
-                    w = self.sheet.column_width(i)
-                    if w and w > 0:
-                        self.col_widths_cache[self.frozen_col_count + i] = w
+                    try:
+                        w = self.sheet.column_width(i)
+                        if w and w > 0:
+                            self.col_widths_cache[self.frozen_col_count + i] = w
+                    except IndexError: pass
+                    
+                frozen_width += 4 
+                
+                if hasattr(self, '_resize_layout_job'):
+                    try: self.after_cancel(self._resize_layout_job)
+                    except: pass
+                    
+                def _update_frames():
+                    try:
+                        self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
+                        self.sheet.place(x=frozen_width, y=0, relwidth=1.0, relheight=1.0, width=-frozen_width)
+                        def _on_table_resize(event, fw=frozen_width):
+                            try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                            except Exception: pass
+                        self.table_frame.bind("<Configure>", _on_table_resize)
+                    except Exception: pass
+
+                self._resize_layout_job = self.after(100, _update_frames)
             else:
                 for i in range(self.sheet.get_total_columns()):
-                    w = self.sheet.column_width(i)
-                    if w and w > 0:
-                        self.col_widths_cache[i] = w
-            # ← debounce save ลง DB
+                    try:
+                        w = self.sheet.column_width(i)
+                        if w and w > 0:
+                            self.col_widths_cache[i] = w
+                    except IndexError: pass
+
             if hasattr(self, '_save_settings_job'):
                 try: self.after_cancel(self._save_settings_job)
                 except: pass
             self._save_settings_job = self.after(2000, self._save_user_settings)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"_save_col_widths error: {e}")
 
     def _update_quick_calc(self, event=None):
-        """คำนวณ Sum/Count/Avg จากเซลล์ที่เลือก เหมือน Excel"""
+        """คำนวณ Sum/Count/Avg จากเซลล์ที่เลือก เหมือน Excel — รองรับทั้ง main และ frozen sheet"""
         try:
-            selected = self.sheet.get_selected_cells()
-            if not selected:
+            col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+            values = []
+            total_selected = 0
+
+            # ── ดึงจาก main sheet ──────────────────────────────────────
+            try:
+                selected = self.sheet.get_selected_cells()
+                if selected:
+                    total_selected += len(selected)
+                    for r, c in selected:
+                        try:
+                            val = self.sheet.get_cell_data(r, c)
+                            if val and str(val).strip():
+                                num = float(str(val).replace(',', '').replace('%', '').strip())
+                                values.append(num)
+                        except (ValueError, TypeError):
+                            pass
+            except Exception:
+                pass
+
+            # ── ดึงจาก frozen sheet ด้วย ──────────────────────────────
+            if self.sheet_frozen:
+                try:
+                    frozen_selected = self.sheet_frozen.get_selected_cells()
+                    if frozen_selected:
+                        total_selected += len(frozen_selected)
+                        for r, c in frozen_selected:
+                            try:
+                                val = self.sheet_frozen.get_cell_data(r, c)
+                                if val and str(val).strip():
+                                    num = float(str(val).replace(',', '').replace('%', '').strip())
+                                    values.append(num)
+                            except (ValueError, TypeError):
+                                pass
+                except Exception:
+                    pass
+
+            if total_selected == 0:
                 self.quick_calc_label.configure(text="")
                 return
 
-            values = []
-            for r, c in selected:
-                try:
-                    val = self.sheet.get_cell_data(r, c)
-                    if val and str(val).strip():
-                        num = float(str(val).replace(',', '').replace('%', '').strip())
-                        values.append(num)
-                except (ValueError, TypeError):
-                    pass
-
-            count = len(selected)
             num_count = len(values)
 
             if num_count == 0:
-                self.quick_calc_label.configure(text=f"จำนวน: {count}")
+                self.quick_calc_label.configure(text=f"จำนวน: {total_selected}")
                 return
 
             total = sum(values)
@@ -2400,59 +3065,144 @@ class CostBenchmarkScreen(CTkFrame):
                     return f"{int(n):,}"
                 return f"{n:,.2f}"
 
-            text = f"จำนวน: {count}    ผลรวม: {fmt(total)}    เฉลี่ย: {fmt(avg)}"
+            text = f"จำนวน: {total_selected}    ผลรวม: {fmt(total)}    เฉลี่ย: {fmt(avg)}"
             self.quick_calc_label.configure(text=text)
         except Exception:
             pass
 
     def _restore_col_widths(self):
         try:
-            for i, w in self.col_widths_cache.items():
-                self.sheet.column_width(i, w)
+            if not self.col_widths_cache:
+                return
+
+            # ✅ ปิด auto_resize ก่อน restore ทุกครั้ง
+            self.sheet.set_options(auto_resize_columns=False, auto_resize_row_index=False)
+            if self.sheet_frozen:
+                self.sheet_frozen.set_options(auto_resize_columns=False, auto_resize_row_index=False)
+
+            if self.sheet_frozen is not None:
+                frozen_width = 40
+                for i in range(self.frozen_col_count):
+                    w = self.col_widths_cache.get(i)
+                    w = w if w and w >= 40 else 120
+                    self.sheet_frozen.column_width(i, w)
+                    frozen_width += w
+                        
+                for i in range(self.sheet.get_total_columns()):
+                    w = self.col_widths_cache.get(self.frozen_col_count + i)
+                    w = w if w and w >= 40 else 120
+                    self.sheet.column_width(i, w)
+
+                frozen_width += 4
+                try:
+                    self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
+                    self.sheet.place(x=frozen_width, y=0, relwidth=1.0, relheight=1.0, width=-frozen_width)
+                    def _on_table_resize(event, fw=frozen_width):
+                        try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                        except Exception: pass
+                    self.table_frame.bind("<Configure>", _on_table_resize)
+                except Exception: pass
+
+            else:
+                for i in range(self.sheet.get_total_columns()):
+                    w = self.col_widths_cache.get(i)
+                    w = w if w and w >= 40 else 120
+                    self.sheet.column_width(i, w)
+            
             self.sheet.redraw()
-        except Exception:
-            pass
+            if self.sheet_frozen:
+                self.sheet_frozen.redraw()
+                
+        except Exception as e:
+            print(f"Restore widths error: {e}")
 
     def _on_end_edit_combined(self, event=None, is_frozen=False):
         try:
-            if event and len(event) >= 2:
+            row, col = None, None
+            # ดึงตำแหน่ง row, col จาก event
+            if isinstance(event, (tuple, list)) and len(event) >= 2:
                 row, col = event[0], event[1]
+            elif isinstance(event, dict):
+                row = event.get('row')
+                col = event.get('column')
+
+            if row is not None and col is not None:
+                row, col = int(row), int(col)
+
+                # 1. บังคับคำนวณสูตรและผลลัพธ์ในบรรทัดนั้นทันที
+                self._auto_calculate_sheet(row)
+
+                # 2. รีเฟรชตารางเพื่อให้ค่าที่คำนวณแสดงผล
+                self.sheet.redraw()
+                if is_frozen and self.sheet_frozen:
+                    self.sheet_frozen.redraw()
+
+                # 3. สั่ง Auto Save
+                if self.auto_save_job_id is not None:
+                    self.after_cancel(self.auto_save_job_id)
+                self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                
+                if hasattr(self, 'save_status_label'):
+                    self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+
+                # 4. เลื่อนเคอร์เซอร์ไปทางขวาเมื่อพิมพ์เสร็จ
                 self.after(10, lambda: self._move_right(row, col, is_frozen))
-        except Exception: pass
+                
+        except Exception as e:
+            print(f"_on_end_edit_combined error: {e}")
 
     def _move_right(self, row, col, is_frozen=False):
-        if is_frozen and self.sheet_frozen:
-            total_cols_frozen = self.sheet_frozen.get_total_columns()
-            next_col = col + 1
-            if next_col < total_cols_frozen:
-                self.sheet_frozen.deselect("all")
-                self.sheet_frozen.select_cell(row, next_col)
-                self.sheet_frozen.see(row, next_col)
+        try:
+            if is_frozen and self.sheet_frozen:
+                total_cols_frozen = self.sheet_frozen.get_total_columns()
+                next_col = col + 1
+                if next_col < total_cols_frozen:
+                    self.sheet_frozen.deselect("all")
+                    try:
+                        self.sheet_frozen.select_cell(row, next_col)
+                        self.sheet_frozen.see(row, next_col)
+                    except Exception:
+                        # ถ้าคอลัมน์ถัดไปโดนซ่อน หรือ Error ให้เด้งข้ามไปตารางฝั่งขวาเลย
+                        try:
+                            self.sheet.select_cell(row, 0)
+                            self.sheet.see(row, 0)
+                            self.sheet.focus_set()
+                        except Exception: pass
+                else:
+                    # ➡️ ถ้าสุดขอบตารางตรึง ให้เด้งข้ามไปตารางหลักฝั่งขวา!
+                    self.sheet_frozen.deselect("all")
+                    try:
+                        self.sheet.select_cell(row, 0)
+                        self.sheet.see(row, 0)
+                        self.sheet.focus_set()
+                    except Exception: pass
             else:
-                # ➡️ ถ้าสุดขอบตารางตรึง ให้เด้งข้ามไปตารางหลักฝั่งขวา!
-                self.sheet_frozen.deselect("all")
-                self.sheet.select_cell(row, 0)
-                self.sheet.see(row, 0)
-                self.sheet.focus_set()
-        else:
-            total_cols = self.sheet.get_total_columns()
-            total_rows = self.sheet.get_total_rows()
-            next_col = col + 1
-            if next_col < total_cols:
-                self.sheet.deselect("all")
-                self.sheet.select_cell(row, next_col)
-                self.sheet.see(row, next_col)
-            else:
-                if row + 1 < total_rows:
+                total_cols = self.sheet.get_total_columns()
+                total_rows = self.sheet.get_total_rows()
+                next_col = col + 1
+                if next_col < total_cols:
                     self.sheet.deselect("all")
-                    # ↩️ ขึ้นบรรทัดใหม่ กระโดดกลับไปเริ่มที่ตารางตรึง (ถ้ามี)
-                    if self.sheet_frozen:
-                        self.sheet_frozen.select_cell(row + 1, 0)
-                        self.sheet_frozen.see(row + 1, 0)
-                        self.sheet_frozen.focus_set()
-                    else:
-                        self.sheet.select_cell(row + 1, 0)
-                        self.sheet.see(row + 1, 0)
+                    try:
+                        self.sheet.select_cell(row, next_col)
+                        self.sheet.see(row, next_col)
+                    except Exception: pass
+                else:
+                    if row + 1 < total_rows:
+                        self.sheet.deselect("all")
+                        # ↩️ ขึ้นบรรทัดใหม่ กระโดดกลับไปเริ่มที่ตารางตรึง (ถ้ามี)
+                        if self.sheet_frozen:
+                            try:
+                                self.sheet_frozen.select_cell(row + 1, 0)
+                                self.sheet_frozen.see(row + 1, 0)
+                                self.sheet_frozen.focus_set()
+                            except Exception: pass
+                        else:
+                            try:
+                                self.sheet.select_cell(row + 1, 0)
+                                self.sheet.see(row + 1, 0)
+                            except Exception: pass
+        except Exception as e:
+            print(f"_move_right error: {e}")
 
     def _on_enter_pressed(self, event=None, is_frozen=False):
         try:
@@ -2473,32 +3223,11 @@ class CostBenchmarkScreen(CTkFrame):
             self._zoom(-1)
         return "break"
 
-    def _move_right(self, row, col):
-        total_cols = self.sheet.get_total_columns()
-        total_rows = self.sheet.get_total_rows()
-        next_col = col + 1
-        if next_col < total_cols:
-            self.sheet.deselect("all")
-            self.sheet.select_cell(row, next_col)
-            self.sheet.see(row, next_col)
-        else:
-            if row + 1 < total_rows:
-                self.sheet.deselect("all")
-                self.sheet.select_cell(row + 1, 0)
-                self.sheet.see(row + 1, 0)
-
-    def _on_enter_pressed(self, event=None):
-        try:
-            curr = self.sheet.get_currently_selected()
-            if curr:
-                self._move_right(curr[0], curr[1])
-            return "break"
-        except Exception:
-            pass
 
     # ================================================================== #
     def _on_sheet_modified(self, event=None):
         try:
+            self._push_undo()
             # ← แก้: คำนวณเฉพาะ row ที่ถูก modify จริงๆ ไม่ใช่ทุก row
             if event and hasattr(event, 'cells'):
                 rows_to_calc = set(r for r, c in event.cells)
@@ -2891,20 +3620,74 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _delete_selected_rows(self):
         if not HAS_TKSHEET: return
-        selected_rows = self.sheet.get_selected_rows()
-        if not selected_rows:
-            selected_cells = self.sheet.get_selected_cells()
-            if selected_cells:
-                selected_rows = list(set(r for r, c in selected_cells))
+        
+        selected_rows = set()
+        
+        try:
+            rows = self.sheet.get_selected_rows()
+            if rows:
+                selected_rows.update(rows)
+        except Exception:
+            pass
+        
+        try:
+            cells = self.sheet.get_selected_cells()
+            if cells:
+                selected_rows.update(r for r, c in cells)
+        except Exception:
+            pass
+        
+        if self.sheet_frozen:
+            try:
+                rows = self.sheet_frozen.get_selected_rows()
+                if rows:
+                    selected_rows.update(rows)
+            except Exception:
+                pass
+            
+            try:
+                cells = self.sheet_frozen.get_selected_cells()
+                if cells:
+                    selected_rows.update(r for r, c in cells)
+            except Exception:
+                pass
+            
+            try:
+                curr = self.sheet_frozen.get_currently_selected()
+                if curr:
+                    selected_rows.add(int(curr[0]))
+            except Exception:
+                pass
+        
+        try:
+            curr = self.sheet.get_currently_selected()
+            if curr:
+                selected_rows.add(int(curr[0]))
+        except Exception:
+            pass
+
         if not selected_rows:
             messagebox.showwarning("แจ้งเตือน", "กรุณาคลิกเลือกบรรทัดที่ต้องการลบก่อน", parent=self)
             return
+        
         if messagebox.askyesno("ยืนยัน", f"ต้องการลบข้อมูลจำนวน {len(selected_rows)} บรรทัด ใช่หรือไม่?", parent=self):
-            self.sheet.delete_rows(list(selected_rows))
+            rows_list = sorted(selected_rows, reverse=True)
+            self.sheet.delete_rows(rows_list)
             if self.sheet_frozen:
-                self.sheet_frozen.delete_rows(list(selected_rows))
+                self.sheet_frozen.delete_rows(rows_list)
             self.sheet.redraw()
-
+            if self.sheet_frozen:
+                self.sheet_frozen.redraw()
+            
+            # ← แก้หลัก: re-sync scroll หลังลบ เพราะ row count เปลี่ยน
+            # และต้อง re-bind frozen scroll ด้วย เพราะ sync loop อาจหลุด
+            if self.sheet_frozen:
+                self.after(100, self._sync_vertical_scroll)
+            
+            if self.auto_save_job_id:
+                self.after_cancel(self.auto_save_job_id)
+            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
     # ================================================================== #
     def _load_from_db(self, *args):
         if not HAS_TKSHEET: return
@@ -2962,7 +3745,6 @@ class CostBenchmarkScreen(CTkFrame):
             messagebox.showerror("Error", f"โหลดข้อมูลล้มเหลว: {e}", parent=self)
         finally:
             self.sheet.bind("<<SheetModified>>", self._on_sheet_modified)
-            self.after(300, self._save_col_widths)
             if conn: self.app_container.release_connection(conn)
     
     def _hide_frozen_scrollbars(self):
@@ -3141,42 +3923,101 @@ class CostBenchmarkScreen(CTkFrame):
         real_cols = set()
         col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
 
-        # 1. เช็คจาก Sheet หลัก
+        # 1. เช็คจาก Sheet หลักฝั่งขวา
         try:
-            selected_cols = self.sheet.get_selected_columns()
-            if selected_cols:
-                for c in selected_cols:
-                    real_cols.add(c + col_offset)
-        except Exception:
-            pass
+            sel_cols = self.sheet.get_selected_columns()
+            if sel_cols:
+                for c in sel_cols: real_cols.add(int(c) + col_offset)
+                
+            sel_cells = self.sheet.get_selected_cells()
+            if sel_cells:
+                for r, c in sel_cells: real_cols.add(int(c) + col_offset)
+                
+            curr = self.sheet.get_currently_selected()
+            if curr:
+                # รองรับ tksheet ทุกเวอร์ชั่น
+                if isinstance(curr[0], int):
+                    real_cols.add(int(curr[1]) + col_offset)
+                elif isinstance(curr[0], str) and len(curr) >= 2:
+                    if curr[0] == "column": real_cols.add(int(curr[1]) + col_offset)
+                    elif curr[0] == "cell" and len(curr) >= 3: real_cols.add(int(curr[2]) + col_offset)
+        except Exception as e: 
+            print(f"Error right cols: {e}")
 
-        try:
-            selected_cells = self.sheet.get_selected_cells()
-            if selected_cells:
-                for r, c in selected_cells:
-                    real_cols.add(c + col_offset)
-        except Exception:
-            pass
-
-        # 2. เช็คจาก Sheet ที่ตรึงไว้ (ถ้ามี)
+        # 2. เช็คจาก Sheet ที่ตรึงไว้ฝั่งซ้าย (ถ้ามี)
         if self.sheet_frozen:
             try:
-                frozen_cols = self.sheet_frozen.get_selected_columns()
-                if frozen_cols:
-                    for c in frozen_cols:
-                        real_cols.add(c)
-            except Exception:
-                pass
+                sel_cols = self.sheet_frozen.get_selected_columns()
+                if sel_cols:
+                    for c in sel_cols: real_cols.add(int(c))
+                    
+                sel_cells = self.sheet_frozen.get_selected_cells()
+                if sel_cells:
+                    for r, c in sel_cells: real_cols.add(int(c))
+                    
+                curr = self.sheet_frozen.get_currently_selected()
+                if curr:
+                    if isinstance(curr[0], int):
+                        real_cols.add(int(curr[1]))
+                    elif isinstance(curr[0], str) and len(curr) >= 2:
+                        if curr[0] == "column": real_cols.add(int(curr[1]))
+                        elif curr[0] == "cell" and len(curr) >= 3: real_cols.add(int(curr[2]))
+            except Exception as e: 
+                print(f"Error frozen cols: {e}")
 
-            try:
-                frozen_cells = self.sheet_frozen.get_selected_cells()
-                if frozen_cells:
-                    for r, c in frozen_cells:
-                        real_cols.add(c)
-            except Exception:
-                pass
+        # กรองเอาเฉพาะ index ที่ถูกต้องจริงๆ
+        valid_cols = [int(c) for c in list(real_cols) if 0 <= int(c) < len(self.columns)]
+        return valid_cols
 
-        return real_cols
+    def _apply_hidden_columns(self):
+        """เรียกใช้เพื่อสั่งซ่อนคอลัมน์ตามที่จำไว้ในฐานข้อมูล"""
+        if not HAS_TKSHEET: return
+        
+        # แสดงทั้งหมดก่อน
+        try:
+            self.sheet.display_columns("all")
+            if self.sheet_frozen:
+                self.sheet_frozen.display_columns("all")
+        except Exception: pass
+
+        self._restore_col_widths() # คืนค่าความกว้างเดิม
+
+        if not getattr(self, "hidden_cols_list", []): return
+
+        # กรองเฉพาะ Index ที่ไม่เกินจำนวนคอลัมน์
+        self.hidden_cols_list = [c for c in set(self.hidden_cols_list) if 0 <= c < len(self.columns)]
+
+        if self.sheet_frozen is not None:
+            frozen_hides = [c for c in self.hidden_cols_list if c < self.frozen_col_count]
+            main_hides = [c - self.frozen_col_count for c in self.hidden_cols_list if c >= self.frozen_col_count]
+            
+            if frozen_hides:
+                try: self.sheet_frozen.hide_columns(frozen_hides)
+                except Exception: pass
+                # ⚠️ ไม้ตาย: บังคับปรับความกว้างเป็น 0 และใส่ป้องกัน Error
+                for c in frozen_hides: 
+                    try: self.sheet_frozen.column_width(c, 0)
+                    except Exception: pass
+                    
+            if main_hides:
+                try: self.sheet.hide_columns(main_hides)
+                except Exception: pass
+                # ⚠️ ไม้ตาย: บังคับปรับความกว้างเป็น 0 และใส่ป้องกัน Error
+                for c in main_hides: 
+                    try: self.sheet.column_width(c, 0)
+                    except Exception: pass
+        else:
+            try: self.sheet.hide_columns(self.hidden_cols_list)
+            except Exception: pass
+            for c in self.hidden_cols_list: 
+                try: self.sheet.column_width(c, 0)
+                except Exception: pass
+            
+        try: self.sheet.redraw()
+        except Exception: pass
+        if self.sheet_frozen: 
+            try: self.sheet_frozen.redraw()
+            except Exception: pass
 
     def _hide_selected_columns(self):
         if not HAS_TKSHEET: return
@@ -3186,26 +4027,14 @@ class CostBenchmarkScreen(CTkFrame):
             messagebox.showwarning("แจ้งเตือน", "กรุณาคลิก 'ช่องใดๆ' หรือ 'หัวคอลัมน์' ที่ต้องการซ่อนก่อน", parent=self)
             return
 
-        # อัปเดตเก็บประวัติคอลัมน์ที่ซ่อนไว้ (Global Index)
+        # อัปเดตเก็บประวัติคอลัมน์ที่ซ่อนไว้
         self.hidden_cols_list.extend(real_cols)
         self.hidden_cols_list = list(set(self.hidden_cols_list))
 
-        # สั่งซ่อนใน Tksheet
-        if self.sheet_frozen is not None:
-            # แยกซ่อนคอลัมน์ฝั่งซ้าย(ที่ตรึง) และฝั่งขวา(ที่เลื่อนได้)
-            frozen_hides = [c for c in self.hidden_cols_list if c < self.frozen_col_count]
-            main_hides = [c - self.frozen_col_count for c in self.hidden_cols_list if c >= self.frozen_col_count]
-            
-            if frozen_hides:
-                self.sheet_frozen.hide_columns(frozen_hides)
-            if main_hides:
-                self.sheet.hide_columns(main_hides)
-        else:
-            self.sheet.hide_columns(self.hidden_cols_list)
+        self._apply_hidden_columns() # <--- เรียกใช้ระบบจัดระเบียบใหม่
+        self._save_user_settings()   # <--- บันทึกลง DB ทันที
 
-        self._save_user_settings()
-
-        # 🧹 สิ่งสำคัญ: เคลียร์ Selection ทิ้ง ป้องกันการจำค่าไปใช้ครั้งต่อไป ("พาเพื่อนไปด้วย")
+        # เคลียร์ Selection
         self.sheet.deselect("all")
         if self.sheet_frozen:
             self.sheet_frozen.deselect("all")
@@ -3223,7 +4052,7 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet_frozen.display_columns("all")
             self.sheet_frozen.redraw()
             
-        self._save_user_settings()
+        self._save_user_settings() # <--- บันทึกลง DB ทันที
         self.sheet.redraw()
 
     def _change_header_color(self):
@@ -3232,33 +4061,37 @@ class CostBenchmarkScreen(CTkFrame):
         if not real_cols:
             messagebox.showwarning("แจ้งเตือน", "กรุณาคลิก 'ช่องใดๆ' หรือ 'หัวคอลัมน์' ที่ต้องการเปลี่ยนสีก่อน", parent=self)
             return
+            
         color_tuple = colorchooser.askcolor(title="เลือกสีสำหรับหัวคอลัมน์", parent=self)
-        if not color_tuple or not color_tuple[1]:
-            return
+        if not color_tuple or not color_tuple[1]: return
+        
         color_code = color_tuple[1]
-        for c_idx in real_cols:
-            if c_idx < len(self.columns):
-                self.custom_header_colors[self.columns[c_idx]] = color_code
-
-        col_offset = self.frozen_col_count
+        col_offset = self.frozen_col_count if self.sheet_frozen else 0
+        
         for c_idx in real_cols:
             if c_idx >= len(self.columns): continue
+            self.custom_header_colors[self.columns[c_idx]] = color_code
+            
             b_bg = self._lighten_color(color_code, amount=0.85)
             display_idx = c_idx - col_offset
-            try:
-                if display_idx >= 0:
-                    self.sheet.highlight_cells(row=0, column=display_idx, bg=color_code, fg="black", canvas="header")
-                    self.sheet.highlight_columns(columns=[display_idx], bg=b_bg, fg="black", highlight_header=False)
-                elif self.sheet_frozen:
+            
+            if display_idx < 0 and self.sheet_frozen:
+                try:
                     self.sheet_frozen.highlight_cells(row=0, column=c_idx, bg=color_code, fg="black", canvas="header")
                     self.sheet_frozen.highlight_columns(columns=[c_idx], bg=b_bg, fg="black", highlight_header=False)
-            except Exception:
-                pass
+                except Exception: pass
+            elif display_idx >= 0:
+                try:
+                    self.sheet.highlight_cells(row=0, column=display_idx, bg=color_code, fg="black", canvas="header")
+                    self.sheet.highlight_columns(columns=[display_idx], bg=b_bg, fg="black", highlight_header=False)
+                except Exception: pass
 
         self._save_user_settings()
-        self.sheet.redraw()
+        try: self.sheet.redraw()
+        except Exception: pass
         if self.sheet_frozen:
-            self.sheet_frozen.redraw()
+            try: self.sheet_frozen.redraw()
+            except Exception: pass
 
     # ================================================================== #
     # ZOOM
@@ -3269,8 +4102,7 @@ class CostBenchmarkScreen(CTkFrame):
         old_zoom = self.zoom_level
         self.zoom_level = max(2, min(40, self.zoom_level + direction))
 
-        if old_zoom == self.zoom_level:
-            return
+        if old_zoom == self.zoom_level: return
 
         scale_ratio = self.zoom_level / old_zoom
         new_row_height = int(30 * (self.zoom_level / 11.0))
@@ -3290,56 +4122,52 @@ class CostBenchmarkScreen(CTkFrame):
 
         try:
             for i in range(self.sheet.get_total_columns()):
-                current_w = self.sheet.column_width(i)
-                if current_w:
-                    self.sheet.column_width(i, int(current_w * scale_ratio))
+                try:
+                    current_w = self.sheet.column_width(i)
+                    if current_w:
+                        self.sheet.column_width(i, int(current_w * scale_ratio))
+                except Exception: pass
 
             frozen_width = 40
             if self.sheet_frozen:
                 for i in range(self.frozen_col_count):
-                    current_w = self.sheet_frozen.column_width(i)
-                    if current_w:
-                        new_w = int(current_w * scale_ratio)
-                        self.sheet_frozen.column_width(i, new_w)
-                        frozen_width += new_w
+                    try:
+                        current_w = self.sheet_frozen.column_width(i)
+                        if current_w:
+                            new_w = int(current_w * scale_ratio)
+                            self.sheet_frozen.column_width(i, new_w)
+                            frozen_width += new_w
+                    except Exception: pass
                 
                 frozen_width += 4
                 self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
                 self.sheet.place(x=frozen_width, y=0, relwidth=1.0, relheight=1.0, width=-frozen_width)
 
-                # ← เพิ่ม: update resize handler ให้ใช้ frozen_width ใหม่
                 def _on_resize_after_zoom(event, fw=frozen_width):
-                    try:
-                        self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
-                    except Exception:
-                        pass
+                    try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                    except Exception: pass
                 self.table_frame.bind("<Configure>", _on_resize_after_zoom)
-
         except Exception as e:
             print(f"Zoom resize error: {e}")
 
-        self.sheet.redraw()
+        try: self.sheet.redraw()
+        except Exception: pass
         if self.sheet_frozen:
-            self.sheet_frozen.redraw()
+            try: self.sheet_frozen.redraw()
+            except Exception: pass
 
-        # ← เพิ่ม: sync row height ทุก row ให้ตรงกันหลัง zoom
         def _sync_after_zoom():
             try:
                 if self.sheet_frozen:
                     rh = int(30 * (self.zoom_level / 11.0))
-                    total_rows = max(
-                        self.sheet.get_total_rows(),
-                        self.sheet_frozen.get_total_rows()
-                    )
+                    total_rows = max(self.sheet.get_total_rows(), self.sheet_frozen.get_total_rows())
                     for r in range(total_rows):
                         self.sheet_frozen.row_height(r, rh)
                         self.sheet.row_height(r, rh)
                     self.sheet_frozen.redraw()
                     self.sheet.redraw()
-                    # ← ซ่อน scrollbar frozen อีกครั้งหลัง zoom
                     self._hide_frozen_scrollbars()
-            except Exception:
-                pass
+            except Exception: pass
 
         self.after(100, _sync_after_zoom)
         self.after(100, self._save_col_widths)
