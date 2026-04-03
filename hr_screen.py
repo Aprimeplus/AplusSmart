@@ -53,7 +53,7 @@ from sqlalchemy import create_engine
 
 # (import ส่วนที่เหลือของโปรแกรม)
 from hr_windows import HRVerificationWindow, PayoutDetailWindow, PayoutCalculationViewer, SOPopupWindow, CalculationDetailViewer
-from history_windows import PurchaseDetailWindow , CancelledHistoryWindow
+from history_windows import PurchaseDetailWindow, CancelledHistoryWindow, STATUS_THAI_MAP
 from custom_widgets import NumericEntry, DateSelector
 import utils
 import business_logic
@@ -852,6 +852,7 @@ class HRScreen(CTkFrame):
             'payout_period_text': 'รอบค่าคอม',
             'sale_key': 'รหัสพนักงาน', 'sale_name': 'ชื่อพนักงาน', 'plan_name': 'แผน',
             'sales_target': 'เป้าหมาย', 
+            'avg_margin': 'Avg Margin (%)',   # <<< ✅ เพิ่มคอลัมน์นี้ตรงนี้
             'total_sales': 'ยอดขาย',
             'total_normal_sales': 'Normal',
             'total_below_sales': 'BelowT',
@@ -883,13 +884,18 @@ class HRScreen(CTkFrame):
                 width = 130
             
             # คอลัมน์ตัวเลขให้ชิดขวา
-            if col_id in ['sales_target', 'total_sales', 'total_normal_sales', 'total_below_sales',
+            elif col_id in ['sales_target', 'total_sales', 'total_normal_sales', 'total_below_sales',
                 'final_commission', 'incentives_total', 'deductions_total', 
                 'withholding_tax', 'net_commission']:
                 anchor = 'e'
                 width = 130
                 if col_id in ['total_normal_sales', 'total_below_sales']:
                     width = 100 
+
+            # <<< ✅ จุดที่เพิ่ม >>>
+            elif col_id == 'avg_margin':
+                anchor = 'e'
+                width = 110
             
             tree.heading(col_id, text=col_text, anchor='center')
             tree.column(col_id, anchor=anchor, width=width, minwidth=60)
@@ -909,7 +915,14 @@ class HRScreen(CTkFrame):
                     'withholding_tax', 'net_commission'
                 ]
 
-                if col_id in money_cols:
+                # <<< ✅ จัดเรียง if-elif ให้ถูกต้อง >>>
+                if col_id == 'avg_margin':
+                    try:
+                        values.append(f"{float(value):.2f}%")
+                    except (ValueError, TypeError):
+                        values.append("0.00%")
+                
+                elif col_id in money_cols:
                     try:
                         # พยายามแปลงเป็น float (รองรับทั้ง None, "", และ string ที่มี comma)
                         if pd.isna(value) or str(value).strip() == "":
@@ -1423,22 +1436,24 @@ class HRScreen(CTkFrame):
             base_query = """
                 SELECT 
                     log.id, 
-                    log.payout_period_text,   -- <<< ✅ เพิ่มบรรทัดนี้
+                    log.payout_period_text,
                     log.sale_key, 
                     u.sale_name, 
                     log.plan_name, 
                     u.sales_target,
+                    -- คำนวณ Avg Margin สดๆ จากบิลทั้งหมดในรอบนี้ (เอาสัญลักษณ์เปอร์เซ็นต์ออกแล้ว)
+                    (SELECT COALESCE(SUM(final_gp) / NULLIF(SUM(final_sales_amount), 0) * 100, 0) FROM commissions WHERE payout_id = log.id) AS avg_margin,
                     log.total_sales,
                     log.total_normal_sales,
                     log.total_below_sales,
-                    log.timestamp,            -- (เก็บไว้เพื่อแสดงผล 'วันที่จ่าย')
+                    log.timestamp,            
                     log.final_commission, 
                     log.incentives_total,
                     log.deductions_total, 
                     log.withholding_tax,
                     log.net_commission,
-                    log.commission_year,      -- <<< ✅ เพิ่มบรรทัดนี้
-                    log.commission_month      -- <<< ✅ เพิ่มบรรทัดนี้
+                    log.commission_year,     
+                    log.commission_month     
                 FROM commission_payout_logs log
                 JOIN sales_users u ON log.sale_key = u.sale_key
             """
@@ -1872,7 +1887,8 @@ class HRScreen(CTkFrame):
                         po_id = int(row['id'])
                         po_card = CTkFrame(container, border_width=1, border_color="#E2E8F0")
                         po_card.pack(fill="x", padx=10, pady=5)
-                        info = f"  - PO: {row['po_number']} | Supplier: {row['supplier_name']} | สถานะ: {row['status']}"
+                        status_th = STATUS_THAI_MAP.get(row['status'], row['status'])
+                        info = f"  - PO: {row['po_number']} | Supplier: {row['supplier_name']} | สถานะ: {status_th}"
                         CTkLabel(po_card, text=info).pack(side="left", padx=10, pady=5)
                         CTkButton(po_card, text="แก้ไข PO", width=100, command=lambda pid=po_id: self._open_po_editor_for_hr(pid)).pack(side="right", padx=10, pady=5)
                 except Exception as e:

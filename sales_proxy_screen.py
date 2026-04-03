@@ -232,16 +232,8 @@ class SOShortnoteSearchDialog(CTkToplevel):
             cutting_fee = format_money(so_data.get('cutting_drilling_fee'))
             discount = format_money(so_data.get('coupons'))
 
-            def format_date(date_val):
-                if pd.notna(date_val) and date_val:
-                    try:
-                        if hasattr(date_val, 'strftime'): return date_val.strftime('%d/%m')
-                        return pd.to_datetime(date_val).strftime('%d/%m')
-                    except: return str(date_val)
-                return "-"
-
-            date_to_wh = format_date(so_data.get('date_to_warehouse'))
-            date_to_cust = format_date(so_data.get('date_to_customer'))
+            date_to_wh = utils.format_date_safe(so_data.get('date_to_warehouse'), '%d/%m')
+            date_to_cust = utils.format_date_safe(so_data.get('date_to_customer'), '%d/%m')
 
             delivery_type = so_data.get('delivery_type') or '-'
             order_pur_val = so_data.get('order_pur') or '-'
@@ -300,7 +292,7 @@ class SOShortnoteSearchDialog(CTkToplevel):
             unloading_stat = so_data.get('unloading_status') or '-'
 
             # สร้างเส้นคั่น
-            separator = "🔥" * 10
+            separator = "-" * 10
 
             shortnote_text = (
                 f"เลขที่ {so_number}\n"
@@ -308,9 +300,7 @@ class SOShortnoteSearchDialog(CTkToplevel):
                 f"ค่าส่ง  : {shipping_cost}\n"
                 f"ค่าย้าย : {relocation_cost}\n"
                 f"ค่าตัด : {cutting_fee}\n"
-                ########################
                 f"ยอดชำระ : {payment_display}\n"
-                ############################
                 f"ค่าธรรมเนียมบัตรเครดิต : {credit_card_fee}\n"
                 f"ค่าธรรมเนียมโอน : {transfer_fee}\n"
                 f"ภาษีหัก ณ ที่จ่าย : {wht_fee}\n"
@@ -325,6 +315,7 @@ class SOShortnoteSearchDialog(CTkToplevel):
                 f"Payment : {remark_text}\n"
                 f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n"
                 f"{separator}\n"
+                f"การจัดส่ง : {delivery_type}\n"
                 f"แผนที่จัดส่ง : {delivery_map}\n"
                 f"Location เข้ารับ : {pickup_loc}\n"
                 f"ประเภทรถ : {vehicle_type}\n"
@@ -348,7 +339,6 @@ class SOShortnoteSearchDialog(CTkToplevel):
             messagebox.showerror("ข้อผิดพลาด", f"ไม่สามารถสร้าง Shortnote ได้: {e}", parent=self)
             import traceback
             traceback.print_exc()
-
 
 # ==============================================================================
 # 🟢 Class หน้าจอหลักของ Sale Support

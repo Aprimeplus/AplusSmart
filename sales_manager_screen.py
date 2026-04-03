@@ -22,6 +22,26 @@ matplotlib.use('TkAgg')
 from history_windows import SOPopupWindow
 from daily_report_widget import DailyReportWidget
 
+STATUS_THAI_MAP = {
+    'Draft': 'ฉบับร่าง',
+    'Edited': 'แก้ไข/บันทึกร่าง',
+    'Pending Sale Manager Approval': 'รอ ผจก.ฝ่ายขายอนุมัติ',
+    'Rejected by SM': 'ผจก.ขาย ตีกลับ',
+    'Pending PU': 'รอฝ่ายจัดซื้อรับงาน',
+    'PO In Progress': 'จัดซื้อกำลังดำเนินการ',
+    'Pending Approval': 'รออนุมัติ PO',
+    'Approved': 'อนุมัติแล้ว',
+    'Rejected': 'ถูกตีกลับให้แก้ไข',
+    'PO Sent': 'สั่งซื้อ/เปิด PO เรียบร้อย',
+    'Forwarded_To_HR': 'ส่งต่อให้ HR',
+    'HR Verified': 'HR ตรวจสอบแล้ว',
+    'Paid': 'จ่ายค่าคอมฯ แล้ว',
+    'Defer Requested': 'HR ขอเลื่อนจ่าย',
+    'Deferred': 'ถูกเลื่อนการจ่าย',
+    'Cancelled': 'ยกเลิก',
+    'Cancelled by PU': 'ยกเลิกโดยจัดซื้อ'
+}
+
 class ToastNotification(CTkToplevel):
     """หน้าต่างแจ้งเตือนมุมขวาล่าง เด้งโชว์แล้วหายไปเอง (ไม่บล็อกการทำงาน)"""
     def __init__(self, master, title, message, duration=10000, color="#16A34A"):
@@ -704,7 +724,10 @@ class SalesManagerScreen(CTkFrame):
                 font=CTkFont(size=13, weight="bold"),
                 anchor="w").pack(anchor="w")
         
-        line2 = f"🎯 เซลล์: {so_data.get('sale_name', '-')}  |  💰 {amount:,.2f} บาท  |  📌 {status}"
+        # 🟢 แปลงสถานะเป็นภาษาไทยเฉพาะตอนโชว์ข้อความ (สีพื้นหลังจะได้ไม่พัง)
+        status_th = STATUS_THAI_MAP.get(status, status)
+        
+        line2 = f"🎯 เซลล์: {so_data.get('sale_name', '-')}  |  💰 {amount:,.2f} บาท  |  📌 {status_th}"
         CTkLabel(info_frame, text=line2,
                 font=CTkFont(size=12),
                 text_color="#6B7280",

@@ -8,6 +8,34 @@ import psycopg2
 from custom_widgets import DateSelector
 from daily_report_dashboard import DailyDashboard
 
+
+STATUS_THAI_MAP = {
+    # --- ฝั่งเซลล์ (Sales) ---
+    'Draft': 'ฉบับร่าง',
+    'Edited': 'แก้ไข/บันทึกร่าง',
+    'Pending Sale Manager Approval': 'รอ ผจก.ฝ่ายขายอนุมัติ',
+    'Rejected by SM': 'ผจก.ขาย ตีกลับ',
+    
+    # --- ฝั่งจัดซื้อ (PU) ---
+    'Pending PU': 'รอฝ่ายจัดซื้อรับงาน',
+    'PO In Progress': 'จัดซื้อกำลังดำเนินการ',
+    'Pending Approval': 'รออนุมัติ PO',
+    'Approved': 'อนุมัติแล้ว',
+    'Rejected': 'ถูกตีกลับให้แก้ไข',
+    'PO Sent': 'สั่งซื้อ/เปิด PO เรียบร้อย',
+    
+    # --- ฝั่งบุคคล/การเงิน (HR/Finance) ---
+    'Forwarded_To_HR': 'ส่งต่อให้ HR',
+    'HR Verified': 'HR ตรวจสอบแล้ว',
+    'Paid': 'จ่ายค่าคอมฯ แล้ว',
+    'Defer Requested': 'HR ขอเลื่อนจ่าย',
+    'Deferred': 'ถูกเลื่อนการจ่าย',
+    
+    # --- ยกเลิก (Cancelled) ---
+    'Cancelled': 'ยกเลิก',
+    'Cancelled by PU': 'ยกเลิกโดยจัดซื้อ'
+}
+
 class DailyReportWidget(CTkFrame):
     def __init__(self, master, app_container, sale_key_filter=None, **kwargs):
         super().__init__(master, **kwargs)
@@ -308,6 +336,10 @@ class DailyReportWidget(CTkFrame):
                 
                 sum_booking += booking; sum_paid += paid
 
+                # 🟢 2. ดึงสถานะภาษาอังกฤษมาแปลงเป็นภาษาไทยก่อนยัดลงตาราง
+                status_en = row['status']
+                status_th = STATUS_THAI_MAP.get(status_en, status_en)
+
                 # ลำดับข้อมูลต้องตรงกับ self.columns
                 vals = (
                     row['so_number'],
@@ -323,7 +355,7 @@ class DailyReportWidget(CTkFrame):
                     f"{service_fee:,.2f}",
                     row.get('sale_name') or row.get('sale_key'),
                     row['final_pu_name'], 
-                    row['status']
+                    status_th # 🟢 3. เปลี่ยนจาก row['status'] เป็น status_th
                 )
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
                 self.tree.insert("", "end", values=vals, tags=(tag, status_tag))
@@ -368,6 +400,8 @@ class DailyReportWidget(CTkFrame):
             export_df['sales_service_amount'] = export_df['sales_service_amount'].fillna(0)
             export_df['total_payment_amount'] = export_df['total_payment_amount'].fillna(0)
             export_df['difference_amount'] = export_df['difference_amount'].fillna(0)
+            
+            export_df['status'] = export_df['status'].map(lambda x: STATUS_THAI_MAP.get(x, x))
             
             def get_status_text(row):
                 d = row['difference_amount']

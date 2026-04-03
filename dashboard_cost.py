@@ -82,7 +82,9 @@ class DashboardCostScreen(CTkFrame):
 
         self.raw_df = pd.DataFrame()
         self.all_order_nos = [] 
-        self.all_sale_order_nos = [] # 🟢 เพิ่มตัวแปรเก็บรายชื่อ Sale Order No. ทั้งหมด
+        self.all_sale_order_nos = []
+        self.all_product_names = []
+        self.all_suppliers = []
 
         self._build_sidebar()
         self._build_main_content()
@@ -109,6 +111,7 @@ class DashboardCostScreen(CTkFrame):
             "date_to":       tk.StringVar(value=""),
             "order_no":      tk.StringVar(value="All"),
             "sale_order_no": tk.StringVar(value="All"),
+            "product_name":  tk.StringVar(value="All"),
             "pu_user":       tk.StringVar(value="All"),
             "sale_name":     tk.StringVar(value="All"),
             "supplier":      tk.StringVar(value="All"),
@@ -184,9 +187,11 @@ class DashboardCostScreen(CTkFrame):
         filters_config = [
             ("🔍 Order No. (พิมพ์ค้นหา)", "order_no"),
             ("🔍 Sale Order No. (พิมพ์ค้นหา)", "sale_order_no"),
+            ("🔍 รายการสินค้า (พิมพ์ค้นหา)", "product_name"),
+            ("🔍 ชื่อ Supplier (พิมพ์ค้นหา)", "supplier"),  # ← เหลือแค่นี้อันเดียว
             ("ผู้ทำตาราง (PU User)", "pu_user"),
             ("ชื่อ Sale",        "sale_name"),
-            ("ชื่อ Supplier",    "supplier"),
+            # ← ลบ "ชื่อ Supplier" ตัวที่สองออก
             ("สถานะ",            "status"),
             ("PRIORITY",        "priority"),
             ("Select",          "select"),
@@ -200,7 +205,7 @@ class DashboardCostScreen(CTkFrame):
                         text_color=COLORS["text_medium"])
             lbl.pack(anchor="w", padx=12, pady=(8, 1))
 
-            if key in ["order_no", "sale_order_no"]:
+            if key in ["order_no", "sale_order_no", "product_name", "supplier"]:
                 menu = CTkComboBox(
                     sidebar,
                     variable=self.filter_vars[key],
@@ -220,8 +225,12 @@ class DashboardCostScreen(CTkFrame):
                 
                 if key == "order_no":
                     menu.bind("<KeyRelease>", self._on_order_search)
-                else:
+                elif key == "sale_order_no":
                     menu.bind("<KeyRelease>", self._on_sale_order_search)
+                elif key == "product_name":
+                    menu.bind("<KeyRelease>", self._on_product_search)
+                elif key == "supplier": 
+                    menu.bind("<KeyRelease>", self._on_supplier_search) # 🟢 เพิ่มบรรทัดนี้
                     
                 menu.bind("<Return>", self._apply_filters)
                 
@@ -256,30 +265,110 @@ class DashboardCostScreen(CTkFrame):
 
     # 🟢 ฟังก์ชันอัจฉริยะ สำหรับค้นหา Order No. ใน Dropdown แบบเรียลไทม์
     def _on_order_search(self, event):
-        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return']:
-            return 
-        typed_text = self.filter_vars["order_no"].get().lower()
-        if typed_text == "" or typed_text == "all":
-            self.filter_menus["order_no"].configure(values=["All"] + self.all_order_nos)
-        else:
-            matching_orders = [order for order in self.all_order_nos if typed_text in str(order).lower()]
-            if matching_orders:
-                self.filter_menus["order_no"].configure(values=matching_orders)
-            else:
-                self.filter_menus["order_no"].configure(values=["ไม่พบข้อมูล"])
+        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Escape']:
+            return
+        typed = self.filter_vars["order_no"].get().lower()
+        matches = [o for o in self.all_order_nos if typed in str(o).lower()] if typed and typed != "all" else self.all_order_nos
+        self._show_search_popup("order_no", matches, self.filter_menus["order_no"])
 
     def _on_sale_order_search(self, event):
-        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return']:
-            return 
-        typed_text = self.filter_vars["sale_order_no"].get().lower()
-        if typed_text == "" or typed_text == "all":
-            self.filter_menus["sale_order_no"].configure(values=["All"] + self.all_sale_order_nos)
-        else:
-            matching_orders = [order for order in self.all_sale_order_nos if typed_text in str(order).lower()]
-            if matching_orders:
-                self.filter_menus["sale_order_no"].configure(values=matching_orders)
-            else:
-                self.filter_menus["sale_order_no"].configure(values=["ไม่พบข้อมูล"])
+        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Escape']:
+            return
+        typed = self.filter_vars["sale_order_no"].get().lower()
+        matches = [o for o in self.all_sale_order_nos if typed in str(o).lower()] if typed and typed != "all" else self.all_sale_order_nos
+        self._show_search_popup("sale_order_no", matches, self.filter_menus["sale_order_no"])
+
+    def _on_product_search(self, event):
+        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Escape']:
+            return
+        typed = self.filter_vars["product_name"].get().lower()
+        matches = [p for p in self.all_product_names if typed in str(p).lower()] if typed and typed != "all" else self.all_product_names
+        self._show_search_popup("product_name", matches, self.filter_menus["product_name"])
+
+    def _on_supplier_search(self, event):
+        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Escape']:
+            return
+        typed = self.filter_vars["supplier"].get().lower()
+        matches = [s for s in self.all_suppliers if typed in str(s).lower()] if typed and typed != "all" else self.all_suppliers
+        self._show_search_popup("supplier", matches, self.filter_menus["supplier"])
+
+    def _show_search_popup(self, key, matches, anchor_widget):
+        """แสดง popup listbox ใต้ช่อง input โดยไม่บัง"""
+        # ปิด popup เก่าถ้ามี
+        if hasattr(self, '_search_popup') and self._search_popup:
+            try: self._search_popup.destroy()
+            except: pass
+            self._search_popup = None
+
+        if not matches:
+            return
+
+        popup = tk.Toplevel(self)
+        popup.overrideredirect(True)
+        popup.attributes('-topmost', True)
+        self._search_popup = popup
+
+        # วางตำแหน่งใต้ anchor_widget
+        anchor_widget.update_idletasks()
+        x = anchor_widget.winfo_rootx()
+        y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 2
+        w = anchor_widget.winfo_width()
+
+        popup.configure(bg="#D1D5DB")
+
+        frame = tk.Frame(popup, bg="white")
+        frame.pack(fill="both", expand=True, padx=1, pady=1)
+
+        sb = tk.Scrollbar(frame)
+        sb.pack(side="right", fill="y")
+
+        h = min(len(matches), 8)
+        lb = tk.Listbox(frame, font=(FONT_FAMILY, 11),
+                        selectbackground="#3B82F6", selectforeground="white",
+                        relief="flat", borderwidth=0, highlightthickness=0,
+                        height=h, yscrollcommand=sb.set, activestyle="none")
+        lb.pack(side="left", fill="both", expand=True)
+        sb.config(command=lb.yview)
+
+        for item in matches[:100]:
+            lb.insert(tk.END, item)
+
+        popup.geometry(f"{w}x{h * 22 + 4}+{x}+{y}")
+
+        def on_select(e=None):
+            sel = lb.curselection()
+            if sel:
+                val = lb.get(sel[0])
+                self.filter_vars[key].set(val)
+                self._apply_filters()
+            try: popup.destroy()
+            except: pass
+            self._search_popup = None
+
+        def on_close(e=None):
+            self.after(200, lambda: _try_close())
+
+        def _try_close():
+            try:
+                focused = str(self.focus_get())
+                # ถ้า focus ยังอยู่ใน popup หรือ anchor → ไม่ปิด
+                if str(popup) in focused or str(anchor_widget) in focused:
+                    return
+                popup.destroy()
+                self._search_popup = None
+            except:
+                pass
+
+        lb.bind("<ButtonRelease-1>", on_select)
+        lb.bind("<Return>", on_select)
+        lb.bind("<Escape>", lambda e: [popup.destroy().__setattr__('_search_popup', None)])
+        
+        # ปิดเมื่อ focus ออกจาก anchor
+        anchor_widget.bind("<FocusOut>", on_close, add="+")
+        anchor_widget.bind("<Escape>", lambda e: popup.destroy(), add="+")
+        
+        # scroll keyboard ใน listbox
+        anchor_widget.bind("<Down>", lambda e: [lb.focus_set(), lb.selection_set(0)] if lb.size() > 0 else None, add="+")
 
 
     # =========================================================
@@ -387,6 +476,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nMarkup\nGuide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)",
             "Sum of\nต้นทุน/เส้น",
+            "ต้นทุน/\nกก.",    
             "ชื่อ Supplier",
             "Average of\nส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)",
@@ -394,7 +484,7 @@ class DashboardCostScreen(CTkFrame):
         ]
 
         self.col_source = {
-            "Selec\nt":                          "Select", 
+            "Select":                          "Select", 
             "วันที่ขอราคา":                      "วันที่ขอราคา",
             "PRIORI\nTY":                        "PRIORITY",
             "WIN RATE\n%":                        "WIN RATE %",
@@ -412,6 +502,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nMarkup\nGuide (%)":     "Markup Guide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":    "ต้นทุนรวม (รวมย้าย)",
             "Sum of\nต้นทุน/เส้น":              "ต้นทุน/เส้น",
+            "ต้นทุน/\nกก.":                     "ต้นทุน/กก. (รวมย้าย)",
             "ชื่อ Supplier":                     "ชื่อ Supplier",
             "Average of\nส่วนลด 2 (%)":         "ส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)":         "ส่วนลด 1 (%)",
@@ -425,6 +516,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nราคาขาย /\nเส้น",
             "ราคาขาย /\nกก.",
             "Sum of\nต้นทุน/เส้น",
+            "ต้นทุน/\nกก.",    
             "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)",
         }
         self.pct_cols = {
@@ -499,6 +591,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nMarkup\nGuide (%)":    100,
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":   120,
             "Sum of\nต้นทุน/เส้น":              90,
+            "ต้นทุน/\nกก.":                     85, 
             "ชื่อ Supplier":                    160,
             "Average of\nส่วนลด 2 (%)":        105,
             "Average of\nส่วนลด 1 (%)":        105,
@@ -515,6 +608,21 @@ class DashboardCostScreen(CTkFrame):
         try:
             query = "SELECT * FROM cost_benchmarks"
             df = pd.read_sql(query, conn)
+
+            try:
+                sales_df = pd.read_sql(
+                    "SELECT sale_key, full_name FROM sales_users WHERE role = 'Sale'",  
+                    #                  ↑ เปลี่ยนเป็นชื่อจริงที่ได้จาก query ด้านบน
+                    conn
+                )
+                if not sales_df.empty:
+                    # normalize ชื่อใน sales_users ให้เป็น Title Case
+                    sales_df["full_name"] = sales_df["full_name"].str.strip()
+                    sale_map = dict(zip(sales_df["sale_key"], sales_df["full_name"]))
+                    df["ชื่อ Sale"] = df["รหัส Sale"].map(sale_map).fillna(df["รหัส Sale"])
+            except Exception as e:
+                print(f"sales join error: {e}")
+                df["ชื่อ Sale"] = df.get("รหัส Sale", "")
 
             if df.empty:
                 self.raw_df = pd.DataFrame()
@@ -538,6 +646,7 @@ class DashboardCostScreen(CTkFrame):
                     "น้ำหนัก/เส้น", "ราคาขาย / เส้น", "ราคาขาย / กก.",
                     "WIN RATE %", "Markup Guide (%)",
                     "ต้นทุน/เส้น", "ส่วนลด 1 (%)", "ส่วนลด 2 (%)",
+                    "ต้นทุน/กก. (รวมย้าย)",  
                 ]
                 for col in numeric_cols:
                     if col in df.columns:
@@ -566,15 +675,20 @@ class DashboardCostScreen(CTkFrame):
 
         def uniq(col):
             if col in self.raw_df.columns:
-                vals = [str(x) for x in self.raw_df[col].unique()
-                        if str(x).strip() not in ("", "None", "nan")]
-                return ["All"] + sorted(vals)
+                # normalize ตัวพิมพ์ก่อน deduplicate
+                vals = list(dict.fromkeys(
+                    str(x).strip()
+                    for x in self.raw_df[col]
+                    if str(x).strip() not in ("", "None", "nan")
+                ))
+                return ["All"] + sorted(vals, key=lambda x: x.lower())
             return ["All"]
 
         # 🟢 ผูกชื่อตัวแปร Filter กับชื่อคอลัมน์ในตาราง Database
         mapping = {
             "order_no":      "Order No.",
-            "sale_order_no": "Sale Order No.", # 🟢 เพิ่ม Sale Order No.
+            "sale_order_no": "Sale Order No.", 
+            "product_name":  "รายการสินค้า",
             "pu_user":       "created_by",      
             "sale_name":     "ชื่อ Sale",
             "supplier":      "ชื่อ Supplier",
@@ -591,17 +705,25 @@ class DashboardCostScreen(CTkFrame):
             # เก็บ Data ทั้งหมดแยกไว้ สำหรับระบบพิมพ์ค้นหา
             if key == "order_no":
                 self.all_order_nos = [v for v in vals if v != "All"]
-            elif key == "sale_order_no": # 🟢 เก็บของ Sale Order No. ด้วย
+            elif key == "sale_order_no": 
                 self.all_sale_order_nos = [v for v in vals if v != "All"]
+            elif key == "product_name": 
+                self.all_product_names = [v for v in vals if v != "All"]
+            elif key == "supplier": # 🟢 เก็บรายชื่อ Supplier 
+                self.all_suppliers = [v for v in vals if v != "All"]
                 
             self.filter_menus[key].configure(values=vals)
             
-            # ถ้าค่าเดิมที่ตั้งไว้ไม่มีในลิสต์ (และไม่ใช่การค้นหาแบบอิสระ) ให้ปรับกลับเป็น All
+            # ถ้าค่าเดิมที่ตั้งไว้ไม่มีในลิสต์ ให้ปรับกลับเป็น All
             if self.filter_vars[key].get() not in vals and self.filter_vars[key].get() != "All":
                 if key == "order_no" and self.filter_vars[key].get() in self.all_order_nos:
-                    pass # ปล่อยผ่านถ้าค่าที่พิมพ์อยู่มันมีในลิสต์ Data ดิบ
+                    pass 
                 elif key == "sale_order_no" and self.filter_vars[key].get() in self.all_sale_order_nos:
-                    pass # ปล่อยผ่านสำหรับ Sale order
+                    pass 
+                elif key == "product_name" and self.filter_vars[key].get() in self.all_product_names: 
+                    pass
+                elif key == "supplier" and self.filter_vars[key].get() in self.all_suppliers: # 🟢 ปล่อยผ่านของ Supplier
+                    pass
                 else:
                     self.filter_vars[key].set("All")
 
@@ -620,27 +742,49 @@ class DashboardCostScreen(CTkFrame):
         date_to_str = self.filter_vars["date_to"].get()
 
         if date_from_str or date_to_str:
-            # แปลงคอลัมน์ "วันที่ขอราคา" ให้เป็นชนิด Date เพื่อเอามาเปรียบเทียบ
-            # สมมติว่าข้อมูลในระบบบันทึกแบบ dd/mm/yyyy
-            try:
-                temp_dates = pd.to_datetime(df["วันที่ขอราคา"], format='%d/%m/%Y', errors='coerce')
+            # 🟢 ฟังก์ชันอัจฉริยะ: แปลงวันที่จาก DB ให้เป็น ค.ศ. (รองรับ พ.ศ. 2569, ปีแบบย่อ 69, และ ค.ศ. 2026)
+            def parse_thai_date(val):
+                if pd.isna(val) or str(val).strip() in ("", "None", "nan"):
+                    return pd.NaT
                 
+                # ตัดเอาเฉพาะวันที่ (เผื่อมีเวลาติดมา) และเปลี่ยน - เป็น /
+                d_str = str(val).split()[0].replace("-", "/") 
+                parts = d_str.split("/")
+                
+                if len(parts) == 3:
+                    try:
+                        d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+                        if y < 100: y += 2500        # ถ้าเป็นเลขย่อ เช่น 69 -> ให้บวกเป็น 2569
+                        if y > 2400: y -= 543        # ถ้าเป็น พ.ศ. (เกิน 2400) -> ลบ 543 ให้กลายเป็น ค.ศ.
+                        return pd.to_datetime(f"{y}-{m:02d}-{d:02d}", errors='coerce')
+                    except ValueError:
+                        return pd.to_datetime(val, errors='coerce')
+                
+                return pd.to_datetime(val, errors='coerce')
+
+            try:
+                # 1. ตรวจสอบเงื่อนไขวันที่ "ตั้งแต่ (From)"
                 if date_from_str:
+                    temp_dates_from = df["วันที่ขอราคา"].apply(parse_thai_date)
                     dt_from = pd.to_datetime(date_from_str, format='%d/%m/%Y')
-                    df = df[temp_dates >= dt_from]
+                    df = df[temp_dates_from >= dt_from]
                     
+                # 2. ตรวจสอบเงื่อนไขวันที่ "ถึง (To)"
                 if date_to_str:
-                    # ปรับให้อยู่ใน Database เดียวกัน จะได้ไม่ต้องแปลงซ้ำ
-                    temp_dates = pd.to_datetime(df["วันที่ขอราคา"], format='%d/%m/%Y', errors='coerce')
+                    temp_dates_to = df["วันที่ขอราคา"].apply(parse_thai_date)
                     dt_to = pd.to_datetime(date_to_str, format='%d/%m/%Y')
-                    df = df[temp_dates <= dt_to]
+                    # บวกเวลาให้ dt_to ไปจบที่ 23:59:59 ของวันนั้น (คลุมข้อมูลให้ครบถ้วน)
+                    dt_to = dt_to.replace(hour=23, minute=59, second=59)
+                    df = df[temp_dates_to <= dt_to]
+                    
             except Exception as e:
                 print(f"Date parsing error: {e}")
 
         # 🟢 กรองข้อมูลตาม Dropdown ที่เลือก
         col_map = {
             "order_no":      "Order No.",
-            "sale_order_no": "Sale Order No.", # 🟢 เพิ่ม Sale Order No.
+            "sale_order_no": "Sale Order No.", 
+            "product_name":  "รายการสินค้า",
             "pu_user":       "created_by",
             "sale_name":     "ชื่อ Sale",
             "supplier":      "ชื่อ Supplier",
@@ -654,8 +798,8 @@ class DashboardCostScreen(CTkFrame):
         for key, col in col_map.items():
             val = self.filter_vars[key].get()
             if val != "All" and val != "" and col in df.columns:
-                # 🟢 ให้ช่อง Order No. และ Sale Order No. กรองตารางแบบ เจอคำบางส่วนก็แสดงให้เลย
-                if key in ["order_no", "sale_order_no"]:
+                # 🟢 เพิ่ม supplier ให้ค้นหาข้อความบางส่วนได้ด้วย
+                if key in ["order_no", "sale_order_no", "product_name", "supplier"]: 
                     df = df[df[col].astype(str).str.contains(val, case=False, na=False)]
                 else:
                     df = df[df[col].astype(str) == str(val)]

@@ -319,14 +319,35 @@ class SOShortnoteSearchDialog(CTkToplevel):
             messagebox.showerror("Error", f"โหลดข้อมูลล้มเหลว: {e}", parent=self)
 
     def _copy_so_shortnote(self, so_data):
-        """ลอจิก Copy Shortnote เหมือนของหน้า Sale เป๊ะๆ"""
+        """ลอจิก Copy Shortnote (รองรับทศนิยม .86 สมบูรณ์แบบ)"""
+        if not so_data:
+            messagebox.showwarning("แจ้งเตือน", "ไม่มีข้อมูล SO สำหรับคัดลอก", parent=self)
+            return
+
         try:
             so_number = so_data.get('so_number', '-')
             pickup_loc = so_data.get('pickup_location') or '-'
             
+            # 🟢 ฟังก์ชันจัดการตัวเลข (ไม่ใช้ utils และไม่ปัดเศษทิ้ง)
             def format_money(val):
-                v = utils.convert_to_float(val)
-                return f"{v:,.0f}" if v > 0 else "-"
+                try:
+                    if pd.isna(val) or val is None or str(val).strip() == '': 
+                        return "-"
+                    # ลบลูกน้ำออกและแปลงเป็น Float ตรงๆ
+                    if isinstance(val, str): 
+                        val = val.replace(',', '')
+                    v = float(val)
+                except:
+                    return "-"
+                    
+                if v <= 0: 
+                    return "-"
+                
+                # เช็คทศนิยม: ถ้ายอดกลมๆ ให้โชว์ 0 ตำแหน่ง, ถ้ามีเศษสตางค์ให้โชว์ 2 ตำแหน่ง
+                if v % 1 == 0:
+                    return f"{v:,.0f}"
+                else:
+                    return f"{v:,.2f}"
 
             sales_amount = format_money(so_data.get('sales_service_amount'))
             shipping_cost = format_money(so_data.get('shipping_cost'))
@@ -334,16 +355,8 @@ class SOShortnoteSearchDialog(CTkToplevel):
             cutting_fee = format_money(so_data.get('cutting_drilling_fee'))
             discount = format_money(so_data.get('coupons'))
 
-            def format_date(date_val):
-                if pd.notna(date_val) and date_val:
-                    try:
-                        if hasattr(date_val, 'strftime'): return date_val.strftime('%d/%m')
-                        return pd.to_datetime(date_val).strftime('%d/%m')
-                    except: return str(date_val)
-                return "-"
-
-            date_to_wh = format_date(so_data.get('date_to_warehouse'))
-            date_to_cust = format_date(so_data.get('date_to_customer'))
+            date_to_wh = utils.format_date_safe(so_data.get('date_to_warehouse'), '%d/%m')
+            date_to_cust = utils.format_date_safe(so_data.get('date_to_customer'), '%d/%m')
 
             delivery_type = so_data.get('delivery_type') or '-'
             order_pur_val = so_data.get('order_pur') or '-'
@@ -354,35 +367,87 @@ class SOShortnoteSearchDialog(CTkToplevel):
             contact_phone = so_data.get('onsite_contact_phone') or '-'
             vehicle_type = so_data.get('vehicle_type') or '-'
             
-            p1_amt = utils.convert_to_float(so_data.get('payment1_amount'))
-            total_amt = utils.convert_to_float(so_data.get('total_payment_amount'))
-            deposit_text = f"{p1_amt:,.0f}" if p1_amt > 0 else "-"
-            full_pay_text = f"{total_amt:,.0f}" if total_amt > 0 else "-"
+            # 🟢 นำ format_money ตัวใหม่มาครอบยอดชำระ
+            total_paid = so_data.get('total_payment_amount') or 0
+            difference = so_data.get('difference_amount') or 0
+            
+            try: total_val = float(str(total_paid).replace(',', ''))
+            except: total_val = 0.0
+            
+            try: diff_val = float(str(difference).replace(',', ''))
+            except: diff_val = 0.0
+
+            # คำนวณยอดเต็มที่แท้จริง
+            grand_total = total_val - diff_val
+
+            if total_val <= 0:
+                payment_display = f"ยังไม่ชำระ (ยอดที่ต้องชำระ {format_money(grand_total)})"
+            elif diff_val < -0.01:
+                # กรณีติดลบ = โอนขาด หรือ มัดจำ
+                payment_display = f"มัดจำ {format_money(total_val)} (ค้างชำระ {format_money(abs(diff_val))})"
+            elif diff_val > 0.01:
+                # กรณีเป็นบวก = โอนเกิน
+                payment_display = f"เต็มจำนวน {format_money(total_val)} (โอนเกิน {format_money(diff_val)})"
+            else:
+                # กรณีเป็น 0 = จ่ายพอดีเป๊ะ
+                payment_display = f"เต็มจำนวน {format_money(total_val)}"
+            
             remark_text = so_data.get('credit_term', 'เงินสด')
 
-            # 🟢 [สำคัญ] ดึงชื่อเจ้าของ SO ตัวจริงมาโชว์ที่ท้ายข้อความ ไม่ใช่ชื่อ Support
+            # หาตัวแปรชื่อผู้จัดทำ (รองรับทั้งหน้า Sale และ Support)
             maker_name = so_data.get('owner_sale_name', 'Unknown')
+            if maker_name == 'Unknown' and hasattr(self, 'commission_app'):
+                maker_name = getattr(self.commission_app, 'sale_name', 'Unknown')
+
+            brokerage_fee = format_money(so_data.get('brokerage_fee'))
+            coupon_val = format_money(so_data.get('coupons'))
+            giveaway_vat = so_data.get('giveaway_vat') or '-'
+            giveaway_no_vat = so_data.get('giveaway_no_vat') or '-'
+
+            credit_card_fee = format_money(so_data.get('credit_card_fee'))
+            transfer_fee = format_money(so_data.get('transfer_fee'))
+            wht_fee = format_money(so_data.get('wht_3_percent'))
+            
+            # (ถ้ามีคอลัมน์ส่วนลดโปรโมชั่นแยกต่างหาก ให้ใช้ promotion_discount ถ้าไม่มีระบบจะแสดงเป็น '-')
+            discount = format_money(so_data.get('promotion_discount'))
+
+            special_req = so_data.get('special_request') or '-'
+            unloading_stat = so_data.get('unloading_status') or '-'
+
+            # สร้างเส้นคั่น
+            separator = "-" * 10
 
             shortnote_text = (
                 f"เลขที่ {so_number}\n"
                 f"ยอดขาย : {sales_amount}\n"
-                f"Location เข้ารับ : {pickup_loc}\n"
                 f"ค่าส่ง  : {shipping_cost}\n"
                 f"ค่าย้าย : {relocation_cost}\n"
                 f"ค่าตัด : {cutting_fee}\n"
-                f"ส่วนลดโปรโมชั่น : {discount}\n"
+                f"ยอดชำระ : {payment_display}\n"
+                f"ค่าธรรมเนียมบัตรเครดิต : {credit_card_fee}\n"
+                f"ค่าธรรมเนียมโอน : {transfer_fee}\n"
+                f"ภาษีหัก ณ ที่จ่าย : {wht_fee}\n"
+                f"ค่านายหน้า : {brokerage_fee}\n"
+                f"คูปอง : {coupon_val}\n"
+                f"ของแถมใน so (vat) : {giveaway_vat}\n"
+                f"ของแถมนอก so (no vat) : {giveaway_no_vat}\n"
+                f"{separator}\n"
                 f"วันที่ย้ายสินค้าเข้าคลัง132 : {date_to_wh}\n"
                 f"วันที่จัดส่งลูกค้า : {date_to_cust}\n"
                 f"Order Pur : {order_pur_val}\n"
-                f"ทะเบียนรถ : {rego}\n"
-                f"ประเภทรถ : {vehicle_type}\n"
-                f"ยอดชำระ  มัดจำ {deposit_text}\n"
-                f"ยอดชำระ เต็ม {full_pay_text}\n"
-                f"Remark : {remark_text}\n"
-                f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n\n"
+                f"Payment : {remark_text}\n"
+                f"อนุมัติโอนยอดค้างส่วนที่เหลือ วันจัดส่งสินค้า ก่อนลงสินค้า\n"
+                f"{separator}\n"
+                f"การจัดส่ง : {delivery_type}\n"
                 f"แผนที่จัดส่ง : {delivery_map}\n"
+                f"Location เข้ารับ : {pickup_loc}\n"
+                f"ประเภทรถ : {vehicle_type}\n"
+                f"เงื่อนไขลงสินค้า : {unloading_stat}\n"
+                f"ทะเบียนรถ : {rego}\n"
                 f"ชื่อผู้ติดต่อหน้างาน : {contact_name}\n"
-                f"เบอร์ติดต่อหน้างาน : {contact_phone}\n\n"
+                f"เบอร์ติดต่อหน้างาน : {contact_phone}\n"
+                f"Special Request : {special_req}\n"
+                f"{separator}\n"
                 f"อ้างอิงจาก Aplus Smart\n"
                 f"ผู้จัดทำ: {maker_name}"
             )
@@ -395,3 +460,5 @@ class SOShortnoteSearchDialog(CTkToplevel):
 
         except Exception as e:
             messagebox.showerror("ข้อผิดพลาด", f"ไม่สามารถสร้าง Shortnote ได้: {e}", parent=self)
+            import traceback
+            traceback.print_exc()

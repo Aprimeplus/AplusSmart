@@ -28,6 +28,33 @@ from po_document_generator import generate_transport_fee_pdf
 #  PRINT WRAPPER FUNCTION
 # ========================================================================================
 
+STATUS_THAI_MAP = {
+    # --- ฝั่งเซลล์ (Sales) ---
+    'Draft': 'ฉบับร่าง',
+    'Edited': 'แก้ไข/บันทึกร่าง',
+    'Pending Sale Manager Approval': 'รอ ผจก.ฝ่ายขายอนุมัติ',
+    'Rejected by SM': 'ผจก.ขาย ตีกลับ',
+    
+    # --- ฝั่งจัดซื้อ (PU) ---
+    'Pending PU': 'รอฝ่ายจัดซื้อรับงาน',
+    'PO In Progress': 'จัดซื้อกำลังดำเนินการ',
+    'Pending Approval': 'รออนุมัติ PO',
+    'Approved': 'อนุมัติแล้ว',
+    'Rejected': 'ถูกตีกลับให้แก้ไข',
+    'PO Sent': 'สั่งซื้อ/เปิด PO เรียบร้อย',
+    
+    # --- ฝั่งบุคคล/การเงิน (HR/Finance) ---
+    'Forwarded_To_HR': 'ส่งต่อให้ HR',
+    'HR Verified': 'HR ตรวจสอบแล้ว',
+    'Paid': 'จ่ายค่าคอมฯ แล้ว',
+    'Defer Requested': 'HR ขอเลื่อนจ่าย',
+    'Deferred': 'ถูกเลื่อนการจ่าย',
+    
+    # --- ยกเลิก (Cancelled) ---
+    'Cancelled': 'ยกเลิก',
+    'Cancelled by PU': 'ยกเลิกโดยจัดซื้อ'
+}
+
 def print_transport_pdf_wrapper(app_container, po_id):
     conn = app_container.get_connection()
     try:
@@ -2409,6 +2436,7 @@ class CommissionHistoryWindow(CTkToplevel):
             elif status in ['Original', 'Draft']: tag = 'Draft'
             
             values = [row.get(col, '') for col in columns]
+            values[2] = STATUS_THAI_MAP.get(values[2], values[2])
             
             # 🟢 ใช้วิธีที่ปลอดภัยในการจัดรูปแบบวันที่
             # columns[1] มักจะเป็น 'timestamp' หรือ 'เวลาบันทึก'

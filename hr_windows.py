@@ -2647,6 +2647,8 @@ class PayoutCalculationViewer(CTkToplevel):
         tree.tag_configure('Paid', background='#E0E7FF', foreground='#3730A3')        
         tree.tag_configure('Default', background='white')
 
+        
+
         # Config Columns
         for col in final_columns:
             anchor = 'center' if col in ['so_number', 'status'] else 'e'
@@ -2674,6 +2676,26 @@ class PayoutCalculationViewer(CTkToplevel):
             
             tree.insert("", "end", values=tuple(values), tags=(tag,))
 
+        total_so_count = len(df_display)
+        sum_sales = df_display['sales'].sum()
+        sum_cost = df_display['cost'].sum()
+        sum_profit = df_display['profit'].sum()
+        
+        # คำนวณ Average Margin (%) ระวังกรณีผลรวมยอดขายเป็น 0
+        avg_margin = (sum_profit / sum_sales * 100) if sum_sales > 0 else 0.0
+
+        # เพิ่ม Tag สำหรับแถว Total ให้เป็นสีเทาตัวหนาเด่นๆ
+        tree.tag_configure('Total_Row', background='#CBD5E1', font=("Tahoma", 11, "bold"))
+
+        # แทรกแถวลงไปท้ายสุดของ Treeview
+        tree.insert("", "end", values=(
+            f"รวมทั้งหมด ({total_so_count} รายการ)",  # ช่องเลขที่ SO
+            f"{sum_sales:,.2f}",                    # ช่องยอดขาย
+            f"{sum_cost:,.2f}",                     # ช่องต้นทุน
+            f"{sum_profit:,.2f}",                   # ช่องกำไร
+            f"{avg_margin:,.2f}%",                  # ช่อง Avg Margin
+            ""                                      # ช่องสถานะ
+        ), tags=('Total_Row',))
         # Scrollbar
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
@@ -2889,6 +2911,27 @@ class CalculationDetailViewer(CTkToplevel):
             values.append(status_val)
             
             tree.insert("", "end", values=tuple(values), tags=(tag,))
+
+        total_so_count = len(df_display)
+        sum_sales = df_display['sales'].sum()
+        sum_cost = df_display['cost'].sum()
+        sum_profit = df_display['profit'].sum()
+        
+        # คำนวณ Average Margin (%) ระวังกรณีผลรวมยอดขายเป็น 0
+        avg_margin = (sum_profit / sum_sales * 100) if sum_sales > 0 else 0.0
+
+        # เพิ่ม Tag สำหรับแถว Total ให้เป็นสีเทาตัวหนาเด่นๆ
+        tree.tag_configure('Total_Row', background='#CBD5E1', font=("Tahoma", 11, "bold"))
+
+        # แทรกแถวลงไปท้ายสุดของ Treeview
+        tree.insert("", "end", values=(
+            f"รวมทั้งหมด ({total_so_count} รายการ)",  # ช่องเลขที่ SO
+            f"{sum_sales:,.2f}",                    # ช่องยอดขาย
+            f"{sum_cost:,.2f}",                     # ช่องต้นทุน
+            f"{sum_profit:,.2f}",                   # ช่องกำไร
+            f"{avg_margin:,.2f}%",                  # ช่อง Avg Margin
+            ""                                      # ช่องสถานะ
+        ), tags=('Total_Row',))
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")

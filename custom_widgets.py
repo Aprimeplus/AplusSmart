@@ -108,71 +108,118 @@ class AutoCompleteEntry(ctk.CTkEntry):
         self.popup = None
         self.listbox = None
         
-        # ตัวแปรสำหรับติดตาม ID ของ trace เพื่อจัดการการเปิด/ปิด
-        # เราจะไม่เพิ่ม trace ในตอนนี้ เพื่อให้สามารถตั้งค่าเริ่มต้นได้โดยไม่แสดง popup
-        self._trace_id = None
-        
-        # ผูก KeyRelease เพื่อเริ่มการค้นหาและเพิ่ม trace เมื่อผู้ใช้เริ่มพิมพ์
-        self.bind("<KeyRelease>", self._start_autocomplete)
-        
-        # บันทึกการผูก Event อื่นๆ เหมือนเดิม
+        # 🟢 เปลี่ยนมาใช้ KeyRelease แทน Trace เพื่อแก้ปัญหาบั๊กเวลาเพิ่มหลายบรรทัด
+        self.bind("<KeyRelease>", self._on_key_release)
         self.bind("<FocusOut>", self._hide_popup)
         self.bind("<Down>", self._focus_on_listbox)
         self.bind("<Escape>", self._hide_popup)
         self.bind("<Configure>", self._reposition_popup)
+
+        # 🟢 เพิ่มการรองรับ Copy (Ctrl+C) และ Paste (Ctrl+V) ให้สมบูรณ์
+        self.bind("<Control-c>", self._copy_text)
+        self.bind("<Control-v>", self._paste_text)
 
     def update_completion_list(self, new_list):
         self.completion_list = new_list
         self._map_display_to_object = {str(item.get(self.display_key, '')): item for item in self.completion_list}
         self._choices = list(self._map_display_to_object.keys())
 
-    def _start_autocomplete(self, event=None):
-        """
-        เริ่มการ trace เมื่อมีการปล่อยปุ่มใดๆ (ผู้ใช้เริ่มพิมพ์)
-        และเรียกใช้ _on_text_change ทันทีเพื่อเริ่มต้นการค้นหา
-        """
-        # เพิ่ม trace เมื่อ KeyRelease ถูกเรียกครั้งแรก
-        if self._trace_id is None:
-            self._trace_id = self.var.trace_add("write", self._on_text_change)
-        
-        # เรียกใช้ _on_text_change ทันทีเพื่อเริ่มต้นการค้นหา
-        self._on_text_change()
+    def _copy_text(self, event=None):
+        """ระบบ Copy ข้อความ (Ctrl+C)"""
+        if self.select_present():
+            self.clipboard_clear()
+            self.clipboard_append(self.selection_get())
+        return "break"
 
-    def _on_text_change(self, *args, **kwargs):
-        current_text = self.var.get()
+    def _paste_text(self, event=None):
+        """ระบบ Paste ข้อความ (Ctrl+V) พร้อมค้นหาอัตโนมัติ"""
+        try:
+            text = self.clipboard_get()
+            if self.select_present():
+                self.delete("sel.first", "sel.last")
+            self.insert(tk.INSERT, text)
+            # แปะเสร็จให้ค้นหา Dropdown ทันที
+            self._do_search()
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _on_key_release(self, event):
+        """ดักจับเวลาพิมพ์ เพื่อค้นหา Dropdown"""
+        # ละเว้นปุ่มลูกศร, ปุ่ม Enter, หรือปุ่ม Control ต่างๆ
+        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Escape', 'Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'c', 'v']:
+            return
         
-        # <<< START: การแก้ไข: ซ่อน Popup หากไม่มีข้อความหรือข้อความมีแต่ช่องว่าง >>>
+        # ถ้ายกด Control ค้างไว้ (เช่น กำลังกด Ctrl+C) ให้ข้ามไป
+        if event.state & 4: 
+            return
+            
+        self._do_search()
+
+    def _do_search(self):
+        """ค้นหาแบบ strict — ทุกคำที่พิมพ์ต้องตรงกับคำในชื่อสินค้าจริงๆ (word-level match)"""
+        current_text = self.var.get()
+
         if not current_text or not current_text.strip():
             self._hide_popup()
             return
-        # <<< END: การแก้ไข >>>
-        
-        # 🟢 [เปลี่ยน Logic การค้นหาใหม่ทั้งหมด]
-        # ใช้คำสั่ง `in` ค้นหาคำที่ซ่อนอยู่ตรงไหนก็ได้ (ไม่สนตัวพิมพ์เล็ก/ใหญ่)
-        search_term = current_text.lower().strip()
-        self.matches = []
-        
-        for choice in self._choices:
-            # ถ้าคำที่พิมพ์ มีอยู่ในชื่อสินค้า/ซัพพลายเออร์ ให้เก็บไว้ใน matches
-            if search_term in str(choice).lower():
-                self.matches.append(choice)
-                
-            # แสดงผลสูงสุดแค่ 15 รายการพอ (เพื่อไม่ให้หน้าจอรกและกระตุก)
-            if len(self.matches) >= 15: 
-                break
 
-        # ถ้าเจอข้อมูลที่ตรงกัน ให้แสดง Popup
+        raw_search = current_text.lower().strip()
+        search_terms = raw_search.split()
+
+        scored_matches = []
+
+        for choice in self._choices:
+            choice_str = str(choice).lower()
+
+            # แยกคำของ choice ออกมาเป็น list (ตัดอักขระพิเศษ)
+            import re
+            choice_words = re.split(r'[\s\-_/.,()]+', choice_str)
+            choice_words = [w for w in choice_words if w]  # กรองช่องว่าง
+
+            score = 0
+
+            # 🥇 Exact match ทั้งประโยค
+            if choice_str == raw_search:
+                score = 100
+
+            # 🥈 ขึ้นต้นด้วยคำค้นหาทั้งหมด
+            elif choice_str.startswith(raw_search):
+                score = 90
+
+            else:
+                # ทุก search_term ต้องตรงกับ "ขึ้นต้น" ของคำใดคำหนึ่งใน choice_words
+                # เช่น "flat" ตรงกับ "flatbar" แต่ไม่ตรงกับ "หล่อแบน"
+                all_terms_matched = True
+                for term in search_terms:
+                    # คำนั้นต้องเป็น prefix ของคำใดคำหนึ่งใน choice
+                    term_found = any(word.startswith(term) for word in choice_words)
+                    if not term_found:
+                        all_terms_matched = False
+                        break
+
+                if all_terms_matched:
+                    # ให้คะแนนตามว่าตรงมากแค่ไหน
+                    if all(any(word == term for word in choice_words) for term in search_terms):
+                        score = 85  # ตรงเป๊ะทุกคำ
+                    else:
+                        score = 70  # ตรงแบบ prefix
+
+            if score > 0:
+                scored_matches.append((score, choice))
+
+        scored_matches.sort(key=lambda x: (-x[0], str(x[1])))
+        self.matches = [match[1] for match in scored_matches][:15]
+
         if self.matches:
             if self.popup is None or not self.popup.winfo_exists():
                 self._create_popup()
-            
             self.listbox.delete(0, tk.END)
             for item in self.matches:
                 self.listbox.insert(tk.END, item)
             self._show_popup()
         else:
             self._hide_popup()
-
 
     def _create_popup(self):
         self.popup = tk.Toplevel(self)
@@ -202,12 +249,8 @@ class AutoCompleteEntry(ctk.CTkEntry):
             self._hide_popup()
             return
 
-        # <<< START: แก้ไข Logic การคำนวณความกว้าง >>>
-        # บวกความกว้างเพิ่มเข้าไปอีก 350 pixels จากความกว้างของช่องกรอกข้อมูล
-        # วิธีนี้จะทำให้มีพื้นที่เพียงพอสำหรับชื่อที่ยาวมากๆ
+        # คำนวณความกว้าง: บวกเพิ่มอีก 350 pixels เผื่อชื่อสินค้ามันยาว
         width = self.winfo_width() + 350
-        # <<< END >>>
-
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height() + 2
         
@@ -221,7 +264,7 @@ class AutoCompleteEntry(ctk.CTkEntry):
 
     def _hide_popup(self, event=None):
         if self.popup:
-            self.after(150, lambda: self.popup.withdraw() if self.popup and self.popup.winfo_exists() else None)
+            self.after(100, lambda: self.popup.withdraw() if self.popup and self.popup.winfo_exists() else None)
 
     def _reposition_popup(self, event=None):
         if self.popup and self.popup.winfo_viewable():
@@ -239,17 +282,14 @@ class AutoCompleteEntry(ctk.CTkEntry):
             
         selection_text = self.listbox.get(self.listbox.curselection())
         
-        trace_info = self.var.trace_info()
-        if trace_info: self.var.trace_vdelete("w", trace_info[0][1])
-        
+        # อัปเดตข้อมูลเข้าไปในช่อง
         self.var.set(selection_text)
         
-        self.var.trace_add("write", self._on_text_change)
-
         self._hide_popup()
         self.icursor(tk.END)
         self.focus_set()
         
+        # ทำงานตามคำสั่ง (Command) ที่ผูกไว้ตอนแรก เช่น การดึงราคามาโชว์
         if self.command:
             selected_object = self._map_display_to_object.get(selection_text)
             if selected_object:
