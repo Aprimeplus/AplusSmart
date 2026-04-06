@@ -2768,6 +2768,11 @@ class SOPopupWindow(CTkToplevel):
             if key not in self.so_shared_vars:
                 # ถ้าไม่มี ให้สร้างใหม่เป็นค่า Default 'VAT'
                 self.so_shared_vars[key] = tk.StringVar(value="VAT")
+
+        if 'commission_month_var' not in self.so_shared_vars:
+            self.so_shared_vars['commission_month_var'] = tk.StringVar(value="")
+        if 'commission_year_var' not in self.so_shared_vars:
+            self.so_shared_vars['commission_year_var'] = tk.StringVar(value="")
         
         # กำหนดค่าเริ่มต้นให้กับ Delivery Type ถ้าเพิ่งสร้างใหม่
         if self.so_shared_vars['delivery_type_var'].get() == "VAT": 
@@ -2852,6 +2857,16 @@ class SOPopupWindow(CTkToplevel):
         self._add_form_row(f1, "ชื่อลูกค้า:", CTkEntry(f1), 'customer_name_entry', 2)
         self._add_form_row(f1, "รหัสลูกค้า:", CTkEntry(f1), 'customer_id_entry', 3)
         self._add_form_row(f1, "Credit Term:", CTkEntry(f1), 'credit_term_entry', 4)
+
+        com_frame = CTkFrame(f1, fg_color="transparent")
+        thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        CTkOptionMenu(com_frame, variable=self.so_shared_vars['commission_month_var'], values=[""] + thai_months, width=120, **self.dropdown_style).pack(side="left", padx=(0, 10))
+        
+        current_year = datetime.now().year + 543
+        years = [""] + [str(y) for y in range(current_year - 2, current_year + 3)]
+        CTkOptionMenu(com_frame, variable=self.so_shared_vars['commission_year_var'], values=years, width=90, **self.dropdown_style).pack(side="left")
+        
+        self._add_form_row(f1, "รอบคอมมิชชั่น:", com_frame, 'commission_period_frame', 5)
 
         # Section 2: Sales and Services
         f2 = self._create_so_section_frame(parent_frame, "ยอดขายและบริการ")
@@ -3150,6 +3165,25 @@ class SOPopupWindow(CTkToplevel):
         
         self.update_idletasks()
         self._so_update_final_calculations()
+
+        if data is not None:
+            c_month = data.get('commission_month')
+            c_year = data.get('commission_year')
+            
+            if pd.notna(c_month) and c_month:
+                thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+                try:
+                    month_idx = int(float(c_month)) - 1
+                    if 0 <= month_idx < 12:
+                        self.so_shared_vars['commission_month_var'].set(thai_months[month_idx])
+                except: pass
+                
+            if pd.notna(c_year) and c_year:
+                try:
+                    year_val = int(float(c_year))
+                    if year_val < 2500: year_val += 543 # แปลง ค.ศ. เป็น พ.ศ. เพื่อแสดงผล
+                    self.so_shared_vars['commission_year_var'].set(str(year_val))
+                except: pass
     
     def _save_so_changes(self):
         """
@@ -3229,6 +3263,20 @@ class SOPopupWindow(CTkToplevel):
         for var_key, data_key in shared_vars_map.items():
             if var_key in self.so_shared_vars: 
                 updated_data[data_key] = self.so_shared_vars[var_key].get()
+
+        month_str = self.so_shared_vars.get('commission_month_var').get()
+        if month_str and month_str != "":
+            thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+            if month_str in thai_months:
+                updated_data['commission_month'] = thai_months.index(month_str) + 1
+                
+        year_str = self.so_shared_vars.get('commission_year_var').get()
+        if year_str and year_str != "":
+            try:
+                y_val = int(year_str)
+                if y_val > 2500: y_val -= 543 # แปลง พ.ศ. กลับเป็น ค.ศ. 
+                updated_data['commission_year'] = y_val
+            except: pass
 
         # --- 4. 🟢 แก้ไข: คำนวณยอด Grand Total โดยแยก VAT/CASH ออกจากกัน ---
         sales = updated_data.get('sales_service_amount', 0.0)
