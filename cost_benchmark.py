@@ -28,6 +28,8 @@ class AutoFilterManager:
         self._active_popup = None
         self._filter_arrow_ids = {}
 
+
+
     # ── ดึงค่าทั้งหมดในคอลัมน์ (รวม frozen + main) ──────────────
     def _get_all_values(self, col_name):
         screen = self.screen
@@ -496,7 +498,7 @@ class InlineSearchPopup(tk.Toplevel):
 
             # ถ้า popup จะเกินล่าง window → เปิดขึ้นบนแทน
             if ry + popup_h > win_y + win_h:
-                ry = ry - popup_h - row_h if hasattr(self, '_last_row_h') else ry - popup_h - 30
+                ry = ry - popup_h - 30
 
             # กันออกนอกขอบซ้าย/บนของ window
             rx = max(rx, win_x)
@@ -1551,7 +1553,6 @@ class CostBenchmarkScreen(CTkFrame):
         )
 
     def _setup_header_filters(self, col_offset=0):
-        # ⚠️ อัปเดตรายชื่อคอลัมน์ที่อนุญาตให้กด Filter ได้ตรงนี้เลยครับ
         self._filter_col_names = {
             "วันที่ขอราคา", "Order No.", "Sale Order No.", "ชื่อ Supplier", "รายการสินค้า",
             "สถานะ", "PRIORITY", "รหัส Sale", "หมวด", "QT", "Select",
@@ -1559,7 +1560,6 @@ class CostBenchmarkScreen(CTkFrame):
         }
         self._header_col_offset = col_offset
 
-        # ใช้การตรวจสอบ _filter_bound แทน เพื่อป้องกันการผูก Event ซ้ำซ้อนเวลาโหลดหน้าจอใหม่
         if not getattr(self.sheet, "_filter_bound", False):
             try:
                 self.sheet.CH.bind("<ButtonRelease-1>", 
@@ -1574,6 +1574,15 @@ class CostBenchmarkScreen(CTkFrame):
                         lambda e: self.after(10, lambda ev=e: self._on_frozen_header_click(ev)), add="+")
                     self.sheet_frozen._filter_bound = True
                 except Exception: pass
+
+        # วาดลูกศรหลัง bind เสร็จ
+        self.after(100, self._draw_filter_arrows)
+        
+        # วาดใหม่ทุกครั้งที่ scroll หรือ resize
+        try:
+            self.sheet.CH.bind("<Configure>", lambda e: self.after(50, self._draw_filter_arrows), add="+")
+            self.sheet.bind("<Configure>", lambda e: self.after(50, self._draw_filter_arrows), add="+")
+        except Exception: pass
 
     def _get_col_from_header_click(self, event, sheet_widget, col_offset=0):
         """คำนวณ display_col จากพิกัดที่แท้จริงของ Canvas (แก้บั๊คเลื่อน Scrollbar แนวนอน)"""
@@ -1917,6 +1926,8 @@ class CostBenchmarkScreen(CTkFrame):
                 
             # Sync scroll แก้อาการหน้าจอเด้ง
             self.after(50, self._sync_vertical_scroll)
+            # อัปเดตลูกศร filter หลัง redraw
+            self.after(50, self._draw_filter_arrows)
 
         except Exception as e:
             print(f"Error in _apply_header_filters: {e}")
@@ -2122,6 +2133,78 @@ class CostBenchmarkScreen(CTkFrame):
         try:
             self.sheet.CH.bind("<ButtonPress-1>", self._on_header_press, add="+")
         except Exception: pass
+
+    def _draw_filter_arrows(self):
+        if not hasattr(self, '_filter_col_names'):
+            return
+            
+        col_offset = self.frozen_col_count if self.sheet_frozen else 0
+        
+        def _draw_on_sheet(sheet_widget, is_frozen=False):
+            try:
+                ch = sheet_widget.CH
+                ch.update_idletasks()
+                ch.delete("filter_arrow")
+                
+                try:
+                    header_h = sheet_widget.MT.header_height
+                except:
+                    header_h = 35
+                
+                for col_name in self._filter_col_names:
+                    try:
+                        real_idx = self.columns.index(col_name)
+                        if is_frozen:
+                            if real_idx >= col_offset:
+                                continue
+                            display_idx = real_idx
+                        else:
+                            display_idx = real_idx - col_offset
+                            if display_idx < 0:
+                                continue
+                        
+                        # ← แก้ตรงนี้: col_positions รวม ri_w ไว้แล้ว ไม่ต้องบวกอีก
+                        try:
+                            x_start = sheet_widget.MT.col_positions[display_idx]
+                            x_end = sheet_widget.MT.col_positions[display_idx + 1]
+                        except (AttributeError, IndexError):
+                            x_start = 0
+                            for i in range(display_idx):
+                                try: x_start += sheet_widget.column_width(i)
+                                except: x_start += 120
+                            try: x_end = x_start + sheet_widget.column_width(display_idx)
+                            except: x_end = x_start + 120
+                        
+                        # วาดปุ่ม ▼
+                        btn_w, btn_h, margin = 18, 14, 3
+                        bx1 = x_end - btn_w - margin
+                        by1 = (header_h - btn_h) // 2
+                        bx2 = x_end - margin
+                        by2 = by1 + btn_h
+                        
+                        has_filter = col_name in self._header_filter_values
+                        bg_color = "#F59E0B" if has_filter else "#9CA3AF"
+                        
+                        ch.create_rectangle(
+                            bx1, by1, bx2, by2,
+                            fill=bg_color, outline="",
+                            tags=("filter_arrow", f"arrow_{col_name}")
+                        )
+                        ch.create_text(
+                            (bx1 + bx2) // 2, (by1 + by2) // 2,
+                            text="▼",
+                            font=("Tahoma", 7, "bold"),
+                            fill="white",
+                            tags=("filter_arrow", f"arrow_{col_name}")
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"_draw_on_sheet error: {e}")
+        
+        _draw_on_sheet(self.sheet, is_frozen=False)
+        if self.sheet_frozen:
+            _draw_on_sheet(self.sheet_frozen, is_frozen=True)
 
     def _rebind_frozen_sheet(self):
         if not self.sheet_frozen:

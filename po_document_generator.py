@@ -426,6 +426,14 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     # 6. ยอดค้างชำระ (นำยอดรวมมาลบด้วยมัดจำและภาษีหัก ณ ที่จ่าย)
     balance_due = recalc_grand_total - (deposit_amount + full_payment_amount + total_all_wht)
 
+    # 🟢 [เพิ่ม Logic อัจฉริยะ] ถ้ายอดค้างเป็น 0 (จ่ายครบ) และมีเงินค้างอยู่ในช่องมัดจำ ให้ย้ายไป "ชำระเต็ม" อัตโนมัติ
+    if balance_due <= 0.05 and deposit_amount > 0 and full_payment_amount == 0:
+        full_payment_amount = deposit_amount
+        full_payment_date = latest_deposit_date
+        deposit_amount = 0.0
+        latest_deposit_date = None
+        balance_due = 0.0  # เซ็ตให้เป็น 0.00 เป๊ะๆ ป้องกันทศนิยมกวนใจ
+
     unified_payment_data = []
     
     # Top (3 rows) - เปลี่ยนให้แสดงยอดรวมต้นทุนหักส่วนลด (net_product_cost) ให้ตรงกับ UI
