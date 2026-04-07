@@ -402,8 +402,14 @@ class InlineSearchPopup(tk.Toplevel):
         self.entry.pack(fill="x")
         self.search_var.trace_add("write", self._on_type)
 
+        # ----------------------------------------------------
+        # แก้ไขจุดที่ 1: เพิ่ม Frame เพื่อใส่ Scrollbar คู่กับ Listbox
+        # ----------------------------------------------------
+        list_frame = tk.Frame(self, bg="#9CA3AF")
+        list_frame.pack(fill="both", expand=True)
+
         self.listbox = tk.Listbox(
-            self,
+            list_frame,
             font=("Tahoma", 11),
             selectbackground="#3B82F6",
             selectforeground="white",
@@ -412,7 +418,14 @@ class InlineSearchPopup(tk.Toplevel):
             highlightthickness=0,
             height=8,
         )
-        self.listbox.pack(fill="both", expand=True)
+        
+        # เพิ่ม Scrollbar แนวตั้ง
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        self.listbox.pack(side="left", fill="both", expand=True)
+        # ----------------------------------------------------
 
         self.listbox.bind("<ButtonRelease-1>", self._on_click)
         self.entry.bind("<Down>", self._on_down)
@@ -496,26 +509,38 @@ class InlineSearchPopup(tk.Toplevel):
     def filter_list(self, term):
         term = (term or "").lower().strip()
         self.listbox.delete(0, tk.END)
+        
+        # ถ้าไม่ได้พิมพ์อะไรเลย ให้โชว์ข้อมูลทั้งหมดที่มีในระบบ
         if not term:
-            for item in self.data_list[:100]:
-                self.listbox.insert(tk.END, item)
+            if self.data_list:
+                # ใช้ * (unpacking) เพื่อความเร็วในการ insert ข้อมูลจำนวนมาก
+                self.listbox.insert(tk.END, *self.data_list)
             return
+
         search_terms = term.split()
+        
+        # ค้นหาแบบธรรมดา (เจอทุกคำที่พิมพ์ เช่น "เหลี่ยม ดำ" ไม่เรียงลำดับคำก็ได้)
         normal_matches = [
             item for item in self.data_list
             if all(t in str(item).lower() for t in search_terms)
         ]
+        
+        # ค้นหาแบบใกล้เคียง (Fuzzy)
         try:
             fuzzy_results = process.extractBests(
                 term, [str(i) for i in self.data_list],
-                scorer=fuzz.token_set_ratio, limit=20, score_cutoff=55
+                scorer=fuzz.token_set_ratio, limit=50, score_cutoff=55 # ขยาย fuzzy limit
             )
             fuzzy_matches = [m[0] for m in fuzzy_results]
         except Exception:
             fuzzy_matches = []
+            
+        # รวมผลลัพธ์และตัดตัวที่ซ้ำกันออก
         combined = list(dict.fromkeys(normal_matches + fuzzy_matches))
-        for item in combined[:60]:
-            self.listbox.insert(tk.END, item)
+        
+        # ยกเลิกการจำกัด [:60] แล้วโชว์ผลลัพธ์ทั้งหมดที่หาเจอ
+        if combined:
+            self.listbox.insert(tk.END, *combined)
 
     def _on_type(self, *args):
         self.filter_list(self.search_var.get())
@@ -839,15 +864,73 @@ class CostBenchmarkScreen(CTkFrame):
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
+                # 1. ดึงข้อมูลรหัส Sale จากฐานข้อมูล
                 cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sale' AND status = 'Active'")
-                self.sales_list = [row[0] for row in cursor.fetchall() if row[0]]
+                raw_sales = [row[0] for row in cursor.fetchall() if row[0]]
 
+                # ==============================================================
+                # 📌 จัดการซ่อน เปลี่ยนชื่อ และจัดเรียงหมวดหมู่
+                # ==============================================================
+                hide_list = {"s", "charita-ct", "vow-p"}
+                
+                rename_map = {
+                    "jiraporn": "JN-IN-JIRAPORN",
+                    "sale center": "CT-Sale Center",
+                    "piyawan": "AM-IN-PIYAWAN",
+                    "ilada": "ID-IN-ILADA",
+                    "vow-s": "TG-IN-Tharinya",
+                    "bunnycee": "KR-IN-Kanokporn",
+                    "lethai": "LT-FL-LETHAI",
+                    "wachira": "WA-FL-WACHIRA"
+                }
+
+                processed_sales = []
+                for sale in raw_sales:
+                    sale_lower = sale.strip().lower()
+                    
+                    if sale_lower in hide_list:
+                        continue
+                        
+                    if sale_lower in rename_map:
+                        processed_sales.append(rename_map[sale_lower])
+                    else:
+                        processed_sales.append(sale.strip())
+                
+                # ลบตัวซ้ำ (เผื่อกรณีเปลี่ยนชื่อแล้วไปซ้ำ)
+                unique_sales = list(dict.fromkeys(processed_sales))
+
+                # แอบเติม Stock เข้าไปในคิวเอาไว้ก่อน
+                if "Stock" not in unique_sales:
+                    unique_sales.append("Stock")
+
+                # 📌 สร้างกฎการให้คะแนนลำดับใหม่ (อัปเดตตามที่ขอ)
+                def get_sort_key(name):
+                    name_upper = name.upper()
+                    if "-IN-" in name_upper:
+                        return 1      # ลำดับ 1: Inbound (มาก่อน)
+                    elif "CT-" in name_upper or "-CT" in name_upper:
+                        return 2      # ลำดับ 2: Center
+                    elif name_upper == "STOCK":
+                        return 3      # ลำดับ 3: Stock
+                    elif "-FL-" in name_upper:
+                        return 4      # ลำดับ 4: Freelance
+                    else:
+                        return 5      # ลำดับ 5: อื่นๆ (ถ้ามีหลงมา จะอยู่ล่างสุด)
+
+                # สั่งเรียงลำดับ โดยดูจากกลุ่มคะแนนที่ตั้งไว้ และเรียงตามตัวอักษร (A-Z) ภายในกลุ่มนั้นๆ ด้วย
+                unique_sales.sort(key=lambda x: (get_sort_key(x), x))
+                
+                self.sales_list = unique_sales
+                # ==============================================================
+
+                # 2. ดึงข้อมูล Supplier
                 cursor.execute("SELECT supplier_name, supplier_code FROM suppliers")
                 for row in cursor.fetchall():
                     if row[0]:
                         self.supplier_list.append(row[0])
                         self.supplier_code_map[row[0]] = row[1] or ""
 
+                # 3. ดึงข้อมูล Product
                 cursor.execute("SELECT product_name, product_code, category FROM products")
                 for row in cursor.fetchall():
                     if row[0]:
@@ -2026,16 +2109,19 @@ class CostBenchmarkScreen(CTkFrame):
             ("row_drag_and_drop", lambda e: self._on_row_drag_drop(e)),
         ])
 
+        # ==========================================================
+        # 📌 เพิ่มเมนูคลิกขวา (แทรกบรรทัด / ลบบรรทัด) สำหรับตารางหลัก
+        # ==========================================================
+        try:
+            self.sheet.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", self._insert_selected_row)
+            self.sheet.popup_menu_add_command("🗑️ ลบบรรทัด (Delete Row)", self._delete_selected_rows)
+        except Exception as e:
+            print(f"Cannot add popup menu to main sheet: {e}")
+            
         # CH bind หลัง enable_bindings เท่านั้น
         try:
             self.sheet.CH.bind("<ButtonPress-1>", self._on_header_press, add="+")
         except Exception: pass
-
-        try:
-            self.sheet.MT.bind("<ButtonRelease-1>",
-                            lambda e: self.after(50, self._update_quick_calc), add="+")
-        except Exception: pass
-
 
     def _rebind_frozen_sheet(self):
         if not self.sheet_frozen:
@@ -2072,11 +2158,20 @@ class CostBenchmarkScreen(CTkFrame):
             ("column_width_resize", lambda e: self._save_col_widths())
         ])
 
+        # ==========================================================
+        # 📌 เพิ่มเมนูคลิกขวา (แทรกบรรทัด / ลบบรรทัด) สำหรับตารางที่ตรึง
+        # ==========================================================
+        try:
+            self.sheet_frozen.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", self._insert_selected_row)
+            self.sheet_frozen.popup_menu_add_command("🗑️ ลบบรรทัด (Delete Row)", self._delete_selected_rows)
+        except Exception as e:
+            print(f"Cannot add popup menu to frozen sheet: {e}")
+
         # CH bind หลัง enable_bindings เท่านั้น
         try:
             self.sheet_frozen.CH.bind("<ButtonPress-1>", self._on_header_press, add="+")
         except Exception: pass
-
+        
         self.sheet_frozen.bind("<<SheetModified>>", self._on_sheet_modified)
         self.sheet_frozen.bind("<Control-c>", lambda e: self.sheet_frozen.copy())
         self.sheet_frozen.bind("<Control-v>", lambda e: self.sheet_frozen.paste())

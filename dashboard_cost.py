@@ -292,6 +292,8 @@ class DashboardCostScreen(CTkFrame):
         matches = [s for s in self.all_suppliers if typed in str(s).lower()] if typed and typed != "all" else self.all_suppliers
         self._show_search_popup("supplier", matches, self.filter_menus["supplier"])
 
+        
+
     def _show_search_popup(self, key, matches, anchor_widget):
         """แสดง popup listbox ใต้ช่อง input โดยไม่บัง"""
         # ปิด popup เก่าถ้ามี
@@ -610,18 +612,46 @@ class DashboardCostScreen(CTkFrame):
             df = pd.read_sql(query, conn)
 
             try:
-                sales_df = pd.read_sql(
-                    "SELECT sale_key, full_name FROM sales_users WHERE role = 'Sale'",  
-                    #                  ↑ เปลี่ยนเป็นชื่อจริงที่ได้จาก query ด้านบน
-                    conn
-                )
-                if not sales_df.empty:
-                    # normalize ชื่อใน sales_users ให้เป็น Title Case
-                    sales_df["full_name"] = sales_df["full_name"].str.strip()
-                    sale_map = dict(zip(sales_df["sale_key"], sales_df["full_name"]))
-                    df["ชื่อ Sale"] = df["รหัส Sale"].map(sale_map).fillna(df["รหัส Sale"])
+                # =========================================================
+                # 📌 กฎการเปลี่ยนชื่อและซ่อน (ใช้กฎเดียวกับหน้า Cost Benchmark)
+                # =========================================================
+                hide_list = {"s", "charita-ct"} 
+                rename_map = {
+                    "jiraporn": "JN-IN-JIRAPORN",
+                    "sale center": "CT-Sale Center",
+                    "piyawan": "AM-IN-PIYAWAN",
+                    "ilada": "ID-IN-ILADA",
+                    "vow-s": "TG-IN-Tharinya",
+                    "bunnycee": "KR-IN-Kanokporn",
+                    "lethai": "LT-FL-LETHAI",
+                    "wachira": "WA-FL-WACHIRA",
+                    "vow-p": "TG-IN-Tharinya"  # 🟢 รวม VOW-P เข้ากับ VOW-S (Tharinya) ไปเลย!
+                }
+
+                if "รหัส Sale" in df.columns:
+                    def map_sale_name(raw_name):
+                        if pd.isna(raw_name): return ""
+                        raw_str = str(raw_name).strip()
+                        lower_str = raw_str.lower()
+                        
+                        if lower_str in hide_list:
+                            return None # ข้อมูลที่โดนซ่อน จะให้กลายเป็น None เพื่อลบทิ้งทีหลัง
+                            
+                        if lower_str in rename_map:
+                            return rename_map[lower_str]
+                            
+                        return raw_str
+
+                    # แปลงร่างข้อมูลในคอลัมน์ "ชื่อ Sale"
+                    df["ชื่อ Sale"] = df["รหัส Sale"].apply(map_sale_name)
+                    
+                    # ลบทิ้งบรรทัดที่เป็น None (คือพวกที่อยู่ใน hide_list) ออกจาก Dashboard เลย
+                    df = df.dropna(subset=["ชื่อ Sale"])
+                else:
+                    df["ชื่อ Sale"] = ""
+                    
             except Exception as e:
-                print(f"sales join error: {e}")
+                print(f"sales map error: {e}")
                 df["ชื่อ Sale"] = df.get("รหัส Sale", "")
 
             if df.empty:
@@ -681,7 +711,22 @@ class DashboardCostScreen(CTkFrame):
                     for x in self.raw_df[col]
                     if str(x).strip() not in ("", "None", "nan")
                 ))
-                return ["All"] + sorted(vals, key=lambda x: x.lower())
+                
+                # =========================================================
+                # 📌 ถ้าเป็นคอลัมน์ "ชื่อ Sale" ให้จัดเรียงลำดับความสำคัญก่อน
+                # =========================================================
+                if col == "ชื่อ Sale":
+                    def get_sort_key(name):
+                        name_upper = str(name).upper()
+                        if "-IN-" in name_upper: return 1      # Inbound มาก่อน
+                        if "CT-" in name_upper or "-CT" in name_upper: return 2  # ตามด้วย Center
+                        if name_upper == "STOCK": return 3     # ตามด้วย Stock
+                        if "-FL-" in name_upper: return 4      # ตามด้วย Freelance
+                        return 5                               # อื่นๆ
+                    
+                    return ["All"] + sorted(vals, key=lambda x: (get_sort_key(x), x.lower()))
+                else:
+                    return ["All"] + sorted(vals, key=lambda x: x.lower())
             return ["All"]
 
         # 🟢 ผูกชื่อตัวแปร Filter กับชื่อคอลัมน์ในตาราง Database
