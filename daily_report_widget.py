@@ -104,6 +104,19 @@ class DailyReportWidget(CTkFrame):
         self.filter_pu_var = tk.StringVar(value="ทั้งหมด")
         CTkOptionMenu(row2, variable=self.filter_pu_var, values=["ทั้งหมด"] + self.pu_list, width=180).pack(side="left", padx=(0, 20))
 
+        # =================================================================
+        # 🟢 เพิ่ม Dropdown กรองสถานะ ตรงนี้ครับ (ก่อนถึงปุ่ม Refresh)
+        # =================================================================
+        CTkLabel(row2, text="สถานะ:", font=CTkFont(weight="bold")).pack(side="left", padx=(0, 5))
+        self.filter_status_var = tk.StringVar(value="ทั้งหมด")
+        
+        # ดึงคำแปลสถานะภาษาไทยแบบไม่ซ้ำกัน มาทำเป็นตัวเลือก
+        unique_thai_statuses = sorted(list(set(STATUS_THAI_MAP.values())))
+        status_options = ["ทั้งหมด"] + unique_thai_statuses
+        
+        CTkOptionMenu(row2, variable=self.filter_status_var, values=status_options, width=160).pack(side="left", padx=(0, 20))
+        # =================================================================
+
         self.btn_refresh = CTkButton(row2, text="🔄 ดึงข้อมูล", width=120, fg_color="#3B82F6", hover_color="#2563EB", command=self.load_report_data)
         self.btn_refresh.pack(side="right", padx=5)
         
@@ -272,6 +285,20 @@ class DailyReportWidget(CTkFrame):
                 # หางานที่ PU คนนี้สร้างในหน้า Commission หรือสร้างในหน้า PO
                 where_clauses.append("(c.user_key = %s OR EXISTS (SELECT 1 FROM purchase_orders po WHERE po.so_number = c.so_number AND po.user_key = %s))")
                 params.extend([pu_key, pu_key])
+
+            # =================================================================
+            # 🟢 5. กรอง สถานะ (Status) เพิ่มตรงนี้
+            # =================================================================
+            status_val = self.filter_status_var.get()
+            if status_val != "ทั้งหมด":
+                # แปลงสถานะภาษาไทยที่เลือก กลับไปเป็น Database Key (ภาษาอังกฤษ)
+                # (ใช้ List Comprehension เผื่อกรณีที่มีหลาย Key แปลเป็นไทยคำเดียวกัน)
+                db_keys = [k for k, v in STATUS_THAI_MAP.items() if v == status_val]
+                
+                if db_keys:
+                    where_clauses.append("c.status IN %s")
+                    params.append(tuple(db_keys))
+            # =================================================================
 
             # ประกอบร่าง Query
             if where_clauses:

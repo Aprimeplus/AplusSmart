@@ -646,51 +646,61 @@ class CostBenchmarkScreen(CTkFrame):
         self._max_undo = 50
 
         # --- Header & Filters ---
-        header_frame = CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
-        header_frame.grid_columnconfigure(5, weight=1)
-
-        CTkLabel(header_frame, text=f"📊 ตารางของคุณ: {self.current_user}",
-                 font=CTkFont(size=20, weight="bold"), text_color="#1F2937").grid(row=0, column=0, padx=(0, 20))
+        header_container = CTkFrame(self, fg_color="transparent")
+        header_container.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 5))
+        header_container.grid_columnconfigure(0, weight=1)
 
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
                             "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
         now = datetime.now()
 
-        CTkLabel(header_frame, text="รอบบิลเดือน:").grid(row=0, column=1, padx=(0, 5))
-        self.month_var = tk.StringVar(value=self.thai_months[now.month - 1])
-        CTkOptionMenu(header_frame, variable=self.month_var, values=self.thai_months, width=100,
-                      command=self._load_from_db).grid(row=0, column=2, padx=(0, 10))
+        # สร้างแถบ Scrollable แนวนอนยาวสุดจอ
+        from customtkinter import CTkScrollableFrame
+        btn_frame = CTkScrollableFrame(header_container, orientation="horizontal", height=45, fg_color="transparent")
+        btn_frame.pack(fill="x")
 
-        CTkLabel(header_frame, text="ปี:").grid(row=0, column=3, padx=(0, 5))
+        # 🔹 โซนที่ 1: ชื่อ และ ตัวกรอง
+        CTkLabel(btn_frame, text=f"📊 ตารางของคุณ: {self.current_user}",
+                 font=CTkFont(size=20, weight="bold"), text_color="#1F2937").pack(side="left", padx=(0, 20))
+
+        CTkLabel(btn_frame, text="รอบบิลเดือน:").pack(side="left", padx=(0, 5))
+        self.month_var = tk.StringVar(value=self.thai_months[now.month - 1])
+        CTkOptionMenu(btn_frame, variable=self.month_var, values=self.thai_months, width=100,
+                      command=self._load_from_db).pack(side="left", padx=(0, 10))
+
+        CTkLabel(btn_frame, text="ปี:").pack(side="left", padx=(0, 5))
         current_year_th = str(now.year + 543)
         year_list = [str(int(current_year_th) + i) for i in range(-2, 3)]
         self.year_var = tk.StringVar(value=current_year_th)
-        CTkOptionMenu(header_frame, variable=self.year_var, values=year_list, width=80,
-                      command=self._load_from_db).grid(row=0, column=4, padx=(0, 15))
+        CTkOptionMenu(btn_frame, variable=self.year_var, values=year_list, width=80,
+                      command=self._load_from_db).pack(side="left", padx=(0, 15))
 
-        CTkButton(header_frame, text="🔄 โหลดข้อมูล", fg_color="#3B82F6", hover_color="#2563EB", width=90,
-                  command=self._load_from_db).grid(row=0, column=5, sticky="w")
+        CTkButton(btn_frame, text="🔄 โหลดข้อมูล", fg_color="#3B82F6", hover_color="#2563EB", width=90,
+                  command=self._load_from_db).pack(side="left", padx=(0, 20))
 
-        btn_frame = CTkFrame(header_frame, fg_color="transparent")
-        btn_frame.grid(row=0, column=6, sticky="e")
-
-        CTkButton(btn_frame, text="🎨 เปลี่ยนสีหัวคอลัมน์", fg_color="#EC4899", hover_color="#DB2777",
-                  command=self._change_header_color).pack(side="left", padx=5)
+        # 🔹 โซนที่ 2: ปุ่มเครื่องมือ
+        CTkButton(btn_frame, text="🎨 สีหัวคอลัมน์", fg_color="#EC4899", hover_color="#DB2777",
+                  width=110, height=30, font=CTkFont(size=12),
+                  command=self._change_header_color).pack(side="left", padx=2)
         CTkButton(btn_frame, text="📌 ตรึงคอลัมน์", fg_color="#0891B2", hover_color="#0E7490",
-                  command=self._freeze_selected_columns).pack(side="left", padx=5)
+                  width=100, height=30, font=CTkFont(size=12),
+                  command=self._freeze_selected_columns).pack(side="left", padx=2)
         CTkButton(btn_frame, text="📌 ยกเลิกตรึง", fg_color="#64748B", hover_color="#475569",
-                  command=self._unfreeze_columns).pack(side="left", padx=5)
+                  width=90, height=30, font=CTkFont(size=12),
+                  command=self._unfreeze_columns).pack(side="left", padx=2)
         CTkButton(btn_frame, text="🗑️ ลบบรรทัด", fg_color="#EF4444", hover_color="#DC2626",
-                  command=self._delete_selected_rows).pack(side="left", padx=5)
+                  width=90, height=30, font=CTkFont(size=12),
+                  command=self._delete_selected_rows).pack(side="left", padx=2)
         CTkButton(btn_frame, text="🙈 ซ่อนคอลัมน์", fg_color="#F59E0B", hover_color="#D97706",
-                  command=self._hide_selected_columns).pack(side="left", padx=5)
+                  width=100, height=30, font=CTkFont(size=12),
+                  command=self._hide_selected_columns).pack(side="left", padx=2)
         CTkButton(btn_frame, text="👁️ แสดงคอลัมน์", fg_color="#8B5CF6", hover_color="#7C3AED",
-                  command=self._show_all_columns).pack(side="left", padx=5)
-        CTkButton(btn_frame, text="➕ เพิ่มบรรทัดใหม่",
-                  command=self._add_new_row).pack(side="left", padx=5)
-        CTkButton(btn_frame, text="⮑ แทรกบรรทัด", fg_color="#10B981", hover_color="#059669",
-                  command=self._insert_selected_row).pack(side="left", padx=5)
+                  width=100, height=30, font=CTkFont(size=12),
+                  command=self._show_all_columns).pack(side="left", padx=2)
+        CTkButton(btn_frame, text="➕ เพิ่มบรรทัด",
+                  width=90, height=30, font=CTkFont(size=12),
+                  command=self._add_new_row).pack(side="left", padx=2)
+
 
         self.columns = [
             "วันที่ขอราคา", "Order No.", "Sale Order No.", "รหัส Sale",
