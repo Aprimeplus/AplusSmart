@@ -25,6 +25,7 @@ from hr_windows import SOPopupWindow
 from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow , CancelledHistoryWindow
 from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
 from reject_history import RejectionHistoryWindow
+from super_supplier_list import SuperSupplierTab   # <-- Demo Tab
 
 
 class RejectionReasonDialog(CTkToplevel):
@@ -337,6 +338,12 @@ class PurchasingManagerScreen(CTkFrame):
         self.master_edit_tab.grid_rowconfigure(1, weight=1)
         # --- END ---
 
+        # --- START: เพิ่มแท็บ Super Supplier List ---
+        self.ssl_tab = self.tab_view.add("Super Supplier List")
+        self.ssl_tab.grid_columnconfigure(0, weight=1)
+        self.ssl_tab.grid_rowconfigure(0, weight=1)
+        # --- END ---
+
         self.manager_view_tab.grid_columnconfigure(0, weight=1)
         self.manager_view_tab.grid_rowconfigure(1, weight=1)
 
@@ -345,6 +352,14 @@ class PurchasingManagerScreen(CTkFrame):
         
         # --- START: เพิ่มการเรียกใช้ฟังก์ชันสร้างแท็บใหม่ ---
         self._create_master_edit_tab(self.master_edit_tab)
+        # --- END ---
+
+        # --- START: Mount SuperSupplierTab ---
+        self.super_supplier_frame = SuperSupplierTab(
+            master=self.ssl_tab,
+            app_container=self.app_container,
+        )
+        self.super_supplier_frame.grid(row=0, column=0, sticky="nsew")
         # --- END ---
         
         # +++ START: แก้ไขการสร้าง PurchasingScreen ตรงนี้ +++
