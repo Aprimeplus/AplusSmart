@@ -344,6 +344,11 @@ class PurchasingManagerScreen(CTkFrame):
         self.ssl_tab.grid_rowconfigure(0, weight=1)
         # --- END ---
 
+        # --- Rejection Dashboard Tab ---
+        self.rejection_dashboard_tab = self.tab_view.add("📊 สถิติการตีกลับ")
+        self.rejection_dashboard_tab.grid_columnconfigure(0, weight=1)
+        self.rejection_dashboard_tab.grid_rowconfigure(1, weight=1)
+
         self.manager_view_tab.grid_columnconfigure(0, weight=1)
         self.manager_view_tab.grid_rowconfigure(1, weight=1)
 
@@ -373,6 +378,7 @@ class PurchasingManagerScreen(CTkFrame):
         self.purchasing_staff_screen.pack(fill="both", expand=True)
         # +++ END +++
 
+        self._create_rejection_dashboard_tab(self.rejection_dashboard_tab)
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
@@ -1684,6 +1690,386 @@ class PurchasingManagerScreen(CTkFrame):
             width = bar.get_width(); ax.text(width + 0.1, bar.get_y() + bar.get_height()/2, f'{int(width)}', va='center', fontname=font_name)
         fig.tight_layout(pad=2); canvas = FigureCanvasTkAgg(fig, master=parent_frame); canvas.draw(); canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10); self.rejection_chart_canvas = canvas
         
+
+    # =========================================================================
+    #  REJECTION DASHBOARD TAB
+    # =========================================================================
+
+    def _create_rejection_dashboard_tab(self, parent_tab):
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1)
+
+        # ── Filter bar เดียว รวม เดือน/ปี + ดูเฉพาะคน ───────────────────────
+        filter_bar = CTkFrame(parent_tab, fg_color="transparent")
+        filter_bar.grid(row=0, column=0, sticky="ew", padx=15, pady=(8, 4))
+
+        self._rd_months = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                           "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+        self._rd_month_map = {n: i+1 for i, n in enumerate(self._rd_months)}
+        cur_year = datetime.now().year
+
+        self.rd_month_var  = tk.StringVar(value="ทุกเดือน")
+        self.rd_year_var   = tk.StringVar(value=str(cur_year))
+        self._rd_person_var = tk.StringVar(value="ทุกคน")
+
+        CTkLabel(filter_bar, text="เดือน:").pack(side="left", padx=(0,3))
+        CTkOptionMenu(filter_bar, variable=self.rd_month_var,
+                      values=["ทุกเดือน"]+self._rd_months, width=125).pack(side="left", padx=(0,8))
+
+        CTkLabel(filter_bar, text="ปี:").pack(side="left", padx=(0,3))
+        CTkOptionMenu(filter_bar, variable=self.rd_year_var,
+                      values=[str(y) for y in range(cur_year, cur_year-5, -1)],
+                      width=85).pack(side="left", padx=(0,8))
+
+        CTkButton(filter_bar, text="🔍 โหลด", width=90,
+                  command=self._rd_load_all).pack(side="left", padx=(0,16))
+
+        # separator label
+        CTkLabel(filter_bar, text="|", text_color="gray60").pack(side="left", padx=(0,10))
+
+        CTkLabel(filter_bar, text="👤 ดูเฉพาะ:").pack(side="left", padx=(0,4))
+        self._rd_person_menu = CTkOptionMenu(
+            filter_bar, variable=self._rd_person_var,
+            values=["ทุกคน"], width=175,
+            command=lambda _: self._rd_draw_person_filtered()
+        )
+        self._rd_person_menu.pack(side="left", padx=(0,4))
+
+        # ── Sub-TabView ───────────────────────────────────────────────────────
+        self._rd_tabview = CTkTabview(parent_tab, corner_radius=8)
+        self._rd_tabview.grid(row=1, column=0, padx=15, pady=(0,10), sticky="nsew")
+
+        self._rd_tab_ov = self._rd_tabview.add("📊 ภาพรวมทีม")
+        self._rd_tab_pu = self._rd_tabview.add("👤 รายบุคคล")
+        self._rd_tab_rs = self._rd_tabview.add("📋 ตามเหตุผล")
+
+        for t in [self._rd_tab_ov, self._rd_tab_pu, self._rd_tab_rs]:
+            t.grid_columnconfigure(0, weight=1)
+            t.grid_rowconfigure(0, weight=1)
+
+        self._rd_frame_ov = CTkScrollableFrame(self._rd_tab_ov)
+        self._rd_frame_ov.grid(row=0, column=0, sticky="nsew")
+        self._rd_frame_ov.grid_columnconfigure(0, weight=1)
+
+        self._rd_frame_pu = CTkScrollableFrame(self._rd_tab_pu)
+        self._rd_frame_pu.grid(row=0, column=0, sticky="nsew")
+        self._rd_frame_pu.grid_columnconfigure(0, weight=1)
+
+        self._rd_frame_rs = CTkScrollableFrame(self._rd_tab_rs)
+        self._rd_frame_rs.grid(row=0, column=0, sticky="nsew")
+        self._rd_frame_rs.grid_columnconfigure(0, weight=1)
+
+        self._rd_cv = {}
+        self._rd_cached_person    = None
+        self._rd_cached_reason_map = {}
+        self._rd_cached_total_po  = 0
+        self._rd_cached_total_rej = 0
+
+        self.after(300, self._rd_load_all)
+
+    # ── Data helpers ──────────────────────────────────────────────────────────
+
+    def _rd_params(self):
+        year  = int(self.rd_year_var.get())
+        month = self._rd_month_map.get(self.rd_month_var.get(), None)
+        return year, month
+
+    def _rd_where(self, year, month, alias="log"):
+        w = (f"WHERE {alias}.action = 'PO Rejected' "
+             f"AND {alias}.table_name = 'purchase_orders'")
+        p = []
+        if year:  w += f" AND EXTRACT(YEAR  FROM {alias}.timestamp::timestamp) = %s"; p.append(year)
+        if month: w += f" AND EXTRACT(MONTH FROM {alias}.timestamp::timestamp) = %s"; p.append(month)
+        return w, p
+
+    def _rd_fetch_person(self, year, month):
+        w, p = self._rd_where(year, month)
+        q = f"""SELECT su.sale_name, COUNT(log.id) AS rejection_count
+                FROM audit_log log
+                JOIN sales_users su ON log.user_info = su.sale_key
+                {w} GROUP BY su.sale_name ORDER BY rejection_count DESC"""
+        try:    return pd.read_sql_query(q, self.pg_engine, params=tuple(p))
+        except: return pd.DataFrame(columns=["sale_name","rejection_count"])
+
+    def _rd_fetch_reason_per_person(self, year, month):
+        w, p = self._rd_where(year, month)
+        q = f"SELECT log.changes, log.user_info FROM audit_log log {w}"
+        result = {}
+        try:
+            df = pd.read_sql_query(q, self.pg_engine, params=tuple(p))
+            name_df  = pd.read_sql_query("SELECT sale_key, sale_name FROM sales_users", self.pg_engine)
+            name_map = dict(zip(name_df["sale_key"], name_df["sale_name"]))
+            for _, row in df.iterrows():
+                sname = name_map.get(row["user_info"], row["user_info"])
+                try:
+                    data = json.loads(row["changes"]) if isinstance(row["changes"], str) else (row["changes"] or {})
+                    for r in str(data.get("reason","")).split(","):
+                        r = r.strip()
+                        if not r: continue
+                        if sname not in result: result[sname] = {}
+                        result[sname][r] = result[sname].get(r, 0) + 1
+                except: pass
+        except: pass
+        out = {}
+        for sname, counts in result.items():
+            df_r = pd.DataFrame(list(counts.items()), columns=["reason","rejection_count"])
+            out[sname] = df_r.sort_values("rejection_count", ascending=False).reset_index(drop=True)
+        return out
+
+    def _rd_fetch_reason_all(self, year, month):
+        w, p = self._rd_where(year, month)
+        try:    df = pd.read_sql_query(f"SELECT log.changes FROM audit_log log {w}", self.pg_engine, params=tuple(p))
+        except: return pd.DataFrame(columns=["reason","rejection_count"])
+        counts = {}
+        for row in df["changes"]:
+            try:
+                data = json.loads(row) if isinstance(row, str) else (row or {})
+                for r in str(data.get("reason","")).split(","):
+                    r = r.strip()
+                    if r: counts[r] = counts.get(r,0)+1
+            except: pass
+        if not counts: return pd.DataFrame(columns=["reason","rejection_count"])
+        out = pd.DataFrame(list(counts.items()), columns=["reason","rejection_count"])
+        return out.sort_values("rejection_count", ascending=False).reset_index(drop=True)
+
+    def _rd_fetch_total_po(self, year, month):
+        cl, p = "WHERE status != 'Draft'", []
+        if year:  cl += " AND EXTRACT(YEAR  FROM timestamp::timestamp) = %s"; p.append(year)
+        if month: cl += " AND EXTRACT(MONTH FROM timestamp::timestamp) = %s"; p.append(month)
+        try:
+            df = pd.read_sql_query(f"SELECT COUNT(id) AS total FROM purchase_orders {cl}", self.pg_engine, params=tuple(p))
+            return int(df["total"].iloc[0])
+        except: return 0
+
+    def _rd_embed(self, fig, frame, key):
+        old = self._rd_cv.get(key)
+        if old:
+            try: old.get_tk_widget().destroy()
+            except: pass
+        cv = FigureCanvasTkAgg(fig, master=frame)
+        cv.draw()
+        cv.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
+        self._rd_cv[key] = cv
+
+    # ── Load all ──────────────────────────────────────────────────────────────
+
+    def _rd_load_all(self):
+        year, month = self._rd_params()
+        by_person   = self._rd_fetch_person(year, month)
+        by_reason   = self._rd_fetch_reason_all(year, month)
+        reason_map  = self._rd_fetch_reason_per_person(year, month)
+        total_po    = self._rd_fetch_total_po(year, month)
+        total_rej   = int(by_person["rejection_count"].sum()) if not by_person.empty else 0
+        rej_pct     = round(total_rej/total_po*100, 2) if total_po > 0 else 0.0
+
+        self._rd_cached_person     = by_person
+        self._rd_cached_reason_map = reason_map
+        self._rd_cached_total_po   = total_po
+        self._rd_cached_total_rej  = total_rej
+
+        # อัปเดต dropdown ชื่อคน
+        names = ["ทุกคน"] + list(by_person["sale_name"]) if not by_person.empty else ["ทุกคน"]
+        self._rd_person_var.set("ทุกคน")
+        self._rd_person_menu.configure(values=names)
+
+        self._rd_draw_overview(by_person, by_reason, total_po, total_rej, rej_pct)
+        self._rd_draw_person_filtered()
+        self._rd_draw_reason(by_reason, total_rej)
+
+    # ── Tab 1: ภาพรวมทีม ─────────────────────────────────────────────────────
+
+    def _rd_draw_overview(self, by_person, by_reason, total_po, total_rej, rej_pct):
+        frame = self._rd_frame_ov
+        for w in frame.winfo_children(): w.destroy()
+        fn = "Tahoma"; bg = self.theme.get("bg","#F8FAFC")
+        colors_p = ["#e76f51","#f4a261","#e9c46a","#2a9d8f","#264653"]
+        colors_r = ["#4361ee","#3a86ff","#48cae4","#0096c7","#023e8a",
+                    "#7b2d8b","#e76f51","#f4a261","#e9c46a","#2a9d8f"]
+
+        # KPI Cards
+        kpi_row = CTkFrame(frame, fg_color="transparent")
+        kpi_row.pack(fill="x", padx=10, pady=(8,4))
+        for title, val, color in [
+            ("📦 PO ทั้งหมด",    f"{total_po:,} ใบ",     "#3B82F6"),
+            ("🔴 ตีกลับทั้งหมด", f"{total_rej:,} ครั้ง", "#EF4444"),
+            ("📈 อัตราตีกลับทีม",f"{rej_pct:.2f}%",      "#F59E0B"),
+            ("👥 PU ที่โดน",     f"{len(by_person)} คน", "#8B5CF6"),
+        ]:
+            card = CTkFrame(kpi_row, fg_color=color, corner_radius=10)
+            card.pack(side="left", padx=8, pady=4, fill="both", expand=True)
+            CTkLabel(card, text=title, font=CTkFont(size=12), text_color="white").pack(pady=(10,2))
+            CTkLabel(card, text=val,   font=CTkFont(size=22,weight="bold"), text_color="white").pack(pady=(0,10))
+
+        # Vertical bar รายบุคคล
+        if not by_person.empty:
+            n = len(by_person); vals = by_person["rejection_count"].values
+            fig1 = Figure(figsize=(max(6, n*1.6), 4.5), dpi=96, facecolor=bg)
+            ax1  = fig1.add_subplot(111); ax1.set_facecolor(bg)
+            bars = ax1.bar(by_person["sale_name"], vals,
+                           color=[colors_p[i%len(colors_p)] for i in range(n)], width=0.5)
+            max_v = max(vals); ax1.set_ylim(0, max_v*1.4)
+            for bar, v in zip(bars, vals):
+                pct = round(v/total_po*100,1) if total_po>0 else 0
+                ax1.text(bar.get_x()+bar.get_width()/2, v+max_v*0.02,
+                         f"{int(v)} ครั้ง ({pct}%)",
+                         ha="center", va="bottom", fontname=fn, fontsize=10.5)
+            ax1.set_ylabel("จำนวนครั้งที่ถูกตีกลับ", fontname=fn, fontsize=11)
+            ax1.set_title("การตีกลับ รายบุคคล", fontname=fn, fontsize=13, weight="bold")
+            ax1.spines["top"].set_visible(False); ax1.spines["right"].set_visible(False)
+            ax1.tick_params(axis="x", labelsize=11, labelfontfamily=fn)
+            ax1.yaxis.set_major_locator(MaxNLocator(integer=True))
+            fig1.tight_layout(pad=2.0)
+            self._rd_embed(fig1, frame, "ov_p")
+
+        # Horizontal bar เหตุผล
+        if not by_reason.empty:
+            MAX_L = 30; df_r = by_reason.copy()
+            df_r["label"] = df_r["reason"].apply(lambda x: x if len(x)<=MAX_L else x[:MAX_L]+"...")
+            n_r = len(df_r); vals2 = df_r["rejection_count"].values
+            fig2 = Figure(figsize=(10, max(4.5, n_r*0.46+1.8)), dpi=96, facecolor=bg)
+            ax2  = fig2.add_subplot(111); ax2.set_facecolor(bg)
+            bars2 = ax2.barh(df_r["label"], vals2,
+                             color=[colors_r[i%len(colors_r)] for i in range(n_r)], height=0.55)
+            ax2.invert_yaxis(); max_v2 = max(vals2)
+            ax2.set_xlim(0, max_v2*1.55); ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+            for bar, v in zip(bars2, vals2):
+                pct = round(v/total_rej*100,1) if total_rej>0 else 0
+                ax2.text(v+max_v2*0.02, bar.get_y()+bar.get_height()/2,
+                         f"{int(v)} ครั้ง ({pct}%)", va="center", fontname=fn, fontsize=10)
+            ax2.set_xlabel("จำนวนครั้ง", fontname=fn, fontsize=11)
+            ax2.set_title("การตีกลับ ตามเหตุผล", fontname=fn, fontsize=13, weight="bold")
+            ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+            ax2.tick_params(axis="y", labelsize=10, labelfontfamily=fn)
+            fig2.tight_layout(pad=2.2)
+            self._rd_embed(fig2, frame, "ov_r")
+
+    # ── Tab 2: รายบุคคล (drill-down) ─────────────────────────────────────────
+
+    def _rd_draw_person_filtered(self):
+        frame      = self._rd_frame_pu
+        for w in frame.winfo_children(): w.destroy()
+        fn = "Tahoma"; bg = self.theme.get("bg","#F8FAFC")
+        by_person  = self._rd_cached_person
+        total_po   = self._rd_cached_total_po
+        total_rej  = self._rd_cached_total_rej
+        reason_map = self._rd_cached_reason_map
+        selected   = self._rd_person_var.get()
+        colors_p   = ["#e76f51","#f4a261","#e9c46a","#2a9d8f","#264653"]
+        colors_r   = ["#4361ee","#3a86ff","#48cae4","#0096c7","#023e8a",
+                      "#7b2d8b","#e76f51","#f4a261","#e9c46a","#2a9d8f"]
+
+        if by_person is None or by_person.empty:
+            CTkLabel(frame, text="ไม่พบข้อมูล", text_color="gray50").pack(pady=40); return
+
+        # โหมด ทุกคน
+        if selected == "ทุกคน":
+            n = len(by_person); vals = by_person["rejection_count"].values; avg = total_rej/n if n>0 else 0
+            fig = Figure(figsize=(max(7, n*1.7), 5.5), dpi=96, facecolor=bg)
+            ax  = fig.add_subplot(111); ax.set_facecolor(bg)
+            bars = ax.bar(by_person["sale_name"], vals,
+                          color=[colors_p[i%len(colors_p)] for i in range(n)], width=0.5)
+            ax.axhline(avg, color="#DC2626", linestyle="--", linewidth=1.5,
+                       label=f"ค่าเฉลี่ย {avg:.1f} ครั้ง")
+            ax.legend(prop={"family":fn,"size":10})
+            max_v = max(vals); ax.set_ylim(0, max_v*1.45)
+            for bar, v in zip(bars, vals):
+                pr = round(v/total_rej*100,1) if total_rej>0 else 0
+                pp = round(v/total_po*100,2)  if total_po>0  else 0
+                ax.text(bar.get_x()+bar.get_width()/2, v+max_v*0.015,
+                        f"{int(v)} ครั้ง | {pr}% ของตีกลับ | {pp}% ของ PO",
+                        ha="center", va="bottom", fontname=fn, fontsize=9.5)
+            ax.set_ylabel("จำนวนครั้งที่ถูกตีกลับ", fontname=fn, fontsize=12)
+            ax.set_title(f"สถิติการตีกลับ รายบุคคล  —  รวม {total_rej} ครั้ง / PO ส่ง {total_po} ใบ",
+                         fontname=fn, fontsize=13, weight="bold")
+            ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+            ax.tick_params(axis="x", labelsize=11, labelfontfamily=fn)
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+            fig.tight_layout(pad=2.5)
+            self._rd_embed(fig, frame, "pu")
+
+        # โหมด drill-down
+        else:
+            row = by_person[by_person["sale_name"]==selected]
+            person_rej = int(row["rejection_count"].iloc[0]) if not row.empty else 0
+            pct_of_rej = round(person_rej/total_rej*100,1) if total_rej>0 else 0
+            pct_of_po  = round(person_rej/total_po*100,2)  if total_po>0  else 0
+            df_r = reason_map.get(selected, pd.DataFrame(columns=["reason","rejection_count"]))
+
+            # KPI mini cards
+            kpi_row = CTkFrame(frame, fg_color="transparent")
+            kpi_row.pack(fill="x", padx=10, pady=(8,6))
+            for title, val, color in [
+                ("🔴 ถูกตีกลับ",        f"{person_rej} ครั้ง",         "#EF4444"),
+                ("📊 สัดส่วนในทีม",      f"{pct_of_rej:.1f}%",          "#8B5CF6"),
+                ("📦 % ต่อ PO ที่ส่ง",   f"{pct_of_po:.2f}%",           "#F59E0B"),
+                ("📋 เหตุผลที่พบ",        f"{len(df_r)} ประเภท",          "#3B82F6"),
+            ]:
+                card = CTkFrame(kpi_row, fg_color=color, corner_radius=10)
+                card.pack(side="left", padx=8, pady=4, fill="both", expand=True)
+                CTkLabel(card, text=title, font=CTkFont(size=12), text_color="white").pack(pady=(10,2))
+                CTkLabel(card, text=val,   font=CTkFont(size=20,weight="bold"), text_color="white").pack(pady=(0,10))
+
+            if df_r.empty:
+                CTkLabel(frame, text="ไม่พบข้อมูลเหตุผล", text_color="gray50").pack(pady=20); return
+
+            MAX_L = 30; df_r = df_r.copy()
+            df_r["label"] = df_r["reason"].apply(lambda x: x if len(x)<=MAX_L else x[:MAX_L]+"...")
+            n_r = len(df_r); vals = df_r["rejection_count"].values
+            fig_h = max(4.5, n_r*0.52+2.2)
+            fig = Figure(figsize=(10, fig_h), dpi=96, facecolor=bg)
+            ax  = fig.add_subplot(111); ax.set_facecolor(bg)
+            bars = ax.barh(df_r["label"], vals,
+                           color=[colors_r[i%len(colors_r)] for i in range(n_r)], height=0.58)
+            ax.invert_yaxis(); max_v = max(vals)
+            ax.set_xlim(0, max_v*1.60); ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            for bar, v in zip(bars, vals):
+                pct_r = round(v/person_rej*100,1) if person_rej>0 else 0
+                ax.text(v+max_v*0.02, bar.get_y()+bar.get_height()/2,
+                        f"{int(v)} ครั้ง  ({pct_r}% ของตัวเอง)",
+                        va="center", fontname=fn, fontsize=10.5)
+            ax.set_xlabel("จำนวนครั้ง", fontname=fn, fontsize=12)
+            ax.set_title(f"เหตุผลการตีกลับของ {selected}  —  รวม {person_rej} ครั้ง",
+                         fontname=fn, fontsize=13, weight="bold")
+            ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+            ax.tick_params(axis="y", labelsize=10.5, labelfontfamily=fn)
+            fig.tight_layout(pad=2.5)
+            self._rd_embed(fig, frame, "pu")
+
+    # ── Tab 3: ตามเหตุผล ─────────────────────────────────────────────────────
+
+    def _rd_draw_reason(self, by_reason, total_rej):
+        frame = self._rd_frame_rs
+        for w in frame.winfo_children(): w.destroy()
+        fn = "Tahoma"; bg = self.theme.get("bg","#F8FAFC")
+        if by_reason.empty:
+            CTkLabel(frame, text="ไม่พบข้อมูล", text_color="gray50").pack(pady=40); return
+        colors_r = ["#4361ee","#3a86ff","#48cae4","#0096c7","#023e8a",
+                    "#7b2d8b","#e76f51","#f4a261","#e9c46a","#2a9d8f"]
+        MAX_L = 32; df_r = by_reason.copy()
+        df_r["label"] = df_r["reason"].apply(lambda x: x if len(x)<=MAX_L else x[:MAX_L]+"...")
+        n = len(df_r); vals = df_r["rejection_count"].values
+        fig = Figure(figsize=(11, max(5, n*0.50+2.2)), dpi=96, facecolor=bg)
+        ax  = fig.add_subplot(111); ax.set_facecolor(bg)
+        bars = ax.barh(df_r["label"], vals,
+                       color=[colors_r[i%len(colors_r)] for i in range(n)], height=0.58)
+        ax.invert_yaxis(); max_v = max(vals)
+        ax.set_xlim(0, max_v*1.55); ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        for bar, v in zip(bars, vals):
+            pct = round(v/total_rej*100,1) if total_rej>0 else 0
+            ax.text(v+max_v*0.02, bar.get_y()+bar.get_height()/2,
+                    f"{int(v)} ครั้ง  ({pct}%)", va="center", fontname=fn, fontsize=10.5)
+        ax.set_xlabel("จำนวนครั้ง", fontname=fn, fontsize=12)
+        ax.set_title(f"สถิติการตีกลับ ตามเหตุผล  —  รวม {total_rej} ครั้ง",
+                     fontname=fn, fontsize=13, weight="bold")
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        ax.tick_params(axis="y", labelsize=10.5, labelfontfamily=fn)
+        fig.tight_layout(pad=2.5)
+        self._rd_embed(fig, frame, "rs")
+
+    # =========================================================================
+    #  END REJECTION DASHBOARD
+    # =========================================================================
+
     def _create_pending_list_view(self, parent_tab):
         container = CTkFrame(parent_tab) # <-- ใช้ parent_tab
         container.grid(row=1, column=0, padx=10, pady=10, sticky="nsew") # <-- แก้ไข row เป็น 1
