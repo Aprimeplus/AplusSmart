@@ -20,6 +20,7 @@ from customtkinter import (
     CTkToplevel, CTkCheckBox, CTkTextbox,
 )
 import pandas as pd
+import json
 from datetime import datetime
 
 # =============================================================================
@@ -251,6 +252,592 @@ MOCK_CREDIT_OPT  = ["ทุกเครดิต", "มีเครดิต (>0
 SN_AGING_DAYS = 30   # SN ที่ค้างเกินกี่วันถือว่า aging
 
 # =============================================================================
+#  DATABASE LAYER  — แทนที่ MOCK_DATA ทั้งหมด
+# =============================================================================
+_DB_CFG = dict(host="192.168.1.60", dbname="aplus_com_test",
+               user="app_user", password="cailfornia123")
+
+# _app_container เก็บ reference ที่ SuperSupplierTab ส่งมาให้
+_app_container = None
+
+
+def _get_conn():
+    """ดึง connection จาก app_container ถ้ามี มิฉะนั้น connect ตรง"""
+    if _app_container:
+        return _app_container.get_connection(), True   # (conn, use_pool)
+    import psycopg2
+    return psycopg2.connect(**_DB_CFG), False
+
+
+def _release_conn(conn, use_pool: bool):
+    if use_pool and _app_container:
+        _app_container.release_connection(conn)
+    else:
+        conn.close()
+
+
+def _to_int_safe(val) -> int:
+    """แปลงค่าเป็น int อย่างปลอดภัย รองรับ 'เงินสด', '30 วัน', None, '' ฯลฯ"""
+    try:
+        cleaned = str(val or "0").replace("วัน", "").strip()
+        return int(float(cleaned))
+    except Exception:
+        return 0
+
+
+def _auto_suggest_zone(coverage_area: str = "", supplier_name: str = "") -> str:
+    """
+    คาดเดา dispatch_zone อัตโนมัติจาก coverage_area หรือชื่อ Supplier
+    ระบบคิดให้เลย — ไม่ต้องกรอกมือ (9 โซนตามที่ PM กำหนด)
+    """
+    text = (coverage_area + " " + supplier_name).lower()
+
+    # โซน 2: ตะวันออก (เช็คก่อนกรุงเทพ)
+    if any(k in text for k in ["ระยอง", "ชลบุรี", "ตะวันออก", "eastern",
+                                "บ้านฉาง", "พัทยา", "มาบตาพุด", "อมตะ"]):
+        return "ตะวันออก (ชลบุรี / ระยอง / สมุทรปราการ)"
+
+    # โซน 4: พระราม 2 / พุทธมณฑล / สมุทรสาคร
+    if any(k in text for k in ["พุทธมณฑล", "พระราม 2", "สมุทรสาคร",
+                                "สมุทรสงคราม", "กาญจนบุรี"]):
+        return "พระราม 2 / พุทธมณฑล / สมุทรสาคร"
+
+    # โซน 3: วังน้อย / อยุธยา / สระบุรี
+    if any(k in text for k in ["วังน้อย", "อยุธยา", "สระบุรี", "ลพบุรี",
+                                "สิงห์บุรี", "อ่างทอง", "นครสวรรค์"]):
+        return "วังน้อย / อยุธยา / สระบุรี"
+
+    # โซน 8: ภาคตะวันตก
+    if any(k in text for k in ["ราชบุรี", "เพชรบุรี", "ประจวบ", "ภาคตะวันตก",
+                                "สุพรรณบุรี", "นครปฐม"]):
+        return "ภาคตะวันตก"
+
+    # โซน 5: ภาคเหนือ
+    if any(k in text for k in ["เชียงใหม่", "เชียงราย", "ลำปาง", "ลำพูน",
+                                "พะเยา", "แพร่", "น่าน", "แม่ฮ่องสอน", "ตาก",
+                                "พิษณุโลก", "เพชรบูรณ์", "อุตรดิตถ์", "ภาคเหนือ"]):
+        return "ภาคเหนือ"
+
+    # โซน 6: ภาคอีสาน
+    if any(k in text for k in ["ขอนแก่น", "อุดร", "นครราชสีมา", "โคราช",
+                                "อุบล", "สุรินทร์", "บุรีรัมย์", "ร้อยเอ็ด",
+                                "มุกดาหาร", "สกลนคร", "อีสาน", "ภาคอีสาน"]):
+        return "ภาคอีสาน"
+
+    # โซน 7: ภาคใต้
+    if any(k in text for k in ["สุราษฎร์", "ภูเก็ต", "หาดใหญ่", "สงขลา",
+                                "นครศรีธรรมราช", "กระบี่", "ตรัง", "พัทลุง",
+                                "ยะลา", "ปัตตานี", "นราธิวาส", "ภาคใต้"]):
+        return "ภาคใต้"
+
+    # โซน 1: กทม. / ปริมณฑล (เช็คทีหลังสุด)
+    if any(k in text for k in ["กรุงเทพ", "บางกอก", "bangkok", "ปริมณฑล",
+                                "สมุทรปราการ", "นนทบุรี", "ปทุม", "รังสิต",
+                                "บางนา", "ลาดกระบัง", "มีนบุรี",
+                                "ทั่วประเทศ", "national"]):
+        return "กทม. / ปริมณฑล"
+
+    return "— ยังไม่ระบุ —"
+
+
+def _row_to_sup(row: dict) -> dict:
+    """แปลง DB row → dict ที่โค้ดเดิมใช้งาน (keys เหมือน MOCK_SUPPLIERS)"""
+    win_loss_raw = row.get("win_loss_log") or "[]"
+    try:
+        wl = json.loads(win_loss_raw) if isinstance(win_loss_raw, str) else win_loss_raw
+    except Exception:
+        wl = []
+    return {
+        "id":            row["id"],
+        "supplier_id":   row.get("supplier_code") or str(row["id"]),
+        "name":          row.get("supplier_name") or "",
+        "category":      row.get("category")      or "",
+        "tier":          row.get("tier")           or "Tier 2",
+        "is_locked":     bool(row.get("is_locked", False)),
+        "source_tag":    row.get("source_tag")     or "Manual",
+        "contact":       row.get("contact_name")   or "",
+        "phone":         row.get("phone_number")   or "",
+        "line_id":       row.get("line_id")        or "",
+        "email":         row.get("email")          or "",
+        "coverage_area": row.get("coverage_area")  or "",
+        "availability":  row.get("availability")   or "พร้อม",
+        "reopen_date":   row.get("reopen_date")    or "",
+        "sn_created":    row.get("sn_created")     or "",
+        "win_pct":       _to_int_safe(row.get("win_pct")),
+        "sla_score":     _to_int_safe(row.get("sla_score")),
+        "price_score":   _to_int_safe(row.get("price_score")),
+        "credit_days":   _to_int_safe(row.get("credit_term")),
+        "credit_term_label": row.get("credit_term_label") or "สด",
+        "business_type": row.get("business_type")  or "",
+        "standard_focus": row.get("standard_focus") or "",
+        "note":          row.get("note")            or "",
+        "win_loss_log":  wl,
+        # ── Zoning Phase 1 ──────────────────────────────────────────────
+        "dispatch_zone":    row.get("dispatch_zone") or _auto_suggest_zone(
+                                row.get("coverage_area",""), row.get("supplier_name","")),
+        "service_area":     row.get("service_area")     or "National",
+        "logistics_assets": row.get("logistics_assets") or "",
+    }
+
+
+def db_get_all_suppliers() -> list:
+    """ดึง Supplier ทั้งหมดจาก DB → list of dict"""
+    conn, use_pool = _get_conn()
+    try:
+        import psycopg2.extras
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("""
+                SELECT id, supplier_name, supplier_code, contact_name, phone_number,
+                       credit_term, bank_account_type, created_by, created_at,
+                       tier, category, is_locked, source_tag,
+                       line_id, email, coverage_area, availability,
+                       reopen_date, sn_created, win_pct, sla_score,
+                       price_score, note, blacklist_reason, win_loss_log,
+                       dispatch_zone, service_area, logistics_assets,
+                       business_type, standard_focus, credit_term_label
+                FROM suppliers
+                ORDER BY id DESC
+            """)
+            rows = cur.fetchall()
+            return [_row_to_sup(dict(r)) for r in rows]
+    except Exception as e:
+        print(f"[SSL] db_get_all_suppliers error: {e}")
+        return []
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_get_categories() -> list:
+    """ดึง category ที่มีใน DB จริงๆ เท่านั้น ไม่ hardcode"""
+    conn, use_pool = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT category
+                FROM   suppliers
+                WHERE  category IS NOT NULL AND category != ''
+                ORDER  BY category
+            """)
+            cats = [r[0] for r in cur.fetchall()]
+        return ["ทุกหมวด"] + cats if cats else ["ทุกหมวด"]
+    except Exception as e:
+        print(f"[SSL] db_get_categories error: {e}")
+        return ["ทุกหมวด"]
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_save_supplier(sup: dict, action: str, user: str):
+    """
+    บันทึก / อัปเดต supplier ลง DB
+    action: 'add' | 'edit' | 'tier' | 'convert' | 'blacklist'
+    """
+    conn, use_pool = _get_conn()
+    try:
+        wl_json = json.dumps(sup.get("win_loss_log", []), ensure_ascii=False)
+        with conn.cursor() as cur:
+            if action == 'add':
+                cur.execute("""
+                    INSERT INTO suppliers
+                        (supplier_name, supplier_code, contact_name, phone_number,
+                         credit_term, tier, category, source_tag,
+                         line_id, email, coverage_area, availability,
+                         sn_created, win_pct, sla_score, price_score,
+                         note, win_loss_log, created_by, created_at,
+                         dispatch_zone, service_area, logistics_assets,
+                         business_type, standard_focus, credit_term_label)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s)
+                    RETURNING id
+                """, (
+                    sup["name"], sup["supplier_id"], sup.get("contact",""),
+                    sup.get("phone",""), sup.get("credit_days", 0),
+                    "SN", sup.get("category",""), "Manual",
+                    sup.get("line_id",""), sup.get("email",""),
+                    sup.get("coverage_area",""), "พร้อม",
+                    sup.get("sn_created",""), 0, 0, 0,
+                    sup.get("note",""), "[]", user,
+                    sup.get("dispatch_zone",""), sup.get("service_area","National"),
+                    sup.get("logistics_assets",""),
+                    sup.get("business_type",""), sup.get("standard_focus",""),
+                    sup.get("credit_term_label","สด")
+                ))
+                new_id = cur.fetchone()[0]
+                sup["id"] = new_id
+            else:
+                cur.execute("""
+                    UPDATE suppliers SET
+                        supplier_name  = %s, contact_name  = %s, phone_number = %s,
+                        credit_term    = %s, category      = %s, tier         = %s,
+                        is_locked      = %s, source_tag    = %s, line_id      = %s,
+                        email          = %s, coverage_area = %s, availability = %s,
+                        reopen_date    = %s, win_pct       = %s, sla_score    = %s,
+                        price_score    = %s, note          = %s, win_loss_log = %s,
+                        blacklist_reason = %s,
+                        dispatch_zone    = %s, service_area  = %s, logistics_assets = %s,
+                        business_type    = %s, standard_focus = %s, credit_term_label = %s
+                    WHERE id = %s
+                """, (
+                    sup["name"], sup.get("contact",""), sup.get("phone",""),
+                    sup.get("credit_days", 0), sup.get("category",""), sup.get("tier","Tier 2"),
+                    sup.get("is_locked", False), sup.get("source_tag","Manual"),
+                    sup.get("line_id",""), sup.get("email",""),
+                    sup.get("coverage_area",""), sup.get("availability","พร้อม"),
+                    sup.get("reopen_date",""), sup.get("win_pct", 0),
+                    sup.get("sla_score", 0), sup.get("price_score", 0),
+                    sup.get("note",""), wl_json,
+                    sup.get("blacklist_reason",""),
+                    sup.get("dispatch_zone",""), sup.get("service_area","National"),
+                    sup.get("logistics_assets",""),
+                    sup.get("business_type",""), sup.get("standard_focus",""),
+                    sup.get("credit_term_label","สด"),
+                    sup["id"]
+                ))
+
+            # Audit log
+            cur.execute("""
+                INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+            """, (
+                f"SSL:{action}", "suppliers", sup.get("id"),
+                user,
+                json.dumps({"supplier_id": sup.get("supplier_id"), "tier": sup.get("tier")},
+                           ensure_ascii=False)
+            ))
+
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"[SSL] db_save_supplier error: {e}")
+        return False
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_check_sw_duplicate(sw_code: str, exclude_id: int = 0) -> bool:
+    """True = ซ้ำ, False = ไม่ซ้ำ"""
+    conn, use_pool = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM suppliers WHERE supplier_code = %s AND id != %s LIMIT 1",
+                (sw_code, exclude_id)
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_next_sn_code(user: str) -> str:
+    """สร้างรหัส SN ถัดไป: SN[YY]-[NNNN]-[USER]"""
+    conn, use_pool = _get_conn()
+    try:
+        yy = datetime.now().strftime("%y")
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM suppliers WHERE supplier_code LIKE %s",
+                (f"SN{yy}-%",)
+            )
+            n = (cur.fetchone()[0] or 0) + 1
+        return f"SN{yy}-{n:04d}-{user}"
+    except Exception as e:
+        print(f"[SSL] db_next_sn_code error: {e}")
+        import random
+        return f"SN{datetime.now().strftime('%y')}-{random.randint(1,9999):04d}-{user}"
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_get_audit_log() -> list:
+    conn, use_pool = _get_conn()
+    try:
+        import psycopg2.extras
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("""
+                SELECT timestamp, action, user_info, changes
+                FROM audit_log
+                WHERE action LIKE 'SSL:%'
+                ORDER BY timestamp DESC
+                LIMIT 200
+            """)
+            rows = cur.fetchall()
+            return [{
+                "timestamp": str(r["timestamp"])[:16],
+                "action":    r["action"].replace("SSL:", ""),
+                "user":      r["user_info"],
+                "detail":    r["changes"] or "",
+            } for r in rows]
+    except Exception as e:
+        print(f"[SSL] db_get_audit_log error: {e}")
+        return []
+    finally:
+        _release_conn(conn, use_pool)
+
+
+# =============================================================================
+#  QUARTERLY SNAPSHOT  DB FUNCTIONS
+# =============================================================================
+def db_get_quarterly_snapshots(cat: str) -> list:
+    """
+    ดึง Quarterly Snapshot จาก DB สำหรับหมวดที่กำหนด
+    คืน list ของ {"quarter": "Q1/2025", "top5": [(name, score), ...]}
+    """
+    conn, use_pool = _get_conn()
+    try:
+        import psycopg2.extras
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("""
+                SELECT quarter_label, snapshot_data
+                FROM   supplier_quarterly_snapshots
+                WHERE  category = %s
+                ORDER  BY quarter_year ASC, quarter_num ASC
+                LIMIT  4
+            """, (cat,))
+            rows = cur.fetchall()
+            if rows:
+                result = []
+                for r in rows:
+                    try:
+                        data = json.loads(r["snapshot_data"]) if isinstance(r["snapshot_data"], str) \
+                               else r["snapshot_data"]
+                        result.append({
+                            "quarter": r["quarter_label"],
+                            "top5":    [tuple(x) for x in data.get("top5", [])]
+                        })
+                    except Exception:
+                        pass
+                if result:
+                    return result
+    except Exception as e:
+        print(f"[SSL] db_get_quarterly_snapshots error: {e}")
+    finally:
+        _release_conn(conn, use_pool)
+    # Fallback → สร้าง snapshot จาก live data ปัจจุบัน
+    return _build_live_snapshot(cat)
+
+
+def _calc_supplier_scores_from_benchmark(cat: str = None) -> dict:
+    """
+    คำนวณ win_pct จาก cost_benchmarks จริง
+    คืน dict: {supplier_name: {"win_pct": int, "price_score": int, "name": str, "category": str, "tier": str}}
+    """
+    conn, use_pool = _get_conn()
+    try:
+        import psycopg2.extras
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # ดึง column names จาก cost_benchmarks
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'cost_benchmarks' ORDER BY ordinal_position
+            """)
+            cols = [r[0] for r in cur.fetchall()]
+
+            # หา column ชื่อ Supplier, สถานะ, หมวด, ต้นทุน/เส้น
+            sup_col   = next((c for c in cols if 'Supplier' in c
+                              and 'Supplier2' not in c and 'ID' not in c
+                              and not c.startswith('Sup')), None)
+            stat_col  = next((c for c in cols if c == 'สถานะ'), None)
+            cat_col   = next((c for c in cols if c == 'หมวด'), None)
+            cost_col  = next((c for c in cols if c == 'ต้นทุน/เส้น'), None)
+
+            if not sup_col or not stat_col:
+                return {}
+
+            # WHERE clause สำหรับ filter category
+            cat_filter = f'AND "{cat_col}" = %s' if cat_col and cat else ''
+            params = (cat,) if cat_col and cat else ()
+
+            # คำนวณ win_pct และ avg cost ต่อ Supplier
+            query = f"""
+                SELECT
+                    "{sup_col}"   AS sup_name,
+                    {f'"{cat_col}" AS category,' if cat_col else "'' AS category,"}
+                    COUNT(*)      AS total,
+                    SUM(CASE WHEN "{stat_col}" = 'WIN' THEN 1 ELSE 0 END) AS wins,
+                    {f'AVG(NULLIF(NULLIF(REGEXP_REPLACE("{cost_col}", \'[^0-9.]\', \'\', \'g\'), \'\')::numeric, 0))' if cost_col else '0'} AS avg_cost
+                FROM cost_benchmarks
+                WHERE "{sup_col}" IS NOT NULL AND "{sup_col}" != ''
+                  AND "{stat_col}" IS NOT NULL AND "{stat_col}" != ''
+                  {cat_filter}
+                GROUP BY "{sup_col}" {f', "{cat_col}"' if cat_col else ''}
+                HAVING COUNT(*) >= 1
+            """
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            if not rows:
+                return {}
+
+            # หา min/max cost สำหรับ normalize เป็น price_score
+            costs = [float(r["avg_cost"] or 0) for r in rows if r["avg_cost"]]
+            max_cost = max(costs) if costs else 1
+            min_cost = min(costs) if costs else 0
+
+            result = {}
+            for r in rows:
+                sup_name = r["sup_name"]
+                total    = int(r["total"] or 1)
+                wins     = int(r["wins"] or 0)
+                win_pct  = round(wins / total * 100) if total > 0 else 0
+                avg_cost = float(r["avg_cost"] or 0)
+
+                # price_score: ยิ่งราคาถูกยิ่งสูง (100 = ถูกสุด, 0 = แพงสุด)
+                if max_cost > min_cost and avg_cost > 0:
+                    price_score = round(100 - ((avg_cost - min_cost) / (max_cost - min_cost)) * 100)
+                else:
+                    price_score = 50  # default ถ้าไม่มีข้อมูลเปรียบเทียบ
+
+                result[sup_name] = {
+                    "name":        sup_name,
+                    "category":    r["category"] or "",
+                    "win_pct":     win_pct,
+                    "price_score": max(0, min(100, price_score)),
+                    "sla_score":   0,   # ยังไม่มีข้อมูล SLA จาก benchmark
+                    "total":       total,
+                    "wins":        wins,
+                }
+            return result
+    except Exception as e:
+        print(f"[SSL] _calc_supplier_scores_from_benchmark error: {e}")
+        return {}
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def _build_live_snapshot(cat: str) -> list:
+    """สร้าง snapshot จาก live data — ดึง win_pct จาก cost_benchmarks จริง"""
+    # ดึง scores จาก cost_benchmarks
+    bench_scores = _calc_supplier_scores_from_benchmark(cat)
+
+    # ดึง tier จาก suppliers
+    all_sups = db_get_all_suppliers()
+    tier_map = {s["name"]: s["tier"] for s in all_sups}
+    cat_map  = {s["name"]: s["category"] for s in all_sups}
+
+    if not bench_scores:
+        return []
+
+    # รวมข้อมูล: ใช้ win_pct จาก benchmark + tier จาก suppliers
+    import pandas as pd
+    rows = []
+    for sup_name, scores in bench_scores.items():
+        tier     = tier_map.get(sup_name, "Tier 2")
+        category = cat_map.get(sup_name) or scores.get("category", "")
+        if cat and category != cat:
+            continue
+        if tier not in ("Tier 1", "Tier 2"):
+            continue
+        win_pct     = scores["win_pct"]
+        price_score = scores["price_score"]
+        # weighted score: Price 60% + Win 20% (SLA ยังไม่มี → กระจาย 80/20)
+        score = round(price_score * 0.60 + win_pct * 0.40)
+        rows.append({"name": sup_name, "score": score,
+                     "win_pct": win_pct, "tier": tier})
+
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows).sort_values("score", ascending=False).head(5)
+    now   = datetime.now()
+    q_num = (now.month - 1) // 3 + 1
+    top5  = [(row["name"], int(row["score"])) for _, row in df.iterrows()]
+    while len(top5) < 5:
+        top5.append(("", 0))
+    return [{"quarter": f"Q{q_num}/{now.year}", "top5": top5}]
+
+
+def db_save_quarterly_snapshot():
+    """
+    บันทึก Top 5 ปัจจุบันลง DB เป็น Snapshot รายไตรมาส
+    ปลอดภัย: ON CONFLICT → UPDATE (ไม่ duplicate)
+    """
+    conn, use_pool = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS supplier_quarterly_snapshots (
+                    id             SERIAL PRIMARY KEY,
+                    category       TEXT NOT NULL,
+                    quarter_label  TEXT NOT NULL,
+                    quarter_year   INT  NOT NULL,
+                    quarter_num    INT  NOT NULL,
+                    snapshot_data  JSONB,
+                    created_at     TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(category, quarter_label)
+                )
+            """)
+        conn.commit()
+
+        import pandas as pd
+        all_sups = db_get_all_suppliers()
+        df_all = pd.DataFrame(all_sups) if all_sups else pd.DataFrame(
+            columns=["name","category","tier","win_pct","sla_score","price_score"])
+        if df_all.empty:
+            return 0
+
+        now     = datetime.now()
+        q_num   = (now.month - 1) // 3 + 1
+        q_label = f"Q{q_num}/{now.year}"
+        saved   = 0
+
+        # ดึง scores จาก cost_benchmarks จริง (ทุก category)
+        bench_scores = _calc_supplier_scores_from_benchmark(cat=None)
+        tier_map = {s["name"]: s["tier"] for s in db_get_all_suppliers()}
+
+        # จัดกลุ่มตาม category
+        import pandas as pd
+        rows_all = []
+        for sup_name, scores in bench_scores.items():
+            tier     = tier_map.get(sup_name, "Tier 2")
+            category = scores.get("category", "")
+            if not category or tier not in ("Tier 1", "Tier 2"):
+                continue
+            win_pct     = scores["win_pct"]
+            price_score = scores["price_score"]
+            score = round(price_score * 0.60 + win_pct * 0.40)
+            rows_all.append({"name": sup_name, "category": category,
+                             "score": score, "tier": tier})
+
+        if not rows_all:
+            # fallback ถ้า benchmark ไม่มีข้อมูล ใช้ suppliers โดยตรง
+            df_all["score"] = df_all.apply(calc_score, axis=1)
+            rows_all = df_all[df_all["tier"].isin(["Tier 1","Tier 2"])][
+                ["name","category","score"]].to_dict("records")
+
+        df_rows = pd.DataFrame(rows_all)
+        cats = [c for c in df_rows["category"].dropna().unique() if c]
+
+        with conn.cursor() as cur:
+            for cat in cats:
+                cat_df = df_rows[df_rows["category"] == cat].sort_values(
+                          "score", ascending=False).head(5)
+                top5 = [(row["name"], int(row["score"])) for _, row in cat_df.iterrows()]
+                while len(top5) < 5:
+                    top5.append(("", 0))
+                snapshot = json.dumps({"top5": top5}, ensure_ascii=False)
+                cur.execute("""
+                    INSERT INTO supplier_quarterly_snapshots
+                        (category, quarter_label, quarter_year, quarter_num, snapshot_data)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (category, quarter_label)
+                    DO UPDATE SET snapshot_data = EXCLUDED.snapshot_data,
+                                  created_at    = NOW()
+                """, (cat, q_label, now.year, q_num, snapshot))
+                saved += 1
+        conn.commit()
+        print(f"[SSL] Snapshot saved: {saved} categories → {q_label}")
+        return saved
+    except Exception as e:
+        conn.rollback()
+        print(f"[SSL] db_save_quarterly_snapshot error: {e}")
+        return 0
+    finally:
+        _release_conn(conn, use_pool)
+
+
+# =============================================================================
 #  WEIGHTED SCORE  Price 60% + Win 20% + SLA 20%
 # =============================================================================
 def calc_score(sup) -> int:
@@ -265,11 +852,35 @@ def calc_score(sup) -> int:
 # =============================================================================
 def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="ทุกสถานะ",
                      search="", source="ทุก Source", credit="ทุกเครดิต"):
-    df = pd.DataFrame(MOCK_SUPPLIERS)
-    if cat    != "ทุกหมวด":        df = df[df["category"]    == cat]
-    if tier   != "ทุก Tier":       df = df[df["tier"]         == tier]
-    if avail  != "ทุกสถานะ":       df = df[df["availability"] == avail]
-    if source != "ทุก Source":     df = df[df["source_tag"]   == source]
+    """ดึงข้อมูลจาก DB จริง แล้ว filter ใน Python เหมือนเดิม
+    win_pct และ price_score ดึงจาก cost_benchmarks จริง (ไม่ใช่ 0 ใน suppliers)
+    """
+    all_sups = db_get_all_suppliers()
+    df = pd.DataFrame(all_sups) if all_sups else pd.DataFrame(columns=[
+        "id","supplier_id","name","category","tier","is_locked","source_tag",
+        "contact","phone","line_id","email","coverage_area","availability",
+        "reopen_date","sn_created","win_pct","sla_score","price_score",
+        "credit_days","note","win_loss_log"
+    ])
+    if df.empty:
+        df["score"] = []
+        return df
+
+    # ── Merge กับ benchmark scores ───────────────────────────────────────────
+    bench = _calc_supplier_scores_from_benchmark(cat=None)
+    if bench:
+        df["win_pct"]     = df["name"].map(
+            lambda n: bench[n]["win_pct"]     if n in bench else df.loc[df["name"]==n,"win_pct"].values[0]
+        )
+        df["price_score"] = df["name"].map(
+            lambda n: bench[n]["price_score"] if n in bench else df.loc[df["name"]==n,"price_score"].values[0]
+        )
+
+    # ── Filters ──────────────────────────────────────────────────────────────
+    if cat    != "ทุกหมวด":    df = df[df["category"]    == cat]
+    if tier   != "ทุก Tier":   df = df[df["tier"]         == tier]
+    if avail  != "ทุกสถานะ":   df = df[df["availability"] == avail]
+    if source != "ทุก Source": df = df[df["source_tag"]   == source]
     if credit == "มีเครดิต (>0 วัน)":
         df = df[df["credit_days"] > 0]
     elif credit == "เงินสด":
@@ -288,17 +899,17 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
 
 
 def get_aging_sns(threshold_days=SN_AGING_DAYS):
-    """คืนรายชื่อ SN ที่ยังไม่ Convert เกิน threshold_days"""
-    today = datetime.now().date()
+    """คืนรายชื่อ SN ที่ยังไม่ Convert เกิน threshold_days — ดึงจาก DB"""
+    today  = datetime.now().date()
     result = []
-    for s in MOCK_SUPPLIERS:
+    for s in db_get_all_suppliers():
         if s["tier"] != "SN":
             continue
         created_str = s.get("sn_created", "")
         if not created_str:
             continue
         try:
-            created = datetime.strptime(created_str, "%Y-%m-%d").date()
+            created = datetime.strptime(created_str[:10], "%Y-%m-%d").date()
             days    = (today - created).days
             if days >= threshold_days:
                 result.append({**s, "_aging_days": days})
@@ -310,11 +921,12 @@ def get_aging_sns(threshold_days=SN_AGING_DAYS):
 #  FUZZY MATCH
 # =============================================================================
 def fuzzy_candidates(name: str, threshold=35):
+    """Fuzzy search ชื่อ Supplier จาก DB"""
     name_l = name.lower()
     if not name_l:
         return []
     results = []
-    for s in MOCK_SUPPLIERS:
+    for s in db_get_all_suppliers():
         sn = s["name"].lower()
         if name_l in sn or sn in name_l:
             score = 90
@@ -471,9 +1083,7 @@ class ConvertToSWPopup(CTkToplevel):
                 text_color=CLR["red"])
             self._ok_btn.configure(state="disabled")
             return
-        existing = [s["supplier_id"] for s in MOCK_SUPPLIERS
-                    if not s["supplier_id"].startswith("SN")]
-        if val in existing:
+        if db_check_sw_duplicate(val, exclude_id=self.sup.get("id", 0)):
             self._val_lbl.configure(
                 text="✗  รหัสนี้มีอยู่ในระบบแล้ว",
                 text_color=CLR["red"])
@@ -488,21 +1098,19 @@ class ConvertToSWPopup(CTkToplevel):
         new_id = self._sw_entry.get().strip()
         note   = self._note.get("1.0", "end").strip()
         old_id = self.sup["supplier_id"]
-        ts     = datetime.now().strftime("%Y-%m-%d %H:%M")
-        for s in MOCK_SUPPLIERS:
-            if s["id"] == self.sup["id"]:
-                s["supplier_id"] = new_id
-                s["tier"]        = "Tier 2"
-                break
-        MOCK_AUDIT_LOG.append({
-            "timestamp": ts, "action": "SN→SW Conversion",
-            "user": self.current_user,
-            "detail": f"{old_id} → {new_id}  Note: {note or '-'}",
-        })
-        messagebox.showinfo("Convert สำเร็จ",
-                            f"รหัส {old_id} → {new_id}\n"
-                            f"Tier ปรับเป็น Tier 2 อัตโนมัติ\n"
-                            f"[Demo] Audit Trail บันทึกแล้ว", parent=self)
+        # อัปเดต dict แล้วบันทึก DB
+        updated = dict(self.sup)
+        updated["supplier_id"] = new_id
+        updated["tier"]        = "Tier 2"
+        updated["note"]        = (updated.get("note","") + f" | Converted from {old_id}").strip(" |")
+        ok = db_save_supplier(updated, action="convert", user=self.current_user)
+        if ok:
+            messagebox.showinfo("Convert สำเร็จ",
+                                f"รหัส {old_id} → {new_id}\n"
+                                f"Tier ปรับเป็น Tier 2 อัตโนมัติ\n"
+                                f"หมายเหตุ: {note or '-'}", parent=self)
+        else:
+            messagebox.showerror("ผิดพลาด", "บันทึกลงฐานข้อมูลไม่สำเร็จ", parent=self)
         if self.on_success:
             self.on_success()
         self.destroy()
@@ -707,11 +1315,12 @@ class SupplierDetailPopup(CTkToplevel):
         # ── Tier Transition History ────────────────────────────────────────────
         # ดึง log ของ Supplier นี้จาก MOCK_AUDIT_LOG
         sup_id   = supplier.get("supplier_id", "")
+        _audit   = db_get_audit_log()
         tier_logs = [
-            l for l in MOCK_AUDIT_LOG
+            l for l in _audit
             if sup_id in l.get("detail", "") and
                any(kw in l.get("action", "") for kw in
-                   ("Tier →", "Flag Blacklist", "SN→SW", "Edit Profile"))
+                   ("tier", "blacklist", "convert", "edit"))
         ]
         if tier_logs:
             sec_label(8, "ประวัติการเปลี่ยน Tier")
@@ -737,19 +1346,106 @@ class SupplierDetailPopup(CTkToplevel):
                 CTkLabel(rf2, text=txt, font=F(size=11),
                          text_color=CLR["gray"]).pack(side="left", padx=(4, 0))
 
-        sec_label(9, "จุดแข็ง / หมายเหตุ")
+        # ── Zoning Phase 1 ────────────────────────────────────────────────────
+        # Section header
+        _z_hdr = CTkFrame(body, fg_color="transparent")
+        _z_hdr.grid(row=9, column=0, sticky="ew", padx=20, pady=(14, 4))
+        CTkLabel(_z_hdr, text="Zoning & การขนส่ง",
+                 font=F(size=12, weight="bold"),
+                 text_color=CLR["blue"]).pack(anchor="w")
+        CTkFrame(_z_hdr, height=1, fg_color=CLR["border"]).pack(fill="x", pady=(2, 0))
+
+        DISPATCH_ZONES = [
+            "— ยังไม่ระบุ —",
+            "1. กทม. / ปริมณฑล",
+            "2. โซนตะวันออก (ชลบุรี / ระยอง / สมุทรปราการ)",
+            "3. โซนวังน้อย / อยุธยา / สระบุรี",
+            "4. โซนพระราม 2 / พุทธมณฑล / สมุทรสาคร",
+            "5. ภาคเหนือ",
+            "6. ภาคอีสาน",
+            "7. ภาคใต้",
+            "8. ภาคตะวันตก",
+            "9. อื่นๆ",
+        ]
+        SERVICE_AREAS  = ["National (ทั่วประเทศ)", "Regional (เฉพาะภาค)", "Local (เฉพาะจังหวัด)"]
+        LOGISTICS_OPTS = ["กระบะ", "6 ล้อ", "10 ล้อ", "เทรลเลอร์"]
+
+        zf = CTkFrame(body, fg_color="transparent")
+        zf.grid(row=10, column=0, sticky="ew", padx=20)
+        zf.grid_columnconfigure(1, weight=1)
+
+        # โซนที่ตั้ง
+        CTkLabel(zf, text="โซนที่ตั้ง:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=0, column=0, sticky="w", pady=5, padx=(0, 10))
+        self._zone_var = tk.StringVar(value=supplier.get("dispatch_zone") or "— ยังไม่ระบุ —")
+        CTkOptionMenu(zf, variable=self._zone_var, values=DISPATCH_ZONES,
+                      font=F(size=13), width=220).grid(row=0, column=1, sticky="w", pady=5)
+
+        # ขอบเขตการส่ง
+        CTkLabel(zf, text="ขอบเขตส่ง:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=1, column=0, sticky="w", pady=5, padx=(0, 10))
+        self._service_var = tk.StringVar(value=supplier.get("service_area") or SERVICE_AREAS[0])
+        CTkOptionMenu(zf, variable=self._service_var, values=SERVICE_AREAS,
+                      font=F(size=13), width=220).grid(row=1, column=1, sticky="w", pady=5)
+
+        # ประเภทรถขนส่ง (multi-select checkboxes)
+        CTkLabel(zf, text="ประเภทรถ:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=2, column=0, sticky="nw", pady=8, padx=(0, 10))
+        truck_frame = CTkFrame(zf, fg_color="transparent")
+        truck_frame.grid(row=2, column=1, sticky="w", pady=5)
+        saved_trucks = supplier.get("logistics_assets", "") or ""
+        saved_set    = {t.strip() for t in saved_trucks.split(",") if t.strip()}
+        self._truck_vars = {}
+        for i, opt in enumerate(LOGISTICS_OPTS):
+            var = tk.BooleanVar(value=(opt in saved_set))
+            self._truck_vars[opt] = var
+            CTkCheckBox(truck_frame, text=opt, variable=var,
+                        font=F(size=12)).grid(row=0, column=i, padx=(0, 12))
+
+        # ── ประเภทธุรกิจ ──────────────────────────────────────────────────────
+        CTkLabel(zf, text="ประเภทธุรกิจ:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=3, column=0, sticky="w", pady=5, padx=(0, 10))
+        self._biz_var = tk.StringVar(value=supplier.get("business_type") or "— ยังไม่ระบุ —")
+        CTkOptionMenu(zf, variable=self._biz_var,
+                      values=["— ยังไม่ระบุ —", "โรงงานผลิต / ผู้นำเข้า", "ตัวแทนจำหน่าย / ร้านค้าใหญ่", "ร้านค้าทั่วไป", "Modern Trade"],
+                      font=F(size=13), width=220).grid(row=3, column=1, sticky="w", pady=5)
+
+        # ── เครดิต ────────────────────────────────────────────────────────────
+        CTkLabel(zf, text="เครดิต:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=4, column=0, sticky="w", pady=5, padx=(0, 10))
+        self._credit_lbl_var = tk.StringVar(value=supplier.get("credit_term_label") or "สด")
+        CTkOptionMenu(zf, variable=self._credit_lbl_var,
+                      values=["สด", "เครดิต 2D", "เครดิต 3D", "เครดิต 7D",
+                               "เครดิต 15D", "เครดิต 30D", "เครดิต 45D", "เครดิต 60D"],
+                      font=F(size=13), width=220).grid(row=4, column=1, sticky="w", pady=5)
+
+        # ── มาตรฐานสินค้า ─────────────────────────────────────────────────────
+        CTkLabel(zf, text="มาตรฐาน:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=5, column=0, sticky="w", pady=5, padx=(0, 10))
+        self._std_var = tk.StringVar(value=supplier.get("standard_focus") or "— ยังไม่ระบุ —")
+        CTkOptionMenu(zf, variable=self._std_var,
+                      values=["— ยังไม่ระบุ —", "เกรดราชการ / มอก.", "เกรดทั่วไป", "ทั้งสองประเภท"],
+                      font=F(size=13), width=220).grid(row=5, column=1, sticky="w", pady=5)
+
+        sec_label(11, "จุดแข็ง / หมายเหตุ")
         self._note_e = CTkEntry(body, font=F(size=13), height=36,
                                 placeholder_text="เช่น ให้เครดิต 60 วัน, ส่งด่วน, ISO ผ่าน...")
-        self._note_e.grid(row=10, column=0, sticky="ew", padx=20, pady=4)
+        self._note_e.grid(row=12, column=0, sticky="ew", padx=20, pady=4)
         if supplier.get("note"):
             self._note_e.insert(0, supplier["note"])
 
         # ── Convert (SN only) ─────────────────────────────────────────────────
         if supplier.get("tier") == "SN":
-            sec_label(11, "SN → SW Conversion")
+            sec_label(13, "SN → SW Conversion")
             conv_f = CTkFrame(body, fg_color=CLR["amber_lt"], corner_radius=8,
                               border_width=1, border_color="#F59E0B")
-            conv_f.grid(row=12, column=0, sticky="ew", padx=20, pady=4)
+            conv_f.grid(row=14, column=0, sticky="ew", padx=20, pady=4)
             CTkLabel(conv_f,
                      text="Supplier นี้ยังเป็นรหัสชั่วคราว (SN)\n"
                           "เมื่อบัญชีอนุมัติรหัส Express แล้ว กด Convert เพื่อผูกรหัส",
@@ -796,6 +1492,15 @@ class SupplierDetailPopup(CTkToplevel):
             "tier":         self._tier_var.get(),
             "is_locked":    self._lock_var.get(),
             "note":         self._note_e.get().strip(),
+            # ── Zoning ──────────────────────────────────────────────────
+            "dispatch_zone":    self._zone_var.get() if hasattr(self, "_zone_var") else "",
+            "service_area":     self._service_var.get() if hasattr(self, "_service_var") else "National",
+            "logistics_assets": ",".join(
+                opt for opt, var in self._truck_vars.items() if var.get()
+            ) if hasattr(self, "_truck_vars") else "",
+            "business_type":    self._biz_var.get() if hasattr(self, "_biz_var") else "",
+            "standard_focus":   self._std_var.get() if hasattr(self, "_std_var") else "",
+            "credit_term_label": self._credit_lbl_var.get() if hasattr(self, "_credit_lbl_var") else "สด",
         })
         result = self._wl_result.get()
         # Bug fix: ถ้า result="Win" ให้ reason เป็น "" เสมอ (ไม่ส่งค่า dropdown)
@@ -807,18 +1512,13 @@ class SupplierDetailPopup(CTkToplevel):
                 "result": result,
                 "reason": reason,
             })
-        for i, s in enumerate(MOCK_SUPPLIERS):
-            if s["id"] == self.sup["id"]:
-                MOCK_SUPPLIERS[i].update(self.sup)
-                break
-        MOCK_AUDIT_LOG.append({
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "action": "Edit Profile", "user": self.current_user,
-            "detail": f"ID={self.sup['supplier_id']} Tier={self.sup['tier']}",
-        })
-        messagebox.showinfo("บันทึกสำเร็จ",
-                            f"อัปเดตข้อมูล '{self.sup['name']}' เรียบร้อยแล้ว (Demo)",
-                            parent=self)
+        ok = db_save_supplier(self.sup, action="edit", user=self.current_user)
+        if ok:
+            messagebox.showinfo("บันทึกสำเร็จ",
+                                f"อัปเดตข้อมูล '{self.sup['name']}' เรียบร้อยแล้ว",
+                                parent=self)
+        else:
+            messagebox.showerror("ผิดพลาด", "บันทึกลงฐานข้อมูลไม่สำเร็จ", parent=self)
         if self.on_save:
             self.on_save(self.sup)
         self.destroy()
@@ -833,9 +1533,10 @@ class AddSupplierPopup(CTkToplevel):
         self.on_success   = on_success
         self.current_user = current_user
         self.title("เพิ่ม Supplier ใหม่ (SN)")
-        _place_popup(self, 560, 560)
-        self.resizable(False, False)
+        _place_popup(self, 640, 700)
+        self.resizable(False, True)
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
         self._debounce_job = None
         F = CTkFont
 
@@ -845,8 +1546,13 @@ class AddSupplierPopup(CTkToplevel):
                  font=F(size=15, weight="bold"),
                  text_color=CLR["white"]).pack(padx=20, pady=12, anchor="w")
 
-        form = CTkFrame(self, fg_color="transparent")
-        form.grid(row=1, column=0, padx=20, pady=12, sticky="ew")
+        # ── Scrollable body ───────────────────────────────────────────────────
+        scroll_body = CTkScrollableFrame(self, fg_color="transparent")
+        scroll_body.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        scroll_body.grid_columnconfigure(0, weight=1)
+
+        form = CTkFrame(scroll_body, fg_color="transparent")
+        form.grid(row=0, column=0, padx=20, pady=12, sticky="ew")
         form.grid_columnconfigure(1, weight=1)
 
         fields_cfg = [
@@ -860,14 +1566,18 @@ class AddSupplierPopup(CTkToplevel):
         ]
         self._inputs = {}
         fuzzy_row_idx = None
+        # ดึง category จาก DB จริง
+        _live_cats = db_get_categories()[1:]  # ข้าม "ทุกหมวด"
+        if not _live_cats:
+            _live_cats = ["(ยังไม่มีหมวด)"]
         for ri, (key, lbl, ph, _) in enumerate(fields_cfg):
             CTkLabel(form, text=lbl + ":", text_color=CLR["gray"],
                      font=F(size=12), width=110, anchor="w").grid(
                 row=ri * 2, column=0, sticky="w", pady=(6, 0), padx=(0, 10))
             if key == "category":
-                self._cat_var = tk.StringVar(value=MOCK_CATEGORIES[1])
+                self._cat_var = tk.StringVar(value=_live_cats[0])
                 w = CTkOptionMenu(form, variable=self._cat_var,
-                                  values=MOCK_CATEGORIES[1:], font=F(size=13))
+                                  values=_live_cats, font=F(size=13))
                 w.grid(row=ri * 2, column=1, sticky="w", pady=(6, 0))
                 self._inputs[key] = self._cat_var
             else:
@@ -885,14 +1595,95 @@ class AddSupplierPopup(CTkToplevel):
                                   border_color="#F59E0B")
         self._fuzzy_visible = False
 
-        # SN preview
-        self._sn_lbl = CTkLabel(self, text="", font=F(size=12, weight="bold"),
+        # ── Zoning fields ─────────────────────────────────────────────────────
+        DISPATCH_ZONES = [
+            "— ยังไม่ระบุ —",
+            "1. กทม. / ปริมณฑล",
+            "2. โซนตะวันออก (ชลบุรี / ระยอง / สมุทรปราการ)",
+            "3. โซนวังน้อย / อยุธยา / สระบุรี",
+            "4. โซนพระราม 2 / พุทธมณฑล / สมุทรสาคร",
+            "5. ภาคเหนือ",
+            "6. ภาคอีสาน",
+            "7. ภาคใต้",
+            "8. ภาคตะวันตก",
+            "9. อื่นๆ",
+        ]
+        SERVICE_AREAS  = ["National (ทั่วประเทศ)", "Regional (เฉพาะภาค)", "Local (เฉพาะจังหวัด)"]
+        LOGISTICS_OPTS = ["กระบะ", "6 ล้อ", "10 ล้อ", "เทรลเลอร์"]
+
+        zone_section = CTkFrame(scroll_body, fg_color=CLR["gray_lt"], corner_radius=8,
+                                border_width=1, border_color=CLR["border"])
+        zone_section.grid(row=1, column=0, padx=20, pady=(4, 4), sticky="ew")
+        zone_section.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(zone_section, text="Zoning & การขนส่ง",
+                 font=F(size=12, weight="bold"),
+                 text_color=CLR["blue"]).grid(
+            row=0, column=0, columnspan=2, padx=12, pady=(8, 4), sticky="w")
+
+        CTkLabel(zone_section, text="โซนที่ตั้ง:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=1, column=0, padx=(12, 8), pady=4, sticky="w")
+        self._zone_var = tk.StringVar(value="— ยังไม่ระบุ —")
+        CTkOptionMenu(zone_section, variable=self._zone_var, values=DISPATCH_ZONES,
+                      font=F(size=12), width=200).grid(row=1, column=1, sticky="w", pady=4, padx=(0, 12))
+
+        CTkLabel(zone_section, text="ขอบเขตส่ง:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=2, column=0, padx=(12, 8), pady=4, sticky="w")
+        self._service_var = tk.StringVar(value=SERVICE_AREAS[0])
+        CTkOptionMenu(zone_section, variable=self._service_var, values=SERVICE_AREAS,
+                      font=F(size=12), width=200).grid(row=2, column=1, sticky="w", pady=4, padx=(0, 12))
+
+        CTkLabel(zone_section, text="ประเภทรถ:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=3, column=0, padx=(12, 8), pady=(4, 8), sticky="nw")
+        truck_frame = CTkFrame(zone_section, fg_color="transparent")
+        truck_frame.grid(row=3, column=1, sticky="w", pady=(4, 8))
+        self._truck_vars = {}
+        for i, opt in enumerate(LOGISTICS_OPTS):
+            var = tk.BooleanVar(value=False)
+            self._truck_vars[opt] = var
+            CTkCheckBox(truck_frame, text=opt, variable=var,
+                        font=F(size=12)).grid(row=0, column=i, padx=(0, 10))
+
+        # ประเภทธุรกิจ
+        CTkLabel(zone_section, text="ประเภทธุรกิจ:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=4, column=0, padx=(12, 8), pady=4, sticky="w")
+        self._biz_var = tk.StringVar(value="— ยังไม่ระบุ —")
+        CTkOptionMenu(zone_section, variable=self._biz_var,
+                      values=["— ยังไม่ระบุ —", "โรงงานผลิต / ผู้นำเข้า", "ตัวแทนจำหน่าย / ร้านค้าใหญ่", "ร้านค้าทั่วไป", "Modern Trade"],
+                      font=F(size=12), width=200).grid(row=4, column=1, sticky="w", pady=4, padx=(0, 12))
+
+        # เครดิต
+        CTkLabel(zone_section, text="เครดิต:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=5, column=0, padx=(12, 8), pady=4, sticky="w")
+        self._credit_lbl_var = tk.StringVar(value="สด")
+        CTkOptionMenu(zone_section, variable=self._credit_lbl_var,
+                      values=["สด", "เครดิต 2D", "เครดิต 3D", "เครดิต 7D",
+                               "เครดิต 15D", "เครดิต 30D", "เครดิต 45D", "เครดิต 60D"],
+                      font=F(size=12), width=200).grid(row=5, column=1, sticky="w", pady=4, padx=(0, 12))
+
+        # มาตรฐานสินค้า
+        CTkLabel(zone_section, text="มาตรฐาน:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=6, column=0, padx=(12, 8), pady=(4, 10), sticky="w")
+        self._std_var = tk.StringVar(value="— ยังไม่ระบุ —")
+        CTkOptionMenu(zone_section, variable=self._std_var,
+                      values=["— ยังไม่ระบุ —", "เกรดราชการ / มอก.", "เกรดทั่วไป", "ทั้งสองประเภท"],
+                      font=F(size=12), width=200).grid(row=6, column=1, sticky="w", pady=(4, 10), padx=(0, 12))
+
+        # SN preview — อยู่ใน scroll_body
+        self._sn_lbl = CTkLabel(scroll_body, text="", font=F(size=12, weight="bold"),
                                  text_color=CLR["blue"])
-        self._sn_lbl.grid(row=2, column=0, padx=20, pady=(4, 0), sticky="w")
+        self._sn_lbl.grid(row=2, column=0, padx=20, pady=(4, 8), sticky="w")
         self._refresh_sn_preview()
 
+        # Bottom bar — ติดขอบล่างหน้าต่างเสมอ
         bf = CTkFrame(self, fg_color=CLR["gray_lt"], corner_radius=0)
-        bf.grid(row=3, column=0, sticky="ew")
+        bf.grid(row=2, column=0, sticky="ew")
         CTkButton(bf, text="ยกเลิก", fg_color="gray50", hover_color="gray40",
                   width=90, command=self.destroy).pack(side="right", padx=12, pady=10)
         CTkButton(bf, text="บันทึกและสร้างรหัส SN",
@@ -903,8 +1694,7 @@ class AddSupplierPopup(CTkToplevel):
         self.grab_set()
 
     def _refresh_sn_preview(self):
-        new_id  = max(s["id"] for s in MOCK_SUPPLIERS) + 1
-        sn_code = f"SN69-{new_id:04d}-{self.current_user}"
+        sn_code = db_next_sn_code(self.current_user)
         self._sn_lbl.configure(text=f"รหัสที่จะได้รับ:  {sn_code}")
         return sn_code
 
@@ -947,10 +1737,10 @@ class AddSupplierPopup(CTkToplevel):
         if not phone:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุเบอร์โทร", parent=self)
             return
-        new_id  = max(s["id"] for s in MOCK_SUPPLIERS) + 1
-        sn_code = f"SN69-{new_id:04d}-{self.current_user}"
+        sn_code = db_next_sn_code(self.current_user)
         new_sup = {
-            "id": new_id, "supplier_id": sn_code,
+            "id": 0,  # จะได้จาก DB หลัง INSERT
+            "supplier_id": sn_code,
             "name":          name,
             "category":      self._cat_var.get(),
             "tier":          "SN", "is_locked": False,
@@ -964,16 +1754,23 @@ class AddSupplierPopup(CTkToplevel):
             "sn_created":    datetime.now().strftime("%Y-%m-%d"),
             "win_pct": 0, "sla_score": 0, "price_score": 0, "credit_days": 0,
             "note": "", "win_loss_log": [],
+            # ── Zoning ──────────────────────────────────────────────────────
+            "dispatch_zone":    self._zone_var.get() if hasattr(self, "_zone_var") else "",
+            "service_area":     self._service_var.get() if hasattr(self, "_service_var") else "National",
+            "logistics_assets": ",".join(
+                opt for opt, var in self._truck_vars.items() if var.get()
+            ) if hasattr(self, "_truck_vars") else "",
+            "business_type":    self._biz_var.get() if hasattr(self, "_biz_var") else "",
+            "standard_focus":   self._std_var.get() if hasattr(self, "_std_var") else "",
+            "credit_term_label": self._credit_lbl_var.get() if hasattr(self, "_credit_lbl_var") else "สด",
         }
-        MOCK_SUPPLIERS.append(new_sup)
-        MOCK_AUDIT_LOG.append({
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "action": "Add SN", "user": self.current_user,
-            "detail": f"SN={sn_code} Name={name}",
-        })
-        messagebox.showinfo("สร้างรหัสสำเร็จ",
-                            f"รหัส Supplier ใหม่ของคุณคือ\n\n{sn_code}\n\n"
-                            f"พร้อมใช้งานทันที (Demo)", parent=self)
+        ok = db_save_supplier(new_sup, action="add", user=self.current_user)
+        if ok:
+            messagebox.showinfo("สร้างรหัสสำเร็จ",
+                                f"รหัส Supplier ใหม่ของคุณคือ\n\n{sn_code}\n\n"
+                                f"บันทึกลงฐานข้อมูลเรียบร้อยแล้ว", parent=self)
+        else:
+            messagebox.showerror("ผิดพลาด", "บันทึกลงฐานข้อมูลไม่สำเร็จ", parent=self)
         if self.on_success:
             self.on_success()
         self.destroy()
@@ -1088,7 +1885,7 @@ class AuditLogPopup(CTkToplevel):
         tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
 
-        logs = list(reversed(MOCK_AUDIT_LOG))
+        logs = db_get_audit_log()
         if not logs:
             CTkLabel(tf, text="ยังไม่มีประวัติ", text_color=CLR["gray"],
                      font=F(size=13)).grid(row=0, column=0)
@@ -1139,9 +1936,44 @@ class Top5View(CTkToplevel):
         body.grid(row=1, column=0, sticky="nsew", padx=0)
         body.grid_columnconfigure(0, weight=1)
 
-        cats = MOCK_CATEGORIES[1:]
-        df_all = pd.DataFrame(MOCK_SUPPLIERS)
-        df_all["score"] = df_all.apply(calc_score, axis=1)
+        cats   = db_get_categories()[1:]   # ข้าม "ทุกหมวด"
+
+        # ── ดึง scores จาก cost_benchmarks จริง ──────────────────────────────
+        bench_scores = _calc_supplier_scores_from_benchmark(cat=None)
+        _sups        = db_get_all_suppliers()
+        tier_map     = {s["name"]: s["tier"] for s in _sups}
+        is_locked_map = {s["name"]: s.get("is_locked", False) for s in _sups}
+        avail_map    = {s["name"]: s.get("availability", "พร้อม") for s in _sups}
+
+        # สร้าง df_all จาก benchmark scores + tier จาก suppliers
+        rows_bench = []
+        for sup_name, sc in bench_scores.items():
+            tier = tier_map.get(sup_name, "Tier 2")
+            cat  = sc.get("category", "")
+            win_pct     = sc["win_pct"]
+            price_score = sc["price_score"]
+            score = round(price_score * 0.60 + win_pct * 0.40)
+            rows_bench.append({
+                "name": sup_name, "category": cat, "tier": tier,
+                "score": score, "win_pct": win_pct, "price_score": price_score,
+                "is_locked": is_locked_map.get(sup_name, False),
+                "availability": avail_map.get(sup_name, "พร้อม"),
+            })
+
+        # เพิ่ม Supplier ที่อยู่ใน DB แต่ยังไม่เคยอยู่ใน benchmark
+        bench_names = set(bench_scores.keys())
+        for s in _sups:
+            if s["name"] not in bench_names and s.get("category"):
+                rows_bench.append({
+                    "name": s["name"], "category": s["category"], "tier": s["tier"],
+                    "score": calc_score(s), "win_pct": s["win_pct"],
+                    "price_score": s["price_score"],
+                    "is_locked": s.get("is_locked", False),
+                    "availability": s.get("availability", "พร้อม"),
+                })
+
+        df_all = pd.DataFrame(rows_bench) if rows_bench else pd.DataFrame(
+            columns=["name","category","tier","score","win_pct","price_score","is_locked","availability"])
 
         # ── B3: หา Tier 2 ที่ Score แซง Tier 1 ──────────────────────────────
         alerts = []
@@ -1299,9 +2131,11 @@ class QuarterlySnapshotPopup(CTkToplevel):
         sel_f.grid(row=0, column=1, rowspan=2, padx=16, pady=10)
         CTkLabel(sel_f, text="หมวด:", font=F(size=12),
                  text_color="#93C5FD").pack(side="left", padx=(0, 6))
-        self._cat_var = tk.StringVar(value=MOCK_CATEGORIES[1])
+        _live_cats = db_get_categories()[1:]  # ข้าม "ทุกหมวด"
+        _default_cat = _live_cats[0] if _live_cats else ""
+        self._cat_var = tk.StringVar(value=_default_cat)
         CTkOptionMenu(sel_f, variable=self._cat_var,
-                      values=MOCK_CATEGORIES[1:],
+                      values=_live_cats if _live_cats else ["(ยังไม่มีหมวด)"],
                       fg_color=CLR["white"], text_color=CLR["navy"],
                       button_color="#3B82F6", button_hover_color="#1A56DB",
                       font=F(size=12), width=130,
@@ -1317,18 +2151,41 @@ class QuarterlySnapshotPopup(CTkToplevel):
                   hover_color="gray40", command=self.destroy).pack(
             side="right", padx=12, pady=8)
 
+        # ── ปุ่มบันทึก Snapshot ไตรมาสนี้ ──────────────────────────────
+        self._save_lbl = CTkLabel(bf, text="", font=F(size=11),
+                                  text_color=CLR["green"])
+        self._save_lbl.pack(side="left", padx=12)
+        CTkButton(bf, text="💾 บันทึก Snapshot ไตรมาสนี้",
+                  fg_color=CLR["teal"], hover_color="#0F6E56",
+                  width=200, height=30, font=F(size=12),
+                  command=self._save_snapshot).pack(side="left", padx=(0, 8), pady=8)
+
         self._render()
         self.transient(master)
+
+    def _save_snapshot(self):
+        saved = db_save_quarterly_snapshot()
+        if saved > 0:
+            self._save_lbl.configure(
+                text=f"✅ บันทึกแล้ว {saved} หมวด",
+                text_color=CLR["green"])
+            self._render()   # refresh ข้อมูล
+        else:
+            self._save_lbl.configure(
+                text="⚠ ไม่มีข้อมูลให้บันทึก",
+                text_color=CLR["amber"])
 
     def _render(self):
         for w in self._body.winfo_children():
             w.destroy()
         F   = CTkFont
         cat = self._cat_var.get()
-        snaps = MOCK_SNAPSHOTS.get(cat, [])
+        # ── ดึงจาก DB แทน MOCK_SNAPSHOTS ───────────────────────────────
+        snaps = db_get_quarterly_snapshots(cat)
         if not snaps:
-            CTkLabel(self._body, text="ไม่มีข้อมูล Snapshot",
-                     text_color=CLR["gray"], font=F(size=13)).pack(pady=20)
+            CTkLabel(self._body, text="ยังไม่มีข้อมูล Snapshot\nกด 'บันทึก Snapshot ไตรมาสนี้' เพื่อเริ่มเก็บข้อมูล",
+                     text_color=CLR["gray"], font=F(size=13),
+                     justify="center").pack(pady=20)
             return
 
         # Header row (quarters)
@@ -1987,7 +2844,7 @@ class BulkImportPopup(CTkToplevel):
             tree.column(col, width=col_w.get(col, 100), anchor="w")
 
         # highlight duplicates
-        existing_names = {s["name"].lower() for s in MOCK_SUPPLIERS}
+        existing_names = {s["name"].lower() for s in db_get_all_suppliers()}
         tree.tag_configure("dup", background="#FEF3C7")
 
         for _, row in df.head(50).iterrows():
@@ -2013,10 +2870,8 @@ class BulkImportPopup(CTkToplevel):
         df = self._df_preview
         if df is None or df.empty:
             return
-        new_id  = max(s["id"] for s in MOCK_SUPPLIERS) + 1
         skipped = 0
         added   = 0
-        ts      = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         def _safe(row, col, default=""):
             v = row.get(col, default)
@@ -2041,10 +2896,10 @@ class BulkImportPopup(CTkToplevel):
                 except Exception:
                     return default
 
-            sn_code = f"SN69-{new_id:04d}-{self.current_user}"
+            sn_code = db_next_sn_code(self.current_user)
             new_sup = {
-                "id":           new_id,
-                "supplier_id":  sn_code if tier == "SN" else f"SW69-{new_id:04d}",
+                "id":           0,
+                "supplier_id":  sn_code if tier == "SN" else _safe(row, "supplier_id", sn_code),
                 "name":         name,
                 "category":     _safe(row, "category", "เหล็กเส้น"),
                 "tier":         tier,
@@ -2062,17 +2917,14 @@ class BulkImportPopup(CTkToplevel):
                 "credit_days":  _num("credit_days"),
                 "note":         _safe(row, "note"),
                 "win_loss_log": [],
+                "sn_created":   datetime.now().strftime("%Y-%m-%d"),
             }
-            MOCK_SUPPLIERS.append(new_sup)
-            MOCK_AUDIT_LOG.append({
-                "timestamp": ts,
-                "action":    "Bulk Import",
-                "user":      self.current_user,
-                "detail":    f"SN={sn_code} Name={name}",
-            })
-            _push_noti(f"Bulk Import: เพิ่ม '{name}' ({sn_code}) โดย {self.current_user}", "low")
-            new_id += 1
-            added  += 1
+            ok = db_save_supplier(new_sup, action="add", user=self.current_user)
+            if ok:
+                added += 1
+                _push_noti(f"Bulk Import: เพิ่ม '{name}' ({sn_code}) โดย {self.current_user}", "low")
+            else:
+                skipped += 1
 
         msg = f"นำเข้าสำเร็จ {added} รายการ"
         if skipped:
@@ -2118,8 +2970,9 @@ class SuggestedSupplierPopup(CTkToplevel):
         CTkLabel(sel_f, text="หมวด:", font=F(size=11),
                  text_color="#93C5FD").pack(side="left", padx=(0,4))
         self._cat_var = tk.StringVar(value=category)
+        _live_cats_all = db_get_categories()  # รวม "ทุกหมวด"
         CTkOptionMenu(sel_f, variable=self._cat_var,
-                      values=MOCK_CATEGORIES,
+                      values=_live_cats_all if _live_cats_all else ["ทุกหมวด"],
                       fg_color=CLR["white"], text_color=CLR["navy"],
                       button_color="#3B82F6", button_hover_color="#1A56DB",
                       font=F(size=12), width=130,
@@ -2266,9 +3119,11 @@ class RankingTimelinePopup(CTkToplevel):
         sel_f.grid(row=0, column=1, rowspan=2, padx=16, pady=10)
         CTkLabel(sel_f, text="หมวด:", font=F(size=11),
                  text_color="#93C5FD").pack(side="left", padx=(0,4))
-        self._cat_var = tk.StringVar(value=MOCK_CATEGORIES[1])
+        _live_cats = db_get_categories()[1:]  # ข้าม "ทุกหมวด"
+        _default_cat = _live_cats[0] if _live_cats else ""
+        self._cat_var = tk.StringVar(value=_default_cat)
         CTkOptionMenu(sel_f, variable=self._cat_var,
-                      values=MOCK_CATEGORIES[1:],
+                      values=_live_cats if _live_cats else ["(ยังไม่มีหมวด)"],
                       fg_color=CLR["white"], text_color=CLR["navy"],
                       button_color="#3B82F6", button_hover_color="#1A56DB",
                       font=F(size=12), width=130,
@@ -2293,10 +3148,12 @@ class RankingTimelinePopup(CTkToplevel):
             w.destroy()
         F    = CTkFont
         cat  = self._cat_var.get()
-        snaps = MOCK_SNAPSHOTS.get(cat, [])
+        # ── ดึงจาก DB แทน MOCK_SNAPSHOTS ───────────────────────────────
+        snaps = db_get_quarterly_snapshots(cat)
         if not snaps:
-            CTkLabel(self._body, text="ไม่มีข้อมูล",
-                     text_color=CLR["gray"], font=F(size=13)).pack(pady=30)
+            CTkLabel(self._body, text="ยังไม่มีข้อมูล\nกด 'บันทึก Snapshot ไตรมาสนี้' ใน Quarterly Snapshot ก่อน",
+                     text_color=CLR["gray"], font=F(size=13),
+                     justify="center").pack(pady=30)
             return
 
         quarters = [s["quarter"] for s in snaps]
@@ -2408,6 +3265,9 @@ class SuperSupplierTab(CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
         self._debounce_job = None
+        # ผูก app_container กับ DB layer
+        global _app_container
+        _app_container = app_container
         _apply_ttk_style()
         self._build_toolbar()
         self._build_kpi_bar()
@@ -2429,7 +3289,8 @@ class SuperSupplierTab(CTkFrame):
         CTkLabel(bar, text="หมวด:", font=F(size=12),
                  text_color="#93C5FD").grid(row=0, column=0, padx=(14, 4), pady=(8,2))
         self._cat_var = tk.StringVar(value="ทุกหมวด")
-        CTkOptionMenu(bar, variable=self._cat_var, values=MOCK_CATEGORIES,
+        _live_cats = db_get_categories()
+        CTkOptionMenu(bar, variable=self._cat_var, values=_live_cats,
                       width=130, command=lambda _: self._apply_filter(),
                       **kw).grid(row=0, column=1, padx=(0, 8), pady=(8,2))
 
@@ -2698,17 +3559,20 @@ class SuperSupplierTab(CTkFrame):
         aging_txt   = f"  ⚠ SN aging: {aging_count}" if aging_count else ""
         self._row_lbl.configure(text=f"แสดง {len(df)} รายการ{aging_txt}")
 
-        all_df = pd.DataFrame(MOCK_SUPPLIERS)
-        total_sn  = len(all_df[all_df["supplier_id"].str.startswith("SN")])
-        converted = sum(1 for l in MOCK_AUDIT_LOG if l.get("action") == "SN→SW Conversion")
+        all_sups = db_get_all_suppliers()
+        all_df   = pd.DataFrame(all_sups) if all_sups else pd.DataFrame(
+            columns=["id","supplier_id","tier"])
+        total_sn  = len(all_df[all_df["supplier_id"].str.startswith("SN")]) if not all_df.empty else 0
+        audit     = db_get_audit_log()
+        converted = sum(1 for l in audit if l.get("action") == "convert")
         conv_pct  = f"{round(converted / max(total_sn + converted, 1) * 100)}%" \
                     if (total_sn + converted) else "0%"
 
         self._kpi_vals["total"].configure(    text=str(len(all_df)))
-        self._kpi_vals["tier1"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 1"])))
-        self._kpi_vals["tier2"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 2"])))
-        self._kpi_vals["sn"].configure(       text=str(len(all_df[all_df["tier"] == "SN"])))
-        self._kpi_vals["blacklist"].configure(text=str(len(all_df[all_df["tier"] == "Blacklist"])))
+        self._kpi_vals["tier1"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 1"])) if not all_df.empty else "0")
+        self._kpi_vals["tier2"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 2"])) if not all_df.empty else "0")
+        self._kpi_vals["sn"].configure(       text=str(len(all_df[all_df["tier"] == "SN"]))      if not all_df.empty else "0")
+        self._kpi_vals["blacklist"].configure(text=str(len(all_df[all_df["tier"] == "Blacklist"])) if not all_df.empty else "0")
         self._kpi_vals["conv_rate"].configure(text=conv_pct)
 
     _sort_state = {}
@@ -2825,7 +3689,8 @@ class SuperSupplierTab(CTkFrame):
         self._tooltip_iid = iid
         try:
             row_id = int(iid)
-            sup = next((s for s in MOCK_SUPPLIERS if s["id"] == row_id), None)
+            _all = db_get_all_suppliers()
+            sup = next((s for s in _all if s["id"] == row_id), None)
             if not sup:
                 self._tooltip.withdraw()
                 return
@@ -2857,7 +3722,8 @@ class SuperSupplierTab(CTkFrame):
             messagebox.showwarning("ไม่ได้เลือก", "กรุณาเลือก Supplier ก่อน", parent=self)
             return None
         row_id = int(sel[0])
-        hits = [s for s in MOCK_SUPPLIERS if s["id"] == row_id]
+        _all = db_get_all_suppliers()
+        hits = [s for s in _all if s["id"] == row_id]
         return hits[0] if hits else None
 
     def _on_right_click(self, e):
@@ -2890,16 +3756,15 @@ class SuperSupplierTab(CTkFrame):
         # D3: Blacklist ต้องใส่เหตุผลก่อนเสมอ
         if new_tier == "Blacklist":
             def _do_blacklist(reason):
-                for s in MOCK_SUPPLIERS:
-                    if s["id"] == sup["id"]:
-                        s["tier"] = "Blacklist"
-                        s["note"] = reason
-                MOCK_AUDIT_LOG.append({
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "action": "Flag Blacklist", "user": self.current_user,
-                    "detail": f"ID={sup['supplier_id']}  เหตุผล: {reason}",
-                })
-                _push_noti(f"Flag Blacklist: '{sup['name']}' โดย {self.current_user} — {reason}", "high")
+                updated = dict(sup)
+                updated["tier"] = "Blacklist"
+                updated["blacklist_reason"] = reason
+                updated["note"] = reason
+                ok = db_save_supplier(updated, action="blacklist", user=self.current_user)
+                if ok:
+                    _push_noti(f"Flag Blacklist: '{sup['name']}' โดย {self.current_user} — {reason}", "high")
+                else:
+                    messagebox.showerror("ผิดพลาด", "บันทึกไม่สำเร็จ", parent=self)
                 self._refresh_table()
                 self._update_bell()
             BlacklistReasonPopup(self, sup, on_confirm=_do_blacklist)
@@ -2927,16 +3792,16 @@ class SuperSupplierTab(CTkFrame):
 
         def _confirm_tier():
             remark = remark_entry.get().strip()
-            for s in MOCK_SUPPLIERS:
-                if s["id"] == sup["id"]:
-                    s["tier"] = new_tier
-            MOCK_AUDIT_LOG.append({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "action": f"Tier → {new_tier}", "user": self.current_user,
-                "detail": f"ID={sup['supplier_id']}" + (f"  Remark: {remark}" if remark else ""),
-            })
-            ntype = "medium" if new_tier in ("Tier 1","Tier 2") else "high"
-            _push_noti(f"เปลี่ยน Tier: '{sup['name']}' → {new_tier} โดย {self.current_user}", ntype)
+            updated = dict(sup)
+            updated["tier"] = new_tier
+            if remark:
+                updated["note"] = (updated.get("note","") + f" | {remark}").strip(" |")
+            ok = db_save_supplier(updated, action="tier", user=self.current_user)
+            if ok:
+                ntype = "medium" if new_tier in ("Tier 1","Tier 2") else "high"
+                _push_noti(f"เปลี่ยน Tier: '{sup['name']}' → {new_tier} โดย {self.current_user}", ntype)
+            else:
+                messagebox.showerror("ผิดพลาด", "บันทึกไม่สำเร็จ", parent=self)
             remark_popup.destroy()
             self._refresh_table()
             self._update_bell()

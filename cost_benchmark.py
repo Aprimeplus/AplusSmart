@@ -4038,6 +4038,10 @@ class CostBenchmarkScreen(CTkFrame):
                 self.save_status_label.configure(text=f"✅ บันทึกล่าสุด: {current_time}", text_color="#16A34A")
             if show_msg:
                 messagebox.showinfo("สำเร็จ", f"บันทึกข้อมูล {len(df)} รายการเรียบร้อยแล้ว!", parent=self)
+
+            # ── Auto-update supplier category จากข้อมูลที่เพิ่งบันทึก ──────────
+            self.after(500, self._update_supplier_categories_from_benchmark)
+
         except Exception as e:
             if conn: conn.rollback()
             import traceback; traceback.print_exc()
@@ -4047,6 +4051,63 @@ class CostBenchmarkScreen(CTkFrame):
                 messagebox.showerror("Error", f"เกิดข้อผิดพลาด:\n{e}", parent=self)
         finally:
             if conn: self.app_container.release_connection(conn)
+
+    def _update_supplier_categories_from_benchmark(self):
+        """
+        Auto-update suppliers.category โดยดูจาก cost_benchmarks
+        หมวดที่ Supplier นั้นๆ ถูกจับคู่บ่อยที่สุด → เซ็ตเป็น category
+        เฉพาะแถวที่ยัง category ว่างอยู่เท่านั้น (ไม่เขียนทับที่มีแล้ว)
+        """
+        # หา column ชื่อ Supplier และ หมวด จาก self.columns
+        sup_col  = next((c for c in self.columns if 'Supplier' in c
+                         and 'Supplier2' not in c and 'ID' not in c
+                         and 'Sup' not in c[:3]), None)
+        cat_col  = next((c for c in self.columns if c == 'หมวด'), None)
+        if not sup_col or not cat_col:
+            return
+
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # ดึง mapping: supplier_name → หมวดที่ใช้บ่อยที่สุด
+                cursor.execute(f"""
+                    SELECT sup_name, top_cat
+                    FROM (
+                        SELECT
+                            "{sup_col}"  AS sup_name,
+                            "{cat_col}"  AS top_cat,
+                            COUNT(*)     AS cnt,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY "{sup_col}"
+                                ORDER BY COUNT(*) DESC
+                            ) AS rn
+                        FROM cost_benchmarks
+                        WHERE "{sup_col}" IS NOT NULL AND "{sup_col}" != ''
+                          AND "{cat_col}" IS NOT NULL AND "{cat_col}" != ''
+                        GROUP BY "{sup_col}", "{cat_col}"
+                    ) ranked
+                    WHERE rn = 1
+                """)
+                mappings = cursor.fetchall()
+
+                updated = 0
+                for sup_name, category in mappings:
+                    cursor.execute("""
+                        UPDATE suppliers
+                        SET    category = %s
+                        WHERE  supplier_name = %s
+                          AND  (category IS NULL OR category = '')
+                    """, (category, sup_name))
+                    updated += cursor.rowcount
+
+            conn.commit()
+            if updated > 0:
+                print(f"[SSL] Auto-updated category: {updated} suppliers")
+        except Exception as e:
+            conn.rollback()
+            print(f"[SSL] _update_supplier_categories_from_benchmark error: {e}")
+        finally:
+            self.app_container.release_connection(conn)
 
     # ================================================================== #
     # FORMULA BAR
