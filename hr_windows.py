@@ -1280,48 +1280,52 @@ class HRVerificationWindow(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
     
     def _defer_so(self):
-        """
-        (แก้ไขใหม่) ส่งคำขอเลื่อนจ่าย (Defer Request) ให้ Sale พิจารณา (แทนการบังคับเลื่อน)
-        """
+        """ส่งคำขอเลื่อนจ่าย (Defer Request) ให้ Sale พิจารณา"""
         so_number = self.system_data.get('so_number')
-        
-        # 1. ให้ HR ระบุเหตุผล (ใช้ RejectionReasonDialog หรือ InputDialog ก็ได้)
-        # แนะนำใช้ RejectionReasonDialog เพื่อความสวยงามและ UX ที่เหมือนกัน
-        from utils import RejectionReasonDialog # ตรวจสอบว่า import แล้ว
-        dialog = RejectionReasonDialog(self)
-        self.wait_window(dialog)
-        reason = getattr(dialog, '_reason_string', None)
-        
-        if reason is None: return # กดยกเลิก
 
-        # ถามยืนยันอีกครั้ง
-        if not messagebox.askyesno("ยืนยัน", f"ต้องการส่งคำขอเลื่อนจ่าย SO: {so_number} ให้ฝ่ายขายพิจารณาใช่หรือไม่?"):
+        # 1. ให้ HR เลือกประเภทและระบุเหตุผล
+        from history_windows import DeferTypeDialog
+        dialog = DeferTypeDialog(self)
+        self.wait_window(dialog)
+
+        if dialog.defer_type is None:
+            return  # ผู้ใช้กดยกเลิก
+
+        defer_type = dialog.defer_type
+        reason = dialog.reason or ""
+
+        # ถามยืนยัน
+        if not messagebox.askyesno("ยืนยัน", f"ต้องการส่งคำขอเลื่อนจ่าย SO: {so_number}\nประเภท: {defer_type}\nให้ฝ่ายขายพิจารณาใช่หรือไม่?"):
             return
 
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 2. อัปเดตสถานะเป็น 'Defer Requested' 
-                # (ยังไม่เปลี่ยนเดือน/ปี เพราะต้องรอ Sale เลือกเดือนเอง)
+                # 2. อัปเดตสถานะเป็น 'Defer Requested' และบันทึก defer_type
                 cursor.execute("""
-                    UPDATE commissions 
-                    SET 
-                        status = 'Defer Requested', 
+                    UPDATE commissions
+                    SET
+                        status = 'Defer Requested',
+                        defer_type = %s,
                         rejection_reason = %s
                     WHERE id = %s
-                """, (f"HR Request: {reason.strip()}", self.system_data['id']))
-                
+                """, (defer_type, f"HR Request: {reason}" if reason else f"HR Request: {defer_type}", self.system_data['id']))
+
                 # 3. แจ้งเตือน Sale
                 sale_key = self.system_data.get('sale_key')
                 if sale_key:
-                    msg = f"HR ขอเลื่อนจ่าย SO: {so_number}\nเหตุผล: {reason.strip()}\n(กรุณาไปที่เมนู 'งานของฉัน' เพื่อตอบรับหรือปฏิเสธ)"
-                    cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)", (sale_key, msg, self.system_data['id']))
+                    msg = (f"HR ขอเลื่อนจ่าย SO: {so_number} "
+                           f"(ประเภท: {defer_type})"
+                           + (f"\nเหตุผล: {reason}" if reason else "")
+                           + "\n(กรุณาไปที่เมนู 'งานของฉัน' เพื่อตอบรับหรือปฏิเสธ)")
+                    cursor.execute(
+                        "INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id) VALUES (%s, %s, FALSE, %s)",
+                        (sale_key, msg, self.system_data['id']))
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", f"ส่งคำขอเลื่อนจ่าย SO: {so_number} ให้ฝ่ายขายพิจารณาเรียบร้อยแล้ว", parent=self.master)
-            
-            self._on_close() # ปิดหน้าต่างและ Refresh หน้าหลัก
+            self._on_close()
 
         except Exception as e:
             if conn: conn.rollback()
