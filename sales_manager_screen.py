@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 
 # --- นำเข้า Class ที่จำเป็น ---
-from history_windows import SOPopupWindow
+from history_windows import SOPopupWindow, DeferralHistoryWindow
 from daily_report_widget import DailyReportWidget
 
 STATUS_THAI_MAP = {
@@ -1062,6 +1062,9 @@ class SalesManagerScreen(CTkFrame):
         header_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=10)
         CTkLabel(header_frame, text="⏳ รายการที่ HR/บัญชี ขอเลื่อนรอบจ่ายคอมมิชชั่น", font=CTkFont(size=16, weight="bold")).pack(side="left")
         CTkButton(header_frame, text="⟳ รีเฟรช", command=self._load_defer_requests, width=90, fg_color="gray").pack(side="right")
+        CTkButton(header_frame, text="📋 ประวัติการเลื่อน SO",
+                  command=lambda: DeferralHistoryWindow(self, self.app_container),
+                  fg_color="#2563EB", hover_color="#1D4ED8", width=160).pack(side="right", padx=(0, 8))
 
         # Scrollable Frame
         self.defer_list_frame = CTkScrollableFrame(parent_tab, fg_color="white", corner_radius=8)
