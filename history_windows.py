@@ -4421,10 +4421,10 @@ class DeferralHistoryWindow(CTkToplevel):
         table_f.grid_rowconfigure(0, weight=1)
         table_f.grid_columnconfigure(0, weight=1)
 
-        cols = ("timestamp", "so_number", "customer_name", "sale_name", "defer_type",
-                "status", "defer_decision", "defer_decision_reason")
-        heads = ("วันที่บันทึก", "SO Number", "ลูกค้า", "เซลล์", "ประเภทเลื่อน",
-                 "สถานะ", "ผล Manager", "เหตุผล Manager")
+        cols = ("timestamp", "so_number", "customer_name", "sale_name",
+                "amount", "defer_period", "status", "defer_type")
+        heads = ("วันที่บันทึก", "SO Number", "ชื่อลูกค้า", "เซลล์",
+                 "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ประเภทเลื่อน")
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -4432,7 +4432,7 @@ class DeferralHistoryWindow(CTkToplevel):
         style.configure("DH.Treeview", rowheight=26)
 
         self.tree = ttk.Treeview(table_f, columns=cols, show="headings", style="DH.Treeview")
-        widths = [130, 130, 220, 100, 150, 120, 110, 200]
+        widths = [130, 130, 250, 120, 120, 180, 130, 150]
         for col, head, w in zip(cols, heads, widths):
             self.tree.heading(col, text=head)
             self.tree.column(col, width=w, anchor="w")
@@ -4483,7 +4483,8 @@ class DeferralHistoryWindow(CTkToplevel):
             query = f"""
                 SELECT c.timestamp, c.so_number, c.customer_name,
                        su.sale_name, c.defer_type, c.status,
-                       c.defer_decision, c.defer_decision_reason,
+                       c.commission_month, c.commission_year,
+                       COALESCE(c.final_sales_amount, c.sales_service_amount) AS calc_amount,
                        c.rejection_reason
                 FROM commissions c
                 LEFT JOIN sales_users su ON c.sale_key = su.sale_key
@@ -4494,33 +4495,57 @@ class DeferralHistoryWindow(CTkToplevel):
             import pandas as pd
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
 
+            thai_months_short = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                                  "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+
             for _, row in df.iterrows():
                 status = str(row.get("status", ""))
                 rejection = str(row.get("rejection_reason", "") or "")
 
-                # defer_type: ใช้ column ใหม่ก่อน, fallback ดึงจาก rejection_reason เก่า
-                defer_type = row.get("defer_type") or ""
-                if not defer_type and rejection.startswith("HR Request:"):
-                    defer_type = rejection.replace("HR Request:", "").strip() or "HR ขอเลื่อน"
+                # ประเภทเลื่อน: column ใหม่ก่อน, fallback จาก rejection_reason
+                defer_type = str(row.get("defer_type") or "")
+                if not defer_type:
+                    if rejection.startswith("HR Request:"):
+                        defer_type = rejection.replace("HR Request:", "").strip() or "HR ขอเลื่อน"
+                    elif rejection.startswith("Sale Confirmed Deferral"):
+                        defer_type = "Sale ยืนยันเลื่อน"
 
-                # defer_decision / reason: ใช้ column ใหม่ก่อน, fallback parse จาก rejection_reason
-                decision = str(row.get("defer_decision", "") or "")
-                decision_reason = str(row.get("defer_decision_reason", "") or "")
-                if not decision and rejection.startswith("Manager Decision:"):
-                    raw = rejection.replace("Manager Decision:", "").strip()
-                    if "ไม่อนุมัติ" in raw:
-                        decision = "ไม่อนุมัติ"
-                    elif "อนุมัติ" in raw:
-                        decision = "อนุมัติ"
-                    decision_reason = raw
+                # จากเดือน → ไปเดือน
+                try:
+                    m = int(row.get("commission_month") or 0)
+                    y = int(row.get("commission_year") or 0)
+                    if m and y:
+                        # commission_month/year คือเดือนที่ถูกเลื่อนไป (target)
+                        # พยายาม parse deferred-to จาก rejection_reason "Sale Confirmed Deferral to M/Y"
+                        import re
+                        match = re.search(r"Deferral to (\d+)/(\d+)", rejection)
+                        if match:
+                            to_m, to_y = int(match.group(1)), int(match.group(2))
+                            from_m = to_m - 1 if to_m > 1 else 12
+                            from_y = to_y if to_m > 1 else to_y - 1
+                            defer_period = f"{thai_months_short[from_m-1]}{from_y+543} → {thai_months_short[to_m-1]}{to_y+543}"
+                        else:
+                            # แสดงแค่รอบปัจจุบัน
+                            defer_period = f"รอบ {thai_months_short[m-1]}{y+543}"
+                    else:
+                        defer_period = "-"
+                except Exception:
+                    defer_period = "-"
 
+                # ยอดขาย
+                try:
+                    amount = f"{float(row.get('calc_amount', 0) or 0):,.2f}"
+                except Exception:
+                    amount = "-"
+
+                # tag สี
                 tag = "Requested"
-                if "อนุมัติ" in decision and decision != "ไม่อนุมัติ":
-                    tag = "Approved"
-                elif "ไม่อนุมัติ" in decision:
-                    tag = "Rejected"
-                elif status == "Deferred":
+                if status == "Deferred":
                     tag = "Deferred"
+                elif status in ("Paid", "HR Verified"):
+                    tag = "Approved"
+                elif "Manager Decision" in rejection and "ไม่อนุมัติ" in rejection:
+                    tag = "Rejected"
 
                 ts = utils.format_date_safe(row.get("timestamp"), "%Y-%m-%d %H:%M")
                 self.tree.insert("", "end", values=(
@@ -4528,10 +4553,10 @@ class DeferralHistoryWindow(CTkToplevel):
                     row.get("so_number", ""),
                     row.get("customer_name", ""),
                     row.get("sale_name", ""),
-                    defer_type or "-",
+                    amount,
+                    defer_period,
                     STATUS_THAI_MAP.get(status, status),
-                    decision or "-",
-                    decision_reason or "-",
+                    defer_type or "-",
                 ), tags=(tag,))
         except Exception as e:
             traceback.print_exc()
@@ -4541,8 +4566,8 @@ class DeferralHistoryWindow(CTkToplevel):
         try:
             import pandas as pd
             rows = [self.tree.item(i)["values"] for i in self.tree.get_children()]
-            cols = ["วันที่บันทึก", "SO Number", "ลูกค้า", "เซลล์", "ประเภทเลื่อน",
-                    "สถานะ", "ผล Manager", "เหตุผล Manager"]
+            cols = ["วันที่บันทึก", "SO Number", "ชื่อลูกค้า", "เซลล์",
+                    "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ประเภทเลื่อน"]
             df = pd.DataFrame(rows, columns=cols)
             path = filedialog.asksaveasfilename(defaultextension=".xlsx",
                                                 filetypes=[("Excel", "*.xlsx")],
