@@ -4460,8 +4460,8 @@ class DeferralHistoryWindow(CTkToplevel):
                 c.status IN ('Defer Requested', 'Deferred', 'Pending HR Approval')
                 OR c.defer_decision IS NOT NULL
                 OR c.defer_type IS NOT NULL
-                OR c.rejection_reason ILIKE 'HR Request%'
-                OR c.rejection_reason ILIKE 'Manager Decision%'
+                OR c.rejection_reason ILIKE 'HR Request%%'
+                OR c.rejection_reason ILIKE 'Manager Decision%%'
             )"""]
             params = []
 
