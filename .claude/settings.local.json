@@ -6,7 +6,9 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(gh pr create --title 'feat: role-based deferral history & Sale full history view' --body ' *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(gh pr create --title 'feat: commission system — deferral workflow, Sale notifications, cutoff enforcement, EXP-0006 fix' --body ' *)",
+      "PowerShell(Get-Command gh -ErrorAction SilentlyContinue)"
     ]
   }
 }
