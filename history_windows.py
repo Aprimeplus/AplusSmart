@@ -4422,9 +4422,9 @@ class DeferralHistoryWindow(CTkToplevel):
         table_f.grid_columnconfigure(0, weight=1)
 
         cols = ("timestamp", "so_number", "customer_name", "sale_name",
-                "amount", "defer_period", "status", "defer_type")
+                "amount", "defer_period", "status", "manager_decision", "defer_type")
         heads = ("วันที่บันทึก", "SO Number", "ชื่อลูกค้า", "เซลล์",
-                 "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ประเภทเลื่อน")
+                 "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ผล Manager", "ประเภทเลื่อน")
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -4432,7 +4432,7 @@ class DeferralHistoryWindow(CTkToplevel):
         style.configure("DH.Treeview", rowheight=26)
 
         self.tree = ttk.Treeview(table_f, columns=cols, show="headings", style="DH.Treeview")
-        widths = [130, 130, 250, 120, 120, 180, 130, 150]
+        widths = [130, 130, 230, 110, 110, 170, 110, 90, 140]
         for col, head, w in zip(cols, heads, widths):
             self.tree.heading(col, text=head)
             self.tree.column(col, width=w, anchor="w")
@@ -4495,14 +4495,27 @@ class DeferralHistoryWindow(CTkToplevel):
             import pandas as pd
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
 
+            import re
             thai_months_short = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
                                   "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+
+            def month_label(m, y):
+                """แปลง (month, year_CE) เป็น 'ม.ค.2569'"""
+                if 1 <= m <= 12:
+                    return f"{thai_months_short[m-1]}{y+543}"
+                return f"{m}/{y+543}"
+
+            def next_month(m, y):
+                return (1, y + 1) if m == 12 else (m + 1, y)
+
+            def prev_month(m, y):
+                return (12, y - 1) if m == 1 else (m - 1, y)
 
             for _, row in df.iterrows():
                 status = str(row.get("status", ""))
                 rejection = str(row.get("rejection_reason", "") or "")
 
-                # ประเภทเลื่อน: column ใหม่ก่อน, fallback จาก rejection_reason
+                # ประเภทเลื่อน
                 defer_type = str(row.get("defer_type") or "")
                 if not defer_type:
                     if rejection.startswith("HR Request:"):
@@ -4510,23 +4523,37 @@ class DeferralHistoryWindow(CTkToplevel):
                     elif rejection.startswith("Sale Confirmed Deferral"):
                         defer_type = "Sale ยืนยันเลื่อน"
 
+                # ผล Manager: column ใหม่ก่อน, fallback parse "Manager Decision:"
+                manager_decision = str(row.get("defer_decision") or "")
+                if not manager_decision:
+                    if "Manager Decision" in rejection:
+                        body = rejection.split("Manager Decision:", 1)[-1].strip()
+                        if "ไม่อนุมัติ" in body:
+                            manager_decision = "❌ ไม่อนุมัติ"
+                        elif "อนุมัติ" in body:
+                            manager_decision = "✅ อนุมัติ"
+                        else:
+                            manager_decision = body[:30]
+
                 # จากเดือน → ไปเดือน
                 try:
                     m = int(row.get("commission_month") or 0)
                     y = int(row.get("commission_year") or 0)
                     if m and y:
-                        # commission_month/year คือเดือนที่ถูกเลื่อนไป (target)
-                        # พยายาม parse deferred-to จาก rejection_reason "Sale Confirmed Deferral to M/Y"
-                        import re
-                        match = re.search(r"Deferral to (\d+)/(\d+)", rejection)
-                        if match:
-                            to_m, to_y = int(match.group(1)), int(match.group(2))
-                            from_m = to_m - 1 if to_m > 1 else 12
-                            from_y = to_y if to_m > 1 else to_y - 1
-                            defer_period = f"{thai_months_short[from_m-1]}{from_y+543} → {thai_months_short[to_m-1]}{to_y+543}"
+                        deferral_match = re.search(r"Deferral to (\d+)/(\d+)", rejection)
+                        if deferral_match:
+                            # Sale ยืนยันเลื่อน: มีเดือนปลายทางชัดเจน
+                            to_m, to_y = int(deferral_match.group(1)), int(deferral_match.group(2))
+                            fr_m, fr_y = prev_month(to_m, to_y)
+                            defer_period = f"{month_label(fr_m, fr_y)} → {month_label(to_m, to_y)}"
+                        elif status == "Defer Requested":
+                            # HR เพิ่งขอเลื่อน: commission_month/year = เดือนที่จะถูกเลื่อน (FROM)
+                            to_m, to_y = next_month(m, y)
+                            defer_period = f"{month_label(m, y)} → {month_label(to_m, to_y)}"
                         else:
-                            # แสดงแค่รอบปัจจุบัน
-                            defer_period = f"รอบ {thai_months_short[m-1]}{y+543}"
+                            # Deferred/Paid: commission_month/year = เดือนที่ถูกเลื่อนไป (TO)
+                            fr_m, fr_y = prev_month(m, y)
+                            defer_period = f"{month_label(fr_m, fr_y)} → {month_label(m, y)}"
                     else:
                         defer_period = "-"
                 except Exception:
@@ -4544,7 +4571,7 @@ class DeferralHistoryWindow(CTkToplevel):
                     tag = "Deferred"
                 elif status in ("Paid", "HR Verified"):
                     tag = "Approved"
-                elif "Manager Decision" in rejection and "ไม่อนุมัติ" in rejection:
+                if "❌" in manager_decision:
                     tag = "Rejected"
 
                 ts = utils.format_date_safe(row.get("timestamp"), "%Y-%m-%d %H:%M")
@@ -4556,6 +4583,7 @@ class DeferralHistoryWindow(CTkToplevel):
                     amount,
                     defer_period,
                     STATUS_THAI_MAP.get(status, status),
+                    manager_decision or "-",
                     defer_type or "-",
                 ), tags=(tag,))
         except Exception as e:
