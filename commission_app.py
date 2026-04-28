@@ -1332,6 +1332,25 @@ class CommissionApp(CTkFrame):
             messagebox.showerror("ข้อมูลไม่ถูกต้อง", message, parent=self)
             return
 
+        # ตรวจสอบวันที่จัดส่งเกิน cutoff — บังคับให้เปลี่ยนรอบคอมก่อนบันทึก
+        if self._is_delivery_date_over_cutoff():
+            day_str = self.delivery_date_selector.day_var.get()
+            month_str = self.delivery_date_selector.month_var.get()
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_num = thai_month_map.get(month_str, 0)
+            cutoff = 21 if month_num in (2, 12) else 25
+            next_month = month_num + 1 if month_num < 12 else 1
+            next_month_thai = self.thai_months[next_month - 1]
+            messagebox.showwarning(
+                "⚠️ วันที่จัดส่งเกินวันตัดรอบ",
+                f"วันที่จัดส่ง ({day_str} {month_str}) เกินวันตัดรอบที่ {cutoff} ของเดือนนี้\n\n"
+                f"กรุณาเปลี่ยน 'รอบเดือนคอม' เป็น {next_month_thai} ก่อนบันทึก",
+                parent=self
+            )
+            return
+
         if self.editing_record_id:
             if not messagebox.askyesno("ยืนยัน", "คุณต้องการบันทึกการเปลี่ยนแปลงนี้ใช่หรือไม่?", parent=self):
                 return
@@ -2007,6 +2026,7 @@ class CommissionApp(CTkFrame):
         )
         self._delivery_cutoff_label.grid(row=4, column=1, columnspan=2, padx=(10, 15), pady=(0, 6), sticky="w")
 
+        self._cutoff_popup_shown = False  # ป้องกัน popup ซ้ำ
         # Trace เมื่อวันหรือเดือนเปลี่ยน
         self.delivery_date_selector.day_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
         self.delivery_date_selector.month_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
