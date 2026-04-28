@@ -2012,7 +2012,7 @@ class CommissionApp(CTkFrame):
         self.delivery_date_selector.month_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
 
     def _check_delivery_date_cutoff(self):
-        """เช็ควันที่จัดส่ง — ถ้าเกิน cutoff ให้เปลี่ยนรอบคอมเป็นเดือนหน้าอัตโนมัติ"""
+        """เช็ควันที่จัดส่ง — ถ้าเกิน cutoff แสดง warning ให้ user เปลี่ยนรอบคอมเอง"""
         try:
             day_str = self.delivery_date_selector.day_var.get()
             month_str = self.delivery_date_selector.month_var.get()
@@ -2027,32 +2027,45 @@ class CommissionApp(CTkFrame):
             month_num = thai_month_map.get(month_str, 0)
             year_be = int(year_str)
 
-            # cutoff: กุมภา (2) และ ธันวา (12) = 21, เดือนอื่น = 25
             cutoff = 21 if month_num in (2, 12) else 25
 
             if day > cutoff:
-                # คำนวณเดือน/ปีถัดไป
-                if month_num < 12:
-                    next_month_num = month_num + 1
-                    next_year_be = year_be
-                else:
-                    next_month_num = 1
-                    next_year_be = year_be + 1
-
+                next_month_num = month_num + 1 if month_num < 12 else 1
+                next_year_be = year_be if month_num < 12 else year_be + 1
                 next_month_thai = self.thai_months[next_month_num - 1]
-
-                # บังคับเปลี่ยนรอบคอมทันที
-                self.commission_month_var.set(next_month_thai)
-                self.commission_year_var.set(str(next_year_be))
-
                 self._delivery_cutoff_label.configure(
-                    text=f"⚠️ วันที่จัดส่ง ({day_str}) เกินวันตัดรอบ ({cutoff}) "
-                         f"— รอบคอมถูกเปลี่ยนเป็น {next_month_thai} {next_year_be} อัตโนมัติ"
+                    text=f"⚠️ วันที่จัดส่ง ({day_str}) เกินวันตัดรอบ ({cutoff})\n"
+                         f"กรุณาเปลี่ยนรอบคอมเป็น {next_month_thai} {next_year_be} ด้วยตัวเอง"
                 )
             else:
                 self._delivery_cutoff_label.configure(text="")
         except Exception:
             pass
+
+    def _is_delivery_date_over_cutoff(self):
+        """คืนค่า True ถ้าวันที่จัดส่งเกิน cutoff และรอบคอมยังเป็นเดือนเดียวกับวันจัดส่ง"""
+        try:
+            day_str = self.delivery_date_selector.day_var.get()
+            month_str = self.delivery_date_selector.month_var.get()
+            if not day_str or not month_str:
+                return False
+
+            day = int(day_str)
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_num = thai_month_map.get(month_str, 0)
+            cutoff = 21 if month_num in (2, 12) else 25
+
+            if day <= cutoff:
+                return False
+
+            # เช็คว่า user ยังไม่ได้เปลี่ยนรอบคอมออกจากเดือนที่จัดส่ง
+            comm_month_str = self.commission_month_var.get()
+            comm_month_num = thai_month_map.get(comm_month_str, 0)
+            return comm_month_num == month_num
+        except Exception:
+            return False
 
     def _populate_fees_frame(self, parent):
         frame = self._create_section_frame(parent, "ค่าธรรมเนียม"); frame.pack(fill="x", pady=(0,10)); frame.grid_columnconfigure(1, weight=1)
@@ -2351,6 +2364,17 @@ class CommissionApp(CTkFrame):
     def _validate_form(self, data):
         if not data["so_number"] or data["so_number"] == "SO":
             return False, "กรุณากรอก 'เลขที่ใบสั่งขาย (SO)'"
+
+        if self._is_delivery_date_over_cutoff():
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_str = self.delivery_date_selector.month_var.get()
+            month_num = thai_month_map.get(month_str, 0)
+            cutoff = 21 if month_num in (2, 12) else 25
+            next_month = self.thai_months[month_num % 12]
+            return False, (f"วันที่จัดส่งเกินวันตัดรอบ ({cutoff})\n"
+                           f"กรุณาเปลี่ยนรอบคอมมิชชั่นเป็น '{next_month}' ก่อนบันทึก")
 
         if not data.get("order_pur"):
             return False, "กรุณากรอกข้อมูลในช่อง 'Order Pur' (ในส่วนรายละเอียดการขาย) ก่อนทำการบันทึก"
