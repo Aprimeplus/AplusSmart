@@ -2063,7 +2063,7 @@ class CommissionApp(CTkFrame):
             pass
 
     def _is_delivery_date_over_cutoff(self):
-        """คืนค่า True ถ้าวันที่จัดส่งเกิน cutoff และรอบคอมยังเป็นเดือนเดียวกับวันจัดส่ง"""
+        """คืนค่า True ถ้าวันที่จัดส่งเกิน cutoff และ commission month ยังไม่ถูกเปลี่ยนเป็นเดือนหน้าที่ถูกต้อง"""
         try:
             day_str = self.delivery_date_selector.day_var.get()
             month_str = self.delivery_date_selector.month_var.get()
@@ -2080,10 +2080,12 @@ class CommissionApp(CTkFrame):
             if day <= cutoff:
                 return False
 
-            # เช็คว่า user ยังไม่ได้เปลี่ยนรอบคอมออกจากเดือนที่จัดส่ง
-            comm_month_str = self.commission_month_var.get()
-            comm_month_num = thai_month_map.get(comm_month_str, 0)
-            return comm_month_num == month_num
+            # เดือนที่ commission ต้องเป็น = เดือนถัดจากวันจัดส่ง
+            required_comm_month = month_num + 1 if month_num < 12 else 1
+            comm_month_num = thai_month_map.get(self.commission_month_var.get(), 0)
+
+            # block ถ้า commission month ยังไม่ตรงกับเดือนที่ควรจะเป็น
+            return comm_month_num != required_comm_month
         except Exception:
             return False
 
