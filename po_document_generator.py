@@ -388,24 +388,18 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     is_wht3_checked = str(is_wht3_checked).lower() in ['true', '1', 't', 'y', 'yes'] if isinstance(is_wht3_checked, str) else (is_wht3_checked == 1)
     product_wht_amt = net_product_cost * 0.03 if is_wht3_checked else 0.0
 
-    # 3. คำนวณค่าส่ง (จะบวกเข้าบิลซัพพลายเออร์ *เฉพาะกรณีที่ซัพพลายเออร์เป็นคนส่งเองเท่านั้น*)
+    # 3. คำนวณค่าส่ง (แสดงค่าจัดส่งเสมอ ไม่ว่าจะเป็นซัพพลายเออร์หรือบริษัทขนส่งภายนอก)
     stock_shipper = str(header_data.get('shipping_to_stock_shipper', ''))
-    if stock_shipper == 'ซัพพลายเออร์จัดส่ง':
-        shipping_stock_cost = float(header_data.get('shipping_to_stock_cost', 0) or 0)
-        shipping_stock_vat = shipping_stock_cost * 0.07 if header_data.get('shipping_to_stock_vat_type') == 'VAT' else 0.0
-        st_wht_type = str(header_data.get('shipping_to_stock_wht_type', ''))
-        stock_wht_amt = shipping_stock_cost * (0.01 if '1' in st_wht_type else (0.03 if '3' in st_wht_type else 0))
-    else:
-        shipping_stock_cost = 0.0; shipping_stock_vat = 0.0; stock_wht_amt = 0.0
+    shipping_stock_cost = float(header_data.get('shipping_to_stock_cost', 0) or 0)
+    shipping_stock_vat = shipping_stock_cost * 0.07 if header_data.get('shipping_to_stock_vat_type') == 'VAT' else 0.0
+    st_wht_type = str(header_data.get('shipping_to_stock_wht_type', ''))
+    stock_wht_amt = shipping_stock_cost * (0.01 if '1' in st_wht_type else (0.03 if '3' in st_wht_type else 0))
 
     site_shipper = str(header_data.get('shipping_to_site_shipper', ''))
-    if site_shipper == 'ซัพพลายเออร์จัดส่ง':
-        shipping_site_cost = float(header_data.get('shipping_to_site_cost', 0) or 0)
-        shipping_site_vat = shipping_site_cost * 0.07 if header_data.get('shipping_to_site_vat_type') == 'VAT' else 0.0
-        si_wht_type = str(header_data.get('shipping_to_site_wht_type', ''))
-        site_wht_amt = shipping_site_cost * (0.01 if '1' in si_wht_type else (0.03 if '3' in si_wht_type else 0))
-    else:
-        shipping_site_cost = 0.0; shipping_site_vat = 0.0; site_wht_amt = 0.0
+    shipping_site_cost = float(header_data.get('shipping_to_site_cost', 0) or 0)
+    shipping_site_vat = shipping_site_cost * 0.07 if header_data.get('shipping_to_site_vat_type') == 'VAT' else 0.0
+    si_wht_type = str(header_data.get('shipping_to_site_wht_type', ''))
+    site_wht_amt = shipping_site_cost * (0.01 if '1' in si_wht_type else (0.03 if '3' in si_wht_type else 0))
 
     total_shipping_cost = shipping_stock_cost + shipping_site_cost
 
