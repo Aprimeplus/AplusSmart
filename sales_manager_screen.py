@@ -1173,7 +1173,7 @@ class SalesManagerScreen(CTkFrame):
                     thai_months = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
                                    "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
                     month_label = f"{thai_months[t_m-1]} {t_y+543}"
-                    msg_for_sale = (f"✅ Manager อนุมัติเลื่อนคอม SO: {row['so_number']}\n"
+                    msg_for_sale = (f"[DEFER] ✅ Manager อนุมัติเลื่อนคอม SO: {row['so_number']}\n"
                                     f"📅 รอบคอมที่จะนำกลับมาคิด: {month_label}\n"
                                     f"💬 เหตุผล: {reason}")
                     cursor.execute("""
@@ -1188,7 +1188,7 @@ class SalesManagerScreen(CTkFrame):
                 else:
                     new_status = 'Pending HR Approval'
                     defer_decision = 'ไม่อนุมัติ'
-                    msg_for_sale = (f"❌ Manager ไม่อนุมัติเลื่อนคอม SO: {row['so_number']}\n"
+                    msg_for_sale = (f"[DEFER] ❌ Manager ไม่อนุมัติเลื่อนคอม SO: {row['so_number']}\n"
                                     f"บังคับจ่ายรอบปัจจุบัน\n💬 เหตุผล: {reason}")
                     cursor.execute("""
                         UPDATE commissions

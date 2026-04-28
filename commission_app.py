@@ -1009,6 +1009,55 @@ class SubmitSODialog(CTkToplevel):
             if conn: 
                 self.app_container.release_connection(conn)
 
+class DeferralNoticeDialog(CTkToplevel):
+    """Popup บังคับให้ Sale กด 'รับทราบ' ก่อนใช้งานระบบได้ เมื่อมี SO ที่ Manager ตัดสินใจเรื่องเลื่อนคอม"""
+    def __init__(self, master, app_container, notifications):
+        super().__init__(master)
+        self.app_container = app_container
+        self.notifications = notifications
+        self.title("⚠️ แจ้งเตือนการเลื่อนรอบคอม")
+        self.geometry("620x480")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", lambda: None)  # บังคับต้องกด รับทราบ
+        self.grid_columnconfigure(0, weight=1)
+
+        CTkLabel(self, text="⚠️ มี SO ของคุณที่ Manager ตัดสินใจแล้ว",
+                 font=CTkFont(size=17, weight="bold"), text_color="#DC2626").pack(pady=(22, 4))
+        CTkLabel(self, text="กรุณาอ่านและกดรับทราบเพื่อยืนยันว่าคุณได้รับทราบข้อมูลแล้ว",
+                 font=CTkFont(size=12), text_color="gray40").pack(pady=(0, 12))
+
+        scroll = CTkScrollableFrame(self, height=260)
+        scroll.pack(fill="x", padx=20, pady=(0, 8))
+        scroll.grid_columnconfigure(0, weight=1)
+
+        for i, notif in enumerate(notifications):
+            msg = str(notif['message']).replace('[DEFER]', '').strip()
+            bg = "#FEF9C3" if "อนุมัติ" in msg else "#FEE2E2"
+            card = CTkFrame(scroll, fg_color=bg, corner_radius=8)
+            card.pack(fill="x", pady=4, padx=2)
+            CTkLabel(card, text=msg, font=CTkFont(size=12), justify="left",
+                     wraplength=540, text_color="#1E293B").pack(padx=12, pady=10, anchor="w")
+
+        CTkButton(self, text="✅ รับทราบแล้ว", font=CTkFont(size=15, weight="bold"),
+                  fg_color="#16A34A", hover_color="#15803D", height=48,
+                  command=self._acknowledge).pack(pady=16, padx=40, fill="x")
+
+    def _acknowledge(self):
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                ids = [n['id'] for n in self.notifications]
+                cursor.executemany("UPDATE notifications SET is_read = TRUE WHERE id = %s",
+                                   [(i,) for i in ids])
+            conn.commit()
+            self.app_container.release_connection(conn)
+        except Exception as e:
+            print(f"[DeferralNotice] acknowledge error: {e}")
+        self.destroy()
+
+
 class CommissionApp(CTkFrame):
     def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None, create_default_header=True):
         super().__init__(master, corner_radius=0, fg_color=app_container.THEME["sale"]["bg"])
@@ -1092,6 +1141,10 @@ class CommissionApp(CTkFrame):
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
 
+        # 9. แจ้งเตือน SO เลื่อนคอมที่ยังไม่รับทราบ (Sale เท่านั้น)
+        if self.user_role and self.user_role.lower() not in ('sales manager', 'director', 'hr', 'sale support'):
+            self.after(900, self._check_pending_deferrals)
+
 
         # ==========================================================
         # 🔥 9. เรียก DailyReportWidget มาวางใน แท็บที่ 2 (tab_report)
@@ -1147,35 +1200,23 @@ class CommissionApp(CTkFrame):
                 self.app_container.release_connection(conn)
 
     def _check_pending_deferrals(self):
-        """ตรวจสอบ SO ที่ Manager อนุมัติเลื่อนแล้ว รอให้ Sale รับทราบ"""
+        """ดึง notifications [DEFER] ที่ยังไม่รับทราบ แล้วแสดง DeferralNoticeDialog"""
         try:
             conn = self.app_container.get_connection()
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT so_number, customer_name, commission_month, commission_year, rejection_reason
-                    FROM commissions
-                    WHERE sale_key = %s AND status = 'Deferred' AND is_active = 1
-                    ORDER BY timestamp DESC
-                """, (self.sale_key,))
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT id, message FROM notifications "
+                    "WHERE user_key_to_notify = %s AND is_read = FALSE AND message LIKE '[DEFER]%%' "
+                    "ORDER BY id ASC",
+                    (self.sale_key,)
+                )
                 rows = cursor.fetchall()
             self.app_container.release_connection(conn)
 
             if not rows:
                 return
 
-            thai_months = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
-                           "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
-
-            lines = []
-            for r in rows:
-                m, y = int(r['commission_month'] or 0), int(r['commission_year'] or 0)
-                period = f"{thai_months[m-1]}{y+543}" if m and y else "?"
-                lines.append(f"• SO: {r['so_number']}  |  ลูกค้า: {r['customer_name']}  |  รอบคอม: {period}")
-
-            msg = (f"มี SO {len(rows)} รายการ ที่ Manager อนุมัติเลื่อนรอบคอมแล้ว:\n\n"
-                   + "\n".join(lines)
-                   + "\n\nกรุณาตรวจสอบในแท็บ 'รายการรอตัดสินใจ & ถูกเลื่อน'\nและยืนยันรับทราบในแต่ละรายการ")
-            messagebox.showwarning("⚠️ SO ที่ถูกเลื่อนรอบคอม", msg, parent=self)
+            DeferralNoticeDialog(self, self.app_container, [dict(r) for r in rows])
         except Exception as e:
             print(f"[pending_deferral_check] {e}")
 
