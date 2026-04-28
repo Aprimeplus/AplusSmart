@@ -2012,11 +2012,12 @@ class CommissionApp(CTkFrame):
         self.delivery_date_selector.month_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
 
     def _check_delivery_date_cutoff(self):
-        """เช็ควันที่จัดส่งว่าเกิน cutoff ไหม ถ้าเกินแนะนำให้เปลี่ยนรอบคอมเป็นเดือนหน้า"""
+        """เช็ควันที่จัดส่ง — ถ้าเกิน cutoff ให้เปลี่ยนรอบคอมเป็นเดือนหน้าอัตโนมัติ"""
         try:
             day_str = self.delivery_date_selector.day_var.get()
             month_str = self.delivery_date_selector.month_var.get()
-            if not day_str or not month_str:
+            year_str = self.delivery_date_selector.year_var.get()
+            if not day_str or not month_str or not year_str:
                 return
 
             day = int(day_str)
@@ -2024,17 +2025,29 @@ class CommissionApp(CTkFrame):
                               "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
                               "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
             month_num = thai_month_map.get(month_str, 0)
+            year_be = int(year_str)
 
             # cutoff: กุมภา (2) และ ธันวา (12) = 21, เดือนอื่น = 25
             cutoff = 21 if month_num in (2, 12) else 25
 
             if day > cutoff:
-                # คำนวณเดือนหน้า
-                next_month = month_num + 1 if month_num < 12 else 1
-                next_month_thai = self.thai_months[next_month - 1]
+                # คำนวณเดือน/ปีถัดไป
+                if month_num < 12:
+                    next_month_num = month_num + 1
+                    next_year_be = year_be
+                else:
+                    next_month_num = 1
+                    next_year_be = year_be + 1
+
+                next_month_thai = self.thai_months[next_month_num - 1]
+
+                # บังคับเปลี่ยนรอบคอมทันที
+                self.commission_month_var.set(next_month_thai)
+                self.commission_year_var.set(str(next_year_be))
+
                 self._delivery_cutoff_label.configure(
                     text=f"⚠️ วันที่จัดส่ง ({day_str}) เกินวันตัดรอบ ({cutoff}) "
-                         f"— แนะนำเปลี่ยนรอบคอมเป็น {next_month_thai}"
+                         f"— รอบคอมถูกเปลี่ยนเป็น {next_month_thai} {next_year_be} อัตโนมัติ"
                 )
             else:
                 self._delivery_cutoff_label.configure(text="")
