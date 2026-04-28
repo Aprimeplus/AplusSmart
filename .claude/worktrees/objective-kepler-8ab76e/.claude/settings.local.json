@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:/Users/Nitro V15/Desktop/AplusSmart - Backup\" --work-tree=\"C:/Users/Nitro V15/Desktop/AplusSmart - Backup/.claude/worktrees/objective-kepler-8ab76e\" status)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --title 'feat: role-based deferral history & Sale full history view' --body ' *)",
+      "Bash(git commit *)"
+    ]
+  }
+}

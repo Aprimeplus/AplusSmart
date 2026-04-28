@@ -1,0 +1,1 @@
+ALTER TABLE cost_benchmarks RENAME COLUMN "ชื่อ Sale" TO "รหัส Sale";
