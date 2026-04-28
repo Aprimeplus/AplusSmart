@@ -620,13 +620,19 @@ class HRScreen(CTkFrame):
         # แปลง List so_ids เป็น String สำหรับ Query IN (...)
         so_ids_str = ', '.join(map(str, so_ids))
 
-        # 2. เขียน SQL Query (คงเดิม)
+        # 2. เขียน SQL Query — match by both product_name patterns AND product_code
         sql = f"""
         WITH po_items AS (
-            SELECT 
+            SELECT
                 c.id AS comm_id,
-                COALESCE(SUM(CASE WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%' THEN poi.total_price ELSE 0 END), 0) as po_cutting_cost,
-                COALESCE(SUM(CASE WHEN poi.product_name LIKE '%%ค่าบริการ%%' THEN poi.total_price ELSE 0 END), 0) as po_service_cost
+                COALESCE(SUM(CASE
+                    WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%'
+                         OR COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
+                    THEN poi.total_price ELSE 0 END), 0) as po_cutting_cost,
+                COALESCE(SUM(CASE
+                    WHEN poi.product_name LIKE '%%ค่าบริการ%%'
+                         OR COALESCE(poi.product_code, '') IN ('EXP-0006', 'EXP-0049', 'EXP-0077', 'EXP-0174')
+                    THEN poi.total_price ELSE 0 END), 0) as po_service_cost
             FROM commissions c
             JOIN purchase_orders po ON c.so_number = po.so_number
             JOIN purchase_order_items poi ON po.id = poi.purchase_order_id
@@ -3879,33 +3885,42 @@ class HRScreen(CTkFrame):
             # 🔥 [จุดแก้ไขสำคัญ 1] ปรับ SQL Query ให้ดึงข้อมูล Cost แยกประเภทให้ครบถ้วน
             # ==============================================================================
             query_comm = """
-                SELECT 
-                    c.*, 
+                SELECT
+                    c.*,
                     -- ดึงค่าแยกย่อยออกมา เพื่อให้ Business Logic นำไปจับคู่คำนวณ Excess ได้ถูกต้อง
                     COALESCE(po_costs.shipping_to_stock_cost, 0) as shipping_to_stock_cost,
                     COALESCE(po_costs.shipping_to_site_cost, 0) as shipping_to_site_cost,
                     COALESCE(po_costs.po_cutting_cost, 0) as po_cutting_cost,
-                    COALESCE(po_costs.po_service_cost, 0) as po_service_cost
+                    COALESCE(po_costs.po_service_cost, 0) as po_service_cost,
+                    -- live_cogs: ยอดรวม PO items ปัจจุบัน (ครบทุก item รวม EXP-0006)
+                    COALESCE(live_cogs.total_item_cost, c.final_cost_amount) as live_cogs
                 FROM commissions c
                 LEFT JOIN (
-                    SELECT 
-                        so_number, 
+                    SELECT
+                        so_number,
                         -- รวมยอดแยกตามประเภท (จาก PO ที่สถานะ != Cancelled)
                         SUM(COALESCE(shipping_to_stock_cost, 0)) as shipping_to_stock_cost,
                         SUM(COALESCE(shipping_to_site_cost, 0)) as shipping_to_site_cost,
                         SUM(COALESCE(cutting_cost, 0)) as po_cutting_cost,
-                        0 as po_service_cost 
-                    FROM purchase_orders 
+                        0 as po_service_cost
+                    FROM purchase_orders
                     WHERE status != 'Cancelled'  -- <-- นับรวม PO ทุกใบที่ไม่ยกเลิก
                     GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
-                WHERE c.sale_key = %s 
-                    AND c.status = 'HR Verified' 
+                LEFT JOIN (
+                    SELECT p.so_number, SUM(COALESCE(poi.total_price, 0)) as total_item_cost
+                    FROM purchase_orders p
+                    JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
+                    WHERE p.status NOT IN ('Cancelled')
+                    GROUP BY p.so_number
+                ) live_cogs ON c.so_number = live_cogs.so_number
+                WHERE c.sale_key = %s
+                    AND c.status = 'HR Verified'
                     AND c.payout_id IS NULL
                     AND c.is_active = 1
                     AND (
-                        (c.commission_year < %s) 
-                        OR 
+                        (c.commission_year < %s)
+                        OR
                         (c.commission_year = %s AND c.commission_month <= %s)
                     )
             """
@@ -3914,19 +3929,31 @@ class HRScreen(CTkFrame):
             
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
 
+            # ใช้ live_cogs แทน final_cost_amount (เพื่อรวม EXP-0006 ที่อาจ approve หลัง HR verify)
+            if 'live_cogs' in self.current_comm_df.columns:
+                self.current_comm_df['final_cost_amount'] = self.current_comm_df['live_cogs'].fillna(
+                    self.current_comm_df['final_cost_amount'])
+                self.current_comm_df.drop(columns=['live_cogs'], inplace=True)
+
             # บันทึก ID ของ SO ที่จะถูกประมวลผล
             self.current_so_ids = self.current_comm_df['id'].tolist()
-            
-            # Reconciliation Logic (เหมือนเดิม)
+
+            # Reconciliation Logic
             if not self.current_comm_df.empty:
                 so_ids_list = self.current_comm_df['id'].tolist()
                 special_amounts_df = self._get_special_service_amounts(so_ids_list)
-                
+
                 if not special_amounts_df.empty:
+                    # ลบ columns ที่ซ้ำออกก่อน merge เพื่อป้องกัน _x/_y suffix bug
+                    cols_to_drop = [c for c in ['po_cutting_cost', 'po_service_cost']
+                                    if c in self.current_comm_df.columns]
+                    if cols_to_drop:
+                        self.current_comm_df = self.current_comm_df.drop(columns=cols_to_drop)
+
                     self.current_comm_df = pd.merge(
-                        self.current_comm_df, 
-                        special_amounts_df[['id', 'so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']], 
-                        on='id', 
+                        self.current_comm_df,
+                        special_amounts_df[['id', 'so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']],
+                        on='id',
                         how='left'
                     )
                     # เติม 0 ในช่องที่ว่าง
