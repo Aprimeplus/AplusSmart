@@ -1,0 +1,5 @@
+cmd  cd to C:\Program Files\PostgreSQL\17\bin
+
+and type
+
+psql -h 192.168.1.60 -p 5432 -U app_user -d aplus_com_tes
