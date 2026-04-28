@@ -4455,7 +4455,14 @@ class DeferralHistoryWindow(CTkToplevel):
         for row in self.tree.get_children():
             self.tree.delete(row)
         try:
-            where = ["c.status IN ('Defer Requested','Deferred','Pending HR Approval') OR c.defer_decision IS NOT NULL"]
+            # รวม SO ที่อยู่ในสถานะเลื่อน + ที่เคยเลื่อนแล้วจ่ายแล้ว (เก็บประวัติจาก rejection_reason หรือ defer_type)
+            where = ["""(
+                c.status IN ('Defer Requested', 'Deferred', 'Pending HR Approval')
+                OR c.defer_decision IS NOT NULL
+                OR c.defer_type IS NOT NULL
+                OR c.rejection_reason ILIKE 'HR Request%'
+                OR c.rejection_reason ILIKE 'Manager Decision%'
+            )"""]
             params = []
 
             search = self.search_var.get().strip()
