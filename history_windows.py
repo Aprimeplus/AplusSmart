@@ -4481,6 +4481,14 @@ class DeferralHistoryWindow(CTkToplevel):
                       width=160,
                       command=lambda _: self._load_data()).pack(side="left", padx=(0, 14))
 
+        # Decision filter
+        CTkLabel(filter_bar, text="ผล:").pack(side="left", padx=(0, 4))
+        self._decision_var = tk.StringVar(value="ทั้งหมด")
+        CTkOptionMenu(filter_bar, variable=self._decision_var,
+                      values=["ทั้งหมด", "อนุมัติ", "ไม่อนุมัติ", "รอการตัดสินใจ"],
+                      width=140,
+                      command=lambda _: self._load_data()).pack(side="left", padx=(0, 14))
+
         # Right side: refresh + export
         CTkButton(filter_bar, text="📥 Export Excel", command=self._export_excel,
                   fg_color="#16A34A", hover_color="#15803D", width=120).pack(side="right", padx=8, pady=8)
@@ -4499,15 +4507,16 @@ class DeferralHistoryWindow(CTkToplevel):
         self.grid_rowconfigure(3, weight=1)
 
         cols = ("so_number", "customer_name", "sale_name",
-                "defer_type", "reason", "from_period", "to_period", "sales_amount")
+                "defer_type", "decision", "reason", "from_period", "to_period", "sales_amount")
         self._tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=20)
 
         col_cfg = [
             ("so_number",      "เลข SO",                    140, "center"),
-            ("customer_name",  "ชื่อลูกค้า",               230, "w"),
-            ("sale_name",      "พนักงานขาย",                120, "center"),
-            ("defer_type",     "ประเภทการเลื่อน",           160, "center"),
-            ("reason",         "เหตุผล",                    220, "w"),
+            ("customer_name",  "ชื่อลูกค้า",               200, "w"),
+            ("sale_name",      "พนักงานขาย",                110, "center"),
+            ("defer_type",     "ประเภทการเลื่อน",           155, "center"),
+            ("decision",       "ผล SM",                      95, "center"),
+            ("reason",         "เหตุผล",                    200, "w"),
             ("from_period",    "เดือนเดิม",                 110, "center"),
             ("to_period",      "เลื่อนไปเดือน",             110, "center"),
             ("sales_amount",   "ยอดขายคำนวณคอม (บาท)",     150, "e"),
@@ -4524,7 +4533,9 @@ class DeferralHistoryWindow(CTkToplevel):
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
 
-        # Row color tags per defer type
+        # Row color tags — ไม่อนุมัติ = แดงอ่อน, อนุมัติ = ตามประเภท
+        self._tree.tag_configure("ไม่อนุมัติ",              background="#FEE2E2")  # แดงอ่อน
+        self._tree.tag_configure("รอการตัดสินใจ",           background="#FEF9C3")  # เหลืองอ่อน
         self._tree.tag_configure("เลื่อนจัดส่ง",           background="#DBEAFE")
         self._tree.tag_configure("ค้างชำระ-ลูกค้าเครดิต",  background="#FEF3C7")
         self._tree.tag_configure("ค้างชำระ-งวดสุดท้าย",    background="#EDE9FE")
@@ -4534,7 +4545,7 @@ class DeferralHistoryWindow(CTkToplevel):
     def _fetch_all_sales(self):
         try:
             df = pd.read_sql_query(
-                "SELECT DISTINCT sale_key FROM commissions WHERE status = 'Deferred' AND is_active = 1 ORDER BY sale_key",
+                "SELECT DISTINCT sale_key FROM commissions WHERE defer_type IS NOT NULL AND is_active = 1 ORDER BY sale_key",
                 self.app_container.pg_engine)
             return ["ทั้งหมด"] + df["sale_key"].tolist()
         except Exception:
@@ -4544,11 +4555,12 @@ class DeferralHistoryWindow(CTkToplevel):
         for item in self._tree.get_children():
             self._tree.delete(item)
 
-        # อัปเดตรายชื่อเซลล์ใน dropdown ครั้งแรก
         sales_list = self._fetch_all_sales()
         self._sale_menu.configure(values=sales_list)
 
         try:
+            # ดึงทุก SO ที่เคยผ่านกระบวนการ defer (defer_type IS NOT NULL)
+            # รวมทั้ง อนุมัติ (Deferred), ไม่อนุมัติ (กลับไป Pending HR Approval ฯลฯ), และรอการตัดสินใจ (Defer Requested)
             query = """
                 SELECT
                     c.so_number,
@@ -4556,13 +4568,15 @@ class DeferralHistoryWindow(CTkToplevel):
                     COALESCE(u.sale_name, c.sale_key) AS sale_name,
                     c.sale_key,
                     COALESCE(c.defer_type, 'อื่นๆ') AS defer_type,
+                    COALESCE(c.defer_decision, 'รอการตัดสินใจ') AS defer_decision,
+                    c.defer_decision_reason,
                     c.rejection_reason,
                     c.commission_month,
                     c.commission_year,
                     COALESCE(c.final_sales_amount, c.sales_service_amount, 0) AS sales_amount
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.status = 'Deferred' AND c.is_active = 1
+                WHERE c.defer_type IS NOT NULL AND c.is_active = 1
                 ORDER BY c.commission_year DESC, c.commission_month DESC, c.so_number
             """
             df = pd.read_sql_query(query, self.app_container.pg_engine)
@@ -4575,6 +4589,7 @@ class DeferralHistoryWindow(CTkToplevel):
         month_sel = self._month_var.get()
         year_sel = self._year_var.get()
         dtype_sel = self._dtype_var.get()
+        decision_sel = self._decision_var.get()
 
         if sale_sel != "ทั้งหมด":
             df = df[df["sale_key"] == sale_sel]
@@ -4586,15 +4601,15 @@ class DeferralHistoryWindow(CTkToplevel):
             df = df[pd.to_numeric(df["commission_year"], errors="coerce") == y_ad]
         if dtype_sel != "ทั้งหมด":
             df = df[df["defer_type"] == dtype_sel]
+        if decision_sel != "ทั้งหมด":
+            df = df[df["defer_decision"] == decision_sel]
 
         total_amt = 0.0
         for _, row in df.iterrows():
-            # สร้าง label รอบเดือนเดิม/ปลายทาง
             try:
                 m = int(row["commission_month"])
                 y = int(row["commission_year"]) + 543
                 from_period = f"{self.THAI_MONTHS[m-1]} {y}" if 1 <= m <= 12 else "-"
-
                 m_next = m + 1
                 y_next = y
                 if m_next > 12:
@@ -4609,29 +4624,41 @@ class DeferralHistoryWindow(CTkToplevel):
             total_amt += amt
 
             dtype = row["defer_type"]
-            reason_raw = row["rejection_reason"] or "-"
-            # ตัด prefix ที่ระบบเติมให้อ่านง่ายขึ้น
+            decision = row["defer_decision"]
+
+            # ใช้ defer_decision_reason ถ้ามี ไม่งั้น fallback ไป rejection_reason
+            reason_raw = row["defer_decision_reason"] or row["rejection_reason"] or "-"
             for prefix in ("HR Request:", "Sale Confirmed Deferral", "Manager Decision:", "Sale Rejected Deferral"):
                 if reason_raw.startswith(prefix):
                     reason_raw = reason_raw[len(prefix):].strip(": ").strip()
                     break
 
-            tag = dtype if dtype in self.DEFER_TYPE_COLORS else "อื่นๆ"
+            # สีแถว: ไม่อนุมัติ = แดง, รอ = เหลือง, อนุมัติ = ตามประเภท
+            if decision == "ไม่อนุมัติ":
+                tag = "ไม่อนุมัติ"
+            elif decision == "รอการตัดสินใจ":
+                tag = "รอการตัดสินใจ"
+            else:
+                tag = dtype if dtype in self.DEFER_TYPE_COLORS else "อื่นๆ"
+
             self._tree.insert("", "end", values=(
                 row["so_number"],
                 row["customer_name"],
                 row["sale_name"],
                 dtype,
+                decision,
                 reason_raw,
                 from_period,
                 to_period,
                 f"{amt:,.2f}",
             ), tags=(tag,))
 
+        n_approved = len(df[df["defer_decision"] == "อนุมัติ"])
+        n_rejected = len(df[df["defer_decision"] == "ไม่อนุมัติ"])
+        n_pending  = len(df[df["defer_decision"] == "รอการตัดสินใจ"])
         self._summary_label.configure(
-            text=f"รวม {len(df)} รายการ  |  ยอดขายรวม: {total_amt:,.2f} บาท"
+            text=f"รวม {len(df)} รายการ  |  อนุมัติ {n_approved}  ไม่อนุมัติ {n_rejected}  รอ {n_pending}  |  ยอดรวม: {total_amt:,.2f} บาท"
         )
-        # เก็บ df ไว้สำหรับ export
         self._current_df = df
 
     # ------------------------------------------------------------------
@@ -4668,14 +4695,16 @@ class DeferralHistoryWindow(CTkToplevel):
             df["ยอดขายคำนวณคอม (บาท)"] = pd.to_numeric(df["sales_amount"], errors="coerce")
 
             export_df = df.rename(columns={
-                "so_number":      "เลข SO",
-                "customer_name":  "ชื่อลูกค้า",
-                "sale_name":      "พนักงานขาย",
-                "defer_type":     "ประเภทการเลื่อน",
-                "rejection_reason": "เหตุผล (raw)",
+                "so_number":           "เลข SO",
+                "customer_name":       "ชื่อลูกค้า",
+                "sale_name":           "พนักงานขาย",
+                "defer_type":          "ประเภทการเลื่อน",
+                "defer_decision":      "ผล SM",
+                "defer_decision_reason": "เหตุผล SM",
+                "rejection_reason":    "เหตุผล (HR/Sale)",
             })[["เลข SO", "ชื่อลูกค้า", "พนักงานขาย",
-                "ประเภทการเลื่อน", "เหตุผล (raw)",
-                "เดือนเดิม", "ยอดขายคำนวณคอม (บาท)"]]
+                "ประเภทการเลื่อน", "ผล SM", "เหตุผล SM",
+                "เหตุผล (HR/Sale)", "เดือนเดิม", "ยอดขายคำนวณคอม (บาท)"]]
 
             export_df.to_excel(save_path, index=False)
             messagebox.showinfo("สำเร็จ", f"Export เรียบร้อยแล้ว\n{save_path}", parent=self)

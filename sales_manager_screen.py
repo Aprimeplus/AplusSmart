@@ -1158,17 +1158,23 @@ class SalesManagerScreen(CTkFrame):
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
                 if approve:
-                    # อนุมัติให้เลื่อน -> เปลี่ยนสถานะเป็น Deferred (รอบัญชีดึงไปจ่ายเดือนหน้า)
                     new_status = 'Deferred'
+                    defer_decision = 'อนุมัติ'
                     msg_for_sale = f"Manager ตัดสินใจ 'อนุมัติ' ให้เลื่อน SO: {row['so_number']} ไปเดือนหน้า (เหตุผล: {reason})"
                 else:
-                    # ไม่อนุมัติ -> ตีกลับไปเป็น Pending HR Approval เพื่อบังคับบัญชีจ่ายเดือนนี้
                     new_status = 'Pending HR Approval'
+                    defer_decision = 'ไม่อนุมัติ'
                     msg_for_sale = f"Manager ตัดสินใจ 'ไม่อนุมัติ' การเลื่อน SO: {row['so_number']} (บังคับจ่ายรอบปัจจุบัน) (เหตุผล: {reason})"
 
-                # 1. อัปเดตสถานะและเหตุผล
-                cursor.execute("UPDATE commissions SET status = %s, rejection_reason = %s WHERE id = %s",
-                               (new_status, f"Manager Decision: {reason}", row['id']))
+                # 1. อัปเดตสถานะ + บันทึกผลการตัดสินใจ defer
+                cursor.execute("""
+                    UPDATE commissions
+                    SET status = %s,
+                        rejection_reason = %s,
+                        defer_decision = %s,
+                        defer_decision_reason = %s
+                    WHERE id = %s
+                """, (new_status, f"Manager Decision: {reason}", defer_decision, reason, row['id']))
 
                 # 2. ส่ง Noti แจ้งเซลล์เจ้าของ SO ให้รับทราบ
                 cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES (%s, %s, FALSE, %s)",
