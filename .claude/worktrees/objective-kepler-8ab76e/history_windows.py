@@ -4325,3 +4325,283 @@ class TransportPOSearchDialog(CTkToplevel):
             TransportLogViewer(self, self.app_container)
         except NameError:
              messagebox.showerror("Error", "ไม่พบ Class TransportLogViewer ในไฟล์ history_windows.py")
+
+
+class DeferTypeDialog(CTkToplevel):
+    """Dialog ให้ HR เลือกประเภทการเลื่อนและระบุเหตุผล"""
+    DEFER_TYPES = [
+        "เลื่อนไปเดือนถัดไป",
+        "รอเอกสารจากลูกค้า",
+        "รอชำระเงินงวดสุดท้าย",
+        "ติดปัญหาการส่งสินค้า",
+        "อื่นๆ (ระบุเหตุผล)",
+    ]
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("เลือกประเภทการเลื่อน")
+        self.geometry("420x380")
+        self.resizable(False, False)
+        self.defer_type = None
+        self.reason = None
+        self.transient(master)
+        self.grab_set()
+
+        self.grid_columnconfigure(0, weight=1)
+
+        CTkLabel(self, text="เลือกประเภทการเลื่อนจ่าย", font=CTkFont(size=15, weight="bold")).pack(pady=(20, 10), padx=20)
+
+        self._type_var = tk.StringVar(value=self.DEFER_TYPES[0])
+        for t in self.DEFER_TYPES:
+            CTkRadioButton(self, text=t, variable=self._type_var, value=t).pack(anchor="w", padx=30, pady=2)
+
+        CTkLabel(self, text="เหตุผลเพิ่มเติม (ถ้ามี):").pack(anchor="w", padx=20, pady=(12, 2))
+        self._reason_entry = CTkEntry(self, width=360, placeholder_text="ระบุเหตุผล...")
+        self._reason_entry.pack(padx=20)
+
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        CTkButton(btn_frame, text="ยืนยัน", width=120, fg_color="#16A34A", hover_color="#15803D",
+                  command=self._confirm).pack(side="left", padx=8)
+        CTkButton(btn_frame, text="ยกเลิก", width=100, fg_color="#6B7280", hover_color="#4B5563",
+                  command=self.destroy).pack(side="left", padx=8)
+
+        self.focus()
+
+    def _confirm(self):
+        self.defer_type = self._type_var.get()
+        self.reason = self._reason_entry.get().strip()
+        self.destroy()
+
+
+class DeferralHistoryWindow(CTkToplevel):
+    """หน้าต่างประวัติการเลื่อน SO ทั้งหมด สำหรับ Sales Manager ดูภาพรวม"""
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.pg_engine = app_container.pg_engine
+        self.title("📋 ประวัติการเลื่อน SO ทั้งหมด")
+        self.geometry("1200x650")
+        self.transient(master)
+        self.grab_set()
+        self.focus()
+
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                            "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
+        self.month_var = tk.StringVar(value="ทุกเดือน")
+        self.year_var = tk.StringVar(value="ทุกปี")
+
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._build_ui()
+        self.after(50, self._load_data)
+
+    def _build_ui(self):
+        top = CTkFrame(self, fg_color="transparent")
+        top.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="ew")
+
+        filter_f = CTkFrame(top, fg_color="transparent")
+        filter_f.pack(side="left")
+
+        month_opts = ["ทุกเดือน"] + self.thai_months
+        CTkOptionMenu(filter_f, variable=self.month_var, values=month_opts, width=130).pack(side="left", padx=4)
+
+        year = datetime.now().year
+        CTkOptionMenu(filter_f, variable=self.year_var,
+                      values=["ทุกปี"] + [str(y) for y in range(year, year - 5, -1)], width=100).pack(side="left", padx=4)
+
+        self.search_var = tk.StringVar()
+        CTkEntry(filter_f, textvariable=self.search_var, placeholder_text="ค้นหา SO / เซลล์...", width=200).pack(side="left", padx=4)
+        CTkButton(filter_f, text="ค้นหา", command=self._load_data, width=80).pack(side="left", padx=8)
+
+        table_f = CTkFrame(self, fg_color="white", corner_radius=8)
+        table_f.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        table_f.grid_rowconfigure(0, weight=1)
+        table_f.grid_columnconfigure(0, weight=1)
+
+        cols = ("timestamp", "so_number", "customer_name", "sale_name",
+                "amount", "defer_period", "status", "manager_decision", "defer_type")
+        heads = ("วันที่บันทึก", "SO Number", "ชื่อลูกค้า", "เซลล์",
+                 "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ผล Manager", "ประเภทเลื่อน")
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("DH.Treeview.Heading", font=("Roboto", 10, "bold"), background="#E5E7EB")
+        style.configure("DH.Treeview", rowheight=26)
+
+        self.tree = ttk.Treeview(table_f, columns=cols, show="headings", style="DH.Treeview")
+        widths = [130, 130, 230, 110, 110, 170, 110, 90, 140]
+        for col, head, w in zip(cols, heads, widths):
+            self.tree.heading(col, text=head)
+            self.tree.column(col, width=w, anchor="w")
+
+        vsb = ttk.Scrollbar(table_f, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        self.tree.tag_configure("Deferred", background="#FEF3C7")
+        self.tree.tag_configure("Requested", background="#FFF7ED")
+        self.tree.tag_configure("Approved", background="#D1FAE5")
+        self.tree.tag_configure("Rejected", background="#FEE2E2")
+
+        bot = CTkFrame(self, fg_color="transparent")
+        bot.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
+        CTkButton(bot, text="Export to Excel", command=self._export, fg_color="#2563EB").pack(side="right")
+
+    def _load_data(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        try:
+            # รวม SO ที่อยู่ในสถานะเลื่อน + ที่เคยเลื่อนแล้วจ่ายแล้ว (เก็บประวัติจาก rejection_reason หรือ defer_type)
+            where = ["""(
+                c.status IN ('Defer Requested', 'Deferred', 'Pending HR Approval')
+                OR c.defer_decision IS NOT NULL
+                OR c.defer_type IS NOT NULL
+                OR c.rejection_reason ILIKE 'HR Request%%'
+                OR c.rejection_reason ILIKE 'Manager Decision%%'
+            )"""]
+            params = []
+
+            search = self.search_var.get().strip()
+            if search:
+                where.append("(c.so_number ILIKE %s OR su.sale_name ILIKE %s OR c.customer_name ILIKE %s)")
+                params.extend([f"%{search}%"] * 3)
+
+            m = self.month_var.get()
+            if m != "ทุกเดือน":
+                where.append("EXTRACT(MONTH FROM c.timestamp::timestamp) = %s")
+                params.append(self.thai_month_map[m])
+
+            y = self.year_var.get()
+            if y != "ทุกปี":
+                where.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
+                params.append(int(y))
+
+            query = f"""
+                SELECT c.timestamp, c.so_number, c.customer_name,
+                       su.sale_name, c.defer_type, c.status,
+                       c.commission_month, c.commission_year,
+                       COALESCE(c.final_sales_amount, c.sales_service_amount) AS calc_amount,
+                       c.rejection_reason
+                FROM commissions c
+                LEFT JOIN sales_users su ON c.sale_key = su.sale_key
+                WHERE {' AND '.join(where)}
+                ORDER BY c.timestamp DESC
+                LIMIT 500
+            """
+            import pandas as pd
+            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+
+            import re
+            thai_months_short = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                                  "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+
+            def month_label(m, y):
+                """แปลง (month, year_CE) เป็น 'ม.ค.2569'"""
+                if 1 <= m <= 12:
+                    return f"{thai_months_short[m-1]}{y+543}"
+                return f"{m}/{y+543}"
+
+            def next_month(m, y):
+                return (1, y + 1) if m == 12 else (m + 1, y)
+
+            def prev_month(m, y):
+                return (12, y - 1) if m == 1 else (m - 1, y)
+
+            for _, row in df.iterrows():
+                status = str(row.get("status", ""))
+                rejection = str(row.get("rejection_reason", "") or "")
+
+                # ประเภทเลื่อน
+                defer_type = str(row.get("defer_type") or "")
+                if not defer_type:
+                    if rejection.startswith("HR Request:"):
+                        defer_type = rejection.replace("HR Request:", "").strip() or "HR ขอเลื่อน"
+                    elif rejection.startswith("Sale Confirmed Deferral"):
+                        defer_type = "Sale ยืนยันเลื่อน"
+
+                # ผล Manager: column ใหม่ก่อน, fallback parse "Manager Decision:"
+                manager_decision = str(row.get("defer_decision") or "")
+                if not manager_decision:
+                    if "Manager Decision" in rejection:
+                        body = rejection.split("Manager Decision:", 1)[-1].strip()
+                        if "ไม่อนุมัติ" in body:
+                            manager_decision = "❌ ไม่อนุมัติ"
+                        elif "อนุมัติ" in body:
+                            manager_decision = "✅ อนุมัติ"
+                        else:
+                            manager_decision = body[:30]
+
+                # จากเดือน → ไปเดือน
+                try:
+                    m = int(row.get("commission_month") or 0)
+                    y = int(row.get("commission_year") or 0)
+                    if m and y:
+                        deferral_match = re.search(r"Deferral to (\d+)/(\d+)", rejection)
+                        if deferral_match:
+                            # Sale ยืนยันเลื่อน: มีเดือนปลายทางชัดเจน
+                            to_m, to_y = int(deferral_match.group(1)), int(deferral_match.group(2))
+                            fr_m, fr_y = prev_month(to_m, to_y)
+                            defer_period = f"{month_label(fr_m, fr_y)} → {month_label(to_m, to_y)}"
+                        elif status == "Defer Requested":
+                            # HR เพิ่งขอเลื่อน: commission_month/year = เดือนที่จะถูกเลื่อน (FROM)
+                            to_m, to_y = next_month(m, y)
+                            defer_period = f"{month_label(m, y)} → {month_label(to_m, to_y)}"
+                        else:
+                            # Deferred/Paid: commission_month/year = เดือนที่ถูกเลื่อนไป (TO)
+                            fr_m, fr_y = prev_month(m, y)
+                            defer_period = f"{month_label(fr_m, fr_y)} → {month_label(m, y)}"
+                    else:
+                        defer_period = "-"
+                except Exception:
+                    defer_period = "-"
+
+                # ยอดขาย
+                try:
+                    amount = f"{float(row.get('calc_amount', 0) or 0):,.2f}"
+                except Exception:
+                    amount = "-"
+
+                # tag สี
+                tag = "Requested"
+                if status == "Deferred":
+                    tag = "Deferred"
+                elif status in ("Paid", "HR Verified"):
+                    tag = "Approved"
+                if "❌" in manager_decision:
+                    tag = "Rejected"
+
+                ts = utils.format_date_safe(row.get("timestamp"), "%Y-%m-%d %H:%M")
+                self.tree.insert("", "end", values=(
+                    ts,
+                    row.get("so_number", ""),
+                    row.get("customer_name", ""),
+                    row.get("sale_name", ""),
+                    amount,
+                    defer_period,
+                    STATUS_THAI_MAP.get(status, status),
+                    manager_decision or "-",
+                    defer_type or "-",
+                ), tags=(tag,))
+        except Exception as e:
+            traceback.print_exc()
+            messagebox.showerror("Error", f"โหลดข้อมูลไม่ได้: {e}", parent=self)
+
+    def _export(self):
+        try:
+            import pandas as pd
+            rows = [self.tree.item(i)["values"] for i in self.tree.get_children()]
+            cols = ["วันที่บันทึก", "SO Number", "ชื่อลูกค้า", "เซลล์",
+                    "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ประเภทเลื่อน"]
+            df = pd.DataFrame(rows, columns=cols)
+            path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                filetypes=[("Excel", "*.xlsx")],
+                                                initialfile=f"deferral_history_{datetime.now().strftime('%Y%m%d')}.xlsx")
+            if path:
+                df.to_excel(path, index=False)
+                messagebox.showinfo("สำเร็จ", f"Export เรียบร้อย:\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
