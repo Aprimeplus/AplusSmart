@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 
 # --- นำเข้า Class ที่จำเป็น ---
-from history_windows import SOPopupWindow, DeferralHistoryWindow
+from history_windows import SOPopupWindow, DeferralHistoryWindow, ManagerDeferApprovalDialog
 from daily_report_widget import DailyReportWidget
 
 STATUS_THAI_MAP = {
@@ -1146,39 +1146,62 @@ class SalesManagerScreen(CTkFrame):
             print(f"Error loading defer requests: {e}")
 
     def _action_defer(self, row, approve):
-        action_text = "อนุมัติให้เลื่อน" if approve else "ไม่อนุมัติการเลื่อน (บังคับให้บัญชีจ่ายรอบนี้)"
-        dialog = CTkInputDialog(text=f"โปรดระบุเหตุผลที่ {action_text} SO: {row['so_number']}\n(เซลล์และบัญชีจะเห็นข้อความนี้)", title=f"ยืนยันการตัดสินใจโดย Manager")
-        reason = dialog.get_input()
+        try:
+            cur_m = int(row.get('commission_month', datetime.now().month))
+            cur_y = int(row.get('commission_year', datetime.now().year))
+        except Exception:
+            cur_m, cur_y = datetime.now().month, datetime.now().year
 
-        if reason is None: return # ผู้ใช้กดปิดหน้าต่าง
-        reason = reason.strip() if reason.strip() else ("Manager อนุมัติการเลื่อน" if approve else "Manager ไม่อนุมัติการเลื่อน บังคับจ่ายรอบนี้")
+        dialog = ManagerDeferApprovalDialog(self, row['so_number'], cur_m, cur_y, approve=approve)
+        self.wait_window(dialog)
+
+        if not dialog.confirmed:
+            return
+
+        reason = dialog.reason or ("Manager อนุมัติการเลื่อน" if approve else "Manager ไม่อนุมัติการเลื่อน บังคับจ่ายรอบนี้")
 
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
+                manager_key = getattr(self.app_container, 'current_user_key', 'Manager')
+
                 if approve:
                     new_status = 'Deferred'
                     defer_decision = 'อนุมัติ'
-                    msg_for_sale = f"Manager ตัดสินใจ 'อนุมัติ' ให้เลื่อน SO: {row['so_number']} ไปเดือนหน้า (เหตุผล: {reason})"
+                    t_m, t_y = dialog.target_month, dialog.target_year
+                    thai_months = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                                   "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+                    month_label = f"{thai_months[t_m-1]} {t_y+543}"
+                    msg_for_sale = (f"[DEFER] ✅ Manager อนุมัติเลื่อนคอม SO: {row['so_number']}\n"
+                                    f"📅 รอบคอมที่จะนำกลับมาคิด: {month_label}\n"
+                                    f"💬 เหตุผล: {reason}")
+                    cursor.execute("""
+                        UPDATE commissions
+                        SET status = %s, rejection_reason = %s,
+                            defer_decision = %s, defer_decision_reason = %s,
+                            defer_approved_by = %s,
+                            commission_month = %s, commission_year = %s
+                        WHERE id = %s
+                    """, (new_status, f"Manager Decision: {reason}", defer_decision, reason,
+                          manager_key, t_m, t_y, row['id']))
                 else:
                     new_status = 'Pending HR Approval'
                     defer_decision = 'ไม่อนุมัติ'
-                    msg_for_sale = f"Manager ตัดสินใจ 'ไม่อนุมัติ' การเลื่อน SO: {row['so_number']} (บังคับจ่ายรอบปัจจุบัน) (เหตุผล: {reason})"
+                    msg_for_sale = (f"[DEFER] ❌ Manager ไม่อนุมัติเลื่อนคอม SO: {row['so_number']}\n"
+                                    f"บังคับจ่ายรอบปัจจุบัน\n💬 เหตุผล: {reason}")
+                    cursor.execute("""
+                        UPDATE commissions
+                        SET status = %s, rejection_reason = %s,
+                            defer_decision = %s, defer_decision_reason = %s,
+                            defer_approved_by = %s
+                        WHERE id = %s
+                    """, (new_status, f"Manager Decision: {reason}", defer_decision, reason,
+                          manager_key, row['id']))
 
-                # 1. อัปเดตสถานะ + บันทึกผลการตัดสินใจ defer
-                cursor.execute("""
-                    UPDATE commissions
-                    SET status = %s,
-                        rejection_reason = %s,
-                        defer_decision = %s,
-                        defer_decision_reason = %s
-                    WHERE id = %s
-                """, (new_status, f"Manager Decision: {reason}", defer_decision, reason, row['id']))
-
-                # 2. ส่ง Noti แจ้งเซลล์เจ้าของ SO ให้รับทราบ
-                cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES (%s, %s, FALSE, %s)",
-                               (row['sale_key'], msg_for_sale, row['id']))
+                cursor.execute(
+                    "INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES (%s, %s, FALSE, %s)",
+                    (row['sale_key'], msg_for_sale, row['id']))
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", f"บันทึกการตัดสินใจ SO: {row['so_number']} เรียบร้อยแล้ว")

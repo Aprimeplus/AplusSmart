@@ -381,11 +381,12 @@ class AppContainer(CTk):
                 
                 if new_notifications:
                     for notif in new_notifications:
+                        # ข้าม [DEFER] notifications — จัดการโดย DeferralNoticeDialog ใน commission_app
+                        if str(notif['message']).startswith('[DEFER]'):
+                            continue
                         # --- [2] จุดตรวจสอบที่ 2: ก่อนเด้ง Popup ---
-                        # เช็คอีกทีก่อนสร้างหน้าต่างลูก (Popup)
                         if self.winfo_exists():
                             NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
-                        
                         cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notif['id'],))
                     
                     conn.commit()
@@ -526,7 +527,7 @@ class AppContainer(CTk):
             widget.destroy()
         loading_win = LoadingWindow(self)
         self.update_idletasks()
-        self.current_user_key = kwargs.get('user_key')
+        self.current_user_key = kwargs.get('user_key') or kwargs.get('sale_key')
         self.current_user_role = kwargs.get('user_role')
         if self.notification_poll_id:
            self.after_cancel(self.notification_poll_id)

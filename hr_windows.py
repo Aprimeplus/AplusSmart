@@ -1293,24 +1293,53 @@ class HRVerificationWindow(CTkToplevel):
 
         defer_type = dialog.defer_type
         reason = dialog.reason or ""
+        expected_delivery_date = dialog.expected_delivery_date
+        expected_payment_date = dialog.expected_payment_date
+        defer_remarks = dialog.defer_remarks
+        is_collection_risk = dialog.is_collection_risk
+
+        # สร้าง rejection_reason สรุปข้อมูลที่ HR กรอก
+        detail_parts = []
+        if expected_delivery_date:
+            detail_parts.append(f"วันส่งใหม่: {expected_delivery_date}")
+        if expected_payment_date:
+            detail_parts.append(f"วันชำระใหม่: {expected_payment_date}")
+        if defer_remarks:
+            detail_parts.append(f"หมายเหตุ: {defer_remarks}")
+        if is_collection_risk:
+            detail_parts.append("Collection Risk: สูง")
+        detail_str = " | ".join(detail_parts)
 
         # ถามยืนยัน
-        if not messagebox.askyesno("ยืนยัน", f"ต้องการส่งคำขอเลื่อนจ่าย SO: {so_number}\nประเภท: {defer_type}\nให้ฝ่ายขายพิจารณาใช่หรือไม่?"):
+        confirm_msg = f"ต้องการส่งคำขอเลื่อนจ่าย SO: {so_number}\nประเภท: {defer_type}"
+        if detail_str:
+            confirm_msg += f"\n{detail_str}"
+        confirm_msg += "\nให้ Sales Manager พิจารณาใช่หรือไม่?"
+        if not messagebox.askyesno("ยืนยัน", confirm_msg):
             return
 
         conn = None
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                # 2. อัปเดตสถานะเป็น 'Defer Requested' และบันทึก defer_type
+                hr_key = getattr(self.app_container, 'current_user_key', 'HR')
+                rejection_text = f"HR Request: {defer_type}" + (f" | {detail_str}" if detail_str else "")
                 cursor.execute("""
                     UPDATE commissions
                     SET
                         status = 'Defer Requested',
                         defer_type = %s,
-                        rejection_reason = %s
+                        defer_requested_by = %s,
+                        rejection_reason = %s,
+                        expected_delivery_date = %s,
+                        expected_payment_date = %s,
+                        defer_remarks = %s,
+                        is_collection_risk = %s
                     WHERE id = %s
-                """, (defer_type, f"HR Request: {reason}" if reason else f"HR Request: {defer_type}", self.system_data['id']))
+                """, (defer_type, hr_key, rejection_text,
+                      expected_delivery_date, expected_payment_date,
+                      defer_remarks, is_collection_risk,
+                      self.system_data['id']))
 
                 # 3. แจ้งเตือน Sale
                 sale_key = self.system_data.get('sale_key')

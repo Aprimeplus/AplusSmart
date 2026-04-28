@@ -1009,6 +1009,55 @@ class SubmitSODialog(CTkToplevel):
             if conn: 
                 self.app_container.release_connection(conn)
 
+class DeferralNoticeDialog(CTkToplevel):
+    """Popup บังคับให้ Sale กด 'รับทราบ' ก่อนใช้งานระบบได้ เมื่อมี SO ที่ Manager ตัดสินใจเรื่องเลื่อนคอม"""
+    def __init__(self, master, app_container, notifications):
+        super().__init__(master)
+        self.app_container = app_container
+        self.notifications = notifications
+        self.title("⚠️ แจ้งเตือนการเลื่อนรอบคอม")
+        self.geometry("620x480")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", lambda: None)  # บังคับต้องกด รับทราบ
+        self.grid_columnconfigure(0, weight=1)
+
+        CTkLabel(self, text="⚠️ มี SO ของคุณที่ Manager ตัดสินใจแล้ว",
+                 font=CTkFont(size=17, weight="bold"), text_color="#DC2626").pack(pady=(22, 4))
+        CTkLabel(self, text="กรุณาอ่านและกดรับทราบเพื่อยืนยันว่าคุณได้รับทราบข้อมูลแล้ว",
+                 font=CTkFont(size=12), text_color="gray40").pack(pady=(0, 12))
+
+        scroll = CTkScrollableFrame(self, height=260)
+        scroll.pack(fill="x", padx=20, pady=(0, 8))
+        scroll.grid_columnconfigure(0, weight=1)
+
+        for i, notif in enumerate(notifications):
+            msg = str(notif['message']).replace('[DEFER]', '').strip()
+            bg = "#FEF9C3" if "อนุมัติ" in msg else "#FEE2E2"
+            card = CTkFrame(scroll, fg_color=bg, corner_radius=8)
+            card.pack(fill="x", pady=4, padx=2)
+            CTkLabel(card, text=msg, font=CTkFont(size=12), justify="left",
+                     wraplength=540, text_color="#1E293B").pack(padx=12, pady=10, anchor="w")
+
+        CTkButton(self, text="✅ รับทราบแล้ว", font=CTkFont(size=15, weight="bold"),
+                  fg_color="#16A34A", hover_color="#15803D", height=48,
+                  command=self._acknowledge).pack(pady=16, padx=40, fill="x")
+
+    def _acknowledge(self):
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                ids = [n['id'] for n in self.notifications]
+                cursor.executemany("UPDATE notifications SET is_read = TRUE WHERE id = %s",
+                                   [(i,) for i in ids])
+            conn.commit()
+            self.app_container.release_connection(conn)
+        except Exception as e:
+            print(f"[DeferralNotice] acknowledge error: {e}")
+        self.destroy()
+
+
 class CommissionApp(CTkFrame):
     def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None, create_default_header=True):
         super().__init__(master, corner_radius=0, fg_color=app_container.THEME["sale"]["bg"])
@@ -1092,6 +1141,11 @@ class CommissionApp(CTkFrame):
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
 
+        # 9. แจ้งเตือน SO เลื่อนคอมที่ยังไม่รับทราบ (Sale เท่านั้น)
+        if self.user_role and self.user_role.lower() not in ('sales manager', 'director', 'hr', 'sale support'):
+            self.after(900, self._check_pending_deferrals)
+
+
         # ==========================================================
         # 🔥 9. เรียก DailyReportWidget มาวางใน แท็บที่ 2 (tab_report)
         # ==========================================================
@@ -1144,6 +1198,27 @@ class CommissionApp(CTkFrame):
             # สำคัญที่สุด: คืน Connection กลับเข้า Pool
             if conn: 
                 self.app_container.release_connection(conn)
+
+    def _check_pending_deferrals(self):
+        """ดึง notifications [DEFER] ที่ยังไม่รับทราบ แล้วแสดง DeferralNoticeDialog"""
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT id, message FROM notifications "
+                    "WHERE user_key_to_notify = %s AND is_read = FALSE AND message LIKE '[DEFER]%%' "
+                    "ORDER BY id ASC",
+                    (self.sale_key,)
+                )
+                rows = cursor.fetchall()
+            self.app_container.release_connection(conn)
+
+            if not rows:
+                return
+
+            DeferralNoticeDialog(self, self.app_container, [dict(r) for r in rows])
+        except Exception as e:
+            print(f"[pending_deferral_check] {e}")
 
     def _start_polling(self):
         self._update_tasks_badge()
@@ -1255,6 +1330,25 @@ class CommissionApp(CTkFrame):
         is_valid, message = self._validate_form(form_data)
         if not is_valid:
             messagebox.showerror("ข้อมูลไม่ถูกต้อง", message, parent=self)
+            return
+
+        # ตรวจสอบวันที่จัดส่งเกิน cutoff — บังคับให้เปลี่ยนรอบคอมก่อนบันทึก
+        if self._is_delivery_date_over_cutoff():
+            day_str = self.delivery_date_selector.day_var.get()
+            month_str = self.delivery_date_selector.month_var.get()
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_num = thai_month_map.get(month_str, 0)
+            cutoff = 21 if month_num in (2, 12) else 25
+            next_month = month_num + 1 if month_num < 12 else 1
+            next_month_thai = self.thai_months[next_month - 1]
+            messagebox.showwarning(
+                "⚠️ วันที่จัดส่งเกินวันตัดรอบ",
+                f"วันที่จัดส่ง ({day_str} {month_str}) เกินวันตัดรอบที่ {cutoff} ของเดือนนี้\n\n"
+                f"กรุณาเปลี่ยน 'รอบเดือนคอม' เป็น {next_month_thai} ก่อนบันทึก",
+                parent=self
+            )
             return
 
         if self.editing_record_id:
@@ -1925,6 +2019,76 @@ class CommissionApp(CTkFrame):
         self.shipping_vat_var_display = CTkEntry(frame, textvariable=self.shipping_vat_calc_var, state="readonly", fg_color="gray85"); self._add_form_row(frame, "VAT 7% (ค่าจัดส่ง):", self.shipping_vat_var_display, 2)
         self.delivery_date_selector = DateSelector(frame, dropdown_style=self.dropdown_style); self._add_form_row(frame, "วันที่จัดส่ง:", self.delivery_date_selector, 3, columnspan=2)
 
+        # Warning label — แสดงเมื่อวันที่จัดส่งเกิน cutoff
+        self._delivery_cutoff_label = CTkLabel(
+            frame, text="", font=CTkFont(size=12, weight="bold"),
+            text_color="#DC2626", wraplength=380, justify="left"
+        )
+        self._delivery_cutoff_label.grid(row=4, column=1, columnspan=2, padx=(10, 15), pady=(0, 6), sticky="w")
+
+        self._cutoff_popup_shown = False  # ป้องกัน popup ซ้ำ
+        # Trace เมื่อวันหรือเดือนเปลี่ยน
+        self.delivery_date_selector.day_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
+        self.delivery_date_selector.month_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
+
+    def _check_delivery_date_cutoff(self):
+        """เช็ควันที่จัดส่ง — ถ้าเกิน cutoff แสดง warning ให้ user เปลี่ยนรอบคอมเอง"""
+        try:
+            day_str = self.delivery_date_selector.day_var.get()
+            month_str = self.delivery_date_selector.month_var.get()
+            year_str = self.delivery_date_selector.year_var.get()
+            if not day_str or not month_str or not year_str:
+                return
+
+            day = int(day_str)
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_num = thai_month_map.get(month_str, 0)
+            year_be = int(year_str)
+
+            cutoff = 21 if month_num in (2, 12) else 25
+
+            if day > cutoff:
+                next_month_num = month_num + 1 if month_num < 12 else 1
+                next_year_be = year_be if month_num < 12 else year_be + 1
+                next_month_thai = self.thai_months[next_month_num - 1]
+                self._delivery_cutoff_label.configure(
+                    text=f"⚠️ วันที่จัดส่ง ({day_str}) เกินวันตัดรอบ ({cutoff})\n"
+                         f"กรุณาเปลี่ยนรอบคอมเป็น {next_month_thai} {next_year_be} ด้วยตัวเอง"
+                )
+            else:
+                self._delivery_cutoff_label.configure(text="")
+        except Exception:
+            pass
+
+    def _is_delivery_date_over_cutoff(self):
+        """คืนค่า True ถ้าวันที่จัดส่งเกิน cutoff และ commission month ยังไม่ถูกเปลี่ยนเป็นเดือนหน้าที่ถูกต้อง"""
+        try:
+            day_str = self.delivery_date_selector.day_var.get()
+            month_str = self.delivery_date_selector.month_var.get()
+            if not day_str or not month_str:
+                return False
+
+            day = int(day_str)
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_num = thai_month_map.get(month_str, 0)
+            cutoff = 21 if month_num in (2, 12) else 25
+
+            if day <= cutoff:
+                return False
+
+            # เดือนที่ commission ต้องเป็น = เดือนถัดจากวันจัดส่ง
+            required_comm_month = month_num + 1 if month_num < 12 else 1
+            comm_month_num = thai_month_map.get(self.commission_month_var.get(), 0)
+
+            # block ถ้า commission month ยังไม่ตรงกับเดือนที่ควรจะเป็น
+            return comm_month_num != required_comm_month
+        except Exception:
+            return False
+
     def _populate_fees_frame(self, parent):
         frame = self._create_section_frame(parent, "ค่าธรรมเนียม"); frame.pack(fill="x", pady=(0,10)); frame.grid_columnconfigure(1, weight=1)
         self.credit_card_fee_entry = NumericEntry(frame); self._add_item_row_with_vat(frame, "ค่าธรรมเนียมบัตรเครดิต:", self.credit_card_fee_entry, self.credit_card_fee_vat_option_var, 1)
@@ -2222,6 +2386,17 @@ class CommissionApp(CTkFrame):
     def _validate_form(self, data):
         if not data["so_number"] or data["so_number"] == "SO":
             return False, "กรุณากรอก 'เลขที่ใบสั่งขาย (SO)'"
+
+        if self._is_delivery_date_over_cutoff():
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_str = self.delivery_date_selector.month_var.get()
+            month_num = thai_month_map.get(month_str, 0)
+            cutoff = 21 if month_num in (2, 12) else 25
+            next_month = self.thai_months[month_num % 12]
+            return False, (f"วันที่จัดส่งเกินวันตัดรอบ ({cutoff})\n"
+                           f"กรุณาเปลี่ยนรอบคอมมิชชั่นเป็น '{next_month}' ก่อนบันทึก")
 
         if not data.get("order_pur"):
             return False, "กรุณากรอกข้อมูลในช่อง 'Order Pur' (ในส่วนรายละเอียดการขาย) ก่อนทำการบันทึก"
