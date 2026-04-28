@@ -4545,9 +4545,17 @@ class DeferralHistoryWindow(CTkToplevel):
     # ------------------------------------------------------------------
     def _fetch_all_sales(self):
         try:
-            df = pd.read_sql_query(
-                "SELECT DISTINCT sale_key FROM commissions WHERE (status IN ('Deferred','Defer Requested','Deferred by SM','Deferred by HR') OR defer_type IS NOT NULL) AND is_active = 1 ORDER BY sale_key",
-                self.app_container.pg_engine)
+            df = pd.read_sql_query("""
+                SELECT DISTINCT sale_key FROM commissions
+                WHERE (
+                    status IN ('Deferred','Defer Requested','Deferred by SM','Deferred by HR')
+                    OR defer_type IS NOT NULL
+                    OR rejection_reason LIKE 'HR Request:%'
+                    OR rejection_reason LIKE 'Sale Confirmed Deferral%'
+                    OR rejection_reason LIKE 'Sale Rejected Deferral%'
+                    OR rejection_reason LIKE 'Manager Decision:%'
+                ) AND is_active = 1 ORDER BY sale_key
+            """, self.app_container.pg_engine)
             return ["ทั้งหมด"] + df["sale_key"].tolist()
         except Exception:
             return ["ทั้งหมด"]
@@ -4574,6 +4582,9 @@ class DeferralHistoryWindow(CTkToplevel):
                         CASE
                             WHEN c.status IN ('Deferred', 'Deferred by SM', 'Deferred by HR') THEN 'อนุมัติ'
                             WHEN c.status = 'Defer Requested' THEN 'รอการตัดสินใจ'
+                            WHEN c.rejection_reason LIKE 'Sale Confirmed Deferral%' THEN 'อนุมัติ'
+                            WHEN c.rejection_reason LIKE 'Sale Rejected Deferral%' THEN 'ไม่อนุมัติ'
+                            WHEN c.rejection_reason LIKE 'Manager Decision:%' THEN 'อนุมัติ'
                             ELSE 'รอการตัดสินใจ'
                         END
                     ) AS defer_decision,
@@ -4584,8 +4595,14 @@ class DeferralHistoryWindow(CTkToplevel):
                     COALESCE(c.final_sales_amount, c.sales_service_amount, 0) AS sales_amount
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE (c.status IN ('Deferred', 'Defer Requested', 'Deferred by SM', 'Deferred by HR')
-                       OR c.defer_type IS NOT NULL) AND c.is_active = 1
+                WHERE (
+                    c.status IN ('Deferred', 'Defer Requested', 'Deferred by SM', 'Deferred by HR')
+                    OR c.defer_type IS NOT NULL
+                    OR c.rejection_reason LIKE 'HR Request:%'
+                    OR c.rejection_reason LIKE 'Sale Confirmed Deferral%'
+                    OR c.rejection_reason LIKE 'Sale Rejected Deferral%'
+                    OR c.rejection_reason LIKE 'Manager Decision:%'
+                ) AND c.is_active = 1
                 ORDER BY c.commission_year DESC, c.commission_month DESC, c.so_number
             """
             df = pd.read_sql_query(query, self.app_container.pg_engine)
