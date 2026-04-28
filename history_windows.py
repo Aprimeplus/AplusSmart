@@ -3,6 +3,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import json
+import re
 import pandas as pd
 from datetime import datetime
 import traceback
@@ -4629,12 +4630,23 @@ class DeferralHistoryWindow(CTkToplevel):
             dtype = row["defer_type"]
             decision = row["defer_decision"]
 
-            # ใช้ defer_decision_reason ถ้ามี ไม่งั้น fallback ไป rejection_reason
+            # แปลง rejection_reason ให้อ่านออกความหมาย
             reason_raw = row["defer_decision_reason"] or row["rejection_reason"] or "-"
-            for prefix in ("HR Request:", "Sale Confirmed Deferral", "Manager Decision:", "Sale Rejected Deferral"):
-                if reason_raw.startswith(prefix):
-                    reason_raw = reason_raw[len(prefix):].strip(": ").strip()
-                    break
+            m_confirmed = re.match(r"Sale Confirmed Deferral to (\d+)/(\d+)", reason_raw)
+            if m_confirmed:
+                mm, yy = m_confirmed.group(1), m_confirmed.group(2)
+                try:
+                    month_label = self.THAI_MONTHS[int(mm) - 1]
+                    reason_raw = f"เซลล์ยืนยันเลื่อนไปเดือน {month_label} {int(yy) + 543}"
+                except Exception:
+                    reason_raw = f"เลื่อนไป {mm}/{yy}"
+            elif reason_raw.startswith("Sale Rejected Deferral"):
+                reason_raw = "เซลล์ปฏิเสธการเลื่อน (รับเงินรอบนี้)"
+            else:
+                for prefix in ("HR Request:", "Manager Decision:"):
+                    if reason_raw.startswith(prefix):
+                        reason_raw = reason_raw[len(prefix):].strip(": ").strip()
+                        break
 
             # สีแถว: ไม่อนุมัติ = แดง, รอ = เหลือง, อนุมัติ = ตามประเภท
             if decision == "ไม่อนุมัติ":
