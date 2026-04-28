@@ -1303,14 +1303,18 @@ class HRVerificationWindow(CTkToplevel):
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
                 # 2. อัปเดตสถานะเป็น 'Defer Requested' และบันทึก defer_type
+                hr_key = getattr(self.app_container, 'current_user_key', 'HR')
                 cursor.execute("""
                     UPDATE commissions
                     SET
                         status = 'Defer Requested',
                         defer_type = %s,
+                        defer_requested_by = %s,
                         rejection_reason = %s
                     WHERE id = %s
-                """, (defer_type, f"HR Request: {reason}" if reason else f"HR Request: {defer_type}", self.system_data['id']))
+                """, (defer_type, hr_key,
+                      f"HR Request: {reason}" if reason else f"HR Request: {defer_type}",
+                      self.system_data['id']))
 
                 # 3. แจ้งเตือน Sale
                 sale_key = self.system_data.get('sale_key')

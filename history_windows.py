@@ -4329,18 +4329,23 @@ class TransportPOSearchDialog(CTkToplevel):
 
 class DeferTypeDialog(CTkToplevel):
     """Dialog ให้ HR เลือกประเภทการเลื่อนและระบุเหตุผล"""
-    DEFER_TYPES = [
-        "เลื่อนไปเดือนถัดไป",
-        "รอเอกสารจากลูกค้า",
-        "รอชำระเงินงวดสุดท้าย",
-        "ติดปัญหาการส่งสินค้า",
-        "อื่นๆ (ระบุเหตุผล)",
+
+    # (type_label, hint_text)
+    DEFER_OPTIONS = [
+        ("เลื่อนจัดส่ง",
+         "⚠️ ต้องอัปเดตวันจัดส่งใน APlus SO Management ด้วย\nมิฉะนั้นระบบจะ update สถานะไม่ได้"),
+        ("ค้างชำระ-ลูกค้าเครดิต",
+         "📌 กรุณากำหนดวันชำระในระบบ APlus Smart SO Management"),
+        ("ค้างชำระ-งวดสุดท้าย",
+         "📌 กรุณากำหนดวันชำระใหม่ในระบบ"),
+        ("อื่นๆ รอ ผจก.ตรวจสอบ",
+         "📋 Manager จะเป็นผู้พิจารณาและระบุรอบคอมปลายทาง"),
     ]
 
     def __init__(self, master):
         super().__init__(master)
-        self.title("เลือกประเภทการเลื่อน")
-        self.geometry("420x380")
+        self.title("ระบุเหตุผลการขอเลื่อนจ่ายคอม")
+        self.geometry("480x460")
         self.resizable(False, False)
         self.defer_type = None
         self.reason = None
@@ -4349,18 +4354,30 @@ class DeferTypeDialog(CTkToplevel):
 
         self.grid_columnconfigure(0, weight=1)
 
-        CTkLabel(self, text="เลือกประเภทการเลื่อนจ่าย", font=CTkFont(size=15, weight="bold")).pack(pady=(20, 10), padx=20)
+        CTkLabel(self, text="เลือกเหตุผลการขอเลื่อนจ่าย",
+                 font=CTkFont(size=15, weight="bold")).pack(pady=(18, 8), padx=20)
 
-        self._type_var = tk.StringVar(value=self.DEFER_TYPES[0])
-        for t in self.DEFER_TYPES:
-            CTkRadioButton(self, text=t, variable=self._type_var, value=t).pack(anchor="w", padx=30, pady=2)
+        self._type_var = tk.StringVar(value=self.DEFER_OPTIONS[0][0])
+        self._hint_label = CTkLabel(self, text="", text_color="#D97706",
+                                    font=CTkFont(size=12), wraplength=420, justify="left")
 
-        CTkLabel(self, text="เหตุผลเพิ่มเติม (ถ้ามี):").pack(anchor="w", padx=20, pady=(12, 2))
-        self._reason_entry = CTkEntry(self, width=360, placeholder_text="ระบุเหตุผล...")
+        radio_frame = CTkFrame(self, fg_color="#F9FAFB", corner_radius=8)
+        radio_frame.pack(fill="x", padx=20, pady=(0, 8))
+
+        for label, hint in self.DEFER_OPTIONS:
+            CTkRadioButton(radio_frame, text=label, variable=self._type_var, value=label,
+                           command=lambda h=hint: self._hint_label.configure(text=h)
+                           ).pack(anchor="w", padx=20, pady=5)
+
+        self._hint_label.pack(anchor="w", padx=20, pady=(0, 4))
+        self._hint_label.configure(text=self.DEFER_OPTIONS[0][1])
+
+        CTkLabel(self, text="เหตุผลเพิ่มเติม / รายละเอียด:").pack(anchor="w", padx=20, pady=(4, 2))
+        self._reason_entry = CTkEntry(self, width=440, placeholder_text="ระบุรายละเอียด...")
         self._reason_entry.pack(padx=20)
 
         btn_frame = CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=20)
+        btn_frame.pack(pady=16)
         CTkButton(btn_frame, text="ยืนยัน", width=120, fg_color="#16A34A", hover_color="#15803D",
                   command=self._confirm).pack(side="left", padx=8)
         CTkButton(btn_frame, text="ยกเลิก", width=100, fg_color="#6B7280", hover_color="#4B5563",
@@ -4371,6 +4388,89 @@ class DeferTypeDialog(CTkToplevel):
     def _confirm(self):
         self.defer_type = self._type_var.get()
         self.reason = self._reason_entry.get().strip()
+        self.destroy()
+
+
+class ManagerDeferApprovalDialog(CTkToplevel):
+    """Dialog ให้ Manager อนุมัติ/ไม่อนุมัติ พร้อมระบุรอบคอมปลายทาง"""
+
+    def __init__(self, master, so_number, current_month, current_year, approve: bool):
+        super().__init__(master)
+        self.approve = approve
+        self.confirmed = False
+        self.target_month = None
+        self.target_year = None
+        self.reason = None
+
+        title = "✅ อนุมัติการเลื่อน" if approve else "❌ ไม่อนุมัติ (บังคับจ่ายรอบนี้)"
+        self.title(f"{title} — SO: {so_number}")
+        self.geometry("480x420" if approve else "420x300")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                            "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+
+        pad = {"padx": 20, "pady": (6, 2)}
+
+        CTkLabel(self, text=title, font=CTkFont(size=15, weight="bold"),
+                 text_color="#16A34A" if approve else "#DC2626").pack(pady=(18, 4))
+        CTkLabel(self, text=f"SO: {so_number}", font=CTkFont(size=13)).pack(**pad)
+
+        if approve:
+            # ── เลือกรอบคอมปลายทาง ──
+            CTkLabel(self, text="🗓  ระบุรอบคอมที่จะนำ SO กลับมาคิด:",
+                     font=CTkFont(size=13, weight="bold")).pack(anchor="w", padx=20, pady=(14, 2))
+
+            remind = ("⚠️  สำคัญ: รายการนี้จะถูกนำกลับมาคำนวณคอมในรอบที่ระบุ\n"
+                      "หากไม่ระบุหรือระบุผิด คอมจะถูกคิดผิดรอบ — กรุณาตรวจสอบก่อนยืนยัน")
+            CTkLabel(self, text=remind, text_color="#B45309",
+                     font=CTkFont(size=11), wraplength=440, justify="left").pack(anchor="w", padx=20)
+
+            period_frame = CTkFrame(self, fg_color="transparent")
+            period_frame.pack(anchor="w", padx=20, pady=(8, 4))
+
+            # คำนวณเดือนถัดไปเป็น default
+            def_m = current_month + 1 if current_month < 12 else 1
+            def_y = current_year if current_month < 12 else current_year + 1
+
+            self._month_var = tk.StringVar(value=self.thai_months[def_m - 1])
+            self._year_var = tk.StringVar(value=str(def_y + 543))
+
+            CTkLabel(period_frame, text="เดือน:").pack(side="left")
+            CTkOptionMenu(period_frame, variable=self._month_var,
+                          values=self.thai_months, width=140).pack(side="left", padx=(4, 12))
+            CTkLabel(period_frame, text="ปี (พ.ศ.):").pack(side="left")
+            year_now = datetime.now().year
+            CTkOptionMenu(period_frame, variable=self._year_var,
+                          values=[str(y + 543) for y in range(year_now, year_now + 3)],
+                          width=90).pack(side="left", padx=4)
+
+        # ── เหตุผล ──
+        CTkLabel(self, text="เหตุผล / หมายเหตุ:").pack(anchor="w", padx=20, pady=(10, 2))
+        self._reason_entry = CTkEntry(self, width=440, placeholder_text="ระบุเหตุผล...")
+        self._reason_entry.pack(padx=20)
+
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=18)
+        btn_color = "#16A34A" if approve else "#DC2626"
+        btn_hover = "#15803D" if approve else "#B91C1C"
+        CTkButton(btn_frame, text="ยืนยัน", width=130, fg_color=btn_color, hover_color=btn_hover,
+                  command=self._confirm).pack(side="left", padx=8)
+        CTkButton(btn_frame, text="ยกเลิก", width=100, fg_color="#6B7280", hover_color="#4B5563",
+                  command=self.destroy).pack(side="left", padx=8)
+
+        self.focus()
+
+    def _confirm(self):
+        if self.approve:
+            m_idx = self.thai_months.index(self._month_var.get()) + 1
+            y_ce = int(self._year_var.get()) - 543
+            self.target_month = m_idx
+            self.target_year = y_ce
+        self.reason = self._reason_entry.get().strip()
+        self.confirmed = True
         self.destroy()
 
 
@@ -4422,9 +4522,9 @@ class DeferralHistoryWindow(CTkToplevel):
         table_f.grid_columnconfigure(0, weight=1)
 
         cols = ("timestamp", "so_number", "customer_name", "sale_name",
-                "amount", "defer_period", "status", "manager_decision", "defer_type")
+                "amount", "defer_period", "status", "requested_by", "approved_by", "defer_reason")
         heads = ("วันที่บันทึก", "SO Number", "ชื่อลูกค้า", "เซลล์",
-                 "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ผล Manager", "ประเภทเลื่อน")
+                 "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ผู้ขอเลื่อน", "ผู้อนุมัติ", "เหตุผล")
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -4432,7 +4532,7 @@ class DeferralHistoryWindow(CTkToplevel):
         style.configure("DH.Treeview", rowheight=26)
 
         self.tree = ttk.Treeview(table_f, columns=cols, show="headings", style="DH.Treeview")
-        widths = [130, 130, 230, 110, 110, 170, 110, 90, 140]
+        widths = [130, 120, 210, 100, 105, 165, 100, 90, 90, 160]
         for col, head, w in zip(cols, heads, widths):
             self.tree.heading(col, text=head)
             self.tree.column(col, width=w, anchor="w")
@@ -4485,7 +4585,9 @@ class DeferralHistoryWindow(CTkToplevel):
                        su.sale_name, c.defer_type, c.status,
                        c.commission_month, c.commission_year,
                        COALESCE(c.final_sales_amount, c.sales_service_amount) AS calc_amount,
-                       c.rejection_reason
+                       c.rejection_reason,
+                       c.defer_requested_by, c.defer_approved_by,
+                       c.defer_decision, c.defer_decision_reason
                 FROM commissions c
                 LEFT JOIN sales_users su ON c.sale_key = su.sale_key
                 WHERE {' AND '.join(where)}
@@ -4515,15 +4617,23 @@ class DeferralHistoryWindow(CTkToplevel):
                 status = str(row.get("status", ""))
                 rejection = str(row.get("rejection_reason", "") or "")
 
-                # ประเภทเลื่อน
+                # เหตุผลการเลื่อน
                 defer_type = str(row.get("defer_type") or "")
+                defer_reason_detail = str(row.get("defer_decision_reason") or "")
                 if not defer_type:
                     if rejection.startswith("HR Request:"):
                         defer_type = rejection.replace("HR Request:", "").strip() or "HR ขอเลื่อน"
                     elif rejection.startswith("Sale Confirmed Deferral"):
                         defer_type = "Sale ยืนยันเลื่อน"
+                full_reason = f"{defer_type}" + (f" — {defer_reason_detail}" if defer_reason_detail else "")
 
-                # ผล Manager: column ใหม่ก่อน, fallback parse "Manager Decision:"
+                # ผู้ขอเลื่อน
+                requested_by = str(row.get("defer_requested_by") or "")
+                if not requested_by and rejection.startswith("HR Request:"):
+                    requested_by = "HR"
+
+                # ผู้อนุมัติ + ผล
+                approved_by = str(row.get("defer_approved_by") or "")
                 manager_decision = str(row.get("defer_decision") or "")
                 if not manager_decision:
                     if "Manager Decision" in rejection:
@@ -4532,8 +4642,7 @@ class DeferralHistoryWindow(CTkToplevel):
                             manager_decision = "❌ ไม่อนุมัติ"
                         elif "อนุมัติ" in body:
                             manager_decision = "✅ อนุมัติ"
-                        else:
-                            manager_decision = body[:30]
+                approved_display = f"{approved_by} ({manager_decision})" if approved_by and manager_decision else (approved_by or manager_decision or "-")
 
                 # จากเดือน → ไปเดือน
                 try:
@@ -4583,8 +4692,9 @@ class DeferralHistoryWindow(CTkToplevel):
                     amount,
                     defer_period,
                     STATUS_THAI_MAP.get(status, status),
-                    manager_decision or "-",
-                    defer_type or "-",
+                    requested_by or "-",
+                    approved_display,
+                    full_reason or "-",
                 ), tags=(tag,))
         except Exception as e:
             traceback.print_exc()
@@ -4595,7 +4705,7 @@ class DeferralHistoryWindow(CTkToplevel):
             import pandas as pd
             rows = [self.tree.item(i)["values"] for i in self.tree.get_children()]
             cols = ["วันที่บันทึก", "SO Number", "ชื่อลูกค้า", "เซลล์",
-                    "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ประเภทเลื่อน"]
+                    "ยอดขายคำนวณคอม", "จากเดือน → ไปเดือน", "สถานะ", "ผู้ขอเลื่อน", "ผู้อนุมัติ", "เหตุผล"]
             df = pd.DataFrame(rows, columns=cols)
             path = filedialog.asksaveasfilename(defaultextension=".xlsx",
                                                 filetypes=[("Excel", "*.xlsx")],

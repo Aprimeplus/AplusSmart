@@ -13,6 +13,10 @@ def migrate_db():
             print("- Added 'defer_decision' column")
             cursor.execute("ALTER TABLE commissions ADD COLUMN IF NOT EXISTS defer_decision_reason TEXT DEFAULT NULL")
             print("- Added 'defer_decision_reason' column")
+            cursor.execute("ALTER TABLE commissions ADD COLUMN IF NOT EXISTS defer_requested_by TEXT DEFAULT NULL")
+            print("- Added 'defer_requested_by' column")
+            cursor.execute("ALTER TABLE commissions ADD COLUMN IF NOT EXISTS defer_approved_by TEXT DEFAULT NULL")
+            print("- Added 'defer_approved_by' column")
         conn.commit()
         print("Migration completed successfully!")
     except Exception as e:

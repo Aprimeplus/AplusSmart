@@ -1092,6 +1092,10 @@ class CommissionApp(CTkFrame):
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
 
+        # 9. แจ้งเตือน SO ที่รอยืนยันการเลื่อน (เฉพาะ Sale เจ้าของ SO)
+        if self.user_role and self.user_role.lower() not in ('sales manager', 'director', 'hr', 'sale support'):
+            self.after(800, self._check_pending_deferrals)
+
         # ==========================================================
         # 🔥 9. เรียก DailyReportWidget มาวางใน แท็บที่ 2 (tab_report)
         # ==========================================================
@@ -1144,6 +1148,39 @@ class CommissionApp(CTkFrame):
             # สำคัญที่สุด: คืน Connection กลับเข้า Pool
             if conn: 
                 self.app_container.release_connection(conn)
+
+    def _check_pending_deferrals(self):
+        """ตรวจสอบ SO ที่ Manager อนุมัติเลื่อนแล้ว รอให้ Sale รับทราบ"""
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT so_number, customer_name, commission_month, commission_year, rejection_reason
+                    FROM commissions
+                    WHERE sale_key = %s AND status = 'Deferred' AND is_active = 1
+                    ORDER BY timestamp DESC
+                """, (self.sale_key,))
+                rows = cursor.fetchall()
+            self.app_container.release_connection(conn)
+
+            if not rows:
+                return
+
+            thai_months = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                           "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+
+            lines = []
+            for r in rows:
+                m, y = int(r['commission_month'] or 0), int(r['commission_year'] or 0)
+                period = f"{thai_months[m-1]}{y+543}" if m and y else "?"
+                lines.append(f"• SO: {r['so_number']}  |  ลูกค้า: {r['customer_name']}  |  รอบคอม: {period}")
+
+            msg = (f"มี SO {len(rows)} รายการ ที่ Manager อนุมัติเลื่อนรอบคอมแล้ว:\n\n"
+                   + "\n".join(lines)
+                   + "\n\nกรุณาตรวจสอบในแท็บ 'รายการรอตัดสินใจ & ถูกเลื่อน'\nและยืนยันรับทราบในแต่ละรายการ")
+            messagebox.showwarning("⚠️ SO ที่ถูกเลื่อนรอบคอม", msg, parent=self)
+        except Exception as e:
+            print(f"[pending_deferral_check] {e}")
 
     def _start_polling(self):
         self._update_tasks_badge()
