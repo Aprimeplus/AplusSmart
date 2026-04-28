@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 
 # --- นำเข้า Class ที่จำเป็น ---
-from history_windows import SOPopupWindow
+from history_windows import SOPopupWindow, DeferralHistoryWindow
 from daily_report_widget import DailyReportWidget
 
 STATUS_THAI_MAP = {
@@ -1062,6 +1062,9 @@ class SalesManagerScreen(CTkFrame):
         header_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=10)
         CTkLabel(header_frame, text="⏳ รายการที่ HR/บัญชี ขอเลื่อนรอบจ่ายคอมมิชชั่น", font=CTkFont(size=16, weight="bold")).pack(side="left")
         CTkButton(header_frame, text="⟳ รีเฟรช", command=self._load_defer_requests, width=90, fg_color="gray").pack(side="right")
+        CTkButton(header_frame, text="📋 ประวัติการเลื่อน SO",
+                  command=lambda: DeferralHistoryWindow(self, self.app_container),
+                  fg_color="#2563EB", hover_color="#1D4ED8", width=160).pack(side="right", padx=(0, 8))
 
         # Scrollable Frame
         self.defer_list_frame = CTkScrollableFrame(parent_tab, fg_color="white", corner_radius=8)
@@ -1155,17 +1158,23 @@ class SalesManagerScreen(CTkFrame):
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
                 if approve:
-                    # อนุมัติให้เลื่อน -> เปลี่ยนสถานะเป็น Deferred (รอบัญชีดึงไปจ่ายเดือนหน้า)
                     new_status = 'Deferred'
+                    defer_decision = 'อนุมัติ'
                     msg_for_sale = f"Manager ตัดสินใจ 'อนุมัติ' ให้เลื่อน SO: {row['so_number']} ไปเดือนหน้า (เหตุผล: {reason})"
                 else:
-                    # ไม่อนุมัติ -> ตีกลับไปเป็น Pending HR Approval เพื่อบังคับบัญชีจ่ายเดือนนี้
                     new_status = 'Pending HR Approval'
+                    defer_decision = 'ไม่อนุมัติ'
                     msg_for_sale = f"Manager ตัดสินใจ 'ไม่อนุมัติ' การเลื่อน SO: {row['so_number']} (บังคับจ่ายรอบปัจจุบัน) (เหตุผล: {reason})"
 
-                # 1. อัปเดตสถานะและเหตุผล
-                cursor.execute("UPDATE commissions SET status = %s, rejection_reason = %s WHERE id = %s",
-                               (new_status, f"Manager Decision: {reason}", row['id']))
+                # 1. อัปเดตสถานะ + บันทึกผลการตัดสินใจ defer
+                cursor.execute("""
+                    UPDATE commissions
+                    SET status = %s,
+                        rejection_reason = %s,
+                        defer_decision = %s,
+                        defer_decision_reason = %s
+                    WHERE id = %s
+                """, (new_status, f"Manager Decision: {reason}", defer_decision, reason, row['id']))
 
                 # 2. ส่ง Noti แจ้งเซลล์เจ้าของ SO ให้รับทราบ
                 cursor.execute("INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) VALUES (%s, %s, FALSE, %s)",

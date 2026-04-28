@@ -2186,12 +2186,14 @@ class CommissionHistoryWindow(CTkToplevel):
         self.on_row_double_click_callback = on_row_double_click
         self.support_user_key_filter = support_user_key_filter
         self.df = None
+        self.can_manage_deferral = getattr(app_container, 'current_user_role', '') in ('Sales Manager', 'Director', 'HR')
+        self.active_tab = "deferral" if self.can_manage_deferral else "drafts"
         
         self.current_page = 0
         self.rows_per_page = 50
         self.total_rows = 0
         self.total_pages = 0
-        self.active_tab = "deferral" # Default เป็นแท็บงานด่วน
+        self.active_tab = "deferral"  # จะถูก override ด้านล่างหลัง can_manage_deferral ถูก set
 
         self.thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
         self.thai_month_map = {name: i + 1 for i, name in enumerate(self.thai_months)}
@@ -2256,17 +2258,23 @@ class CommissionHistoryWindow(CTkToplevel):
         self.payout_tab = self.tab_view.add("💰 ประวัติการรับเงิน")
         self.payout_frame = CTkFrame(self.payout_tab, fg_color="transparent"); self.payout_frame.pack(fill="both", expand=True)
 
-        self.draft_tab = self.tab_view.add("📝 รายการฉบับร่าง / ส่งแล้ว")
+        self.draft_tab_label = "📋 ประวัติทั้งหมด" if not self.can_manage_deferral else "📝 รายการฉบับร่าง / ส่งแล้ว"
+        self.draft_tab = self.tab_view.add(self.draft_tab_label)
         self.draft_frame = CTkFrame(self.draft_tab, fg_color="transparent"); self.draft_frame.pack(fill="both", expand=True)
-        
+
+        # Sale/Support เปิดมาที่ "ประวัติทั้งหมด" เพื่อเห็น SO ทุกสถานะรวมกัน
+        if not self.can_manage_deferral:
+            self.tab_view.set(self.draft_tab_label)
+
         # Bottom Buttons
         self.button_frame = CTkFrame(self, fg_color="transparent")
         self.button_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
         
-        # ปุ่ม Action (โชว์เฉพาะแท็บ Deferral)
-        self.action_button = CTkButton(self.button_frame, text="⚡ จัดการรายการที่เลือก", command=self._open_deferral_action_window, 
+        # ปุ่ม Action (โชว์เฉพาะแท็บ Deferral และเฉพาะ Manager ขึ้นไปเท่านั้น)
+        self.action_button = CTkButton(self.button_frame, text="⚡ จัดการรายการที่เลือก", command=self._open_deferral_action_window,
                                        fg_color="#F59E0B", hover_color="#D97706", font=CTkFont(weight="bold"))
-        self.action_button.pack(side="left", padx=10)
+        if self.can_manage_deferral:
+            self.action_button.pack(side="left", padx=10)
         
         self.cancel_button = CTkButton(self.button_frame, text="ยกเลิกรายการที่เลือก", command=self._cancel_selected_record, 
                                        fg_color="#DC2626", hover_color="#B91C1C")
@@ -2282,16 +2290,20 @@ class CommissionHistoryWindow(CTkToplevel):
         selected_tab = self.tab_view.get()
         if selected_tab == "⚠️ รายการรอตัดสินใจ & ถูกเลื่อน":
             self.active_tab = "deferral"
-            self.action_button.pack(side="left", padx=10)
+            if self.can_manage_deferral:
+                self.action_button.pack(side="left", padx=10)
             self.cancel_button.pack_forget()
         elif selected_tab == "💰 ประวัติการรับเงิน":
             self.active_tab = "payout"
             self.action_button.pack_forget()
             self.cancel_button.pack_forget()
-        else: # Drafts
+        else: # Drafts / ประวัติทั้งหมด
             self.active_tab = "drafts"
             self.action_button.pack_forget()
-            self.cancel_button.pack(side="left", padx=10)
+            if self.can_manage_deferral:
+                self.cancel_button.pack(side="left", padx=10)
+            else:
+                self.cancel_button.pack_forget()
         
         self.current_page = 0
         self._populate_history_table()
@@ -2314,10 +2326,13 @@ class CommissionHistoryWindow(CTkToplevel):
                 # แท็บ 2: โชว์เฉพาะที่ได้เงินแล้วชัวร์ๆ
                 status_condition = "c.status IN ('Paid', 'HR Verified')"
             
-            else: 
-                # แท็บ 3: (ร่าง/ส่งแล้ว/กำลังดำเนินการ) 
-                # ใช้ NOT IN เพื่อดึง "ทุกสถานะที่เหลือ" มาโชว์ที่นี่ให้หมด จะได้ไม่มี SO ล่องหนอีก!
-                status_condition = "c.status NOT IN ('Defer Requested', 'Deferred', 'Paid', 'HR Verified')"
+            else:
+                if self.can_manage_deferral:
+                    # Manager: แท็บ 3 แสดงเฉพาะ ร่าง/ส่งแล้ว/กำลังดำเนินการ
+                    status_condition = "c.status NOT IN ('Defer Requested', 'Deferred', 'Paid', 'HR Verified')"
+                else:
+                    # Sale/Support: แท็บนี้คือ "ประวัติทั้งหมด" → ไม่กรอง status เลย
+                    status_condition = "1=1"
 
             where_clauses = ["c.is_active = 1", status_condition]
             params = []
