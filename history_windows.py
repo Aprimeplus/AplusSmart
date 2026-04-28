@@ -4580,22 +4580,45 @@ class DeferralHistoryWindow(CTkToplevel):
                 where.append("EXTRACT(YEAR FROM c.timestamp::timestamp) = %s")
                 params.append(int(y))
 
-            query = f"""
+            where_sql = ' AND '.join(where)
+            # query แบบใหม่ (มี column defer_requested_by/defer_approved_by หลัง migrate)
+            query_full = f"""
                 SELECT c.timestamp, c.so_number, c.customer_name,
                        su.sale_name, c.defer_type, c.status,
                        c.commission_month, c.commission_year,
                        COALESCE(c.final_sales_amount, c.sales_service_amount) AS calc_amount,
                        c.rejection_reason,
-                       c.defer_requested_by, c.defer_approved_by,
+                       req.sale_name AS requester_name,
+                       appr.sale_name AS approver_name,
+                       c.defer_decision, c.defer_decision_reason
+                FROM commissions c
+                LEFT JOIN sales_users su   ON c.sale_key          = su.sale_key
+                LEFT JOIN sales_users req  ON c.defer_requested_by = req.sale_key
+                LEFT JOIN sales_users appr ON c.defer_approved_by  = appr.sale_key
+                WHERE {where_sql}
+                ORDER BY c.timestamp DESC
+                LIMIT 500
+            """
+            # query แบบเก่า (fallback ถ้ายังไม่ได้ migrate)
+            query_legacy = f"""
+                SELECT c.timestamp, c.so_number, c.customer_name,
+                       su.sale_name, c.defer_type, c.status,
+                       c.commission_month, c.commission_year,
+                       COALESCE(c.final_sales_amount, c.sales_service_amount) AS calc_amount,
+                       c.rejection_reason,
+                       NULL AS requester_name, NULL AS approver_name,
                        c.defer_decision, c.defer_decision_reason
                 FROM commissions c
                 LEFT JOIN sales_users su ON c.sale_key = su.sale_key
-                WHERE {' AND '.join(where)}
+                WHERE {where_sql}
                 ORDER BY c.timestamp DESC
                 LIMIT 500
             """
             import pandas as pd
-            df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+            try:
+                df = pd.read_sql_query(query_full, self.pg_engine, params=tuple(params))
+            except Exception:
+                df = pd.read_sql_query(query_legacy, self.pg_engine, params=tuple(params))
 
             import re
             thai_months_short = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
@@ -4627,13 +4650,13 @@ class DeferralHistoryWindow(CTkToplevel):
                         defer_type = "Sale ยืนยันเลื่อน"
                 full_reason = f"{defer_type}" + (f" — {defer_reason_detail}" if defer_reason_detail else "")
 
-                # ผู้ขอเลื่อน
-                requested_by = str(row.get("defer_requested_by") or "")
+                # ผู้ขอเลื่อน — ใช้ชื่อจริง requester_name (หลัง migrate) หรือ fallback "HR"
+                requested_by = str(row.get("requester_name") or "")
                 if not requested_by and rejection.startswith("HR Request:"):
                     requested_by = "HR"
 
-                # ผู้อนุมัติ + ผล
-                approved_by = str(row.get("defer_approved_by") or "")
+                # ผู้อนุมัติ + ผล — ใช้ชื่อจริง approver_name
+                approved_by = str(row.get("approver_name") or "")
                 manager_decision = str(row.get("defer_decision") or "")
                 if not manager_decision:
                     if "Manager Decision" in rejection:
