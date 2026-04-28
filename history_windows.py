@@ -4483,7 +4483,8 @@ class DeferralHistoryWindow(CTkToplevel):
             query = f"""
                 SELECT c.timestamp, c.so_number, c.customer_name,
                        su.sale_name, c.defer_type, c.status,
-                       c.defer_decision, c.defer_decision_reason
+                       c.defer_decision, c.defer_decision_reason,
+                       c.rejection_reason
                 FROM commissions c
                 LEFT JOIN sales_users su ON c.sale_key = su.sale_key
                 WHERE {' AND '.join(where)}
@@ -4494,9 +4495,26 @@ class DeferralHistoryWindow(CTkToplevel):
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
 
             for _, row in df.iterrows():
-                tag = "Requested"
                 status = str(row.get("status", ""))
+                rejection = str(row.get("rejection_reason", "") or "")
+
+                # defer_type: ใช้ column ใหม่ก่อน, fallback ดึงจาก rejection_reason เก่า
+                defer_type = row.get("defer_type") or ""
+                if not defer_type and rejection.startswith("HR Request:"):
+                    defer_type = rejection.replace("HR Request:", "").strip() or "HR ขอเลื่อน"
+
+                # defer_decision / reason: ใช้ column ใหม่ก่อน, fallback parse จาก rejection_reason
                 decision = str(row.get("defer_decision", "") or "")
+                decision_reason = str(row.get("defer_decision_reason", "") or "")
+                if not decision and rejection.startswith("Manager Decision:"):
+                    raw = rejection.replace("Manager Decision:", "").strip()
+                    if "ไม่อนุมัติ" in raw:
+                        decision = "ไม่อนุมัติ"
+                    elif "อนุมัติ" in raw:
+                        decision = "อนุมัติ"
+                    decision_reason = raw
+
+                tag = "Requested"
                 if "อนุมัติ" in decision and decision != "ไม่อนุมัติ":
                     tag = "Approved"
                 elif "ไม่อนุมัติ" in decision:
@@ -4510,10 +4528,10 @@ class DeferralHistoryWindow(CTkToplevel):
                     row.get("so_number", ""),
                     row.get("customer_name", ""),
                     row.get("sale_name", ""),
-                    row.get("defer_type", "") or "-",
+                    defer_type or "-",
                     STATUS_THAI_MAP.get(status, status),
                     decision or "-",
-                    row.get("defer_decision_reason", "") or "-",
+                    decision_reason or "-",
                 ), tags=(tag,))
         except Exception as e:
             traceback.print_exc()
