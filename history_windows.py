@@ -4650,10 +4650,8 @@ class DeferralHistoryWindow(CTkToplevel):
                         defer_type = "Sale ยืนยันเลื่อน"
                 full_reason = f"{defer_type}" + (f" — {defer_reason_detail}" if defer_reason_detail else "")
 
-                # ผู้ขอเลื่อน — ใช้ชื่อจริง requester_name (หลัง migrate) หรือ fallback "HR"
+                # ผู้ขอเลื่อน — ใช้ชื่อจริงจาก requester_name (SQL ดึงให้แล้ว รวมถึง fallback HR user สำหรับ record เก่า)
                 requested_by = str(row.get("requester_name") or "")
-                if not requested_by and rejection.startswith("HR Request:"):
-                    requested_by = "HR"
 
                 # ผู้อนุมัติ + ผล — ใช้ชื่อจริง approver_name
                 approved_by = str(row.get("approver_name") or "")

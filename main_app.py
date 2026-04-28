@@ -526,7 +526,7 @@ class AppContainer(CTk):
             widget.destroy()
         loading_win = LoadingWindow(self)
         self.update_idletasks()
-        self.current_user_key = kwargs.get('user_key')
+        self.current_user_key = kwargs.get('user_key') or kwargs.get('sale_key')
         self.current_user_role = kwargs.get('user_role')
         if self.notification_poll_id:
            self.after_cancel(self.notification_poll_id)

@@ -1092,9 +1092,6 @@ class CommissionApp(CTkFrame):
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
 
-        # 9. แจ้งเตือน SO ที่รอยืนยันการเลื่อน (เฉพาะ Sale เจ้าของ SO)
-        if self.user_role and self.user_role.lower() not in ('sales manager', 'director', 'hr', 'sale support'):
-            self.after(800, self._check_pending_deferrals)
 
         # ==========================================================
         # 🔥 9. เรียก DailyReportWidget มาวางใน แท็บที่ 2 (tab_report)
