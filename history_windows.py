@@ -18,6 +18,7 @@ from customtkinter import (
 )
 
 import utils
+from custom_widgets import DateSelector
 from utils import FormattedNumericEntry, RejectionReasonDialog
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 
@@ -4328,66 +4329,139 @@ class TransportPOSearchDialog(CTkToplevel):
 
 
 class DeferTypeDialog(CTkToplevel):
-    """Dialog ให้ HR เลือกประเภทการเลื่อนและระบุเหตุผล"""
+    """Dialog ให้ HR เลือกประเภทการเลื่อนและกรอก mandatory field ตามประเภท"""
 
-    # (type_label, hint_text)
     DEFER_OPTIONS = [
-        ("เลื่อนจัดส่ง",
-         "⚠️ ต้องอัปเดตวันจัดส่งใน APlus SO Management ด้วย\nมิฉะนั้นระบบจะ update สถานะไม่ได้"),
-        ("ค้างชำระ-ลูกค้าเครดิต",
-         "📌 กรุณากำหนดวันชำระในระบบ APlus Smart SO Management"),
-        ("ค้างชำระ-งวดสุดท้าย",
-         "📌 กรุณากำหนดวันชำระใหม่ในระบบ"),
-        ("อื่นๆ รอ ผจก.ตรวจสอบ",
-         "📋 Manager จะเป็นผู้พิจารณาและระบุรอบคอมปลายทาง"),
+        "เลื่อนจัดส่ง",
+        "ค้างชำระ-ลูกค้าเครดิต",
+        "ค้างชำระ-งวดสุดท้าย",
+        "อื่นๆ รอ ผจก.ตรวจสอบ",
     ]
 
     def __init__(self, master):
         super().__init__(master)
         self.title("ระบุเหตุผลการขอเลื่อนจ่ายคอม")
-        self.geometry("480x460")
+        self.geometry("500x560")
         self.resizable(False, False)
-        self.defer_type = None
-        self.reason = None
         self.transient(master)
         self.grab_set()
+
+        # output attributes
+        self.defer_type = None
+        self.reason = None
+        self.expected_delivery_date = None
+        self.expected_payment_date = None
+        self.defer_remarks = None
+        self.is_collection_risk = False
 
         self.grid_columnconfigure(0, weight=1)
 
         CTkLabel(self, text="เลือกเหตุผลการขอเลื่อนจ่าย",
-                 font=CTkFont(size=15, weight="bold")).pack(pady=(18, 8), padx=20)
+                 font=CTkFont(size=15, weight="bold")).pack(pady=(18, 4), padx=20)
 
-        self._type_var = tk.StringVar(value=self.DEFER_OPTIONS[0][0])
-        self._hint_label = CTkLabel(self, text="", text_color="#D97706",
-                                    font=CTkFont(size=12), wraplength=420, justify="left")
+        # Tooltip
+        tip_frame = CTkFrame(self, fg_color="#EFF6FF", corner_radius=6)
+        tip_frame.pack(fill="x", padx=20, pady=(0, 10))
+        CTkLabel(tip_frame,
+                 text="❓ สำคัญ: กรอกวันที่นัดหมายใหม่ให้ครบทุกครั้ง เพื่อให้ Manager\n"
+                      "สามารถระบุรอบคอมที่จะนำยอดกลับมาคำนวณได้ถูกต้อง",
+                 font=CTkFont(size=11), text_color="#1D4ED8",
+                 justify="left", wraplength=440).pack(padx=12, pady=8, anchor="w")
 
+        # Radio options
         radio_frame = CTkFrame(self, fg_color="#F9FAFB", corner_radius=8)
-        radio_frame.pack(fill="x", padx=20, pady=(0, 8))
+        radio_frame.pack(fill="x", padx=20, pady=(0, 10))
 
-        for label, hint in self.DEFER_OPTIONS:
+        self._type_var = tk.StringVar(value=self.DEFER_OPTIONS[0])
+        for label in self.DEFER_OPTIONS:
             CTkRadioButton(radio_frame, text=label, variable=self._type_var, value=label,
-                           command=lambda h=hint: self._hint_label.configure(text=h)
-                           ).pack(anchor="w", padx=20, pady=5)
+                           command=self._on_option_change).pack(anchor="w", padx=20, pady=6)
 
-        self._hint_label.pack(anchor="w", padx=20, pady=(0, 4))
-        self._hint_label.configure(text=self.DEFER_OPTIONS[0][1])
-
-        CTkLabel(self, text="เหตุผลเพิ่มเติม / รายละเอียด:").pack(anchor="w", padx=20, pady=(4, 2))
-        self._reason_entry = CTkEntry(self, width=440, placeholder_text="ระบุรายละเอียด...")
-        self._reason_entry.pack(padx=20)
+        # Dynamic mandatory field area
+        self._dynamic_frame = CTkFrame(self, fg_color="#F0FDF4", corner_radius=8)
+        self._dynamic_frame.pack(fill="x", padx=20, pady=(0, 10))
+        self._date_widget = None
+        self._remarks_widget = None
+        self._on_option_change()
 
         btn_frame = CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=16)
-        CTkButton(btn_frame, text="ยืนยัน", width=120, fg_color="#16A34A", hover_color="#15803D",
+        btn_frame.pack(pady=12)
+        CTkButton(btn_frame, text="ยืนยัน", width=130, fg_color="#16A34A", hover_color="#15803D",
                   command=self._confirm).pack(side="left", padx=8)
         CTkButton(btn_frame, text="ยกเลิก", width=100, fg_color="#6B7280", hover_color="#4B5563",
                   command=self.destroy).pack(side="left", padx=8)
 
         self.focus()
 
+    def _on_option_change(self):
+        for w in self._dynamic_frame.winfo_children():
+            w.destroy()
+        self._date_widget = None
+        self._remarks_widget = None
+
+        opt = self._type_var.get()
+
+        if opt == "เลื่อนจัดส่ง":
+            CTkLabel(self._dynamic_frame,
+                     text="📅 วันที่นัดส่งของใหม่ (บังคับ):",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#15803D").pack(anchor="w", padx=14, pady=(10, 4))
+            self._date_widget = DateSelector(self._dynamic_frame)
+            self._date_widget.pack(anchor="w", padx=14, pady=(0, 10))
+
+        elif opt == "ค้างชำระ-ลูกค้าเครดิต":
+            CTkLabel(self._dynamic_frame,
+                     text="📅 วันนัดชำระใหม่ที่คาดว่าจะเก็บเงินได้ (บังคับ):",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#15803D").pack(anchor="w", padx=14, pady=(10, 4))
+            self._date_widget = DateSelector(self._dynamic_frame)
+            self._date_widget.pack(anchor="w", padx=14, pady=(0, 10))
+
+        elif opt == "ค้างชำระ-งวดสุดท้าย":
+            CTkLabel(self._dynamic_frame,
+                     text="📅 วันนัดชำระงวดสุดท้าย (บังคับ):",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#15803D").pack(anchor="w", padx=14, pady=(10, 4))
+            self._date_widget = DateSelector(self._dynamic_frame)
+            self._date_widget.pack(anchor="w", padx=14, pady=(0, 4))
+            CTkLabel(self._dynamic_frame,
+                     text="⚠️  รายการนี้จะถูก Flag ว่า Collection Risk สูง — Manager จะ Monitor เป็นพิเศษ",
+                     font=CTkFont(size=11), text_color="#DC2626",
+                     wraplength=440).pack(anchor="w", padx=14, pady=(0, 10))
+
+        elif opt == "อื่นๆ รอ ผจก.ตรวจสอบ":
+            CTkLabel(self._dynamic_frame,
+                     text="📝 หมายเหตุ / รายละเอียด (บังคับ):",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#15803D").pack(anchor="w", padx=14, pady=(10, 4))
+            self._remarks_widget = CTkTextbox(self._dynamic_frame, height=80)
+            self._remarks_widget.pack(fill="x", padx=14, pady=(0, 10))
+
     def _confirm(self):
-        self.defer_type = self._type_var.get()
-        self.reason = self._reason_entry.get().strip()
+        opt = self._type_var.get()
+
+        if opt in ("เลื่อนจัดส่ง", "ค้างชำระ-ลูกค้าเครดิต", "ค้างชำระ-งวดสุดท้าย"):
+            date_val = self._date_widget.get_date() if self._date_widget else None
+            if not date_val:
+                messagebox.showwarning("กรุณากรอกข้อมูล",
+                                       "กรุณาระบุวันที่นัดหมายใหม่ก่อนยืนยัน", parent=self)
+                return
+            if opt == "เลื่อนจัดส่ง":
+                self.expected_delivery_date = date_val
+            else:
+                self.expected_payment_date = date_val
+            self.is_collection_risk = (opt == "ค้างชำระ-งวดสุดท้าย")
+
+        elif opt == "อื่นๆ รอ ผจก.ตรวจสอบ":
+            remarks = self._remarks_widget.get("1.0", "end").strip() if self._remarks_widget else ""
+            if not remarks:
+                messagebox.showwarning("กรุณากรอกข้อมูล",
+                                       "กรุณาระบุหมายเหตุก่อนยืนยัน", parent=self)
+                return
+            self.defer_remarks = remarks
+
+        self.defer_type = opt
+        self.reason = ""
         self.destroy()
 
 
