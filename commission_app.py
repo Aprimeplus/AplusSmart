@@ -1009,6 +1009,190 @@ class SubmitSODialog(CTkToplevel):
             if conn: 
                 self.app_container.release_connection(conn)
 
+class SOSummaryExportDialog(CTkToplevel):
+    """Dialog ให้ Sale เลือกช่วงข้อมูลแล้ว Export รายงานสรุป SO เป็น Excel"""
+
+    THAI_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                   "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+    THAI_MONTHS_SHORT = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.",
+                         "ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
+
+    def __init__(self, master, app_container, sale_key, sale_name):
+        super().__init__(master)
+        self.app_container = app_container
+        self.sale_key = sale_key
+        self.sale_name = sale_name
+        self.title("📊 สรุปรอบคอม — Export SO")
+        self.geometry("540x480")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+        self.grid_columnconfigure(0, weight=1)
+
+        now = datetime.now()
+        year_be = now.year + 543
+
+        # ── Header ──
+        CTkLabel(self, text="📊 สรุปรอบคอม", font=CTkFont(size=16, weight="bold")).pack(pady=(20, 4))
+        CTkLabel(self, text="เลือกช่วงข้อมูลที่ต้องการ Export", font=CTkFont(size=12),
+                 text_color="gray50").pack(pady=(0, 14))
+
+        # ── Mode selection ──
+        self._mode_var = tk.StringVar(value="month")
+        mode_frame = CTkFrame(self, fg_color="#F9FAFB", corner_radius=8)
+        mode_frame.pack(fill="x", padx=20, pady=(0, 12))
+        CTkRadioButton(mode_frame, text="เลือกตามรอบคอม (เดือน)", variable=self._mode_var,
+                       value="month", command=self._on_mode_change).pack(anchor="w", padx=16, pady=(10, 4))
+        CTkRadioButton(mode_frame, text="เลือกตามช่วงวันที่บันทึก", variable=self._mode_var,
+                       value="daterange", command=self._on_mode_change).pack(anchor="w", padx=16, pady=(0, 10))
+
+        # ── Dynamic input area ──
+        self._input_frame = CTkFrame(self, fg_color="#EFF6FF", corner_radius=8)
+        self._input_frame.pack(fill="x", padx=20, pady=(0, 12))
+        self._input_frame.grid_columnconfigure(1, weight=1)
+
+        # สร้าง widgets สำหรับ month mode
+        self._month_var = tk.StringVar(value=self.THAI_MONTHS[now.month - 1])
+        self._year_var  = tk.StringVar(value=str(year_be))
+        year_list = [str(y) for y in range(year_be - 3, year_be + 2)]
+
+        self._month_widgets = CTkFrame(self._input_frame, fg_color="transparent")
+        CTkLabel(self._month_widgets, text="รอบคอมเดือน:", font=CTkFont(size=13)).pack(side="left", padx=(0, 8))
+        CTkOptionMenu(self._month_widgets, variable=self._month_var,
+                      values=self.THAI_MONTHS, width=150).pack(side="left", padx=(0, 8))
+        CTkOptionMenu(self._month_widgets, variable=self._year_var,
+                      values=year_list, width=90).pack(side="left")
+
+        # สร้าง widgets สำหรับ daterange mode
+        self._daterange_widgets = CTkFrame(self._input_frame, fg_color="transparent")
+        CTkLabel(self._daterange_widgets, text="ตั้งแต่:", font=CTkFont(size=13)).grid(row=0, column=0, padx=(0, 8), pady=4, sticky="w")
+        self._from_date = DateSelector(self._daterange_widgets)
+        self._from_date.grid(row=0, column=1, sticky="w")
+        CTkLabel(self._daterange_widgets, text="ถึง:", font=CTkFont(size=13)).grid(row=1, column=0, padx=(0, 8), pady=4, sticky="w")
+        self._to_date = DateSelector(self._daterange_widgets)
+        self._to_date.grid(row=1, column=1, sticky="w")
+
+        self._on_mode_change()
+
+        # ── Column preview ──
+        preview = CTkFrame(self, fg_color="#F0FDF4", corner_radius=8)
+        preview.pack(fill="x", padx=20, pady=(0, 14))
+        CTkLabel(preview, text="คอลัมน์ที่จะ Export:", font=CTkFont(size=12, weight="bold"),
+                 text_color="#15803D").pack(anchor="w", padx=14, pady=(8, 2))
+        CTkLabel(preview, text="เลขที่ SO  |  ชื่อลูกค้า  |  ยอดขาย (บาท)  |  พนักงานขาย  |  สถานะ",
+                 font=CTkFont(size=11), text_color="#374151").pack(anchor="w", padx=14, pady=(0, 8))
+
+        # ── Buttons ──
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=4)
+        CTkButton(btn_frame, text="📥 Export Excel", font=CTkFont(size=14, weight="bold"),
+                  fg_color="#2563EB", hover_color="#1D4ED8", height=42, width=160,
+                  command=self._export).pack(side="left", padx=8)
+        CTkButton(btn_frame, text="ยกเลิก", fg_color="#6B7280", hover_color="#4B5563",
+                  height=42, width=100, command=self.destroy).pack(side="left", padx=8)
+
+        self.focus()
+
+    def _on_mode_change(self):
+        self._month_widgets.pack_forget()
+        self._daterange_widgets.pack_forget()
+        if self._mode_var.get() == "month":
+            self._month_widgets.pack(padx=14, pady=12)
+        else:
+            self._daterange_widgets.pack(padx=14, pady=12)
+
+    def _export(self):
+        import pandas as pd
+        from tkinter import filedialog
+
+        try:
+            engine = self.app_container.pg_engine
+            month_num_map = {m: i+1 for i, m in enumerate(self.THAI_MONTHS)}
+
+            if self._mode_var.get() == "month":
+                m = month_num_map.get(self._month_var.get(), 0)
+                y = int(self._year_var.get()) - 543
+                if not m:
+                    messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาเลือกรอบเดือน", parent=self)
+                    return
+                query = """
+                    SELECT c.so_number, c.customer_name,
+                           COALESCE(c.final_sales_amount, c.sales_service_amount, 0) AS amount,
+                           su.sale_name, c.status,
+                           c.commission_month, c.commission_year, c.rejection_reason
+                    FROM commissions c
+                    LEFT JOIN sales_users su ON c.sale_key = su.sale_key
+                    WHERE c.sale_key = %(sk)s
+                      AND c.commission_month = %(m)s AND c.commission_year = %(y)s
+                      AND c.is_active = 1
+                    ORDER BY c.timestamp DESC
+                """
+                df = pd.read_sql_query(query, engine, params={"sk": self.sale_key, "m": m, "y": y})
+                period_label = f"{self._month_var.get()} {self._year_var.get()}"
+            else:
+                f_date = self._from_date.get_date()
+                t_date = self._to_date.get_date()
+                if not f_date or not t_date:
+                    messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาเลือกช่วงวันที่", parent=self)
+                    return
+                query = """
+                    SELECT c.so_number, c.customer_name,
+                           COALESCE(c.final_sales_amount, c.sales_service_amount, 0) AS amount,
+                           su.sale_name, c.status,
+                           c.commission_month, c.commission_year, c.rejection_reason
+                    FROM commissions c
+                    LEFT JOIN sales_users su ON c.sale_key = su.sale_key
+                    WHERE c.sale_key = %(sk)s
+                      AND c.timestamp::date BETWEEN %(fd)s AND %(td)s
+                      AND c.is_active = 1
+                    ORDER BY c.timestamp DESC
+                """
+                df = pd.read_sql_query(query, engine, params={"sk": self.sale_key, "f_date": f_date, "t_date": t_date, "fd": f_date, "td": t_date})
+                period_label = f"{f_date} ถึง {t_date}"
+
+            if df.empty:
+                messagebox.showinfo("ไม่พบข้อมูล", f"ไม่พบรายการ SO ในช่วงที่เลือก", parent=self)
+                return
+
+            # แปลง status
+            def map_status(row):
+                s = str(row.get("status", ""))
+                if s in ("Paid", "HR Verified", "HR ตรวจสอบแล้ว"):
+                    return "จ่ายค่าคอมแล้ว"
+                if s == "Deferred":
+                    m_num = int(row.get("commission_month") or 0)
+                    y_num = int(row.get("commission_year") or 0)
+                    if m_num and y_num:
+                        prev_m = m_num - 1 if m_num > 1 else 12
+                        return f"โดนเลื่อน {self.THAI_MONTHS_SHORT[prev_m-1]} → {self.THAI_MONTHS_SHORT[m_num-1]} {y_num+543}"
+                    return "โดนเลื่อน"
+                return "รอจ่ายค่าคอม"
+
+            df["สถานะ"] = df.apply(map_status, axis=1)
+            df_export = df.rename(columns={
+                "so_number":     "เลขที่ SO",
+                "customer_name": "ชื่อลูกค้า",
+                "amount":        "ยอดขาย (บาท)",
+                "sale_name":     "พนักงานขาย",
+            })[["เลขที่ SO", "ชื่อลูกค้า", "ยอดขาย (บาท)", "พนักงานขาย", "สถานะ"]]
+
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                initialfile=f"SO_Summary_{self.sale_name}_{period_label}.xlsx",
+                parent=self
+            )
+            if not save_path:
+                return
+
+            df_export.to_excel(save_path, index=False)
+            messagebox.showinfo("สำเร็จ", f"Export เรียบร้อยแล้ว\n{save_path}", parent=self)
+            self.destroy()
+
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
+
+
 class DeferralNoticeDialog(CTkToplevel):
     """Popup บังคับให้ Sale กด 'รับทราบ' ก่อนใช้งานระบบได้ เมื่อมี SO ที่ Manager ตัดสินใจเรื่องเลื่อนคอม"""
     def __init__(self, master, app_container, notifications):
@@ -1244,13 +1428,18 @@ class CommissionApp(CTkFrame):
         button_container.grid(row=0, column=1, sticky="e")
         
         # ใช้ grid วางปุ่มภายใน button_container
-        self.tasks_button = CTkButton(button_container, text="งานของฉัน 🔔 (0)", command=self._open_my_tasks_window)
-        self.tasks_button.grid(row=0, column=0, padx=10)
+        CTkButton(button_container, text="📊 สรุปรอบคอม",
+                  command=lambda: SOSummaryExportDialog(self, self.app_container, self.sale_key, self.sale_name),
+                  fg_color="#2563EB", hover_color="#1D4ED8"
+                  ).grid(row=0, column=0, padx=(0, 6))
 
-        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").grid(row=0, column=1, padx=(0, 10))
-        
+        self.tasks_button = CTkButton(button_container, text="งานของฉัน 🔔 (0)", command=self._open_my_tasks_window)
+        self.tasks_button.grid(row=0, column=1, padx=6)
+
         if self.show_logout_button:
-            CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").grid(row=0, column=1, padx=(0, 10))
+            CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen,
+                      fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F",
+                      border_width=2, hover_color="#FFEBEE").grid(row=0, column=2, padx=(0, 10))
     
     
     def _refresh_history_if_open(self):
