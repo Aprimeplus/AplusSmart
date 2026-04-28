@@ -4317,7 +4317,7 @@ class TransportPOSearchDialog(CTkToplevel):
 # ==============================================================================
 
 class DeferTypeDialog(CTkToplevel):
-    """Dialog สำหรับ HR เลือกประเภทการเลื่อนและระบุเหตุผลก่อนส่งคำขอไป Sale/SM"""
+    """Dialog สำหรับ HR เลือกประเภทการเลื่อน + เหตุผล (แบบ checkbox เหมือน RejectionReasonDialog)"""
 
     DEFER_TYPES = [
         "เลื่อนจัดส่ง",
@@ -4326,42 +4326,78 @@ class DeferTypeDialog(CTkToplevel):
         "อื่นๆ",
     ]
 
+    REASONS_LIST = [
+        "ลงสเปคสินค้าผิด SO", "ลงเสปคสินค้าผิด PO", "ลงราคาต้นทุนผิด PO",
+        "ลงราคาขายผิด SO", "ไม่แยกค่ารถ/ราคาผิด SO", "ไม่แยกค่ารถ/ราคาผิด PO",
+        "รายการต้นทุนไม่ครบ PO", "ค่าตัด/เจาะ ตกหล่น", "ค่าของแถม ตกหล่น",
+    ]
+
     def __init__(self, master):
         super().__init__(master)
         self.title("ระบุประเภทและเหตุผลการเลื่อน")
-        self.geometry("460x340")
-        self.resizable(False, False)
+        self.geometry("500x620")
         self.attributes("-topmost", True)
 
-        self.defer_type = None   # ผลลัพธ์: ประเภท
-        self.reason = None       # ผลลัพธ์: เหตุผล (string)
+        self.defer_type = None
+        self.reason = None
+        self._checkbox_vars = []
 
-        main = CTkFrame(self, fg_color="transparent")
-        main.pack(fill="both", expand=True, padx=24, pady=20)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
-        CTkLabel(main, text="ประเภทการเลื่อน:", font=CTkFont(size=13, weight="bold")).pack(anchor="w")
+        # --- ส่วนเลือกประเภท ---
+        type_frame = CTkFrame(self, fg_color="transparent")
+        type_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 4))
+        type_frame.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(type_frame, text="ประเภทการเลื่อน:", font=CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w", padx=(0, 10))
         self._type_var = tk.StringVar(value=self.DEFER_TYPES[0])
-        CTkOptionMenu(main, variable=self._type_var, values=self.DEFER_TYPES, width=380).pack(anchor="w", pady=(6, 16))
+        CTkOptionMenu(type_frame, variable=self._type_var, values=self.DEFER_TYPES).grid(row=0, column=1, sticky="ew")
 
-        CTkLabel(main, text="เหตุผลเพิ่มเติม (ถ้ามี):", font=CTkFont(size=13, weight="bold")).pack(anchor="w")
-        self._reason_text = tk.Text(main, height=5, width=46, font=("Arial", 12),
-                                    relief="solid", bd=1, wrap="word")
-        self._reason_text.pack(fill="x", pady=(6, 16))
+        CTkLabel(self, text="กรุณาเลือกเหตุผล (เลือกได้มากกว่า 1 ข้อ)", font=CTkFont(size=14, weight="bold")).grid(row=1, column=0, padx=20, pady=(10, 4))
 
-        btn_row = CTkFrame(main, fg_color="transparent")
-        btn_row.pack()
-        CTkButton(btn_row, text="ตกลง", command=self._on_ok,
-                  width=120, font=CTkFont(size=13, weight="bold")).pack(side="left", padx=8)
-        CTkButton(btn_row, text="ยกเลิก", command=self.destroy,
-                  fg_color="gray", hover_color="#555", width=100).pack(side="left", padx=8)
+        # --- Checkbox เหตุผล (เหมือน RejectionReasonDialog เดิม) ---
+        scroll_frame = CTkScrollableFrame(self)
+        scroll_frame.grid(row=2, column=0, padx=15, pady=5, sticky="nsew")
+
+        for reason in self.REASONS_LIST:
+            var = tk.StringVar(value="0")
+            CTkCheckBox(scroll_frame, text=reason, variable=var, font=CTkFont(size=14)).pack(pady=5, padx=10, anchor="w")
+            self._checkbox_vars.append((var, reason))
+
+        # --- อื่นๆ free text ---
+        other_frame = CTkFrame(self, fg_color="transparent")
+        other_frame.grid(row=3, column=0, padx=20, pady=5, sticky="ew")
+        other_frame.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(other_frame, text="อื่นๆ:", font=CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=(0, 5))
+        self._other_entry = CTkEntry(other_frame)
+        self._other_entry.grid(row=0, column=1, sticky="ew")
+
+        # --- ปุ่ม ---
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=4, column=0, padx=20, pady=12)
+
+        CTkButton(btn_frame, text="ยกเลิก", command=self.destroy, fg_color="gray").pack(side="right", padx=5)
+        CTkButton(btn_frame, text="ตกลง", command=self._on_ok,
+                  fg_color="#DC2626", hover_color="#B91C1C").pack(side="right", padx=5)
 
         self.transient(master)
         self.grab_set()
         self.focus_force()
 
     def _on_ok(self):
+        selected = [r for var, r in self._checkbox_vars if var.get() == "1"]
+        other_text = self._other_entry.get().strip()
+        if other_text:
+            selected.append(f"อื่นๆ: {other_text}")
+
+        if not selected:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาเลือกเหตุผลอย่างน้อย 1 ข้อ", parent=self)
+            return
+
         self.defer_type = self._type_var.get()
-        self.reason = self._reason_text.get("1.0", "end").strip()
+        self.reason = ", ".join(selected)
         self.destroy()
 
 
