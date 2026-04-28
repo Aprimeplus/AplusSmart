@@ -2000,6 +2000,47 @@ class CommissionApp(CTkFrame):
         self.shipping_vat_var_display = CTkEntry(frame, textvariable=self.shipping_vat_calc_var, state="readonly", fg_color="gray85"); self._add_form_row(frame, "VAT 7% (ค่าจัดส่ง):", self.shipping_vat_var_display, 2)
         self.delivery_date_selector = DateSelector(frame, dropdown_style=self.dropdown_style); self._add_form_row(frame, "วันที่จัดส่ง:", self.delivery_date_selector, 3, columnspan=2)
 
+        # Warning label — แสดงเมื่อวันที่จัดส่งเกิน cutoff
+        self._delivery_cutoff_label = CTkLabel(
+            frame, text="", font=CTkFont(size=12, weight="bold"),
+            text_color="#DC2626", wraplength=380, justify="left"
+        )
+        self._delivery_cutoff_label.grid(row=4, column=1, columnspan=2, padx=(10, 15), pady=(0, 6), sticky="w")
+
+        # Trace เมื่อวันหรือเดือนเปลี่ยน
+        self.delivery_date_selector.day_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
+        self.delivery_date_selector.month_var.trace_add("write", lambda *_: self._check_delivery_date_cutoff())
+
+    def _check_delivery_date_cutoff(self):
+        """เช็ควันที่จัดส่งว่าเกิน cutoff ไหม ถ้าเกินแนะนำให้เปลี่ยนรอบคอมเป็นเดือนหน้า"""
+        try:
+            day_str = self.delivery_date_selector.day_var.get()
+            month_str = self.delivery_date_selector.month_var.get()
+            if not day_str or not month_str:
+                return
+
+            day = int(day_str)
+            thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
+                              "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
+                              "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            month_num = thai_month_map.get(month_str, 0)
+
+            # cutoff: กุมภา (2) และ ธันวา (12) = 21, เดือนอื่น = 25
+            cutoff = 21 if month_num in (2, 12) else 25
+
+            if day > cutoff:
+                # คำนวณเดือนหน้า
+                next_month = month_num + 1 if month_num < 12 else 1
+                next_month_thai = self.thai_months[next_month - 1]
+                self._delivery_cutoff_label.configure(
+                    text=f"⚠️ วันที่จัดส่ง ({day_str}) เกินวันตัดรอบ ({cutoff}) "
+                         f"— แนะนำเปลี่ยนรอบคอมเป็น {next_month_thai}"
+                )
+            else:
+                self._delivery_cutoff_label.configure(text="")
+        except Exception:
+            pass
+
     def _populate_fees_frame(self, parent):
         frame = self._create_section_frame(parent, "ค่าธรรมเนียม"); frame.pack(fill="x", pady=(0,10)); frame.grid_columnconfigure(1, weight=1)
         self.credit_card_fee_entry = NumericEntry(frame); self._add_item_row_with_vat(frame, "ค่าธรรมเนียมบัตรเครดิต:", self.credit_card_fee_entry, self.credit_card_fee_vat_option_var, 1)
