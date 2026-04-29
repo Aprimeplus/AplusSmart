@@ -1353,6 +1353,8 @@ class HRVerificationWindow(CTkToplevel):
                         status = 'Defer Requested',
                         commission_month = %s,
                         commission_year = %s,
+                        defer_source_month = %s,
+                        defer_source_year = %s,
                         defer_type = %s,
                         defer_requested_by = %s,
                         rejection_reason = %s,
@@ -1362,6 +1364,7 @@ class HRVerificationWindow(CTkToplevel):
                         is_collection_risk = %s
                     WHERE id = %s
                 """, (next_month, next_year,
+                      cur_month, cur_year,
                       defer_type, hr_key, rejection_text,
                       expected_delivery_date, expected_payment_date,
                       defer_remarks, is_collection_risk,
@@ -1850,47 +1853,32 @@ class PayoutDetailWindow(CTkToplevel):
 
             placeholders = ', '.join(['%s']*len(so_id_list))
             
-            # [🔥 แก้ไข Query] ตัด total_po_shipping_cost ออกเพื่อแก้ Error
+            # ใช้ final_sales_amount / final_gp ที่ HR verify แล้ว ให้ตรงกับหน้าคำนวณ&จ่าย
             query = f"""
-                SELECT so_number, sales_service_amount, final_cost_amount, cost_multiplier, 
-                       difference_amount 
-                FROM commissions 
-                WHERE id IN ({placeholders}) 
+                SELECT so_number, final_sales_amount, final_gp
+                FROM commissions
+                WHERE id IN ({placeholders})
                 ORDER BY so_number DESC
             """
             df = pd.read_sql_query(query, self.app_container.pg_engine, params=tuple(so_id_list))
-            
-            if df.empty: return pd.DataFrame()
-            
-            # 1. แปลงข้อมูลเป็นตัวเลข
-            sales = pd.to_numeric(df['sales_service_amount'], errors='coerce').fillna(0)
-            cost = pd.to_numeric(df['final_cost_amount'], errors='coerce').fillna(0)
-            diff = pd.to_numeric(df['difference_amount'], errors='coerce').fillna(0)
-            
-            # 2. ดึงตัวคูณ (ถ้าไม่มีใน DB ให้ใช้ 1.03)
-            if 'cost_multiplier' in df.columns:
-                mult = pd.to_numeric(df['cost_multiplier'], errors='coerce').fillna(1.03)
-                # ถ้าตัวคูณเป็น 0 หรือ 1 (หลุดมา) ให้บังคับเป็น 1.03 ไว้ก่อนเพื่อความปลอดภัยในมุมมอง HR
-                mult = mult.apply(lambda x: 1.03 if x < 1.01 else x)
-            else:
-                mult = 1.03
 
-            # 3. [🔥 สำคัญ] คำนวณกำไรใหม่สดๆ (เหมือนใน Popup)
-            # Profit = Sales - (Cost * Multiplier) + Diff
-            profit = (sales - (cost * mult)) + diff
-            
-            # 4. คำนวณ Margin (%)
-            df['calculated_margin'] = (profit / sales.replace(0, np.nan)) * 100
+            if df.empty: return pd.DataFrame()
+
+            # แปลงเป็นตัวเลข
+            sales = pd.to_numeric(df['final_sales_amount'], errors='coerce').fillna(0)
+            gp    = pd.to_numeric(df['final_gp'],           errors='coerce').fillna(0)
+
+            # คำนวณ Margin จาก final_gp / final_sales_amount (เหมือนที่ HR verify ไว้)
+            df['calculated_margin'] = (gp / sales.replace(0, np.nan)) * 100
             df['calculated_margin'] = df['calculated_margin'].fillna(0.0)
-            
-            # 5. กำหนดสถานะ (Normal / Below Tier)
+
             df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if x >= 10.0 else 'Below Tier')
-            
-            return df[['so_number', 'status', 'sales_service_amount', 'calculated_margin']].rename(columns={
-                'so_number': 'SO Number', 
-                'status': 'สถานะ', 
-                'sales_service_amount': 'ยอดขายสินค้า', 
-                'calculated_margin': 'Margin (%)'
+
+            return df[['so_number', 'status', 'final_sales_amount', 'calculated_margin']].rename(columns={
+                'so_number':          'SO Number',
+                'status':             'สถานะ',
+                'final_sales_amount': 'ยอดขายสินค้า',
+                'calculated_margin':  'Margin (%)'
             })
 
         except Exception as e:

@@ -3993,6 +3993,64 @@ class HRScreen(CTkFrame):
 
             final_auto_deduction = shipping_deduction + difference_deduction + marketing_deduction
 
+            # --- DEBUG: แสดงรายละเอียด Auto Deduction ราย SO ---
+            print("\n" + "="*70)
+            print(f"[DEBUG] Auto Deduction Breakdown  (รวม = {final_auto_deduction:,.2f} บาท)")
+            print("="*70)
+
+            # 1. Shipping deduction
+            print(f"\n[1] Shipping Deduction = {shipping_deduction:,.2f} บาท")
+            print(f"    PO shipping รวม : {total_po_shipping:,.2f}  |  SO shipping รวม : {total_so_shipping:,.2f}")
+            print(f"    ส่วนต่าง (PO-SO) : {total_po_shipping - total_so_shipping:,.2f}  {'(ไม่หัก)' if total_po_shipping <= total_so_shipping else ''}")
+            _debug_ship_cols = ['so_number', 'shipping_cost', 'relocation_cost',
+                                'shipping_to_stock_cost', 'shipping_to_site_cost']
+            _avail = [c for c in _debug_ship_cols if c in self.current_comm_df.columns]
+            _ship_df = self.current_comm_df[_avail].copy()
+            for col in _avail[1:]:
+                _ship_df[col] = pd.to_numeric(_ship_df[col], errors='coerce').fillna(0)
+            _ship_df['so_ship'] = _ship_df.get('shipping_cost', 0) + _ship_df.get('relocation_cost', 0)
+            _ship_df['po_ship'] = _ship_df.get('shipping_to_stock_cost', 0) + _ship_df.get('shipping_to_site_cost', 0)
+            _ship_nonzero = _ship_df[(_ship_df['so_ship'] != 0) | (_ship_df['po_ship'] != 0)]
+            if not _ship_nonzero.empty:
+                print(f"    {'SO':<20} {'SO ship':>12} {'PO ship':>12}")
+                print(f"    {'-'*44}")
+                for _, r in _ship_nonzero.iterrows():
+                    print(f"    {str(r.get('so_number','')):<20} {r['so_ship']:>12,.2f} {r['po_ship']:>12,.2f}")
+
+            # 2. Brokerage/Difference deduction
+            print(f"\n[2] Brokerage/Difference Deduction = {difference_deduction:,.2f} บาท")
+            print(f"    brokerage รวม : {total_brokerage:,.2f}  |  difference รวม : {total_difference:,.2f}")
+            print(f"    diff_base (broker-diff) : {diff_base:,.2f}  {'(ไม่หัก)' if diff_base >= 0 else ''}")
+            _brok_cols = ['so_number', 'brokerage_fee', 'difference_amount']
+            _avail2 = [c for c in _brok_cols if c in self.current_comm_df.columns]
+            _brok_df = self.current_comm_df[_avail2].copy()
+            for col in _avail2[1:]:
+                _brok_df[col] = pd.to_numeric(_brok_df[col], errors='coerce').fillna(0)
+            _brok_nonzero = _brok_df[(_brok_df.get('brokerage_fee', 0) != 0) | (_brok_df.get('difference_amount', 0) != 0)]
+            if not _brok_nonzero.empty:
+                print(f"    {'SO':<20} {'brokerage':>12} {'difference':>12}")
+                print(f"    {'-'*44}")
+                for _, r in _brok_nonzero.iterrows():
+                    print(f"    {str(r.get('so_number','')):<20} {r.get('brokerage_fee',0):>12,.2f} {r.get('difference_amount',0):>12,.2f}")
+
+            # 3. Marketing deduction
+            print(f"\n[3] Marketing Deduction (coupons+giveaways) = {marketing_deduction:,.2f} บาท")
+            print(f"    total_marketing = {total_marketing:,.2f}")
+            _mkt_cols = ['so_number', 'coupons', 'giveaways']
+            _avail3 = [c for c in _mkt_cols if c in self.current_comm_df.columns]
+            _mkt_df = self.current_comm_df[_avail3].copy()
+            for col in _avail3[1:]:
+                _mkt_df[col] = pd.to_numeric(_mkt_df[col], errors='coerce').fillna(0)
+            _mkt_nonzero = _mkt_df[(_mkt_df.get('coupons', 0) != 0) | (_mkt_df.get('giveaways', 0) != 0)]
+            if not _mkt_nonzero.empty:
+                print(f"    {'SO':<20} {'coupons':>12} {'giveaways':>12}")
+                print(f"    {'-'*44}")
+                for _, r in _mkt_nonzero.iterrows():
+                    print(f"    {str(r.get('so_number','')):<20} {r.get('coupons',0):>12,.2f} {r.get('giveaways',0):>12,.2f}")
+
+            print("\n" + "="*70 + "\n")
+            # --- END DEBUG ---
+
             # เตรียม Dataframe ส่งไปคำนวณจริง
             df_for_calc = self.current_comm_df.copy()
             df_for_calc['final_sales_amount'] = pd.to_numeric(df_for_calc['final_sales_amount'], errors='coerce').fillna(0.0)

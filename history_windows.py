@@ -2791,8 +2791,11 @@ class SOPopupWindow(CTkToplevel):
             self.so_shared_vars['commission_year_var'] = tk.StringVar(value="")
         
         # กำหนดค่าเริ่มต้นให้กับ Delivery Type ถ้าเพิ่งสร้างใหม่
-        if self.so_shared_vars['delivery_type_var'].get() == "VAT": 
+        if self.so_shared_vars['delivery_type_var'].get() == "VAT":
              self.so_shared_vars['delivery_type_var'].set("ซัพพลายเออร์จัดส่ง")
+
+        if 'vehicle_type_var' not in self.so_shared_vars:
+            self.so_shared_vars['vehicle_type_var'] = tk.StringVar(value="-")
 
         # สร้างตัวแปรสำหรับเก็บผลลัพธ์การคำนวณ (Calculation Vars)
         calc_vars = [
@@ -2910,15 +2913,23 @@ class SOPopupWindow(CTkToplevel):
         self._add_form_row(f4, "วันที่ย้ายเข้าคลัง:", DateSelector(f4, dropdown_style=self.dropdown_style), 'date_to_wh_selector', 4)
         self._add_form_row(f4, "วันที่จัดส่งลูกค้า:", DateSelector(f4, dropdown_style=self.dropdown_style), 'date_to_customer_selector', 5)
         self._add_form_row(f4, "ทะเบียนเข้ารับ:", CTkEntry(f4), 'pickup_rego_entry', 6)
-        
-        # 🟢 [เพิ่มใหม่] เงื่อนไขลงสินค้า และ Special Request
+
+        vehicle_options = [
+            "-", "กระบะ", "6 ล้อธรรมดา", "6 ล้อเฮียบ", "10 ล้อธรรมดา", "10 ล้อเฮียบ",
+            "รถเทรลเลอร์", "รถเทรลเลอร์-เฮียบ", "lala มอไซ", "lala เก๋ง",
+            "lala กระบะ", "lala กระบะตู้ทึบ", "ลูกค้ารับเอง",
+            "ฝากส่งขนส่งเอกชน-ชำระต้นทาง", "ฝากส่งขนส่งเอกชน-เก็บปลายทาง"
+        ]
+        self._add_form_row(f4, "ประเภทรถ:", CTkOptionMenu(f4, variable=self.so_shared_vars['vehicle_type_var'], values=vehicle_options, **self.dropdown_style), 'vehicle_type_menu', 7)
+
+        # เงื่อนไขลงสินค้า และ Special Request
         if 'unloading_status_var' not in self.so_shared_vars:
             self.so_shared_vars['unloading_status_var'] = tk.StringVar(value="ไม่รวมลง")
         unloading_frame = CTkFrame(f4, fg_color="transparent")
         CTkRadioButton(unloading_frame, text="รวมลง", variable=self.so_shared_vars['unloading_status_var'], value="รวมลง").pack(side="left", padx=5)
         CTkRadioButton(unloading_frame, text="ไม่รวมลง", variable=self.so_shared_vars['unloading_status_var'], value="ไม่รวมลง").pack(side="left", padx=5)
-        self._add_form_row(f4, "เงื่อนไขลงสินค้า:", unloading_frame, 'unloading_status_radio', 7)
-        self._add_form_row(f4, "Special Request:", CTkEntry(f4), 'special_request_entry', 8)
+        self._add_form_row(f4, "เงื่อนไขลงสินค้า:", unloading_frame, 'unloading_status_radio', 8)
+        self._add_form_row(f4, "Special Request:", CTkEntry(f4), 'special_request_entry', 9)
 
         # Section 5: Fees and Discounts
         f5 = self._create_so_section_frame(parent_frame, "ค่าธรรมเนียมและส่วนลด")
@@ -3141,6 +3152,7 @@ class SOPopupWindow(CTkToplevel):
             # 🟢 แก้ไขของแถมและหน้างาน
             'giveaway_vat': 'giveaway_vat_entry', 'giveaway_no_vat': 'giveaway_no_vat_entry', 
             'special_request': 'special_request_entry', 'unloading_status': 'unloading_status_var',
+            'vehicle_type': 'vehicle_type_var',
             
             'cash_product_input': 'cash_product_input_entry', 'cash_actual_payment': 'cash_actual_payment_entry',
             'sales_service_vat_option': 'sales_service_vat_option', 'cutting_drilling_fee_vat_option': 'cutting_drilling_fee_vat_option',
@@ -3274,7 +3286,8 @@ class SOPopupWindow(CTkToplevel):
             'shipping_vat_option_var': 'shipping_vat_option', 
             'credit_card_fee_vat_option_var': 'credit_card_fee_vat_option',
             'relocation_cost_vat_option': 'relocation_cost_vat_option',
-            'unloading_status_var': 'unloading_status' # 🟢 เพิ่มใหม่
+            'unloading_status_var': 'unloading_status',
+            'vehicle_type_var': 'vehicle_type'
         }
         for var_key, data_key in shared_vars_map.items():
             if var_key in self.so_shared_vars: 

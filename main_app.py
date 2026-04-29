@@ -400,9 +400,15 @@ class AppContainer(CTk):
                         if str(notif['message']).startswith('[DEFER]'):
                             continue
                         # --- [2] จุดตรวจสอบที่ 2: ก่อนเด้ง Popup ---
-                        if self.winfo_exists():
-                            NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
-                        cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notif['id'],))
+                        try:
+                            if self.winfo_exists():
+                                NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
+                        except Exception:
+                            pass  # app destroyed between winfo_exists check and popup creation
+                        try:
+                            cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notif['id'],))
+                        except Exception:
+                            pass
                     
                     conn.commit()
                     
@@ -417,11 +423,19 @@ class AppContainer(CTk):
 
         except Exception as e:
             # ดักจับ Error ตอนปิดโปรแกรม ไม่ให้รก Terminal
-            if "application has been destroyed" not in str(e) and "bad window path name" not in str(e):
+            ignored = ("application has been destroyed", "bad window path name",
+                       "connection already closed", "connection pool is closed")
+            if not any(s in str(e) for s in ignored):
                 print(f"Error checking for notifications: {e}")
-            if conn: conn.rollback()
+            try:
+                if conn: conn.rollback()
+            except Exception:
+                pass
         finally:
-            if conn: self.release_connection(conn)
+            try:
+                if conn: self.release_connection(conn)
+            except Exception:
+                pass
         
         # --- [4] จุดตรวจสอบที่ 4: ตั้งเวลาทำงานรอบถัดไป ---
         # สำคัญ: ต้องเก็บ ID ไว้ใน self.notification_poll_id เพื่อให้ on_closing สั่งยกเลิกได้
