@@ -620,13 +620,19 @@ class HRScreen(CTkFrame):
         # แปลง List so_ids เป็น String สำหรับ Query IN (...)
         so_ids_str = ', '.join(map(str, so_ids))
 
-        # 2. เขียน SQL Query (คงเดิม)
+        # 2. เขียน SQL Query — match by both product_name patterns AND product_code
         sql = f"""
         WITH po_items AS (
-            SELECT 
+            SELECT
                 c.id AS comm_id,
-                COALESCE(SUM(CASE WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%' THEN poi.total_price ELSE 0 END), 0) as po_cutting_cost,
-                COALESCE(SUM(CASE WHEN poi.product_name LIKE '%%ค่าบริการ%%' THEN poi.total_price ELSE 0 END), 0) as po_service_cost
+                COALESCE(SUM(CASE
+                    WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%'
+                         OR COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
+                    THEN poi.total_price ELSE 0 END), 0) as po_cutting_cost,
+                COALESCE(SUM(CASE
+                    WHEN poi.product_name LIKE '%%ค่าบริการ%%'
+                         OR COALESCE(poi.product_code, '') IN ('EXP-0006', 'EXP-0049', 'EXP-0077', 'EXP-0174')
+                    THEN poi.total_price ELSE 0 END), 0) as po_service_cost
             FROM commissions c
             JOIN purchase_orders po ON c.so_number = po.so_number
             JOIN purchase_order_items poi ON po.id = poi.purchase_order_id
@@ -1645,10 +1651,12 @@ class HRScreen(CTkFrame):
             
             # --- 4. ส่งข้อมูลที่สะอาดและถูกต้องไปยังหน้าต่าง Verify ---
             self.app_container.show_hr_verification_window(
-                system_data=system_data, 
+                system_data=system_data,
                 excel_data=excel_data,
                 po_data=po_data,
-                refresh_callback=self._refresh_comparison_view
+                refresh_callback=self._refresh_comparison_view,
+                target_commission_month=getattr(self, 'current_comparison_month', None),
+                target_commission_year=getattr(self, 'current_comparison_year', None),
             )
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างตรวจสอบได้: {e}", parent=self)
@@ -3182,11 +3190,10 @@ class HRScreen(CTkFrame):
                         WHERE p.status = 'Approved'
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
-                WHERE c.is_active = 1 
-                  -- ✅ แก้ไขตรงนี้ครับ: เพิ่ม 'HR Verified' เข้าไป
+                WHERE c.is_active = 1
                   AND c.status NOT IN ('Paid', 'Cancelled', 'HR Verified')
             """
-            
+
             params = []
 
             # --- Filter พนักงานขาย ---
@@ -3713,8 +3720,7 @@ class HRScreen(CTkFrame):
                         WHERE p.status = 'Approved'
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
-                WHERE c.is_active = 1 
-                  -- ✅ แก้ไขตรงนี้ครับ: เพิ่ม 'HR Verified' เข้าไป
+                WHERE c.is_active = 1
                   AND c.status NOT IN ('Paid', 'Cancelled', 'HR Verified')
             """
             params = []
@@ -3879,33 +3885,42 @@ class HRScreen(CTkFrame):
             # 🔥 [จุดแก้ไขสำคัญ 1] ปรับ SQL Query ให้ดึงข้อมูล Cost แยกประเภทให้ครบถ้วน
             # ==============================================================================
             query_comm = """
-                SELECT 
-                    c.*, 
+                SELECT
+                    c.*,
                     -- ดึงค่าแยกย่อยออกมา เพื่อให้ Business Logic นำไปจับคู่คำนวณ Excess ได้ถูกต้อง
                     COALESCE(po_costs.shipping_to_stock_cost, 0) as shipping_to_stock_cost,
                     COALESCE(po_costs.shipping_to_site_cost, 0) as shipping_to_site_cost,
                     COALESCE(po_costs.po_cutting_cost, 0) as po_cutting_cost,
-                    COALESCE(po_costs.po_service_cost, 0) as po_service_cost
+                    COALESCE(po_costs.po_service_cost, 0) as po_service_cost,
+                    -- live_cogs: ยอดรวม PO items ปัจจุบัน (ครบทุก item รวม EXP-0006)
+                    COALESCE(live_cogs.total_item_cost, c.final_cost_amount) as live_cogs
                 FROM commissions c
                 LEFT JOIN (
-                    SELECT 
-                        so_number, 
+                    SELECT
+                        so_number,
                         -- รวมยอดแยกตามประเภท (จาก PO ที่สถานะ != Cancelled)
                         SUM(COALESCE(shipping_to_stock_cost, 0)) as shipping_to_stock_cost,
                         SUM(COALESCE(shipping_to_site_cost, 0)) as shipping_to_site_cost,
                         SUM(COALESCE(cutting_cost, 0)) as po_cutting_cost,
-                        0 as po_service_cost 
-                    FROM purchase_orders 
+                        0 as po_service_cost
+                    FROM purchase_orders
                     WHERE status != 'Cancelled'  -- <-- นับรวม PO ทุกใบที่ไม่ยกเลิก
                     GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
-                WHERE c.sale_key = %s 
-                    AND c.status = 'HR Verified' 
+                LEFT JOIN (
+                    SELECT p.so_number, SUM(COALESCE(poi.total_price, 0)) as total_item_cost
+                    FROM purchase_orders p
+                    JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
+                    WHERE p.status NOT IN ('Cancelled')
+                    GROUP BY p.so_number
+                ) live_cogs ON c.so_number = live_cogs.so_number
+                WHERE c.sale_key = %s
+                    AND c.status = 'HR Verified'
                     AND c.payout_id IS NULL
                     AND c.is_active = 1
                     AND (
-                        (c.commission_year < %s) 
-                        OR 
+                        (c.commission_year < %s)
+                        OR
                         (c.commission_year = %s AND c.commission_month <= %s)
                     )
             """
@@ -3914,19 +3929,31 @@ class HRScreen(CTkFrame):
             
             self.current_comm_df = pd.read_sql_query(query_comm, self.pg_engine, params=params)
 
+            # ใช้ live_cogs แทน final_cost_amount (เพื่อรวม EXP-0006 ที่อาจ approve หลัง HR verify)
+            if 'live_cogs' in self.current_comm_df.columns:
+                self.current_comm_df['final_cost_amount'] = self.current_comm_df['live_cogs'].fillna(
+                    self.current_comm_df['final_cost_amount'])
+                self.current_comm_df.drop(columns=['live_cogs'], inplace=True)
+
             # บันทึก ID ของ SO ที่จะถูกประมวลผล
             self.current_so_ids = self.current_comm_df['id'].tolist()
-            
-            # Reconciliation Logic (เหมือนเดิม)
+
+            # Reconciliation Logic
             if not self.current_comm_df.empty:
                 so_ids_list = self.current_comm_df['id'].tolist()
                 special_amounts_df = self._get_special_service_amounts(so_ids_list)
-                
+
                 if not special_amounts_df.empty:
+                    # ลบ columns ที่ซ้ำออกก่อน merge เพื่อป้องกัน _x/_y suffix bug
+                    cols_to_drop = [c for c in ['po_cutting_cost', 'po_service_cost']
+                                    if c in self.current_comm_df.columns]
+                    if cols_to_drop:
+                        self.current_comm_df = self.current_comm_df.drop(columns=cols_to_drop)
+
                     self.current_comm_df = pd.merge(
-                        self.current_comm_df, 
-                        special_amounts_df[['id', 'so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']], 
-                        on='id', 
+                        self.current_comm_df,
+                        special_amounts_df[['id', 'so_cutting_rev', 'so_service_rev', 'po_cutting_cost', 'po_service_cost']],
+                        on='id',
                         how='left'
                     )
                     # เติม 0 ในช่องที่ว่าง
@@ -3965,6 +3992,64 @@ class HRScreen(CTkFrame):
             marketing_deduction = (total_marketing / 0.2) * 0.0175 if total_marketing > 0 else 0.0
 
             final_auto_deduction = shipping_deduction + difference_deduction + marketing_deduction
+
+            # --- DEBUG: แสดงรายละเอียด Auto Deduction ราย SO ---
+            print("\n" + "="*70)
+            print(f"[DEBUG] Auto Deduction Breakdown  (รวม = {final_auto_deduction:,.2f} บาท)")
+            print("="*70)
+
+            # 1. Shipping deduction
+            print(f"\n[1] Shipping Deduction = {shipping_deduction:,.2f} บาท")
+            print(f"    PO shipping รวม : {total_po_shipping:,.2f}  |  SO shipping รวม : {total_so_shipping:,.2f}")
+            print(f"    ส่วนต่าง (PO-SO) : {total_po_shipping - total_so_shipping:,.2f}  {'(ไม่หัก)' if total_po_shipping <= total_so_shipping else ''}")
+            _debug_ship_cols = ['so_number', 'shipping_cost', 'relocation_cost',
+                                'shipping_to_stock_cost', 'shipping_to_site_cost']
+            _avail = [c for c in _debug_ship_cols if c in self.current_comm_df.columns]
+            _ship_df = self.current_comm_df[_avail].copy()
+            for col in _avail[1:]:
+                _ship_df[col] = pd.to_numeric(_ship_df[col], errors='coerce').fillna(0)
+            _ship_df['so_ship'] = _ship_df.get('shipping_cost', 0) + _ship_df.get('relocation_cost', 0)
+            _ship_df['po_ship'] = _ship_df.get('shipping_to_stock_cost', 0) + _ship_df.get('shipping_to_site_cost', 0)
+            _ship_nonzero = _ship_df[(_ship_df['so_ship'] != 0) | (_ship_df['po_ship'] != 0)]
+            if not _ship_nonzero.empty:
+                print(f"    {'SO':<20} {'SO ship':>12} {'PO ship':>12}")
+                print(f"    {'-'*44}")
+                for _, r in _ship_nonzero.iterrows():
+                    print(f"    {str(r.get('so_number','')):<20} {r['so_ship']:>12,.2f} {r['po_ship']:>12,.2f}")
+
+            # 2. Brokerage/Difference deduction
+            print(f"\n[2] Brokerage/Difference Deduction = {difference_deduction:,.2f} บาท")
+            print(f"    brokerage รวม : {total_brokerage:,.2f}  |  difference รวม : {total_difference:,.2f}")
+            print(f"    diff_base (broker-diff) : {diff_base:,.2f}  {'(ไม่หัก)' if diff_base >= 0 else ''}")
+            _brok_cols = ['so_number', 'brokerage_fee', 'difference_amount']
+            _avail2 = [c for c in _brok_cols if c in self.current_comm_df.columns]
+            _brok_df = self.current_comm_df[_avail2].copy()
+            for col in _avail2[1:]:
+                _brok_df[col] = pd.to_numeric(_brok_df[col], errors='coerce').fillna(0)
+            _brok_nonzero = _brok_df[(_brok_df.get('brokerage_fee', 0) != 0) | (_brok_df.get('difference_amount', 0) != 0)]
+            if not _brok_nonzero.empty:
+                print(f"    {'SO':<20} {'brokerage':>12} {'difference':>12}")
+                print(f"    {'-'*44}")
+                for _, r in _brok_nonzero.iterrows():
+                    print(f"    {str(r.get('so_number','')):<20} {r.get('brokerage_fee',0):>12,.2f} {r.get('difference_amount',0):>12,.2f}")
+
+            # 3. Marketing deduction
+            print(f"\n[3] Marketing Deduction (coupons+giveaways) = {marketing_deduction:,.2f} บาท")
+            print(f"    total_marketing = {total_marketing:,.2f}")
+            _mkt_cols = ['so_number', 'coupons', 'giveaways']
+            _avail3 = [c for c in _mkt_cols if c in self.current_comm_df.columns]
+            _mkt_df = self.current_comm_df[_avail3].copy()
+            for col in _avail3[1:]:
+                _mkt_df[col] = pd.to_numeric(_mkt_df[col], errors='coerce').fillna(0)
+            _mkt_nonzero = _mkt_df[(_mkt_df.get('coupons', 0) != 0) | (_mkt_df.get('giveaways', 0) != 0)]
+            if not _mkt_nonzero.empty:
+                print(f"    {'SO':<20} {'coupons':>12} {'giveaways':>12}")
+                print(f"    {'-'*44}")
+                for _, r in _mkt_nonzero.iterrows():
+                    print(f"    {str(r.get('so_number','')):<20} {r.get('coupons',0):>12,.2f} {r.get('giveaways',0):>12,.2f}")
+
+            print("\n" + "="*70 + "\n")
+            # --- END DEBUG ---
 
             # เตรียม Dataframe ส่งไปคำนวณจริง
             df_for_calc = self.current_comm_df.copy()

@@ -650,13 +650,18 @@ def _calc_supplier_scores_from_benchmark(cat: str = None) -> dict:
             params = (cat,) if cat_col and cat else ()
 
             # คำนวณ win_pct และ avg cost ต่อ Supplier
+            # pre-compute to avoid backslash-in-f-string-expression (Python < 3.12)
+            if cost_col:
+                cost_avg_expr = f"""AVG(NULLIF(NULLIF(REGEXP_REPLACE("{cost_col}", '[^0-9.]', '', 'g'), '')::numeric, 0))"""
+            else:
+                cost_avg_expr = "0"
             query = f"""
                 SELECT
                     "{sup_col}"   AS sup_name,
                     {f'"{cat_col}" AS category,' if cat_col else "'' AS category,"}
                     COUNT(*)      AS total,
                     SUM(CASE WHEN "{stat_col}" = 'WIN' THEN 1 ELSE 0 END) AS wins,
-                    {f'AVG(NULLIF(NULLIF(REGEXP_REPLACE("{cost_col}", \'[^0-9.]\', \'\', \'g\'), \'\')::numeric, 0))' if cost_col else '0'} AS avg_cost
+                    {cost_avg_expr} AS avg_cost
                 FROM cost_benchmarks
                 WHERE "{sup_col}" IS NOT NULL AND "{sup_col}" != ''
                   AND "{stat_col}" IS NOT NULL AND "{stat_col}" != ''

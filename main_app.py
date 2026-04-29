@@ -82,7 +82,7 @@ class NotificationPopup(CTkToplevel):
         main_frame.pack(padx=2, pady=2, fill="both", expand=True)
         CTkLabel(main_frame, text=title, font=CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=(10, 2))
         CTkLabel(main_frame, text=message, font=CTkFont(size=14), wraplength=380, justify="left").pack(anchor="w", padx=15, pady=(0, 10))
-        self.after(7000, self.destroy)
+        self.after(7000, self._safe_destroy)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         width = 400
@@ -90,6 +90,21 @@ class NotificationPopup(CTkToplevel):
         x = screen_width - width - 20
         y = screen_height - height - 60
         self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _safe_destroy(self):
+        try:
+            if self.winfo_exists():
+                self.destroy()
+        except Exception:
+            pass
+
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        # CTkToplevel schedules this 10ms after init; guard against destroy race condition
+        try:
+            if self.winfo_exists():
+                super()._revert_withdraw_after_windows_set_titlebar_color()
+        except Exception:
+            pass
 
 class LoadingWindow(CTkToplevel):
     def __init__(self, master):
@@ -385,9 +400,15 @@ class AppContainer(CTk):
                         if str(notif['message']).startswith('[DEFER]'):
                             continue
                         # --- [2] จุดตรวจสอบที่ 2: ก่อนเด้ง Popup ---
-                        if self.winfo_exists():
-                            NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
-                        cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notif['id'],))
+                        try:
+                            if self.winfo_exists():
+                                NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
+                        except Exception:
+                            pass  # app destroyed between winfo_exists check and popup creation
+                        try:
+                            cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notif['id'],))
+                        except Exception:
+                            pass
                     
                     conn.commit()
                     
@@ -402,11 +423,19 @@ class AppContainer(CTk):
 
         except Exception as e:
             # ดักจับ Error ตอนปิดโปรแกรม ไม่ให้รก Terminal
-            if "application has been destroyed" not in str(e):
+            ignored = ("application has been destroyed", "bad window path name",
+                       "connection already closed", "connection pool is closed")
+            if not any(s in str(e) for s in ignored):
                 print(f"Error checking for notifications: {e}")
-            if conn: conn.rollback()
+            try:
+                if conn: conn.rollback()
+            except Exception:
+                pass
         finally:
-            if conn: self.release_connection(conn)
+            try:
+                if conn: self.release_connection(conn)
+            except Exception:
+                pass
         
         # --- [4] จุดตรวจสอบที่ 4: ตั้งเวลาทำงานรอบถัดไป ---
         # สำคัญ: ต้องเก็บ ID ไว้ใน self.notification_poll_id เพื่อให้ on_closing สั่งยกเลิกได้
@@ -614,16 +643,18 @@ class AppContainer(CTk):
         from edit_commission_window import EditCommissionWindow
         EditCommissionWindow(parent=self, app_container=self, data=data, refresh_callback=refresh_callback, user_role=user_role)
 
-    def show_hr_verification_window(self, system_data, excel_data, po_data, refresh_callback=None):
+    def show_hr_verification_window(self, system_data, excel_data, po_data, refresh_callback=None,
+                                    target_commission_month=None, target_commission_year=None):
         from hr_windows import HRVerificationWindow
-        # สร้างหน้าต่างใหม่โดยมี master เป็น AppContainer (self)
         win = HRVerificationWindow(
-            master=self, 
+            master=self,
             app_container=self,
             system_data=system_data,
             excel_data=excel_data,
             po_data=po_data,
-            refresh_callback=refresh_callback
+            refresh_callback=refresh_callback,
+            target_commission_month=target_commission_month,
+            target_commission_year=target_commission_year,
         )
 
     def show_sales_data_viewer(self, so_number):

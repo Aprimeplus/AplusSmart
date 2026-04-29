@@ -949,28 +949,30 @@ class SalesManagerScreen(CTkFrame):
             # ถามย้ำอีกครั้งเพื่อความชัวร์ ป้องกันกดพลาด
             if not messagebox.askyesno("ยืนยันครั้งสุดท้าย", f"คุณแน่ใจหรือไม่ที่จะยกเลิก SO: {so_number} อย่างถาวร?"):
                 return
-                
+
+            so_id_int = int(so_id)  # pandas อ่านค่าเป็น numpy.int64 ต้อง convert ก่อนส่งให้ psycopg2
+
             conn = None
             try:
                 conn = self.app_container.get_connection()
                 with conn.cursor() as cursor:
                     # เปลี่ยนสถานะเป็น Cancelled และเก็บเหตุผลลง DB
                     cursor.execute("""
-                        UPDATE commissions 
-                        SET status = 'Cancelled', 
+                        UPDATE commissions
+                        SET status = 'Cancelled',
                             rejection_reason = %s,
                             sm_reject_count = COALESCE(sm_reject_count, 0) + 1
                         WHERE id = %s
-                    """, (f"ยกเลิกโดย SM: {reason}", so_id))
+                    """, (f"ยกเลิกโดย SM: {reason}", so_id_int))
                     
                     # แจ้งเตือนเซลล์เจ้าของ SO ผ่าน Noti
-                    cursor.execute("SELECT sale_key FROM commissions WHERE id = %s", (so_id,))
+                    cursor.execute("SELECT sale_key FROM commissions WHERE id = %s", (so_id_int,))
                     res = cursor.fetchone()
                     if res:
                         cursor.execute("""
-                            INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id) 
+                            INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
                             VALUES (%s, %s, FALSE, %s)
-                        """, (res[0], f"SO: {so_number} ถูกยกเลิกโดย Manager เหตุผล: {reason}", so_id))
+                        """, (res[0], f"SO: {so_number} ถูกยกเลิกโดย Manager เหตุผล: {reason}", so_id_int))
                         
                 conn.commit()
                 messagebox.showinfo("สำเร็จ", f"ยกเลิก SO: {so_number} เรียบร้อยแล้ว")
@@ -1418,46 +1420,77 @@ class SMExportDialog(CTkToplevel):
             print(f"Error loading sales users: {e}")
 
     def _execute_export(self):
+        thai_months_name = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                            "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+
         # 1. แปลงค่าจาก Dropdown เป็นค่าสำหรับ Database
         month_num = self.month_map[self.selected_month.get()]
         year_ad = int(self.selected_year.get()) - 543
         sale_selection = self.selected_sale.get()
 
-        # 2. สร้าง SQL Query (เอาคอลัมน์สถานะและอัปเดตล่าสุดออก)
+        # 2. สร้าง SQL Query
         query = """
-            SELECT 
-                c.so_number AS "เลขที่ SO",
-                c.customer_name AS "ชื่อลูกค้า",
+            SELECT
+                c.so_number          AS "เลขที่ SO",
+                c.customer_name      AS "ชื่อลูกค้า",
                 c.sales_service_amount AS "ยอดขาย (บาท)",
-                COALESCE(u.sale_name, c.sale_key) AS "พนักงานขาย"
+                COALESCE(u.sale_name, c.sale_key) AS "พนักงานขาย",
+                c.status             AS "_status",
+                c.defer_source_month AS "_defer_src_m",
+                c.defer_source_year  AS "_defer_src_y"
             FROM commissions c
             LEFT JOIN sales_users u ON c.sale_key = u.sale_key
             WHERE c.is_active = 1
               AND c.commission_month = %s
               AND c.commission_year = %s
+              AND c.status NOT IN ('Cancelled', 'Original')
         """
         params = [month_num, year_ad]
 
-        # ถ้าเลือกเซลส์คนใดคนหนึ่ง ให้เพิ่มเงื่อนไข
         if sale_selection != "ทั้งหมด (All Sales)":
             target_sale_key = self.sale_mapping[sale_selection]
             query += " AND c.sale_key = %s"
             params.append(target_sale_key)
-            
+
         query += " ORDER BY c.so_number ASC"
 
         # 3. ดึงข้อมูล
         try:
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
-            
+
             if df.empty:
                 messagebox.showinfo("แจ้งเตือน", "ไม่พบข้อมูล SO ตามเงื่อนไขที่เลือก", parent=self)
                 return
 
+            # สร้างคอลัมน์ "สถานะ" และ "หมายเหตุ (เลื่อน)" จากคอลัมน์ internal
+            status_map = {
+                'PO In Progress':      'รอคิดค่าคอม',
+                'Pending PU':          'รอคิดค่าคอม',
+                'Pending HR Approval': 'รอ HR ตรวจสอบ',
+                'Defer Requested':     'รอ Manager อนุมัติเลื่อน',
+                'Deferred':            'รอคิดค่าคอม(เลื่อน)',
+                'Approved':            'จ่ายแล้ว',
+            }
+            df['สถานะ'] = df['_status'].map(status_map).fillna(df['_status'])
+
+            def _defer_note(row):
+                m, y = row['_defer_src_m'], row['_defer_src_y']
+                if pd.notna(m) and pd.notna(y):
+                    try:
+                        return f"เลื่อนมาจาก {thai_months_name[int(m)-1]} {int(y)+543}"
+                    except Exception:
+                        pass
+                return ""
+
+            df['หมายเหตุ (เลื่อน)'] = df.apply(_defer_note, axis=1)
+
+            # ลบคอลัมน์ internal ออกก่อน export
+            df = df.drop(columns=['_status', '_defer_src_m', '_defer_src_y'])
+
             # 4. บันทึกไฟล์
             sale_str = "All" if sale_selection == "ทั้งหมด (All Sales)" else target_sale_key
             default_filename = f"SO_Report_{year_ad}_{month_num:02d}_{sale_str}.xlsx"
-            
+
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".xlsx",
                 filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
@@ -1465,22 +1498,22 @@ class SMExportDialog(CTkToplevel):
                 title="บันทึกไฟล์ Excel",
                 parent=self
             )
-            
-            if not file_path: return # กดยกเลิก
-            
-            # ตกแต่ง Excel เล็กน้อย (เหลือแค่ 4 คอลัมน์)
+
+            if not file_path: return
+
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='SO Data', index=False)
                 worksheet = writer.sheets['SO Data']
-                worksheet.column_dimensions['A'].width = 20 # SO Number
-                worksheet.column_dimensions['B'].width = 35 # Customer
-                worksheet.column_dimensions['C'].width = 18 # Sales
-                worksheet.column_dimensions['D'].width = 30 # Sale Name
-            
+                worksheet.column_dimensions['A'].width = 20  # SO Number
+                worksheet.column_dimensions['B'].width = 35  # Customer
+                worksheet.column_dimensions['C'].width = 18  # Sales Amount
+                worksheet.column_dimensions['D'].width = 30  # Sale Name
+                worksheet.column_dimensions['E'].width = 22  # สถานะ
+                worksheet.column_dimensions['F'].width = 35  # หมายเหตุ
+
             self.destroy()
             messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้ว!\n\nจำนวน: {len(df)} รายการ")
-            
-            # เปิดไฟล์ให้ดูเลย (เฉพาะ Windows)
+
             if os.name == 'nt':
                 os.startfile(file_path)
 

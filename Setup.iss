@@ -2,12 +2,12 @@
 
 ; --- START: กำหนดค่าคงที่ทั้งหมดไว้ที่นี่เพื่อง่ายต่อการแก้ไข ---
 #define MyAppName "A+Smart"
-#define MyAppVersion " 59"
+#define MyAppVersion " 60"
 #define MyAppPublisher "APrime Plus Co., Ltd."
 #define MyAppURL "https://www.aprimeplus.com/"
 #define MyAppExeName "A+ Smart Solution.exe"
 ; --- [สำคัญ] แก้ไข Path ตรงนี้ให้เป็นที่อยู่ของโฟลเดอร์โปรแกรมของคุณ (ใช้ \ ตัวเดียวได้) ---
-#define MySourcePath "C:\Users\Nitro V15\Desktop\AplusSmart\dist\A+ Smart Solution"
+#define MySourcePath "C:\Users\Nitro V15\Desktop\AplusSmart - Backup\.claude\worktrees\objective-kepler-8ab76e\dist\A+ Smart Solution"
 ; --- [แนะนำ] นำไฟล์ไอคอนมาไว้ในโฟลเดอร์โปรเจกต์ ---
 #define MyAppIcon "C:\Users\Nitro V15\Desktop\AplusSmart\company_logo.ico"
 ; --- END ---
