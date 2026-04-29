@@ -182,7 +182,8 @@ class SalesDataViewerWindow(CTkToplevel):
 
 class HRVerificationWindow(CTkToplevel):
 
-    def __init__(self, master, app_container, system_data, excel_data, po_data, refresh_callback=None):
+    def __init__(self, master, app_container, system_data, excel_data, po_data, refresh_callback=None,
+                 target_commission_month=None, target_commission_year=None):
         super().__init__(master)
         self.master = master
         self.app_container = app_container
@@ -191,6 +192,8 @@ class HRVerificationWindow(CTkToplevel):
         self.excel_data = excel_data
         self.po_data = po_data
         self.refresh_callback = refresh_callback
+        self.target_commission_month = target_commission_month
+        self.target_commission_year = target_commission_year
         self.so_number = self.system_data.get('so_number', 'N/A')
         self.record_id = self.system_data.get('id')
         self.cost_multiplier_var = tk.StringVar(value="1.03") # สร้างตัวแปรพร้อมค่าเริ่มต้น
@@ -715,13 +718,15 @@ class HRVerificationWindow(CTkToplevel):
         
         # ดึงทุนดิบมาเตรียมคำนวณเพื่อการแสดงผล
         raw_cost_system = self.calculated_values.get('total_cost_system', 0.0)
+        po_service_cost_raw = self.calculated_values.get('po_service_cost_raw', 0.0)
         total_cost_express = self.calculated_values.get('total_cost_express', 0.0)
-        
+
         # ดึงตัวคูณปัจจุบัน (เช่น 1.03)
         multiplier = float(self.cost_multiplier_var.get())
-        
+
         # คำนวณยอดที่รวมตัวคูณแล้ว "เพื่อใช้แสดงผลบนหน้าจอเท่านั้น"
-        display_cost_system = raw_cost_system * multiplier
+        # EXP-0006/ค่าบริการ: บวกตรง ไม่ผ่าน multiplier (เพราะ business_logic ดึงออกก่อนคูณ แล้วบวกกลับ)
+        display_cost_system = (raw_cost_system * multiplier) + po_service_cost_raw
 
         # 2. อัปเดตข้อความบน Radio Buttons (โชว์ยอดที่รวม 1.03 ให้ HR สบายใจ)
         self.sales_system_radio.configure(text=f"จากระบบ (System): {total_sale_system:,.2f} บาท")
@@ -1002,19 +1007,27 @@ class HRVerificationWindow(CTkToplevel):
         คำนวณต้นทุนและยอดขาย (แก้ไขเพื่อป้องกันการคูณค่าบริหารจัดการเบิ้ล)
         """
         po_product_cost_raw = 0.0
+        po_service_cost_raw = 0.0  # ค่าบริการ (EXP-0006 ฯลฯ) — บวกตรงไม่ผ่าน multiplier
         approved_po_df = self.po_data[self.po_data['status'] == 'Approved']
-        
+
+        # รหัสสินค้าที่จัดเป็น "ค่าบริการ" (ไม่คูณ multiplier แต่ต้องรวมในต้นทุน)
+        SERVICE_CODES = {'EXP-0006', 'EXP-0049', 'EXP-0077', 'EXP-0174'}
+
         if not approved_po_df.empty:
             approved_po_ids = tuple(approved_po_df['id'].tolist())
             try:
-                query = "SELECT product_name, total_price FROM purchase_order_items WHERE purchase_order_id IN %s"
+                query = "SELECT product_code, product_name, total_price FROM purchase_order_items WHERE purchase_order_id IN %s"
                 items_df = pd.read_sql(query, self.pg_engine, params=(approved_po_ids,))
                 shipping_keywords = ['ค่ารถ', 'shipping', 'delivery', 'ขนส่ง', 'ค่าขนย้าย', 'relocation', 'ค่าส่ง']
-                
+
                 for _, row in items_df.iterrows():
+                    p_code = str(row.get('product_code') or '').strip().upper()
                     p_name = str(row['product_name']).lower()
                     price = float(row['total_price'] or 0)
-                    if not any(k in p_name for k in shipping_keywords):
+                    if p_code in SERVICE_CODES or 'ค่าบริการ' in p_name:
+                        # ค่าบริการ: บวกตรง ไม่ผ่าน multiplier
+                        po_service_cost_raw += price
+                    elif not any(k in p_name for k in shipping_keywords):
                         po_product_cost_raw += price
             except: pass
 
@@ -1027,7 +1040,8 @@ class HRVerificationWindow(CTkToplevel):
         self.calculated_values = {
             'total_sale_system': total_sale_system,
             'total_sale_express': total_sale_express,
-            'total_cost_system': po_product_cost_raw,  # ส่ง 23,336.00 (ทุนดิบ)
+            'total_cost_system': po_product_cost_raw,  # ทุนสินค้าดิบ (ยังไม่คูณ multiplier)
+            'po_service_cost_raw': po_service_cost_raw,  # ค่าบริการ EXP-0006 ฯลฯ (บวกตรง)
             'total_cost_express': total_cost_express
         }
 
@@ -1324,10 +1338,21 @@ class HRVerificationWindow(CTkToplevel):
             with conn.cursor() as cursor:
                 hr_key = getattr(self.app_container, 'current_user_key', 'HR')
                 rejection_text = f"HR Request: {defer_type}" + (f" | {detail_str}" if detail_str else "")
+
+                # คำนวณ commission_month/year ของเดือนถัดไป เพื่อให้ SO โผล่ใน comparison เดือนหน้า
+                cur_month = int(self.system_data.get('commission_month') or 1)
+                cur_year = int(self.system_data.get('commission_year') or 2025)
+                if cur_month >= 12:
+                    next_month, next_year = 1, cur_year + 1
+                else:
+                    next_month, next_year = cur_month + 1, cur_year
+
                 cursor.execute("""
                     UPDATE commissions
                     SET
                         status = 'Defer Requested',
+                        commission_month = %s,
+                        commission_year = %s,
                         defer_type = %s,
                         defer_requested_by = %s,
                         rejection_reason = %s,
@@ -1336,7 +1361,8 @@ class HRVerificationWindow(CTkToplevel):
                         defer_remarks = %s,
                         is_collection_risk = %s
                     WHERE id = %s
-                """, (defer_type, hr_key, rejection_text,
+                """, (next_month, next_year,
+                      defer_type, hr_key, rejection_text,
                       expected_delivery_date, expected_payment_date,
                       defer_remarks, is_collection_risk,
                       self.system_data['id']))
@@ -1457,21 +1483,32 @@ class HRVerificationWindow(CTkToplevel):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
-                update_query = """
-                    UPDATE commissions 
-                    SET 
-                        status = 'HR Verified', 
-                        final_sales_amount = %s, 
+                # อัปเดต commission_month/year ด้วย ป้องกัน SO ที่ defer แล้ว re-verify ยังคง
+                # มี commission_month เดิม (เดือนก่อน) ทำให้โผล่ใน cumulative query ของเดือนอื่น
+                extra_period_sql = ""
+                extra_period_params = []
+                if self.target_commission_month and self.target_commission_year:
+                    extra_period_sql = "commission_month = %s, commission_year = %s,"
+                    extra_period_params = [self.target_commission_month, self.target_commission_year]
+
+                update_query = f"""
+                    UPDATE commissions
+                    SET
+                        status = 'HR Verified',
+                        {extra_period_sql}
+                        final_sales_amount = %s,
                         final_cost_amount = %s,
                         final_gp = %s,
                         final_margin = %s,
                         hr_sale_source = %s,
                         hr_cost_source = %s,
-                        payout_id = NULL -- <--- เพิ่มบรรทัดนี้
+                        payout_id = NULL
                     WHERE id = %s
                 """
-                params = (final_sale, final_cost, final_gp, final_margin, 
-                          self.final_sale_source.get(), self.final_cost_source.get(), so_id)
+                params = tuple(extra_period_params) + (
+                    final_sale, final_cost, final_gp, final_margin,
+                    self.final_sale_source.get(), self.final_cost_source.get(), so_id
+                )
                 cursor.execute(update_query, params)
             conn.commit()
             messagebox.showinfo("สำเร็จ", "ยืนยันและบันทึกข้อมูลเรียบร้อยแล้ว", parent=self.master)

@@ -1651,10 +1651,12 @@ class HRScreen(CTkFrame):
             
             # --- 4. ส่งข้อมูลที่สะอาดและถูกต้องไปยังหน้าต่าง Verify ---
             self.app_container.show_hr_verification_window(
-                system_data=system_data, 
+                system_data=system_data,
                 excel_data=excel_data,
                 po_data=po_data,
-                refresh_callback=self._refresh_comparison_view
+                refresh_callback=self._refresh_comparison_view,
+                target_commission_month=getattr(self, 'current_comparison_month', None),
+                target_commission_year=getattr(self, 'current_comparison_year', None),
             )
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างตรวจสอบได้: {e}", parent=self)
@@ -3188,11 +3190,10 @@ class HRScreen(CTkFrame):
                         WHERE p.status = 'Approved'
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
-                WHERE c.is_active = 1 
-                  -- ✅ แก้ไขตรงนี้ครับ: เพิ่ม 'HR Verified' เข้าไป
+                WHERE c.is_active = 1
                   AND c.status NOT IN ('Paid', 'Cancelled', 'HR Verified')
             """
-            
+
             params = []
 
             # --- Filter พนักงานขาย ---
@@ -3719,8 +3720,7 @@ class HRScreen(CTkFrame):
                         WHERE p.status = 'Approved'
                         GROUP BY p.so_number
                     ) po ON c.so_number = po.so_number
-                WHERE c.is_active = 1 
-                  -- ✅ แก้ไขตรงนี้ครับ: เพิ่ม 'HR Verified' เข้าไป
+                WHERE c.is_active = 1
                   AND c.status NOT IN ('Paid', 'Cancelled', 'HR Verified')
             """
             params = []

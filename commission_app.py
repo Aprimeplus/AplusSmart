@@ -1157,15 +1157,26 @@ class SOSummaryExportDialog(CTkToplevel):
             # แปลง status
             def map_status(row):
                 s = str(row.get("status", ""))
-                if s in ("Paid", "HR Verified", "HR ตรวจสอบแล้ว"):
+                if s == "Paid":
                     return "จ่ายค่าคอมแล้ว"
+                if s == "HR Verified":
+                    return "HR ตรวจสอบแล้ว (รอจ่าย)"
+                if s == "Defer Requested":
+                    return "ขอเลื่อน (รออนุมัติ)"
                 if s == "Deferred":
                     m_num = int(row.get("commission_month") or 0)
                     y_num = int(row.get("commission_year") or 0)
                     if m_num and y_num:
-                        prev_m = m_num - 1 if m_num > 1 else 12
-                        return f"โดนเลื่อน {self.THAI_MONTHS_SHORT[prev_m-1]} → {self.THAI_MONTHS_SHORT[m_num-1]} {y_num+543}"
+                        # commission_month คือเดือนเป้าหมาย, ต้นทางคือเดือนก่อนหน้า
+                        if m_num > 1:
+                            prev_m, prev_y = m_num - 1, y_num
+                        else:
+                            prev_m, prev_y = 12, y_num - 1
+                        return (f"โดนเลื่อน {self.THAI_MONTHS_SHORT[prev_m-1]} {prev_y+543}"
+                                f" → {self.THAI_MONTHS_SHORT[m_num-1]} {y_num+543}")
                     return "โดนเลื่อน"
+                if s in ("Cancelled",):
+                    return "ยกเลิก"
                 return "รอจ่ายค่าคอม"
 
             df["สถานะ"] = df.apply(map_status, axis=1)
@@ -1240,6 +1251,13 @@ class DeferralNoticeDialog(CTkToplevel):
         except Exception as e:
             print(f"[DeferralNotice] acknowledge error: {e}")
         self.destroy()
+
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        try:
+            if self.winfo_exists():
+                super()._revert_withdraw_after_windows_set_titlebar_color()
+        except Exception:
+            pass
 
 
 class CommissionApp(CTkFrame):
@@ -1400,9 +1418,15 @@ class CommissionApp(CTkFrame):
             if not rows:
                 return
 
-            DeferralNoticeDialog(self, self.app_container, [dict(r) for r in rows])
+            try:
+                if self.winfo_exists():
+                    DeferralNoticeDialog(self, self.app_container, [dict(r) for r in rows])
+            except Exception as e:
+                if "bad window path name" not in str(e):
+                    print(f"[pending_deferral_check] {e}")
         except Exception as e:
-            print(f"[pending_deferral_check] {e}")
+            if "bad window path name" not in str(e):
+                print(f"[pending_deferral_check] {e}")
 
     def _start_polling(self):
         self._update_tasks_badge()
@@ -2728,10 +2752,15 @@ class CommissionApp(CTkFrame):
         button_container.grid(row=0, column=1, sticky="e")
         
         # ใช้ grid วางปุ่มภายใน button_container
-        self.tasks_button = CTkButton(button_container, text="งานของฉัน 🔔 (0)", command=self._open_my_tasks_window)
-        self.tasks_button.grid(row=0, column=0, padx=10)
+        CTkButton(button_container, text="📊 Export SO",
+                  command=lambda: SOSummaryExportDialog(self, self.app_container, self.sale_key, self.sale_name),
+                  fg_color="#2563EB", hover_color="#1D4ED8"
+                  ).grid(row=0, column=0, padx=(0, 6))
 
-        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").grid(row=0, column=1, padx=(0, 10))
+        self.tasks_button = CTkButton(button_container, text="งานของฉัน 🔔 (0)", command=self._open_my_tasks_window)
+        self.tasks_button.grid(row=0, column=1, padx=6)
+
+        CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").grid(row=0, column=2, padx=(0, 10))
 
     def _on_payment1_select(self, selected_value: str):
         self._calculate_payment_from_percentage(self.payment1_percent_var, self.payment1_amount_entry)
