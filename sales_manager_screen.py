@@ -250,23 +250,26 @@ class SalesManagerScreen(CTkFrame):
             print(f"Noti System Error: {e}")
 
         # --- ตรวจสอบ Notifications Table (เช่น HR ยกเลิก SO) ---
-        if not self._sm_noti_dialog_open:
+        if not self._sm_noti_dialog_open and self.user_key:
             try:
-                conn = self.app_container.get_connection()
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT id, message, timestamp FROM notifications "
-                        "WHERE user_key_to_notify = %s AND is_read = FALSE "
-                        "ORDER BY timestamp ASC LIMIT 1",
-                        (self.user_key,)
-                    )
-                    row = cursor.fetchone()
-                if row:
+                noti_df = pd.read_sql_query(
+                    "SELECT id, message, timestamp FROM notifications "
+                    "WHERE user_key_to_notify = %(ukey)s AND is_read = FALSE "
+                    "AND message LIKE '[HR\\_CANCEL]%%' "
+                    "ORDER BY timestamp ASC LIMIT 1",
+                    self.pg_engine,
+                    params={"ukey": self.user_key}
+                )
+                print(f"[SM Noti] user_key={self.user_key}, unread_count={len(noti_df)}")
+                if not noti_df.empty:
+                    r = noti_df.iloc[0]
+                    noti_tuple = (r['id'], r['message'], r.get('timestamp'))
                     self._sm_noti_dialog_open = True
-                    dlg = SMNotificationDialog(self.winfo_toplevel(), self.app_container, row)
+                    dlg = SMNotificationDialog(self.winfo_toplevel(), self.app_container, noti_tuple)
                     dlg.bind("<Destroy>", lambda e: setattr(self, '_sm_noti_dialog_open', False))
             except Exception as e:
                 print(f"SM Notification check error: {e}")
+                traceback.print_exc()
 
     def _on_destroy(self, event):
         """หยุด Loop เมื่อปิดหน้าจอ"""
