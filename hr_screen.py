@@ -699,8 +699,8 @@ class HRScreen(CTkFrame):
                 # 4b. แจ้งเตือน Sale Manager ทุกคน
                 cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sales Manager' AND status = 'Active'")
                 manager_keys = [r[0] for r in cursor.fetchall()]
-                manager_msg = (f"[HR ยกเลิก SO] {so_number}\n"
-                               f"เจ้าของ: {sale_key}\n"
+                manager_msg = (f"[HR_CANCEL] SO: {so_number} ถูกยกเลิกโดย HR\n"
+                               f"เจ้าของ SO: {sale_key}\n"
                                f"สาเหตุ: {reason}")
                 for mgr_key in manager_keys:
                     cursor.execute("""
