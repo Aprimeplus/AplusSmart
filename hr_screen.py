@@ -696,6 +696,18 @@ class HRScreen(CTkFrame):
                     VALUES (%s, %s, FALSE, %s, NOW())
                 """, (sale_key, noti_msg, so_id))
 
+                # 4b. แจ้งเตือน Sale Manager ทุกคน
+                cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Sales Manager' AND status = 'Active'")
+                manager_keys = [r[0] for r in cursor.fetchall()]
+                manager_msg = (f"[HR ยกเลิก SO] {so_number}\n"
+                               f"เจ้าของ: {sale_key}\n"
+                               f"สาเหตุ: {reason}")
+                for mgr_key in manager_keys:
+                    cursor.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id, timestamp)
+                        VALUES (%s, %s, FALSE, %s, NOW())
+                    """, (mgr_key, manager_msg, so_id))
+
                 # 5. บันทึก Audit Log
                 import json
                 log_data = json.dumps({"reason": reason, "cancelled_by": self.user_role})
@@ -1275,10 +1287,12 @@ class HRScreen(CTkFrame):
         try:
             from hr_windows import CalculationDetailViewer
             CalculationDetailViewer(
-                master=self, 
-                debug_df=debug_df, 
-                so_breakdown_df=so_breakdown_df, 
-                plan_name=plan_name
+                master=self,
+                debug_df=debug_df,
+                so_breakdown_df=so_breakdown_df,
+                plan_name=plan_name,
+                comm_df=self.current_comm_df if hasattr(self, 'current_comm_df') else None,
+                user_role=getattr(self, 'user_role', None)
             )
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างรายละเอียดได้: {e}", parent=self)
@@ -3971,14 +3985,15 @@ class HRScreen(CTkFrame):
                 return
             
             # --- Auto Deduction Calculation (เพื่อโชว์บนหน้าจอ HR) ---
-            # 🔥 [จุดแก้ไขสำคัญ 2] คำนวณยอดหักตาม Logic ใหม่ (รวมยอด Shipping)
-            total_so_shipping = self.current_comm_df['shipping_cost'].sum() + self.current_comm_df['relocation_cost'].sum()
-            total_po_shipping = self.current_comm_df['shipping_to_stock_cost'].sum() + self.current_comm_df['shipping_to_site_cost'].sum()
-            
-            shipping_deduction = 0.0
-            if total_po_shipping > total_so_shipping:
-                shipping_diff = total_po_shipping - total_so_shipping
-                shipping_deduction = (shipping_diff / 0.2) * 0.0175
+            # คิดแยกราย SO — เฉพาะ SO ที่ PO ค่าขนส่ง > SO ค่าขนส่ง เท่านั้น ไม่ให้ SO ดีช่วย offset SO แย่
+            _so_ship = (pd.to_numeric(self.current_comm_df['shipping_cost'], errors='coerce').fillna(0)
+                        + pd.to_numeric(self.current_comm_df['relocation_cost'], errors='coerce').fillna(0))
+            _po_ship = (pd.to_numeric(self.current_comm_df['shipping_to_stock_cost'], errors='coerce').fillna(0)
+                        + pd.to_numeric(self.current_comm_df['shipping_to_site_cost'], errors='coerce').fillna(0))
+            shipping_diff = (_po_ship - _so_ship).clip(lower=0).sum()  # เอาเฉพาะ row ที่ PO > SO
+            shipping_deduction = (shipping_diff / 0.2) * 0.0175 if shipping_diff > 0 else 0.0
+            total_so_shipping = _so_ship.sum()
+            total_po_shipping = _po_ship.sum()
             
             # Brokerage / Marketing Deduction (คงเดิม)
             total_brokerage = self.current_comm_df['brokerage_fee'].sum()
@@ -4982,7 +4997,7 @@ class HRScreen(CTkFrame):
         
         # ล้างช่องค้นหาและรีเฟรชตาราง
         self.cancel_search_entry.delete(0, "end")
-        for widget in self.cancel_result_frame.winfo_children(): widget.destroy()
+        for widget in self.inline_result_frame.winfo_children(): widget.destroy()
         self._load_cancelled_so_history()
 
     def _load_cancelled_so_history(self):

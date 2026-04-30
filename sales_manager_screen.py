@@ -135,6 +135,7 @@ class SalesManagerScreen(CTkFrame):
         self.known_pending_so_ids = set() # เก็บ ID ของ SO ที่เคยแจ้งเตือนไปแล้ว
         self.reminder_timer_count = 0     # ตัวนับเวลาสำหรับเตือนทุก 10 นาที
         self.noti_job_id = None
+        self._sm_noti_dialog_open = False  # ป้องกัน dialog ซ้อนกัน
         
         # เริ่มทำงานระบบ Noti เบื้องหลัง (หน่วงเวลา 3 วินาทีหลังเปิดหน้าจอ)
         self.after(3000, self._start_notification_system)
@@ -156,7 +157,7 @@ class SalesManagerScreen(CTkFrame):
         
         action_bar.grid_columnconfigure(3, weight=1) 
         
-        CTkLabel(action_bar, text="🔎 ค้นหา SO:", font=self.label_font_bold).grid(row=0, column=0, padx=(20, 5), pady=10, sticky="w")
+        CTkLabel(action_bar, text="🔎 ระบุเลข SO ที่ต้องการยกเลิก:", font=self.label_font_bold).grid(row=0, column=0, padx=(20, 5), pady=10, sticky="w")
         
         self.cancel_search_entry = CTkEntry(action_bar, placeholder_text="ระบุเลข SO... (เช่น SO6701-001)", width=250, height=34)
         self.cancel_search_entry.grid(row=0, column=1, padx=5, pady=10, sticky="w")
@@ -244,9 +245,28 @@ class SalesManagerScreen(CTkFrame):
                 # ไม่มีงานค้างเลย รีเซ็ตเวลา
                 self.reminder_timer_count = 0
                 self.known_pending_so_ids.clear()
-                
+
         except Exception as e:
             print(f"Noti System Error: {e}")
+
+        # --- ตรวจสอบ Notifications Table (เช่น HR ยกเลิก SO) ---
+        if not self._sm_noti_dialog_open:
+            try:
+                conn = self.app_container.get_connection()
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT id, message, timestamp FROM notifications "
+                        "WHERE user_key_to_notify = %s AND is_read = FALSE "
+                        "ORDER BY timestamp ASC LIMIT 1",
+                        (self.user_key,)
+                    )
+                    row = cursor.fetchone()
+                if row:
+                    self._sm_noti_dialog_open = True
+                    dlg = SMNotificationDialog(self.winfo_toplevel(), self.app_container, row)
+                    dlg.bind("<Destroy>", lambda e: setattr(self, '_sm_noti_dialog_open', False))
+            except Exception as e:
+                print(f"SM Notification check error: {e}")
 
     def _on_destroy(self, event):
         """หยุด Loop เมื่อปิดหน้าจอ"""
@@ -407,19 +427,19 @@ class SalesManagerScreen(CTkFrame):
             month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
             year_val = int(self.chart_year_var.get()) - 543
 
-            # 🟢 แก้ไขคิวรี่: ใช้ SUM(sm_reject_count) ดึงยอดตีกลับสะสมทั้งหมดของเดือนนั้น
+            # filter ด้วย bill_date (วันที่เปิด SO) แทน commission_month เพื่อให้ตรงกับเดือนจริงที่ถูกตีกลับ
             query = """
                 SELECT u.sale_name, SUM(COALESCE(c.sm_reject_count, 0)) as reject_count
                 FROM commissions c
                 JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.commission_month = %s 
-                  AND c.commission_year = %s
+                WHERE EXTRACT(MONTH FROM c.bill_date) = %s
+                  AND EXTRACT(YEAR FROM c.bill_date) = %s
                   AND c.is_active = 1
                   AND c.sm_reject_count > 0
                 GROUP BY u.sale_name
                 ORDER BY reject_count ASC
             """
-            
+
             df = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
             
             if df.empty:
@@ -472,32 +492,46 @@ class SalesManagerScreen(CTkFrame):
             month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
             year_val = int(self.chart_year_var.get()) - 543
             
-            # 🟢 อัปเดตคิวรี่: ดึงข้อมูล SO ที่มีประวัติเคยถูกตีกลับ
             query = """
-                SELECT 
-                    u.sale_name as "ชื่อเซลล์",
-                    c.so_number as "เลขที่ SO",
-                    c.customer_name as "ชื่อลูกค้า",
-                    c.sales_service_amount as "ยอดขาย (บาท)",
-                    c.sm_reject_count as "จำนวนครั้งที่ถูกตีกลับ",
-                    c.rejection_reason as "เหตุผลล่าสุดที่ถูกตีกลับ"
+                SELECT
+                    u.sale_name      AS sale_name,
+                    c.so_number      AS so_number,
+                    c.customer_name  AS customer_name,
+                    c.sales_service_amount AS sales_amount,
+                    c.sm_reject_count      AS reject_count,
+                    c.rejection_reason     AS rejection_reason
                 FROM commissions c
                 JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.commission_month = %s 
-                  AND c.commission_year = %s
+                WHERE EXTRACT(MONTH FROM c.bill_date) = %s
+                  AND EXTRACT(YEAR FROM c.bill_date) = %s
                   AND c.is_active = 1
                   AND c.sm_reject_count > 0
                 ORDER BY u.sale_name ASC, c.sm_reject_count DESC
             """
-            
-            df_detail = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
-            
-            if df_detail.empty:
+
+            df_raw = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
+
+            if df_raw.empty:
                 messagebox.showinfo("แจ้งเตือน", f"ไม่มีสถิติการตีกลับในรอบ {self.chart_month_var.get()} {self.chart_year_var.get()}")
                 return
-            
-            # สร้างหน้าสรุป KPI รวบยอด
-            summary_df = df_detail.groupby('ชื่อเซลล์')['จำนวนครั้งที่ถูกตีกลับ'].sum().reset_index()
+
+            df_detail = df_raw.rename(columns={
+                'sale_name':        'ชื่อเซลล์',
+                'so_number':        'เลขที่ SO',
+                'customer_name':    'ชื่อลูกค้า',
+                'sales_amount':     'ยอดขาย (บาท)',
+                'reject_count':     'จำนวนครั้งที่ถูกตีกลับ',
+                'rejection_reason': 'เหตุผลล่าสุดที่ถูกตีกลับ',
+            })
+
+            # สร้างหน้าสรุป KPI รวบยอด พร้อมรวมเหตุผลทั้งหมด
+            summary_df = df_detail.groupby('ชื่อเซลล์').agg(
+                reject_total=('จำนวนครั้งที่ถูกตีกลับ', 'sum'),
+                reasons=('เหตุผลล่าสุดที่ถูกตีกลับ', lambda x: ' / '.join(v for v in x.dropna().unique() if str(v).strip()))
+            ).reset_index().rename(columns={
+                'reject_total': 'จำนวนครั้งที่ถูกตีกลับ',
+                'reasons': 'เหตุผล',
+            })
             summary_df = summary_df.sort_values('จำนวนครั้งที่ถูกตีกลับ', ascending=False)
             
             default_filename = f"KPI_รายงานการตีกลับ_{self.chart_month_var.get()}_{self.chart_year_var.get()}.xlsx"
@@ -517,7 +551,8 @@ class SalesManagerScreen(CTkFrame):
                 # จัด Format Excel
                 worksheet1 = writer.sheets['สรุป KPI รายบุคคล']
                 worksheet1.column_dimensions['A'].width = 30
-                worksheet1.column_dimensions['B'].width = 25
+                worksheet1.column_dimensions['B'].width = 20
+                worksheet1.column_dimensions['C'].width = 60
                 
                 worksheet2 = writer.sheets['รายละเอียด SO ที่ผิดพลาด']
                 worksheet2.column_dimensions['A'].width = 25
@@ -956,15 +991,24 @@ class SalesManagerScreen(CTkFrame):
             try:
                 conn = self.app_container.get_connection()
                 with conn.cursor() as cursor:
-                    # เปลี่ยนสถานะเป็น Cancelled และเก็บเหตุผลลง DB
+                    # เปลี่ยนสถานะเป็น Cancelled + ปิด active ไม่ให้คิดคอม
                     cursor.execute("""
                         UPDATE commissions
                         SET status = 'Cancelled',
+                            is_active = 0,
                             rejection_reason = %s,
                             sm_reject_count = COALESCE(sm_reject_count, 0) + 1
                         WHERE id = %s
                     """, (f"ยกเลิกโดย SM: {reason}", so_id_int))
-                    
+
+                    # ยกเลิก PO ที่เกี่ยวข้องทั้งหมด
+                    cursor.execute("""
+                        UPDATE purchase_orders
+                        SET status = 'Cancelled',
+                            approval_status = 'Cancelled'
+                        WHERE so_number = %s
+                    """, (so_number,))
+
                     # แจ้งเตือนเซลล์เจ้าของ SO ผ่าน Noti
                     cursor.execute("SELECT sale_key FROM commissions WHERE id = %s", (so_id_int,))
                     res = cursor.fetchone()
@@ -973,7 +1017,16 @@ class SalesManagerScreen(CTkFrame):
                             INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
                             VALUES (%s, %s, FALSE, %s)
                         """, (res[0], f"SO: {so_number} ถูกยกเลิกโดย Manager เหตุผล: {reason}", so_id_int))
-                        
+
+                    # Audit Log
+                    import json as _json
+                    cursor.execute("""
+                        INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                        VALUES (%s, %s, %s, %s, %s, NOW())
+                    """, ('Cancel SO', 'commissions', so_id_int,
+                          getattr(self.app_container, 'current_user_key', 'SM'),
+                          _json.dumps({"reason": reason, "cancelled_by": "SM"})))
+
                 conn.commit()
                 messagebox.showinfo("สำเร็จ", f"ยกเลิก SO: {so_number} เรียบร้อยแล้ว")
                 
@@ -999,46 +1052,47 @@ class SalesManagerScreen(CTkFrame):
             
         try:
             query = """
-                SELECT c.timestamp, c.so_number, c.customer_name, u.sale_name, c.rejection_reason
+                SELECT c.timestamp, c.so_number, c.customer_id, c.customer_name,
+                       u.sale_name, c.rejection_reason
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE c.status = 'Cancelled' AND c.is_active = 1
+                WHERE c.status = 'Cancelled'
                 ORDER BY c.timestamp DESC LIMIT 100
             """
             df = pd.read_sql_query(query, self.pg_engine)
-            
-            # ใช้ Treeview เพื่อความสะอาดและโหลดไว
-            columns = ("วันที่", "SO Number", "ชื่อลูกค้า", "เซลล์", "เหตุผลที่ยกเลิก")
+
+            columns = ("วันที่", "SO Number", "รหัสลูกค้า", "ชื่อลูกค้า", "เซลล์", "เหตุผลที่ยกเลิก")
             tree = ttk.Treeview(self.cancelled_history_frame, columns=columns, show="headings", height=15)
-            
+
             style = ttk.Style()
             style.theme_use("clam")
             style.configure("Treeview.Heading", font=('Tahoma', 12, 'bold'), background="#F3F4F6")
             style.configure("Treeview", font=('Tahoma', 11), rowheight=30)
-            
+
             tree.heading("วันที่", text="วันที่ / เวลา")
             tree.heading("SO Number", text="SO Number")
+            tree.heading("รหัสลูกค้า", text="รหัสลูกค้า")
             tree.heading("ชื่อลูกค้า", text="ชื่อลูกค้า")
             tree.heading("เซลล์", text="พนักงานขาย")
             tree.heading("เหตุผลที่ยกเลิก", text="เหตุผลที่ยกเลิก")
-            
+
             tree.column("วันที่", width=150, anchor="center")
             tree.column("SO Number", width=150, anchor="center")
-            tree.column("ชื่อลูกค้า", width=350, anchor="w")
+            tree.column("รหัสลูกค้า", width=120, anchor="center")
+            tree.column("ชื่อลูกค้า", width=280, anchor="w")
             tree.column("เซลล์", width=150, anchor="center")
-            tree.column("เหตุผลที่ยกเลิก", width=400, anchor="w")
-            
+            tree.column("เหตุผลที่ยกเลิก", width=380, anchor="w")
+
             vsb = ttk.Scrollbar(self.cancelled_history_frame, orient="vertical", command=tree.yview)
             tree.configure(yscrollcommand=vsb.set)
-            
+
             tree.pack(side="left", fill="both", expand=True)
             vsb.pack(side="right", fill="y")
-            
+
             if df.empty:
-                # ถ้าไม่มีข้อมูล ให้แทรกแถวว่างๆ บอกไว้
-                tree.insert("", "end", values=("-", "ไม่มีประวัติการยกเลิก SO", "-", "-", "-"))
+                tree.insert("", "end", values=("-", "ไม่มีประวัติการยกเลิก SO", "-", "-", "-", "-"))
                 return
-                
+
             for _, row in df.iterrows():
                 ts = row['timestamp']
                 ts_str = str(ts)[:16] if pd.notna(ts) else "-"
@@ -1047,6 +1101,7 @@ class SalesManagerScreen(CTkFrame):
                 tree.insert("", "end", values=(
                     ts_str,
                     row['so_number'],
+                    row['customer_id'] or "-",
                     row['customer_name'] or "-",
                     row['sale_name'] or "-",
                     reason
@@ -1520,3 +1575,116 @@ class SMExportDialog(CTkToplevel):
         except Exception as e:
             messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
             print(traceback.format_exc())
+
+
+class SMNotificationDialog(CTkToplevel):
+    """Popup แจ้งเตือน Sales Manager กรณีมีการยกเลิก SO หรือแจ้งเตือนอื่นๆ
+    ต้องกด 'รับทราบ' เพื่อปิด (ไม่หายไปเอง)"""
+
+    def __init__(self, master, app_container, notification_row):
+        """
+        notification_row: tuple (id, message, timestamp)
+        """
+        super().__init__(master)
+        self.app_container = app_container
+        self.noti_id = notification_row[0]
+        self.noti_message = notification_row[1]
+        self.noti_time = notification_row[2]
+
+        self.title("📢 แจ้งเตือนจากระบบ")
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+        self.grab_set()  # บล็อก input จากหน้าต่างอื่น
+
+        self._build_ui()
+        self._center_on_master(master)
+
+    def _build_ui(self):
+        # Header
+        header = CTkFrame(self, fg_color="#DC2626", corner_radius=0)
+        header.pack(fill="x")
+        CTkLabel(
+            header,
+            text="⚠️  แจ้งเตือน — กรุณารับทราบ",
+            font=CTkFont(size=15, weight="bold"),
+            text_color="white"
+        ).pack(padx=20, pady=12)
+
+        # Body
+        body = CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=24, pady=16)
+
+        # เวลา
+        time_str = ""
+        if self.noti_time:
+            try:
+                if hasattr(self.noti_time, 'strftime'):
+                    time_str = self.noti_time.strftime("%d/%m/%Y %H:%M")
+                else:
+                    time_str = str(self.noti_time)
+            except Exception:
+                time_str = str(self.noti_time)
+
+        if time_str:
+            CTkLabel(
+                body,
+                text=f"🕐 {time_str}",
+                font=CTkFont(size=12),
+                text_color=("gray50", "gray60")
+            ).pack(anchor="w", pady=(0, 8))
+
+        # ข้อความ
+        msg_frame = CTkFrame(body, fg_color=("gray92", "gray20"), corner_radius=8)
+        msg_frame.pack(fill="x", pady=(0, 16))
+        CTkLabel(
+            msg_frame,
+            text=self.noti_message,
+            font=CTkFont(size=14),
+            wraplength=380,
+            justify="left"
+        ).pack(padx=16, pady=14, anchor="w")
+
+        # ปุ่มรับทราบ
+        CTkButton(
+            body,
+            text="✅  รับทราบ",
+            font=CTkFont(size=14, weight="bold"),
+            fg_color="#16A34A",
+            hover_color="#15803D",
+            height=40,
+            command=self._acknowledge
+        ).pack(fill="x")
+
+    def _center_on_master(self, master):
+        w, h = 440, 300
+        self.geometry(f"{w}x{h}")
+        self.update_idletasks()
+        try:
+            mx = master.winfo_rootx()
+            my = master.winfo_rooty()
+            mw = master.winfo_width()
+            mh = master.winfo_height()
+            x = mx + (mw - w) // 2
+            y = my + (mh - h) // 2
+        except Exception:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            x = (sw - w) // 2
+            y = (sh - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _acknowledge(self):
+        """Mark notification as read in DB then close"""
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE notifications SET is_read = TRUE WHERE id = %s",
+                    (int(self.noti_id),)
+                )
+            conn.commit()
+        except Exception as e:
+            print(f"SMNotificationDialog: ไม่สามารถอัปเดต is_read: {e}")
+            # ถ้า UPDATE ล้มเหลว ก็ยังปิด dialog ได้
+        self.grab_release()
+        self.destroy()

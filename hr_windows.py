@@ -2772,13 +2772,15 @@ class PayoutCalculationViewer(CTkToplevel):
 
 
 class CalculationDetailViewer(CTkToplevel):
-    def __init__(self, master, debug_df, so_breakdown_df, plan_name):
+    def __init__(self, master, debug_df, so_breakdown_df, plan_name, comm_df=None, user_role=None):
         super().__init__(master)
         self.app_container = master.app_container
+        self.user_role = user_role
         self.title(f"รายละเอียดการคำนวณ - {plan_name}")
         self.plan_name = plan_name
+        self.comm_df = comm_df
         self.geometry("1100x700")
-        
+
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -2787,13 +2789,61 @@ class CalculationDetailViewer(CTkToplevel):
 
         self.tab_steps = self.tab_view.add("ขั้นตอนการคำนวณ")
         self.tab_so = self.tab_view.add("รายละเอียดตาม SO")
+        self.tab_deduct = self.tab_view.add("คำนวณ หัก ค่าใช้จ่ายอื่นๆ")
 
-        # เรียกใช้ฟังก์ชันแสดงผล (ใช้ Logic ใหม่)
         self._populate_calc_steps_tab(self.tab_steps, debug_df)
         self._populate_so_breakdown_tab(self.tab_so, so_breakdown_df)
+        self._populate_deduction_tab(self.tab_deduct, comm_df)
 
         self.transient(master)
         self.grab_set()
+
+    def refresh_so_tab(self):
+        """Re-query commissions + purchase_orders from DB and repopulate all tabs."""
+        if self.comm_df is None or self.comm_df.empty:
+            return
+        try:
+            import pandas as pd
+            so_numbers = self.comm_df['so_number'].dropna().tolist()
+            if not so_numbers:
+                return
+            placeholders = ','.join(['%s'] * len(so_numbers))
+
+            self.comm_df = pd.read_sql_query(
+                f"SELECT * FROM commissions WHERE so_number IN ({placeholders}) AND is_active = 1",
+                self.app_container.pg_engine, params=tuple(so_numbers))
+
+            po_cost = pd.read_sql_query(
+                f"""SELECT so_number, COALESCE(SUM(grand_total), 0) AS live_cost
+                    FROM purchase_orders
+                    WHERE so_number IN ({placeholders}) AND status != 'Cancelled'
+                    GROUP BY so_number""",
+                self.app_container.pg_engine, params=tuple(so_numbers))
+
+            breakdown_df = self.comm_df.merge(po_cost, on='so_number', how='left')
+            multiplier = pd.to_numeric(breakdown_df.get('cost_multiplier', 1.03), errors='coerce').fillna(1.03)
+            breakdown_df['final_cost_amount'] = pd.to_numeric(
+                breakdown_df['live_cost'], errors='coerce').fillna(0)
+            breakdown_df['sales_service_amount'] = pd.to_numeric(
+                breakdown_df['sales_service_amount'], errors='coerce').fillna(0)
+            breakdown_df['profit'] = breakdown_df['sales_service_amount'] - (breakdown_df['final_cost_amount'] * multiplier)
+
+            # คำนวณ display status จาก margin เพื่อให้สีถูกต้อง
+            def _margin_status(row):
+                sales = row['sales_service_amount']
+                cost  = row['final_cost_amount'] * (row.get('cost_multiplier', 1.03) or 1.03)
+                margin = (row['profit'] / sales * 100) if sales > 0 else 0
+                if margin >= 10:
+                    return f"Normal (>={margin:.2f}%)"
+                else:
+                    return f"Below Tier (<{margin:.2f}%)"
+            breakdown_df['status'] = breakdown_df.apply(_margin_status, axis=1)
+
+            self._populate_so_breakdown_tab(self.tab_so, breakdown_df)
+            self._populate_deduction_tab(self.tab_deduct, self.comm_df)
+        except Exception as e:
+            print(f"[refresh_so_tab] error: {e}")
+            import traceback; traceback.print_exc()
     
     def _populate_calc_steps_tab(self, tab, df):
         """แสดงข้อมูลขั้นตอนการคำนวณ"""
@@ -3021,6 +3071,168 @@ class CalculationDetailViewer(CTkToplevel):
         except Exception as e:
             print(f"Error opening detail: {e}")
             messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}")
+
+    def _populate_deduction_tab(self, tab, comm_df):
+        """แสดงรายละเอียด Auto Deduction ราย SO แยกเป็น 3 ส่วน"""
+        import pandas as pd
+        self._clear_frame(tab)
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+
+        scroll_frame = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        scroll_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        scroll_frame.grid_columnconfigure(0, weight=1)
+
+        if comm_df is None or comm_df.empty:
+            ctk.CTkLabel(scroll_frame, text="ไม่มีข้อมูล SO สำหรับคำนวณ").pack(pady=20)
+            return
+
+        df = comm_df.copy()
+
+        def _num(col_name):
+            if col_name in df.columns:
+                return pd.to_numeric(df[col_name], errors='coerce').fillna(0)
+            return pd.Series([0.0] * len(df))
+
+        # --- คำนวณ ---
+        so_ship = _num('shipping_cost') + _num('relocation_cost')
+        po_ship = _num('shipping_to_stock_cost') + _num('shipping_to_site_cost')
+        # คิดเฉพาะ SO ที่ PO > SO ไม่ให้ SO ที่ดีช่วย offset SO ที่แย่
+        ship_diff = (po_ship - so_ship).clip(lower=0).sum()
+        shipping_deduction = (ship_diff / 0.2) * 0.0175 if ship_diff > 0 else 0.0
+
+        total_brokerage = _num('brokerage_fee').sum()
+        total_difference = _num('difference_amount').sum()
+        diff_base = total_brokerage - total_difference
+        difference_deduction = (abs(diff_base) / 0.2) * 0.0175 if diff_base < 0 else 0.0
+
+        total_marketing = _num('coupons').sum() + _num('giveaways').sum()
+        marketing_deduction = (total_marketing / 0.2) * 0.0175 if total_marketing > 0 else 0.0
+
+        final_deduction = shipping_deduction + difference_deduction + marketing_deduction
+
+        header_font = ctk.CTkFont(size=14, weight="bold")
+        normal_font = ctk.CTkFont(size=12)
+
+        # --- Summary Banner ---
+        banner = ctk.CTkFrame(scroll_frame, fg_color="#E2E8F0", corner_radius=8)
+        banner.grid(row=0, column=0, sticky="ew", pady=(0, 12), padx=2)
+        ctk.CTkLabel(banner, text=f"รวมหัก ค่าใช้จ่ายอื่นๆ = {final_deduction:,.2f} บาท",
+                     font=ctk.CTkFont(size=16, weight="bold"), text_color="#1E293B").pack(pady=10)
+
+        row_idx = [1]
+
+        def _section(title, deduction_amt, color):
+            sec = ctk.CTkFrame(scroll_frame, fg_color=color, corner_radius=6)
+            sec.grid(row=row_idx[0], column=0, sticky="ew", pady=(0, 8), padx=2)
+            sec.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(sec, text=f"{title}  =  {deduction_amt:,.2f} บาท",
+                         font=header_font, text_color="#1E293B").grid(row=0, column=0, sticky="w", padx=12, pady=(8, 4))
+            row_idx[0] += 1
+            return sec
+
+        def _tree_in_frame(parent, tree_row, columns, col_widths, col_anchors, nrows=10):
+            style = ttk.Style()
+            style.theme_use("clam")
+            style.configure("Ded.Treeview.Heading", font=("Tahoma", 11, "bold"), background="#334155", foreground="white")
+            style.configure("Ded.Treeview", font=("Tahoma", 11), rowheight=26)
+            f = ctk.CTkFrame(parent, fg_color="white", corner_radius=0)
+            f.grid(row=tree_row, column=0, sticky="ew", padx=8, pady=(0, 8))
+            f.grid_columnconfigure(0, weight=1)
+            tree = ttk.Treeview(f, columns=columns, show="headings", style="Ded.Treeview", height=min(nrows, 12))
+            for col, w, anc in zip(columns, col_widths, col_anchors):
+                tree.heading(col, text=col)
+                tree.column(col, width=w, anchor=anc)
+            tree.grid(row=0, column=0, sticky="ew")
+            vsb = ttk.Scrollbar(f, orient="vertical", command=tree.yview)
+            vsb.grid(row=0, column=1, sticky="ns")
+            tree.configure(yscrollcommand=vsb.set)
+            return tree
+
+        # --- [1] Shipping ---
+        sec1 = _section("[1] ค่าขนส่ง — PO สูงกว่า SO", shipping_deduction, "#DBEAFE")
+        ctk.CTkLabel(sec1, text=f"รวมส่วนต่างที่ PO > SO: {ship_diff:,.2f}  →  ({ship_diff:,.2f} / 0.20) × 1.75%  (SO ที่ SO > PO ไม่นำมาคิด)",
+                     font=normal_font, text_color="#1E3A5F").grid(row=1, column=0, sticky="w", padx=12, pady=(0, 4))
+        df['_so_ship'] = so_ship.values
+        df['_po_ship'] = po_ship.values
+        ship_rows = df[(df['_so_ship'] != 0) | (df['_po_ship'] != 0)]
+        if not ship_rows.empty:
+            cols1 = ("เลขที่ SO", "SO ค่าขนส่ง", "PO ค่าขนส่ง", "ส่วนต่าง (PO-SO)")
+            tree1 = _tree_in_frame(sec1, 2, cols1, [180, 150, 150, 160], ["center","e","e","e"], len(ship_rows))
+            tree1.tag_configure('neg', background='#FEE2E2')
+            tree1.tag_configure('pos', background='#DCFCE7')
+            for _, r in ship_rows.iterrows():
+                diff = r['_po_ship'] - r['_so_ship']
+                tree1.insert("", "end", values=(r.get('so_number',''), f"{r['_so_ship']:,.2f}",
+                                                f"{r['_po_ship']:,.2f}", f"{diff:,.2f}"),
+                             tags=('neg' if diff > 0 else 'pos',))
+        else:
+            ctk.CTkLabel(sec1, text="ไม่มี SO ที่มีข้อมูลค่าขนส่ง", font=normal_font, text_color="white").grid(
+                row=2, column=0, sticky="w", padx=12, pady=(0, 8))
+
+        # --- [2] Brokerage/Difference ---
+        sec2 = _section("[2] ค่านายหน้า — ยอดส่วนต่างสูงกว่าค่านายหน้า", difference_deduction, "#EDE9FE")
+        ctk.CTkLabel(sec2, text=f"ค่านายหน้ารวม: {total_brokerage:,.2f}  |  ยอดส่วนต่างรวม: {total_difference:,.2f}  |  ผลต่าง: {diff_base:,.2f}  →  ({abs(diff_base):,.2f} / 0.20) × 1.75%",
+                     font=normal_font, text_color="#3B0764").grid(row=1, column=0, sticky="w", padx=12, pady=(0, 4))
+        df['_brok'] = pd.to_numeric(df.get('brokerage_fee', 0), errors='coerce').fillna(0)
+        df['_diff_amt'] = pd.to_numeric(df.get('difference_amount', 0), errors='coerce').fillna(0)
+        brok_rows = df[(df['_brok'] != 0) | (df['_diff_amt'] != 0)]
+        if not brok_rows.empty:
+            cols2 = ("เลขที่ SO", "ค่านายหน้า", "ยอดส่วนต่าง", "ผลต่าง (นายหน้า − ส่วนต่าง)")
+            tree2 = _tree_in_frame(sec2, 2, cols2, [180, 150, 150, 220], ["center","e","e","e"], len(brok_rows))
+            tree2.tag_configure('neg', background='#FEE2E2')
+            for _, r in brok_rows.iterrows():
+                gap = r['_brok'] - r['_diff_amt']
+                tree2.insert("", "end", values=(r.get('so_number',''), f"{r['_brok']:,.2f}",
+                                                f"{r['_diff_amt']:,.2f}", f"{gap:,.2f}"),
+                             tags=('neg' if gap < 0 else '',))
+        else:
+            ctk.CTkLabel(sec2, text="ไม่มี SO ที่มีข้อมูลค่านายหน้า", font=normal_font, text_color="white").grid(
+                row=2, column=0, sticky="w", padx=12, pady=(0, 8))
+
+        # --- [3] Marketing ---
+        sec3 = _section("[3] ส่วนลด / ของแถม — คูปอง + ของกำนัล", marketing_deduction, "#D1FAE5")
+        ctk.CTkLabel(sec3, text=f"ยอดรวมส่วนลด+ของแถม: {total_marketing:,.2f}  →  ({total_marketing:,.2f} / 0.20) × 1.75%",
+                     font=normal_font, text_color="#064E3B").grid(row=1, column=0, sticky="w", padx=12, pady=(0, 4))
+        df['_coupons'] = pd.to_numeric(df.get('coupons', 0), errors='coerce').fillna(0)
+        df['_giveaways'] = pd.to_numeric(df.get('giveaways', 0), errors='coerce').fillna(0)
+        mkt_rows = df[(df['_coupons'] != 0) | (df['_giveaways'] != 0)]
+        if not mkt_rows.empty:
+            cols3 = ("เลขที่ SO", "คูปองส่วนลด", "ของแถม/กำนัล", "รวม")
+            tree3 = _tree_in_frame(sec3, 2, cols3, [180, 150, 150, 140], ["center","e","e","e"], len(mkt_rows))
+            for _, r in mkt_rows.iterrows():
+                tree3.insert("", "end", values=(r.get('so_number',''), f"{r['_coupons']:,.2f}",
+                                                f"{r['_giveaways']:,.2f}", f"{r['_coupons']+r['_giveaways']:,.2f}"))
+        else:
+            ctk.CTkLabel(sec3, text="ไม่มี SO ที่มีคูปองส่วนลดหรือของแถม", font=normal_font, text_color="white").grid(
+                row=2, column=0, sticky="w", padx=12, pady=(0, 8))
+
+    def _on_so_row_double_click(self, event):
+        """Double-click บน SO row — เปิด editor (เฉพาะ Director)"""
+        if self.user_role != 'Director':
+            return
+        tree = event.widget
+        sel = tree.selection()
+        if not sel:
+            return
+        so_number = str(tree.item(sel[0])['values'][0])
+        if not so_number or so_number.startswith('รวม'):
+            return
+        self._open_so_editor(so_number)
+
+    def _open_so_editor(self, so_number):
+        """เปิด SOPOSelectorDialog สำหรับ Director เลือกแก้ไข SO หรือ PO"""
+        try:
+            SOPOSelectorDialog(
+                master=self,
+                app_container=self.app_container,
+                so_number=so_number,
+                on_save_callback=self.refresh_so_tab
+            )
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"ไม่สามารถเปิดได้: {e}", parent=self)
+            import traceback; traceback.print_exc()
 
     def _clear_frame(self, frame):
         for widget in frame.winfo_children():
@@ -3893,4 +4105,209 @@ class HRCoverSheetDialog(CTkToplevel):
 
         except Exception as e:
             messagebox.showerror("Error", f"Print Failed: {e}", parent=self)
-            traceback.print_exc()
+
+
+class SOPOSelectorDialog(CTkToplevel):
+    """
+    Dialog สำหรับ Director: แสดงข้อมูล SO + รายการ PO ทั้งหมดที่เชื่อมกัน
+    ให้เลือกก่อนว่าจะแก้ไข SO หรือ PO ใด
+    """
+    def __init__(self, master, app_container, so_number, on_save_callback=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.so_number = so_number
+        self.sales_data = {}
+        self.on_save_callback = on_save_callback
+
+        self.title(f"แก้ไข SO / PO  —  {so_number}")
+        self.resizable(True, True)
+        self.transient(master)
+        self.grab_set()
+
+        self._build_ui()
+        self.after(50, self._load_data)
+        # วาง popup ให้อยู่บนจอเดียวกับ master
+        self.after(10, lambda: self._center_on_master(master))
+
+    def _build_ui(self):
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # SO info bar
+        self.so_info_frame = CTkFrame(self, fg_color="#EDE9FE", corner_radius=8)
+        self.so_info_frame.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+        self.so_info_label = CTkLabel(
+            self.so_info_frame, text="กำลังโหลด...",
+            font=CTkFont(size=14, weight="bold"), text_color="#3B0764")
+        self.so_info_label.pack(padx=14, pady=8, anchor="w")
+
+        # PO list section
+        po_section = CTkFrame(self, corner_radius=8)
+        po_section.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
+        po_section.grid_rowconfigure(1, weight=1)
+        po_section.grid_columnconfigure(0, weight=1)
+
+        CTkLabel(po_section,
+                 text="รายการ PO ที่เชื่อมกับ SO นี้  (double-click เพื่อเปิด PO Editor)",
+                 font=CTkFont(size=13), text_color="#374151"
+                 ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+
+        tree_frame = CTkFrame(po_section, fg_color="transparent")
+        tree_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        cols = ("po_number", "supplier", "total_cost", "status")
+        self.po_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=8)
+        self.po_tree.heading("po_number",  text="เลข PO")
+        self.po_tree.heading("supplier",   text="ซัพพลายเออร์")
+        self.po_tree.heading("total_cost", text="มูลค่า PO")
+        self.po_tree.heading("status",     text="สถานะ")
+        self.po_tree.column("po_number",  width=140, anchor="center")
+        self.po_tree.column("supplier",   width=200, anchor="w")
+        self.po_tree.column("total_cost", width=120, anchor="e")
+        self.po_tree.column("status",     width=110, anchor="center")
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.po_tree.yview)
+        self.po_tree.configure(yscrollcommand=vsb.set)
+        self.po_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        self.po_tree.bind("<Double-1>", lambda e: self._open_selected_po())
+
+        # Action buttons
+        btn_frame = CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+        btn_frame.grid_columnconfigure(2, weight=1)
+
+        CTkButton(btn_frame, text="แก้ไข SO", fg_color="#7C3AED", hover_color="#6D28D9",
+                  font=CTkFont(size=14, weight="bold"), command=self._open_so_popup
+                  ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        CTkButton(btn_frame, text="แก้ไข PO ที่เลือก", fg_color="#2563EB", hover_color="#1D4ED8",
+                  font=CTkFont(size=14, weight="bold"), command=self._open_selected_po
+                  ).grid(row=0, column=1, sticky="ew", padx=4)
+
+        CTkButton(btn_frame, text="ปิด", fg_color="#6B7280", hover_color="#4B5563",
+                  font=CTkFont(size=14), command=self.destroy
+                  ).grid(row=0, column=2, sticky="ew", padx=(4, 0))
+
+    def _load_data(self):
+        import pandas as pd
+        try:
+            pg = self.app_container.pg_engine
+            so_df = pd.read_sql_query(
+                "SELECT * FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1",
+                pg, params=(self.so_number,))
+            if not so_df.empty:
+                self.sales_data = so_df.iloc[0].to_dict()
+                cust   = self.sales_data.get("customer_name", "-")
+                amt    = float(self.sales_data.get("final_sales_amount") or 0)
+                status = self.sales_data.get("status", "-")
+                self.so_info_label.configure(
+                    text=f"SO: {self.so_number}   ลูกค้า: {cust}   ยอดขาย: {amt:,.2f} บาท")
+            else:
+                self.so_info_label.configure(
+                    text=f"SO: {self.so_number}  (ไม่พบข้อมูลใน commissions)")
+
+            po_df = pd.read_sql_query(
+                "SELECT id, po_number, supplier_name, grand_total, status FROM purchase_orders WHERE so_number = %s ORDER BY id",
+                pg, params=(self.so_number,))
+
+            for _, row in po_df.iterrows():
+                total = float(row.get("grand_total") or 0)
+                self.po_tree.insert("", "end", iid=str(int(row["id"])),
+                                    values=(row.get("po_number", "-"),
+                                            row.get("supplier_name", "-"),
+                                            f"{total:,.2f}",
+                                            row.get("status", "-")))
+            if po_df.empty:
+                self.po_tree.insert("", "end", iid="none",
+                                    values=("—", "ไม่มี PO ที่เชื่อมอยู่", "", ""))
+        except Exception as e:
+            self.so_info_label.configure(text=f"โหลดข้อมูลไม่สำเร็จ: {e}")
+            import traceback; traceback.print_exc()
+
+    def _center_on_master(self, master):
+        """วาง dialog บนจอเดียวกับ master window พร้อม fixed size"""
+        try:
+            w, h = 680, 480
+            self.geometry(f"{w}x{h}")
+            self.update_idletasks()
+            mx = master.winfo_rootx()
+            my = master.winfo_rooty()
+            mw = master.winfo_width()
+            mh = master.winfo_height()
+            x = mx + (mw - w) // 2
+            y = my + (mh - h) // 2
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+    def _refresh_header(self):
+        """อัปเดต header label หลังจาก save SO"""
+        try:
+            import pandas as pd
+            so_df = pd.read_sql_query(
+                "SELECT customer_name, sales_service_amount FROM commissions WHERE so_number = %s AND is_active = 1 LIMIT 1",
+                self.app_container.pg_engine, params=(self.so_number,))
+            if not so_df.empty:
+                row = so_df.iloc[0]
+                self.sales_data.update(row.to_dict())
+                cust = row.get("customer_name", "-")
+                amt  = float(row.get("sales_service_amount") or 0)
+                self.so_info_label.configure(
+                    text=f"SO: {self.so_number}   ลูกค้า: {cust}   ยอดขาย: {amt:,.2f} บาท")
+        except Exception:
+            pass
+
+    def _make_callback(self):
+        """สร้าง callback ที่ refresh ทั้ง header ของ dialog และตารางหลัก"""
+        def _cb():
+            self._refresh_header()
+            if self.on_save_callback:
+                self.on_save_callback()
+        return _cb
+
+    def _open_selected_po(self):
+        sel = self.po_tree.selection()
+        if not sel or sel[0] == "none":
+            messagebox.showinfo("เลือก PO", "กรุณาเลือก PO ที่ต้องการแก้ไขก่อน", parent=self)
+            return
+        po_id = int(sel[0])
+        from history_windows import PurchaseDetailWindow
+        PurchaseDetailWindow(master=self, app_container=self.app_container,
+                             purchase_id=po_id, on_save_callback=self._make_callback())
+
+    def _open_so_popup(self):
+        if not self.sales_data:
+            messagebox.showwarning("ไม่พบข้อมูล", "ยังโหลด SO ไม่เสร็จ กรุณารอสักครู่", parent=self)
+            return
+        import tkinter as tk
+        so_shared_vars = {
+            'delivery_type_var':               tk.StringVar(),
+            'sales_service_vat_option':        tk.StringVar(),
+            'cutting_drilling_fee_vat_option': tk.StringVar(),
+            'other_service_fee_vat_option':    tk.StringVar(),
+            'shipping_vat_option_var':         tk.StringVar(),
+            'credit_card_fee_vat_option_var':  tk.StringVar(),
+            'so_grand_total_var':              tk.StringVar(),
+            'so_vs_payment_result_var':        tk.StringVar(),
+            'difference_amount_var':           tk.StringVar(),
+            'cash_required_total_var':         tk.StringVar(),
+            'cash_verification_result_var':    tk.StringVar(),
+            'credit_term_var':     tk.StringVar(value=str(self.sales_data.get('credit_term') or 'เงินสด')),
+            'sales_vat_calc_var':  tk.StringVar(value="0.00"),
+            'cutting_drilling_vat_calc_var': tk.StringVar(value="0.00"),
+            'other_service_vat_calc_var':    tk.StringVar(value="0.00"),
+            'shipping_vat_calc_var':         tk.StringVar(value="0.00"),
+            'card_fee_vat_calc_var':         tk.StringVar(value="0.00"),
+            'vehicle_type_var': tk.StringVar(value=str(self.sales_data.get('vehicle_type') or '-')),
+        }
+        sale_theme = {"primary": "#7C3AED", "primary_hover": "#6D28D9",
+                      "bg": "#5B21B6", "header": "white"}
+        from history_windows import SOPopupWindow
+        SOPopupWindow(master=self, app_container=self.app_container,
+                      sales_data=self.sales_data, so_shared_vars=so_shared_vars,
+                      sale_theme=sale_theme, on_save_callback=self._make_callback())
