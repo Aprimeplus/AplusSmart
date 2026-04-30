@@ -397,7 +397,8 @@ class AppContainer(CTk):
                 if new_notifications:
                     for notif in new_notifications:
                         # ข้าม [DEFER] notifications — จัดการโดย DeferralNoticeDialog ใน commission_app
-                        if str(notif['message']).startswith('[DEFER]'):
+                        # ข้าม [HR_CANCEL] notifications — จัดการโดย SMNotificationDialog ใน sales_manager_screen
+                        if str(notif['message']).startswith('[DEFER]') or str(notif['message']).startswith('[HR_CANCEL]'):
                             continue
                         # --- [2] จุดตรวจสอบที่ 2: ก่อนเด้ง Popup ---
                         try:
