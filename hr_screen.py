@@ -435,6 +435,164 @@ class AnnualArchiveDialog(CTkToplevel):
         self.result = None
         self.destroy()
 
+class PayoutConfirmDialog(CTkToplevel):
+    """
+    Custom confirmation dialog สำหรับยืนยันการจ่ายคอมมิชชั่น (Paid)
+    แสดงรายละเอียด SO งวดปัจจุบัน + SO ตกหล่นจากงวดก่อน พร้อมยอดเงิน
+    """
+    THAI_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม",
+                   "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม",
+                   "พฤศจิกายน", "ธันวาคม"]
+
+    def __init__(self, master, period_text, val_gross, val_wht, val_net,
+                 comm_df, selected_year, selected_month):
+        super().__init__(master)
+        self.result = False
+        self.title("ยืนยันการจ่ายคอมมิชชั่น")
+        self.resizable(False, True)
+        self.grab_set()
+        self.transient(master)
+
+        # ---- แยก SO งวดปัจจุบัน vs ตกหล่น ----
+        self._current_rows = []
+        self._old_rows = []
+        if comm_df is not None and not comm_df.empty:
+            df = comm_df.copy()
+            df['commission_year']  = pd.to_numeric(df['commission_year'],  errors='coerce').fillna(0).astype(int)
+            df['commission_month'] = pd.to_numeric(df['commission_month'], errors='coerce').fillna(0).astype(int)
+            if 'final_sales_amount' not in df.columns:
+                df['final_sales_amount'] = 0.0
+            df['final_sales_amount'] = pd.to_numeric(df['final_sales_amount'], errors='coerce').fillna(0.0)
+
+            cur_mask = (df['commission_year'] == selected_year) & (df['commission_month'] == selected_month)
+            for _, r in df[cur_mask].iterrows():
+                self._current_rows.append({'so': str(r['so_number']), 'amount': float(r['final_sales_amount'])})
+            for _, r in df[~cur_mask].iterrows():
+                mo = int(r['commission_month'])
+                yr = int(r['commission_year'])
+                mo_str = self.THAI_MONTHS[mo - 1] if 1 <= mo <= 12 else f"เดือน {mo}"
+                yr_be  = yr + 543
+                self._old_rows.append({'so': str(r['so_number']), 'amount': float(r['final_sales_amount']),
+                                       'period': f"{mo_str} {yr_be}"})
+
+        # ---- สร้าง UI ----
+        W = 560
+        self._build_ui(period_text, val_gross, val_wht, val_net)
+        self.update_idletasks()
+        H = min(self.winfo_reqheight() + 20, 680)
+        self._center(master, W, H)
+        self.geometry(f"{W}x{H}")
+
+    # ------------------------------------------------------------------
+    def _build_ui(self, period_text, val_gross, val_wht, val_net):
+        # ── HEADER ──────────────────────────────────────────────────────
+        hdr = CTkFrame(self, fg_color="#1E3A5F", corner_radius=0)
+        hdr.pack(fill="x")
+        CTkLabel(hdr, text="💰  ยืนยันการจ่ายคอมมิชชั่น",
+                 font=CTkFont(size=16, weight="bold"),
+                 text_color="white").pack(pady=(12, 2))
+        CTkLabel(hdr, text=f"งวด: {period_text}",
+                 font=CTkFont(size=13),
+                 text_color="#A8D0F0").pack(pady=(0, 12))
+
+        body = CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+
+        # ── สรุปยอดเงิน ─────────────────────────────────────────────────
+        fin_box = CTkFrame(body, fg_color="#F0F4FF", corner_radius=10)
+        fin_box.pack(fill="x", pady=(0, 10))
+        fin_box.grid_columnconfigure(1, weight=1)
+
+        def fin_row(parent, row_idx, label, value_text, color="#1F1F1F", bold=False):
+            wt = "bold" if bold else "normal"
+            CTkLabel(parent, text=label,  font=CTkFont(size=13, weight=wt),
+                     text_color=color).grid(row=row_idx, column=0, sticky="w", padx=14, pady=3)
+            CTkLabel(parent, text=value_text, font=CTkFont(size=13, weight=wt),
+                     text_color=color).grid(row=row_idx, column=1, sticky="e", padx=14, pady=3)
+
+        fin_row(fin_box, 0, "ยอดคอมมิชชั่นขั้นต้น (Gross)", f"{val_gross:,.2f} บาท")
+        fin_row(fin_box, 1, "ภาษีหัก ณ ที่จ่าย (3%)",        f"-{val_wht:,.2f} บาท", color="#DC2626")
+
+        sep = CTkFrame(fin_box, height=1, fg_color="#CBD5E1")
+        sep.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=4)
+
+        fin_row(fin_box, 3, "✅  ยอดโอนสุทธิ (Net)",
+                f"{val_net:,.2f} บาท", color="#16A34A", bold=True)
+
+        # ── รายการ SO ───────────────────────────────────────────────────
+        total = len(self._current_rows) + len(self._old_rows)
+        CTkLabel(body,
+                 text=f"📦  รายการ SO ทั้งหมด ({total} รายการ)",
+                 font=CTkFont(size=13, weight="bold")).pack(anchor="w", pady=(4, 4))
+
+        so_scroll = CTkScrollableFrame(body, height=230, fg_color="#F8F9FA", corner_radius=8)
+        so_scroll.pack(fill="x")
+
+        # งวดปัจจุบัน
+        if self._current_rows:
+            CTkLabel(so_scroll,
+                     text=f"✅  งวดปัจจุบัน ({len(self._current_rows)} รายการ)",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#16A34A").pack(anchor="w", padx=10, pady=(6, 2))
+            for row in self._current_rows:
+                CTkLabel(so_scroll,
+                         text=f"   • {row['so']}   ยอดขาย: {row['amount']:,.0f} บาท",
+                         font=CTkFont(size=12),
+                         text_color="#374151").pack(anchor="w", padx=10, pady=1)
+
+        # ตกหล่น
+        if self._old_rows:
+            CTkLabel(so_scroll,
+                     text=f"⚠️  ตกหล่นจากงวดก่อน ({len(self._old_rows)} รายการ)",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#B45309").pack(anchor="w", padx=10, pady=(8, 2))
+            for row in self._old_rows:
+                CTkLabel(so_scroll,
+                         text=f"   • {row['so']}   [{row['period']}]   ยอดขาย: {row['amount']:,.0f} บาท",
+                         font=CTkFont(size=12),
+                         text_color="#92400E").pack(anchor="w", padx=10, pady=1)
+
+        if not self._current_rows and not self._old_rows:
+            CTkLabel(so_scroll, text="(ไม่มีข้อมูล SO)",
+                     text_color="gray").pack(pady=10)
+
+        # ── ปุ่ม ────────────────────────────────────────────────────────
+        btn_frame = CTkFrame(body, fg_color="transparent")
+        btn_frame.pack(pady=(12, 4))
+        CTkButton(btn_frame, text="❌  ยกเลิก",
+                  width=140, height=38,
+                  fg_color="#6B7280", hover_color="#4B5563",
+                  command=self._cancel).pack(side="left", padx=8)
+        CTkButton(btn_frame, text="✅  ยืนยันการจ่าย",
+                  width=160, height=38,
+                  fg_color="#16A34A", hover_color="#15803D",
+                  command=self._confirm).pack(side="left", padx=8)
+
+    # ------------------------------------------------------------------
+    def _center(self, master, w, h):
+        try:
+            self.update_idletasks()
+            mx = master.winfo_rootx()
+            my = master.winfo_rooty()
+            mw = master.winfo_width()
+            mh = master.winfo_height()
+            x = mx + (mw - w) // 2
+            y = my + (mh - h) // 2
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+    def _confirm(self):
+        self.result = True
+        self.grab_release()
+        self.destroy()
+
+    def _cancel(self):
+        self.result = False
+        self.grab_release()
+        self.destroy()
+
+
 class HRScreen(CTkFrame):
     
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None):
@@ -4389,24 +4547,20 @@ class HRScreen(CTkFrame):
             
             total_items = count_current + count_old
 
-            # --- 3. สร้างข้อความ Popup ---
-            msg = (
-                f"📌 **สรุปยอดจ่ายคอมมิชชั่น (งวด: {self.current_period_text})**\n"
-                f"--------------------------------------------------\n"
-                f"💰 **ยอดคอมมิชชั่นขั้นต้น (Gross):** {val_gross:,.2f} บาท\n"
-                f"ภาษีหัก ณ ที่จ่าย (3%):  -{val_wht:,.2f} บาท\n"
-                f"--------------------------------------------------\n"
-                f"✅ **ยอดโอนสุทธิ (Net):** {val_net:,.2f} บาท\n"
-                f"--------------------------------------------------\n\n"
-                f"📦 **รายละเอียดรายการ (SO):**\n"
-                f"   - รายการประจำงวดนี้: {count_current} รายการ\n"
-                f"   - ⚠️ รายการตกหล่นจากงวดก่อน: {count_old} รายการ\n"
-                f"   (รวมทั้งหมด {total_items} รายการ)\n\n"
-                f"ยืนยันที่จะบันทึกสถานะ 'Paid' และดำเนินการจ่ายเงินใช่หรือไม่?"
+            # --- 3. แสดง Popup ยืนยัน (Custom Dialog แบบละเอียด) ---
+            comm_df_for_dialog = self.current_comm_df if hasattr(self, 'current_comm_df') else None
+            dlg = PayoutConfirmDialog(
+                self.winfo_toplevel(),
+                period_text=self.current_period_text,
+                val_gross=val_gross,
+                val_wht=val_wht,
+                val_net=val_net,
+                comm_df=comm_df_for_dialog,
+                selected_year=self.selected_year,
+                selected_month=self.selected_month,
             )
-
-            # --- 4. แสดง Popup ถามยืนยัน ---
-            if not messagebox.askyesno("ยืนยันการจ่ายเงิน", msg, parent=self):
+            self.wait_window(dlg)
+            if not dlg.result:
                 return
 
             # =========================================================
