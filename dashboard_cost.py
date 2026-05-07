@@ -486,7 +486,7 @@ class DashboardCostScreen(CTkFrame):
         ]
 
         self.col_source = {
-            "Select":                          "Select", 
+            "Selec\nt":                        "Select",   # ← key ต้องตรงกับ display_columns
             "วันที่ขอราคา":                      "วันที่ขอราคา",
             "PRIORI\nTY":                        "PRIORITY",
             "WIN RATE\n%":                        "WIN RATE %",
@@ -610,6 +610,13 @@ class DashboardCostScreen(CTkFrame):
         try:
             query = "SELECT * FROM cost_benchmarks"
             df = pd.read_sql(query, conn)
+
+            # ── Normalize column names ───────────────────────────────────────
+            # PostgreSQL อาจคืนชื่อ "select" (lowercase) แทน "Select"
+            # เพราะ SELECT เป็น reserved word ที่ต้องใช้ double-quote ตอนสร้าง
+            # ทำให้ case อาจไม่ตรงกับที่ dashboard ต้องการ → normalize ทั้งหมด
+            df.columns = ["Select" if c.lower() == "select" else c for c in df.columns]
+            # ────────────────────────────────────────────────────────────────
 
             try:
                 # =========================================================

@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A+ Smart — คู่มือการทำงานของระบบ</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Segoe UI', 'Tahoma', sans-serif;
+      background: #f0f4f8;
+      color: #1a202c;
+      padding: 30px 20px 80px;
+    }
+
+    /* ── TOP HEADER ── */
+    .page-header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .page-header h1 {
+      font-size: 36px;
+      font-weight: 900;
+      color: #1a202c;
+      margin-bottom: 6px;
+    }
+
+    .page-header p {
+      font-size: 18px;
+      color: #718096;
+    }
+
+    /* ── TABLE OF CONTENTS (WHO'S WHO) ── */
+    .who-section {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      justify-content: center;
+      max-width: 1100px;
+      margin: 0 auto 50px;
+    }
+
+    .who-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: white;
+      border-radius: 14px;
+      padding: 14px 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+      min-width: 180px;
+    }
+
+    .who-icon {
+      font-size: 30px;
+      width: 50px;
+      height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+    }
+
+    .who-text .name {
+      font-weight: 800;
+      font-size: 15px;
+    }
+
+    .who-text .role {
+      font-size: 12px;
+      color: #718096;
+    }
+
+    /* ── PHASE SECTIONS ── */
+    .phase {
+      max-width: 1100px;
+      margin: 0 auto 60px;
+    }
+
+    .phase-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding: 16px 24px;
+      border-radius: 16px;
+      color: white;
+    }
+
+    .phase-num {
+      font-size: 40px;
+      font-weight: 900;
+      opacity: .5;
+    }
+
+    .phase-header h2 {
+      font-size: 24px;
+      font-weight: 800;
+    }
+
+    .phase-header p {
+      font-size: 14px;
+      opacity: .85;
+      margin-top: 2px;
+    }
+
+    /* ── STEP CARDS ── */
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .step-row {
+      display: grid;
+      grid-template-columns: 80px 1fr;
+      gap: 0;
+      align-items: stretch;
+    }
+
+    .step-line {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .step-circle {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: 900;
+      color: white;
+      flex-shrink: 0;
+      z-index: 1;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
+    }
+
+    .step-connector {
+      width: 3px;
+      flex: 1;
+      min-height: 30px;
+      background: #cbd5e0;
+      margin: 4px 0;
+    }
+
+    .step-card {
+      background: white;
+      border-radius: 16px;
+      padding: 20px 24px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, .07);
+      margin-left: 0;
+      border-left: 5px solid #cbd5e0;
+    }
+
+    .step-who {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 12px;
+      border-radius: 20px;
+      margin-bottom: 10px;
+      color: white;
+    }
+
+    .step-title {
+      font-size: 20px;
+      font-weight: 800;
+      margin-bottom: 8px;
+      color: #1a202c;
+    }
+
+    .step-desc {
+      font-size: 15px;
+      color: #4a5568;
+      line-height: 1.7;
+    }
+
+    .step-desc ul {
+      padding-left: 20px;
+    }
+
+    .step-desc li {
+      margin-bottom: 4px;
+    }
+
+    /* status badge */
+    .badge {
+      display: inline-block;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 4px 14px;
+      border-radius: 30px;
+      margin: 8px 4px 0 0;
+    }
+
+    .badge-yellow {
+      background: #fef3c7;
+      color: #92400e;
+      border: 2px solid #f59e0b;
+    }
+
+    .badge-green {
+      background: #d1fae5;
+      color: #065f46;
+      border: 2px solid #10b981;
+    }
+
+    .badge-red {
+      background: #fee2e2;
+      color: #991b1b;
+      border: 2px solid #ef4444;
+    }
+
+    .badge-blue {
+      background: #dbeafe;
+      color: #1e40af;
+      border: 2px solid #3b82f6;
+    }
+
+    .badge-gray {
+      background: #f3f4f6;
+      color: #374151;
+      border: 2px solid #9ca3af;
+    }
+
+    .badge-purple {
+      background: #ede9fe;
+      color: #5b21b6;
+      border: 2px solid #8b5cf6;
+    }
+
+    /* ── DEFER BOX ── */
+    .defer-box {
+      background: #fffbeb;
+      border: 2px dashed #f59e0b;
+      border-radius: 14px;
+      padding: 18px 22px;
+      margin-top: 12px;
+    }
+    .defer-box .df-title {
+      font-size: 16px;
+      font-weight: 800;
+      color: #92400e;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .defer-box .df-desc {
+      font-size: 14px;
+      color: #78350f;
+      line-height: 1.7;
+    }
+    .defer-box .df-arrow {
+      font-size: 22px;
+      margin: 6px 0;
+      color: #f59e0b;
+    }
+    .decision-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .badge-orange {
+      background: #fff7ed;
+      color: #92400e;
+      border: 2px solid #f97316;
+    }
+
+    /* ── REJECTION BOX ── */
+    .reject-box {
+      background: #fff5f5;
+      border: 2px dashed #fc8181;
+      border-radius: 14px;
+      padding: 18px 22px;
+      margin-top: 12px;
+    }
+
+    .reject-box .rj-title {
+      font-size: 16px;
+      font-weight: 800;
+      color: #c53030;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .reject-box .rj-desc {
+      font-size: 14px;
+      color: #742a2a;
+      line-height: 1.7;
+    }
+
+    .reject-box .rj-arrow {
+      font-size: 22px;
+      margin: 6px 0;
+      color: #fc8181;
+    }
+
+    /* ── FLOW ARROW BETWEEN PHASES ── */
+    .big-arrow {
+      text-align: center;
+      font-size: 40px;
+      color: #a0aec0;
+      margin: -20px 0 10px;
+    }
+
+    /* ── INFO BOX ── */
+    .info-box {
+      background: #ebf8ff;
+      border-left: 5px solid #63b3ed;
+      border-radius: 0 12px 12px 0;
+      padding: 14px 18px;
+      margin-top: 12px;
+      font-size: 14px;
+      color: #2c5282;
+      line-height: 1.7;
+    }
+
+    .info-box strong {
+      font-weight: 800;
+    }
+
+    /* ── FORMULA BOX ── */
+    .formula-box {
+      background: #f0fff4;
+      border: 2px solid #68d391;
+      border-radius: 12px;
+      padding: 14px 18px;
+      margin-top: 12px;
+      font-size: 14px;
+      color: #22543d;
+    }
+
+    .formula-box .fx {
+      font-family: 'Courier New', monospace;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    /* ── DECISION SPLIT ── */
+    .decision {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .decision-yes {
+      background: #f0fff4;
+      border: 2px solid #68d391;
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .decision-no {
+      background: #fff5f5;
+      border: 2px dashed #fc8181;
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .decision-yes .d-title {
+      color: #276749;
+      font-weight: 800;
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+
+    .decision-no .d-title {
+      color: #c53030;
+      font-weight: 800;
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+
+    .decision .d-desc {
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* ── SUMMARY TABLE ── */
+    .summary-section {
+      max-width: 1100px;
+      margin: 0 auto 40px;
+      background: white;
+      border-radius: 20px;
+      padding: 30px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, .08);
+    }
+
+    .summary-section h2 {
+      font-size: 22px;
+      font-weight: 800;
+      margin-bottom: 20px;
+      color: #2d3748;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th {
+      background: #2d3748;
+      color: white;
+      padding: 12px 16px;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid #e2e8f0;
+      vertical-align: top;
+    }
+
+    tr:hover td {
+      background: #f7fafc;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* colors per role */
+    .c-sales {
+      border-left-color: #3b82f6 !important;
+    }
+
+    .c-sm {
+      border-left-color: #06b6d4 !important;
+    }
+
+    .c-pur {
+      border-left-color: #8b5cf6 !important;
+    }
+
+    .c-pm {
+      border-left-color: #f59e0b !important;
+    }
+
+    .c-hr {
+      border-left-color: #10b981 !important;
+    }
+
+    .c-sys {
+      border-left-color: #94a3b8 !important;
+    }
+
+    .bg-sales {
+      background: #3b82f6;
+    }
+
+    .bg-sm {
+      background: #06b6d4;
+    }
+
+    .bg-pur {
+      background: #8b5cf6;
+    }
+
+    .bg-pm {
+      background: #f59e0b;
+    }
+
+    .bg-hr {
+      background: #10b981;
+    }
+
+    .bg-sys {
+      background: #64748b;
+    }
+
+    .circle-sales {
+      background: #3b82f6;
+    }
+
+    .circle-sm {
+      background: #06b6d4;
+    }
+
+    .circle-pur {
+      background: #8b5cf6;
+    }
+
+    .circle-pm {
+      background: #f59e0b;
+    }
+
+    .circle-hr {
+      background: #10b981;
+    }
+
+    .circle-sys {
+      background: #64748b;
+    }
+
+    .circle-start {
+      background: #1a202c;
+    }
+
+    .circle-end {
+      background: #276749;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ════════════════════════════════════════
+     HEADER
+════════════════════════════════════════ -->
+  <div class="page-header">
+    <h1>🏢 A+ Smart Solution</h1>
+    <p>คู่มือการทำงานของระบบ — ตั้งแต่เปิดโปรแกรมจนถึงจ่าย Commission</p>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     WHO'S WHO
+════════════════════════════════════════ -->
+  <div class="who-section">
+    <div class="who-card">
+      <div class="who-icon" style="background:#dbeafe">💼</div>
+      <div class="who-text">
+        <div class="name" style="color:#1e40af">Sales ฝ่ายขาย</div>
+        <div class="role">กรอก SO, ติดตามยอด</div>
+      </div>
+    </div>
+    <div class="who-card">
+      <div class="who-icon" style="background:#cffafe">👔</div>
+      <div class="who-text">
+        <div class="name" style="color:#0e7490">Sales Manager</div>
+        <div class="role">อนุมัติ/ปฏิเสธ SO</div>
+      </div>
+    </div>
+    <div class="who-card">
+      <div class="who-icon" style="background:#ede9fe">📦</div>
+      <div class="who-text">
+        <div class="name" style="color:#5b21b6">Purchasing จัดซื้อ</div>
+        <div class="role">สร้าง PO จาก SO</div>
+      </div>
+    </div>
+    <div class="who-card">
+      <div class="who-icon" style="background:#fef3c7">🏦</div>
+      <div class="who-text">
+        <div class="name" style="color:#92400e">Pur Manager/Director</div>
+        <div class="role">อนุมัติ PO หลายชั้น</div>
+      </div>
+    </div>
+    <div class="who-card">
+      <div class="who-icon" style="background:#d1fae5">🧮</div>
+      <div class="who-text">
+        <div class="name" style="color:#065f46">HR บุคคล</div>
+        <div class="role">ตรวจสอบ + คิด Commission</div>
+      </div>
+    </div>
+    <div class="who-card">
+      <div class="who-icon" style="background:#f1f5f9">⚙️</div>
+      <div class="who-text">
+        <div class="name" style="color:#475569">ระบบอัตโนมัติ</div>
+        <div class="role">ทำงานเองตลอด 24h</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 0: เปิดโปรแกรม
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#1a202c,#2d3748)">
+      <div class="phase-num">0</div>
+      <div>
+        <h2>🚀 เปิดโปรแกรมและ Login</h2>
+        <p>ระบบเตรียมตัว, เชื่อมฐานข้อมูล, แล้วรอรับ User</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-start">🖥</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sys">
+          <span class="step-who bg-sys">⚙️ ระบบ</span>
+          <div class="step-title">เปิดโปรแกรม A+ Smart</div>
+          <div class="step-desc">
+            ระบบทำ 3 อย่างอัตโนมัติก่อนที่ใครจะ Login ได้:
+            <ul>
+              <li>🔌 เชื่อมต่อฐานข้อมูล PostgreSQL (Server-APrime)</li>
+              <li>⏰ ตั้งนาฬิกาเช็ค Notification ทุก <strong>15 วินาที</strong></li>
+              <li>🔄 ตั้ง background task ทุก <strong>1 ชั่วโมง</strong> (auto-submit งานค้าง)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-start">🔐</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sys">
+          <span class="step-who bg-sys">⚙️ ระบบ</span>
+          <div class="step-title">หน้า Login — ใส่ Username + Password</div>
+          <div class="step-desc">
+            หลังกด Login ระบบจะดูว่า User คนนี้เป็น "ตำแหน่ง" อะไร แล้วเปิดหน้าจอที่ถูกต้องให้เลย:
+            <ul>
+              <li>💼 Sales → หน้ากรอก SO</li>
+              <li>👔 Sales Manager → หน้าคิว SO รออนุมัติ</li>
+              <li>📦 Purchasing → หน้าสร้าง PO</li>
+              <li>🏦 Pur Manager / Director → หน้าอนุมัติ PO</li>
+              <li>🧮 HR → หน้าตรวจสอบและคิด Commission</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 1: Sales กรอก SO
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#1d4ed8,#3b82f6)">
+      <div class="phase-num">1</div>
+      <div>
+        <h2>💼 Sales กรอก SO แล้วส่งอนุมัติ</h2>
+        <p>Sales Order = ใบบันทึกการขาย ยอด ลูกค้า และรายละเอียดทั้งหมด</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sales">1</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sales">
+          <span class="step-who bg-sales">💼 Sales</span>
+          <div class="step-title">กรอกข้อมูล SO (Sales Order)</div>
+          <div class="step-desc">
+            ใส่ข้อมูลทุกอย่างที่เกี่ยวกับการขายครั้งนี้:
+            <ul>
+              <li>📄 เลข SO, ชื่อลูกค้า</li>
+              <li>💰 ยอดขาย (Sales Amount), ค่า Service</li>
+              <li>🧾 VAT, WHT ตามที่ลูกค้าตกลง</li>
+              <li>🚚 วันส่งสินค้า, ที่อยู่จัดส่ง</li>
+              <li>📅 กำหนดชำระเงิน</li>
+            </ul>
+          </div>
+          <div><span class="badge badge-gray">📝 สถานะ: Draft</span></div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sales">2</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sales">
+          <span class="step-who bg-sales">💼 Sales</span>
+          <div class="step-title">กด "Submit" ส่งให้ Sales Manager อนุมัติ</div>
+          <div class="step-desc">
+            เมื่อกรอกครบแล้ว กด Submit — ระบบจะ:
+            <ul>
+              <li>🔔 ส่ง Notification แจ้ง Sales Manager ทันที</li>
+              <li>🔒 ล็อก SO ไม่ให้แก้ไขได้จนกว่าจะมีผล</li>
+            </ul>
+          </div>
+          <div><span class="badge badge-yellow">⏳ สถานะ: Pending SM Approval</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 2: Sales Manager อนุมัติ SO
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#0e7490,#06b6d4)">
+      <div class="phase-num">2</div>
+      <div>
+        <h2>👔 Sales Manager ตรวจสอบและตัดสินใจ</h2>
+        <p>จุดแรกที่ข้อมูลอาจ "โดนตีกลับ" — ถ้าข้อมูลไม่ถูกต้อง SO จะถูกส่งกลับ Sales</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sm">3</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sm">
+          <span class="step-who bg-sm">👔 Sales Manager</span>
+          <div class="step-title">รับ Notification และตรวจสอบ SO</div>
+          <div class="step-desc">
+            Sales Manager เห็น SO ในคิว จะดูข้อมูลทั้งหมด:
+            <ul>
+              <li>ยอดขายถูกต้องมั้ย</li>
+              <li>ชื่อลูกค้าและเงื่อนไขครบมั้ย</li>
+              <li>วันส่งสมเหตุสมผลมั้ย</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sm">4</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sm">
+          <span class="step-who bg-sm">👔 Sales Manager</span>
+          <div class="step-title">ตัดสินใจ: อนุมัติ หรือ ปฏิเสธ?</div>
+          <div class="step-desc">มี 2 ทางเลือก:</div>
+          <div class="decision">
+            <div class="decision-yes">
+              <div class="d-title">✅ อนุมัติ (Approve)</div>
+              <div class="d-desc">
+                SO ถูกส่งต่อให้<strong>ฝ่าย Purchasing</strong> เพื่อไปสร้าง PO ต่อ<br><br>
+                🔔 ระบบแจ้ง Purchasing ทันที
+              </div>
+              <div><span class="badge badge-green">✅ SM Approved</span></div>
+            </div>
+            <div class="decision-no">
+              <div class="d-title">❌ ปฏิเสธ (Reject)</div>
+              <div class="d-desc">
+                SM ต้องพิมพ์ <strong>"เหตุผล"</strong> ก่อนกด Reject<br><br>
+                🔔 ระบบแจ้งกลับไปที่ Sales ทันที
+              </div>
+              <div><span class="badge badge-red">❌ Rejected</span></div>
+            </div>
+          </div>
+
+          <div class="reject-box" style="margin-top:16px">
+            <div class="rj-title">🔴 เส้นทางเมื่อโดน Reject (ตีกลับ Phase 1)</div>
+            <div class="rj-arrow">↓</div>
+            <div class="rj-desc">
+              <strong>1. Sales Manager กด Reject + พิมพ์เหตุผล</strong><br>
+              <strong>2. ระบบเปลี่ยนสถานะ SO → "Edited"</strong> (ปลดล็อกให้แก้ไขได้)<br>
+              <strong>3. 🔔 Notification ส่งไปหา Sales ทันที</strong> ว่า SO ถูกตีกลับ พร้อมเหตุผล<br>
+              <strong>4. Sales เข้าไปแก้ไขข้อมูล</strong> ใน Tab "ประวัติการบันทึก"<br>
+              <strong>5. Sales กด Submit ใหม่</strong> → วนกลับไป Phase 2 ใหม่อีกรอบ<br><br>
+              ⚠️ วนได้ไม่จำกัดจนกว่า SM จะ Approve
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 3: Purchasing สร้าง PO
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#5b21b6,#8b5cf6)">
+      <div class="phase-num">3</div>
+      <div>
+        <h2>📦 Purchasing สร้าง PO จาก SO ที่อนุมัติแล้ว</h2>
+        <p>Purchase Order = ใบสั่งซื้อสินค้าจาก Supplier เพื่อมาตอบ SO ของลูกค้า</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-pur">5</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-pur">
+          <span class="step-who bg-pur">📦 Purchasing</span>
+          <div class="step-title">รับงาน SO ที่ SM อนุมัติแล้ว</div>
+          <div class="step-desc">
+            ในหน้า "รับงาน SO" จะเห็น SO ทั้งหมดที่ผ่าน SM มาแล้ว<br>
+            เลือก SO ที่จะสร้าง PO → กดเปิดฟอร์ม
+          </div>
+          <div><span class="badge badge-green">✅ SO Approved</span></div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-pur">6</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-pur">
+          <span class="step-who bg-pur">📦 Purchasing</span>
+          <div class="step-title">กรอกข้อมูล PO (Purchase Order)</div>
+          <div class="step-desc">
+            <ul>
+              <li>📄 เลข PO, ชื่อ Supplier (ผู้ขายส่ง)</li>
+              <li>📋 รายการสินค้า + ราคาต้นทุน</li>
+              <li>🔢 ราคาสินค้า <strong>(ระบบจะคำนวณต้นทุนแฝงตามนโยบายบริษัทอัตโนมัติ)</strong></li>
+              <li>🚢 ค่าขนส่ง (แยก: ไปโกดัง / ไปหน้างาน)</li>
+              <li>🔧 ค่าบริการอื่นๆ (ตัด/เจาะ/ฯลฯ)</li>
+              <li>🧾 VAT, WHT ตามที่ตกลง</li>
+            </ul>
+          </div>
+          <div class="info-box">
+            <strong>📌 หมายเหตุการคำนวณต้นทุน:</strong> ระบบจะคำนวณต้นทุนแฝง (Overhead)
+            เพิ่มเข้าไปในแต่ละรายการโดยอัตโนมัติ ตามมาตรฐานของบริษัท เพื่อให้ HR ใช้ตรวจสอบในขั้นตอนถัดไป
+          </div>
+          <div><span class="badge badge-gray">📝 สถานะ: Draft</span></div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-pur">7</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-pur">
+          <span class="step-who bg-pur">📦 Purchasing</span>
+          <div class="step-title">Submit PO เพื่อขออนุมัติ</div>
+          <div class="step-desc">
+            กด Submit → ระบบสร้าง PDF เอกสาร PO และแจ้ง Manager 1 ทันที
+          </div>
+          <div><span class="badge badge-yellow">⏳ สถานะ: Pending Approval</span></div>
+
+          <div class="info-box" style="background:#fef3c7;border-color:#f59e0b;color:#78350f">
+            <strong>⏰ ระบบ Auto-Submit:</strong> ถ้า Purchasing สร้าง PO แล้วทิ้งไว้เป็น Draft
+            เกิน <strong>24 ชั่วโมง</strong> ระบบจะ Submit ให้เองอัตโนมัติ (background task ทำทุกชั่วโมง)
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 4: Approval Chain PO
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#92400e,#f59e0b)">
+      <div class="phase-num">4</div>
+      <div>
+        <h2>🏦 สายการอนุมัติ PO — หลายชั้น</h2>
+        <p>จุดที่ 2 ที่ข้อมูลอาจ "โดนตีกลับ" — POอาจวิ่งไปมาหลายรอบก่อน Approve</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-pm">8</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-pm">
+          <span class="step-who bg-pm">🏦 Purchasing Manager 1</span>
+          <div class="step-title">รับ Notification และตรวจ PO รอบแรก</div>
+          <div class="step-desc">
+            Manager 1 ดู: ราคาต้นทุน, Supplier, รายการสินค้าถูกต้องมั้ย
+          </div>
+          <div class="decision">
+            <div class="decision-yes">
+              <div class="d-title">✅ Manager 1 Approve</div>
+              <div class="d-desc">ส่งต่อให้ Manager 2 ต่อ</div>
+              <div><span class="badge badge-green">M1 Approved</span></div>
+            </div>
+            <div class="decision-no">
+              <div class="d-title">❌ Manager 1 Reject</div>
+              <div class="d-desc">ตีกลับ Purchasing พร้อมเหตุผล</div>
+              <div><span class="badge badge-red">Rejected → ต้องแก้</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-pm">9</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-pm">
+          <span class="step-who bg-pm">🏦 Purchasing Manager 2 / Director</span>
+          <div class="step-title">อนุมัติรอบสอง (ขึ้นอยู่กับมูลค่า PO)</div>
+          <div class="step-desc">
+            PO มูลค่าสูงต้องผ่าน Director ด้วย — ตรวจในภาพรวมอีกรอบ
+          </div>
+          <div class="decision">
+            <div class="decision-yes">
+              <div class="d-title">✅ Final Approve</div>
+              <div class="d-desc">PO ผ่านแล้ว ส่งต่อ HR ตรวจ</div>
+              <div><span class="badge badge-green">PO Approved</span></div>
+            </div>
+            <div class="decision-no">
+              <div class="d-title">❌ Reject อีกครั้ง</div>
+              <div class="d-desc">ตีกลับ Purchasing อีกรอบ</div>
+              <div><span class="badge badge-red">Rejected</span></div>
+            </div>
+          </div>
+
+          <div class="reject-box" style="margin-top:16px">
+            <div class="rj-title">🔴 เส้นทางเมื่อ PO โดน Reject (ตีกลับ Phase 3)</div>
+            <div class="rj-arrow">↓</div>
+            <div class="rj-desc">
+              <strong>1. Manager กด Reject + พิมพ์เหตุผล</strong><br>
+              <strong>2. ระบบเปลี่ยนสถานะ PO → "Rejected"</strong><br>
+              <strong>3. 🔔 Notification ส่งกลับ Purchasing</strong> พร้อมเหตุผล<br>
+              <strong>4. Purchasing เปิด PO ขึ้นมาแก้ไข</strong> ในหน้า "ประวัติ PO"<br>
+              <strong>5. Purchasing กด Submit ใหม่</strong> → วนกลับไป Phase 4 ใหม่<br>
+              <strong>6. Manager ทุกคนต้องอนุมัติใหม่ทั้งหมด</strong> จากต้น<br><br>
+              ⚠️ วนได้ไม่จำกัดจนกว่าทุก Manager จะ Approve หมด
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 5: HR ตรวจสอบ
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#065f46,#10b981)">
+      <div class="phase-num">5</div>
+      <div>
+        <h2>🧮 HR ตรวจสอบข้อมูลทั้งหมด</h2>
+        <p>จุดที่ 3 ที่อาจตีกลับ — HR ตรวจตัวเลขทุกอย่างก่อนคำนวณ Commission</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-hr">10</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-hr">
+          <span class="step-who bg-hr">🧮 HR</span>
+          <div class="step-title">ตรวจสอบข้อมูล SO vs ข้อมูล Express</div>
+          <div class="step-desc">
+            HR จะ match ข้อมูลระหว่าง SO กับข้อมูลจากระบบ Express:
+            <ul>
+              <li>ตัวเลขตรงกันมั้ย</li>
+              <li>ตัวคูณต้นทุน (Cost Multiplier) ถูกต้องตามนโยบายหรือไม่</li>
+              <li>ค่า Service Fees บันทึกถูกหมวดมั้ย</li>
+              <li>ค่าขนส่งถูกต้องมั้ย</li>
+            </ul>
+          </div>
+          <div class="decision">
+            <div class="decision-yes">
+              <div class="d-title">✅ ข้อมูลถูกต้อง</div>
+              <div class="d-desc">HR ผ่าน → คำนวณ Commission ได้เลย</div>
+              <div><span class="badge badge-green">HR Verified</span></div>
+            </div>
+            <div class="decision-no">
+              <div class="d-title">⚠️ พบความผิดปกติ</div>
+              <div class="d-desc">HR Flag ปัญหา แจ้ง Purchasing แก้ไข</div>
+              <div><span class="badge badge-red">Flag Discrepancy</span></div>
+            </div>
+          </div>
+
+          <div class="reject-box" style="margin-top:16px">
+            <div class="rj-title">🔴 เส้นทางเมื่อ HR พบปัญหา (ตีกลับ Phase 3 หรือ 4)</div>
+            <div class="rj-arrow">↓</div>
+            <div class="rj-desc">
+              <strong>1. HR Flag ข้อผิดพลาดพร้อมรายละเอียด</strong><br>
+              <strong>2. 🔔 แจ้ง Purchasing หรือ Sales</strong> ว่าข้อมูลไม่ตรง<br>
+              <strong>3. ฝ่ายที่รับผิดชอบแก้ไข</strong> (Purchasing แก้ PO หรือ Sales แก้ SO)<br>
+              <strong>4. Submit ใหม่ → ผ่าน Approval Chain ใหม่ทั้งหมด</strong><br>
+              <strong>5. HR ตรวจอีกครั้ง</strong> จนกว่าข้อมูลจะถูกต้อง
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 5B: การเลื่อนรอบจ่าย Commission
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#92400e,#d97706)">
+      <div class="phase-num">5B</div>
+      <div>
+        <h2>⏳ การเลื่อนรอบจ่าย Commission (Defer)</h2>
+        <p>HR เห็นว่า SO ยังไม่พร้อมจ่ายคอมรอบนี้ → ขอเลื่อนไปรอบถัดไป → SM ตัดสินใจ</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-hr">⏳</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-hr">
+          <span class="step-who bg-hr">🧮 HR</span>
+          <div class="step-title">HR กดปุ่ม "เลื่อนไปเดือนถัดไป (Defer)"</div>
+          <div class="step-desc">
+            ระหว่างที่ HR กำลังตรวจสอบ SO อยู่ใน Phase 5 ถ้าเห็นว่า SO ยังไม่เหมาะสมจ่ายคอมรอบนี้ จะกดเลื่อนแทน:
+            <ul>
+              <li>📋 เลือก <strong>ประเภทการเลื่อน</strong> (Defer Type)</li>
+              <li>💬 ระบุเหตุผลที่ขอเลื่อน</li>
+              <li>📅 ใส่วันส่งสินค้าใหม่ที่คาดว่าจะได้ (ถ้ามี)</li>
+              <li>💳 ใส่วันชำระเงินใหม่ที่คาดว่าจะได้ (ถ้ามี)</li>
+              <li>⚠️ ติ๊ก "Collection Risk สูง" (ถ้ามีความเสี่ยงเก็บเงินไม่ได้)</li>
+            </ul>
+          </div>
+          <div class="defer-box">
+            <div class="df-title">🟡 สิ่งที่ระบบทำทันทีเมื่อ HR กด Defer</div>
+            <div class="df-arrow">↓</div>
+            <div class="df-desc">
+              <strong>1. สถานะ SO เปลี่ยน → "Defer Requested"</strong><br>
+              <strong>2. ระบบบันทึกเดือนต้นทาง</strong> (defer_source_month/year) ไว้ว่าเดิมอยู่รอบไหน<br>
+              <strong>3. commission_month/year เลื่อนไปเดือนถัดไปก่อน</strong> (รอ SM ยืนยัน)<br>
+              <strong>4. 🔔 ระบบส่ง Notification ไปหา Sales</strong> ว่า SO ของตัวเองถูกขอเลื่อน<br>
+              <strong>5. 🔔 ระบบส่ง Notification ไปหา Sales Manager</strong> ให้มาตัดสินใจ
+            </div>
+          </div>
+          <div style="margin-top:10px"><span class="badge badge-orange">⏳ Defer Requested</span></div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sales">👁</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sales">
+          <span class="step-who bg-sales">💼 Sales (ฝ่ายขาย)</span>
+          <div class="step-title">Sales เห็น Notification และดูสถานะ</div>
+          <div class="step-desc">
+            Sales เปิดโปรแกรมมา → มี <strong>Popup บังคับรับทราบ</strong> ขึ้นมาทันที (DeferralNoticeDialog)<br><br>
+            ใน Tab ติดตามสถานะ จะเห็น SO นี้แสดงว่า:<br>
+            <ul>
+              <li>สถานะ: <strong>"รอ Manager อนุมัติเลื่อนจ่าย"</strong></li>
+              <li>ปุ่มจะเป็น <strong>"รอผลตัดสินใจ"</strong> — กดไม่ได้ ต้องรอ SM</li>
+            </ul>
+          </div>
+          <div class="info-box">
+            <strong>📌 Sales ทำอะไรไม่ได้ในขั้นตอนนี้</strong> — ต้องรอให้ SM ตัดสินใจก่อน ถึงจะรู้ว่า SO นี้จะเลื่อนหรือบังคับจ่ายรอบนี้
+          </div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sm">⚖</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sm">
+          <span class="step-who bg-sm">👔 Sales Manager</span>
+          <div class="step-title">SM เห็น Tab "⏳ คำขอเลื่อนรอบคอมฯ" และตัดสินใจ</div>
+          <div class="step-desc">
+            SM เปิด Tab พิเศษที่แสดงรายการขอเลื่อนทั้งหมด จะเห็น:
+            <ul>
+              <li>เลข SO, ชื่อลูกค้า</li>
+              <li>🔄 รอบที่ขอเลื่อนจาก → ไปเป็น (เช่น เมษายน → พฤษภาคม)</li>
+              <li>👤 ชื่อ Sales + เหตุผลที่ HR ระบุ</li>
+            </ul>
+          </div>
+          <div class="decision">
+            <div class="decision-yes">
+              <div class="d-title">✅ อนุมัติให้เลื่อน</div>
+              <div class="d-desc">
+                SM กดปุ่ม "อนุมัติให้เลื่อน"<br>
+                เลือกเดือน/ปีปลายทาง<br>
+                ใส่เหตุผล
+              </div>
+              <div><span class="badge badge-green">→ สถานะ: Deferred</span></div>
+            </div>
+            <div class="decision-no">
+              <div class="d-title">❌ ไม่อนุมัติ (บังคับจ่าย)</div>
+              <div class="d-desc">
+                SM กดปุ่ม "ไม่อนุมัติ (บังคับจ่าย)"<br>
+                ใส่เหตุผล<br>
+                SO กลับไปจ่ายรอบเดิม
+              </div>
+              <div><span class="badge badge-yellow">→ สถานะ: Pending HR Approval</span></div>
+            </div>
+          </div>
+
+          <div class="defer-box" style="margin-top:16px">
+            <div class="df-title">🟡 ผลลัพธ์ 2 ทาง หลัง SM ตัดสินใจ</div>
+            <div class="df-arrow">↓</div>
+            <div class="df-desc">
+              <strong>ทาง A — SM อนุมัติเลื่อน:</strong><br>
+              &nbsp;&nbsp;• สถานะ → <strong>"Deferred"</strong><br>
+              &nbsp;&nbsp;• commission_month/year ถูกเซ็ตเป็นเดือนปลายทางที่ SM เลือก<br>
+              &nbsp;&nbsp;• SO หายไปจากรอบนี้ → <strong>โผล่ในรอบเดือนหน้าแทน</strong><br>
+              &nbsp;&nbsp;• 🔔 Sales รับ Notification พร้อม Popup บังคับรับทราบ<br>
+              &nbsp;&nbsp;• Sales เห็น SO นี้ในตาราง "รายการที่ถูกเลื่อน" พร้อมหมายเหตุ "เลื่อนมาจาก [เดือน]"<br>
+              &nbsp;&nbsp;• <strong>เดือนหน้า HR ต้องตรวจสอบ SO นี้ใหม่อีกครั้ง (Phase 5 อีกรอบ)</strong><br><br>
+              <strong>ทาง B — SM ไม่อนุมัติ (บังคับจ่าย):</strong><br>
+              &nbsp;&nbsp;• สถานะ → <strong>"Pending HR Approval"</strong> (กลับมาจ่ายรอบเดิม)<br>
+              &nbsp;&nbsp;• 🔔 Sales รับ Notification พร้อม Popup บังคับรับทราบ<br>
+              &nbsp;&nbsp;• HR ต้องกลับมาตรวจสอบ SO นี้ใน Phase 5 ใหม่ → คำนวณ Commission รอบนี้ตามปกติ
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sales">📬</div>
+        </div>
+        <div class="step-card c-sales">
+          <span class="step-who bg-sales">💼 Sales (ฝ่ายขาย)</span>
+          <div class="step-title">Sales รับทราบผลการตัดสินใจ (Popup บังคับ)</div>
+          <div class="step-desc">
+            เมื่อ Sales เปิดโปรแกรม ระบบจะ <strong>ดึง Notification [DEFER] ที่ยังไม่รับทราบ</strong> มาแสดง Popup บังคับทันที<br><br>
+            Sales ต้องกด <strong>"รับทราบ"</strong> ก่อนถึงจะใช้งานระบบต่อได้
+          </div>
+          <div class="info-box" style="background:#f0fff4;border-color:#68d391;color:#22543d">
+            <strong>✅ กรณีเลื่อนสำเร็จ (Deferred):</strong> SO นี้จะโผล่อยู่ใน Tab "รายการที่ถูกเลื่อน" ในหน้า Sales จนกว่าเดือนนั้นจะถึงและ HR คำนวณเสร็จ
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 6: คำนวณ Commission
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#065f46,#10b981)">
+      <div class="phase-num">6</div>
+      <div>
+        <h2>💰 HR คำนวณ Commission</h2>
+        <p>หลัง HR Verify แล้ว ระบบจะคิด Commission ให้ Sales ตาม Plan ที่กำหนด</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-hr">11</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-hr">
+          <span class="step-who bg-hr">🧮 HR</span>
+          <div class="step-title">เลือก Commission Plan และคำนวณ</div>
+          <div class="step-desc">
+            ระบบคำนวณตามโครงสร้าง:
+          </div>
+          <div class="formula-box">
+            <div style="margin-bottom:8px"><strong>📊 กระบวนการประมวลผลอัตโนมัติ:</strong></div>
+            <div class="fx">1. ระบบดึงข้อมูลยอดขายและโครงสร้างต้นทุนที่ผ่านการอนุมัติ</div>
+            <div class="fx" style="margin-top:4px">2. ประมวลผลกำไรและอัตราส่วน (Margin) ตามนโยบายบริษัท</div>
+            <div class="fx" style="margin-top:4px">3. เทียบเคียงเป้ายอดขาย (KPI) และเงื่อนไขการทำงานของพนักงาน</div>
+            <div class="fx" style="margin-top:4px">4. คำนวณยอด Commission สุทธิเข้าสู่ระบบเงินเดือน</div>
+          </div>
+          <div style="margin-top:10px"><span class="badge badge-blue">💰 Commission คำนวณแล้ว</span></div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-hr">12</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-hr">
+          <span class="step-who bg-hr">🧮 HR</span>
+          <div class="step-title">ดู Dashboard และ Cost Benchmarking</div>
+          <div class="step-desc">
+            <ul>
+              <li>📈 Cost Benchmark: เปรียบต้นทุนจริงกับเป้าหมาย</li>
+              <li>📋 Outstanding Dashboard: ดูรายการที่ยังค้างอยู่ทั้งหมด</li>
+              <li>📊 Daily Report: สรุปยอดรายวัน</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 7: Sales อัปเดตยอด + ดูผล
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#1d4ed8,#3b82f6)">
+      <div class="phase-num">7</div>
+      <div>
+        <h2>💼 Sales อัปเดตยอดชำระและดู Commission</h2>
+        <p>หลังสินค้าส่งแล้ว Sales ต้องอัปเดตยอดที่รับจริงจากลูกค้า</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sales">13</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sales">
+          <span class="step-who bg-sales">💼 Sales</span>
+          <div class="step-title">อัปเดตยอดชำระจริง (Tab: อัปเดตยอดชำระ)</div>
+          <div class="step-desc">
+            ลูกค้าโอนเงินมาแล้ว Sales กรอกยอดที่รับจริง<br>
+            ระบบจะเปรียบเทียบกับยอดที่คาดไว้ และ reconcile ส่วนต่าง
+          </div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-sales">14</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-sales">
+          <span class="step-who bg-sales">💼 Sales</span>
+          <div class="step-title">ดู Commission ที่ได้รับ (Tab: ประวัติ)</div>
+          <div class="step-desc">
+            Sales ดูได้ว่าได้ Commission เท่าไหร่จาก SO นี้<br>
+            Export เป็น Excel ได้
+          </div>
+          <div><span class="badge badge-blue">💰 Commission ได้รับแล้ว</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     PHASE 8: Archive
+════════════════════════════════════════ -->
+  <div class="phase">
+    <div class="phase-header" style="background: linear-gradient(135deg,#1a202c,#4a5568)">
+      <div class="phase-num">8</div>
+      <div>
+        <h2>🗄️ HR Archive ปิดรอบ Commission</h2>
+        <p>ปลายปีหรือปลายรอบ HR ส่ง archive เพื่อปิดบัญชี Commission</p>
+      </div>
+    </div>
+
+    <div class="steps">
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-hr">15</div>
+          <div class="step-connector"></div>
+        </div>
+        <div class="step-card c-hr">
+          <span class="step-who bg-hr">🧮 HR</span>
+          <div class="step-title">Export Commission ทั้งหมดเป็น Excel</div>
+          <div class="step-desc">
+            HR ใช้ Tab "Archive" เพื่อ Export ข้อมูล Commission ทั้งรอบ<br>
+            บันทึกเป็นไฟล์ Excel ถาวรไว้ในระบบ
+          </div>
+          <div><span class="badge badge-purple">🗄️ Archived</span></div>
+        </div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-line">
+          <div class="step-circle circle-end">🏁</div>
+        </div>
+        <div class="step-card" style="border-left-color:#10b981;background:#f0fff4">
+          <span class="step-who" style="background:#065f46">🏁 จบรอบ</span>
+          <div class="step-title" style="color:#065f46">ปิดรอบ — รอ SO รอบใหม่</div>
+          <div class="step-desc">
+            ระบบพร้อมรับ SO ใหม่รอบต่อไป<br>
+            ทุก Notification ถูก mark-read, Audit Log บันทึกทุก action ไว้แล้ว
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     REJECTION SUMMARY TABLE
+════════════════════════════════════════ -->
+  <div class="summary-section">
+    <h2>🔴 สรุป: เมื่อข้อมูลโดนตีกลับ — ไปไหน ใครแก้?</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ใครตีกลับ?</th>
+          <th>ตีกลับอะไร?</th>
+          <th>ข้อมูลไปที่ไหน?</th>
+          <th>ใครต้องแก้ไข?</th>
+          <th>หลังแก้แล้ว?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>👔 <strong>Sales Manager</strong></td>
+          <td>SO ไม่ถูกต้อง</td>
+          <td>🔔 Notification → Sales<br>สถานะ → "Edited"</td>
+          <td>💼 <strong>Sales</strong> เปิด Tab "ประวัติ" แก้ไข SO</td>
+          <td>Sales Submit ใหม่ → SM อนุมัติใหม่</td>
+        </tr>
+        <tr>
+          <td>🏦 <strong>Pur Manager 1</strong></td>
+          <td>PO ไม่ถูกต้อง</td>
+          <td>🔔 Notification → Purchasing<br>สถานะ → "Rejected"</td>
+          <td>📦 <strong>Purchasing</strong> เปิดหน้า "ประวัติ PO" แก้ไข</td>
+          <td>Submit ใหม่ → ผ่าน Manager ทุกคนอีกรอบ</td>
+        </tr>
+        <tr>
+          <td>🏦 <strong>Pur Manager 2 / Director</strong></td>
+          <td>PO ไม่ผ่านระดับสูง</td>
+          <td>🔔 Notification → Purchasing<br>สถานะ → "Rejected"</td>
+          <td>📦 <strong>Purchasing</strong> แก้ไขตามที่ Director ระบุ</td>
+          <td>Submit ใหม่ → ผ่าน M1, M2, Director ใหม่</td>
+        </tr>
+        <tr>
+          <td>🧮 <strong>HR ตรวจพบปัญหา</strong></td>
+          <td>ตัวเลขหรือสูตรคำนวณไม่ตรง</td>
+          <td>🔔 Flag → Purchasing หรือ Sales<br>ระบุรายละเอียดปัญหา</td>
+          <td>📦 <strong>Purchasing</strong> แก้ PO หรือ 💼 <strong>Sales</strong> แก้ SO</td>
+          <td>Submit ใหม่ → ผ่าน Approval Chain ทั้งหมดอีกรอบ</td>
+        </tr>
+        <tr style="background:#fff7ed">
+          <td>🧮 <strong>HR ขอเลื่อน (Defer)</strong></td>
+          <td>SO ยังไม่พร้อมจ่ายคอมรอบนี้</td>
+          <td>🔔 Notification → Sales + SM<br>สถานะ → <strong>"Defer Requested"</strong><br>commission_month เลื่อนไปเดือนหน้าก่อน</td>
+          <td>👔 <strong>SM</strong> เปิด Tab "คำขอเลื่อนรอบคอมฯ" แล้วตัดสินใจ</td>
+          <td>
+            ✅ SM อนุมัติ → <strong>"Deferred"</strong> → SO ไปรอบหน้า HR ตรวจใหม่<br>
+            ❌ SM ไม่อนุมัติ → <strong>"Pending HR Approval"</strong> → จ่ายรอบนี้ตามปกติ
+          </td>
+        </tr>
+        <tr style="background:#fffbeb">
+          <td>👔 <strong>SM อนุมัติเลื่อน</strong></td>
+          <td>SO ถูกเลื่อนไปรอบหน้า (Deferred)</td>
+          <td>🔔 Popup บังคับ → Sales ต้องรับทราบ<br>สถานะ → <strong>"Deferred"</strong><br>SO โผล่ใน "รายการที่ถูกเลื่อน"</td>
+          <td>💼 <strong>Sales</strong> รับทราบ (กด OK ใน Popup)<br>ไม่ต้องทำอะไรเพิ่ม</td>
+          <td>เดือนหน้า HR เห็น SO นี้ใหม่ → Phase 5 ใหม่อีกรอบ</td>
+        </tr>
+        <tr style="background:#f0fff4">
+          <td>⚙️ <strong>ระบบ Auto</strong></td>
+          <td>PO Draft ค้าง > 24h</td>
+          <td>ระบบ Submit ให้เองอัตโนมัติ</td>
+          <td>ไม่ต้องทำอะไร ระบบจัดการเอง</td>
+          <td>PO เข้าคิวอนุมัติปกติ</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ════════════════════════════════════════
+     NOTIFICATION SYSTEM SUMMARY
+════════════════════════════════════════ -->
+  <div class="summary-section">
+    <h2>🔔 ระบบ Notification — ใครได้รับแจ้งอะไร?</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>เหตุการณ์</th>
+          <th>ใครได้รับแจ้ง?</th>
+          <th>เช็คทุก...?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Sales Submit SO</td>
+          <td>👔 Sales Manager</td>
+          <td rowspan="8" style="text-align:center;vertical-align:middle;font-size:20px;font-weight:800;color:#065f46">
+            ⏰<br><strong>15</strong><br>วินาที</td>
+        </tr>
+        <tr>
+          <td>SM Approve SO</td>
+          <td>📦 Purchasing</td>
+        </tr>
+        <tr>
+          <td>SM Reject SO</td>
+          <td>💼 Sales (+ เหตุผล)</td>
+        </tr>
+        <tr>
+          <td>Purchasing Submit PO</td>
+          <td>🏦 Purchasing Manager 1</td>
+        </tr>
+        <tr>
+          <td>M1 Approve PO</td>
+          <td>🏦 Manager 2 / Director</td>
+        </tr>
+        <tr>
+          <td>Manager Reject PO</td>
+          <td>📦 Purchasing (+ เหตุผล)</td>
+        </tr>
+        <tr>
+          <td>PO Final Approved</td>
+          <td>🧮 HR</td>
+        </tr>
+        <tr>
+          <td>HR Flag ปัญหา</td>
+          <td>📦 Purchasing หรือ 💼 Sales</td>
+        </tr>
+        <tr style="background:#fff7ed">
+          <td>⏳ HR ขอเลื่อน (Defer)</td>
+          <td>💼 Sales (แจ้งว่าโดนขอเลื่อน) + 👔 SM (ให้มาตัดสินใจ)</td>
+        </tr>
+        <tr style="background:#fff7ed">
+          <td>SM อนุมัติเลื่อน / ไม่อนุมัติ</td>
+          <td>💼 Sales → Popup บังคับรับทราบ (DeferralNoticeDialog)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="text-align:center;color:#a0aec0;font-size:13px;margin-top:20px">
+    A+ Smart Solution — คู่มือการทำงานของระบบ | ครอบคลุม SO → PO → Approval → Commission → Archive
+  </div>
+
+</body>
+
+</html>

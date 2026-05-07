@@ -382,6 +382,17 @@ class PurchasingManagerScreen(CTkFrame):
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
+
+        # Hook tab-change → show/hide header buttons (wrap original command, don't replace it)
+        try:
+            original_cmd = self.tab_view._segmented_button.cget("command")
+            def _combined_tab_cmd(tab_name, _orig=original_cmd, _self=self):
+                if _orig:
+                    _orig(tab_name)
+                _self._on_tab_changed(tab_name)
+            self.tab_view._segmented_button.configure(command=_combined_tab_cmd)
+        except Exception:
+            pass
     
     # --- START: เพิ่ม 6 ฟังก์ชันใหม่สำหรับแท็บ Master Edit ---
     
@@ -1115,9 +1126,10 @@ class PurchasingManagerScreen(CTkFrame):
                  font=CTkFont(size=22, weight="bold"), 
                  text_color=self.theme["header"]).pack(side="left")
         
-        # Container สำหรับปุ่มด้านขวา
+        # Container สำหรับปุ่มด้านขวา (show/hide ตาม active tab)
         button_container = CTkFrame(header_frame, fg_color="transparent")
         button_container.pack(side="right")
+        self.header_btn_container = button_container  # เก็บ ref ไว้ toggle
         
         # 1. ปุ่มอนุมัติ
         self.approve_all_button = CTkButton(button_container, 
@@ -1165,6 +1177,14 @@ class PurchasingManagerScreen(CTkFrame):
         
         # 5. ปุ่ม Logout
         CTkButton(button_container, text="ออก", width=60, command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="left", padx=5)
+
+    def _on_tab_changed(self, tab_name=None):
+        """แสดง/ซ่อน header buttons ตาม active tab"""
+        active = self.tab_view.get()
+        if active == "ภาพรวมและอนุมัติ (Manager View)":
+            self.header_btn_container.pack(side="right")
+        else:
+            self.header_btn_container.pack_forget()
 
     # -------------------------------------------------------------------------
     #  ฟังก์ชันสำหรับระบบยกเลิก SO (Manual Cancel)
