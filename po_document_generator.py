@@ -412,12 +412,18 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     cutting_wht_amount = cutting_cost * (0.01 if '1' in cut_wht_type_raw else (0.03 if '3' in cut_wht_type_raw else 0))
 
     # 5. สรุปยอดรวม (Grand Total) และ ภาษีหัก ณ ที่จ่าย (WHT)
-    recalc_total_vat = recalc_product_vat + shipping_stock_vat + shipping_site_vat + cutting_vat    
-    recalc_grand_total = net_product_cost + total_shipping_cost + cutting_cost + recalc_total_vat
-    
+    recalc_total_vat = recalc_product_vat + shipping_stock_vat + shipping_site_vat + cutting_vat
+
+    # ยอดรวมทั้งหมด (รวมค่ารถ) — ใช้คำนวณยอดค้างชำระ
+    recalc_grand_total_with_shipping = net_product_cost + total_shipping_cost + cutting_cost + recalc_total_vat
+
+    # "รวมทั้งสิ้น" ฝั่งขวาของ PO — ไม่รวมค่ารถ และไม่รวม Vat ของค่ารถ
+    recalc_total_vat_no_shipping = recalc_product_vat + cutting_vat
+    recalc_grand_total = net_product_cost + cutting_cost + recalc_total_vat_no_shipping
+
     total_all_wht = product_wht_amt + stock_wht_amt + site_wht_amt + cutting_wht_amount
-    
-    # 6. ยอดค้างชำระ (นำยอดรวมมาลบด้วยมัดจำและภาษีหัก ณ ที่จ่าย)
+
+    # 6. ยอดค้างชำระ (คิดจาก recalc_grand_total ที่ไม่รวมค่ารถ — ค่ารถแยกต่างหาก ไม่เกี่ยวกับค่าสินค้า)
     balance_due = recalc_grand_total - (deposit_amount + full_payment_amount + total_all_wht)
 
     # 🟢 [เพิ่ม Logic อัจฉริยะ] ถ้ายอดค้างเป็น 0 (จ่ายครบ) และมีเงินค้างอยู่ในช่องมัดจำ ให้ย้ายไป "ชำระเต็ม" อัตโนมัติ
@@ -432,8 +438,8 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     
     # Top (3 rows) - เปลี่ยนให้แสดงยอดรวมต้นทุนหักส่วนลด (net_product_cost) ให้ตรงกับ UI
     payment_data_top = [
-        [PB('เลขที่บัญชี', 'Small_TH'), make_para(display_account_number), PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(net_product_cost), 'Small_Right_TH')], 
-        [PB('ธนาคาร', 'Small_TH'), make_para(display_bank_name), PB('Vat 7%', 'Small_TH'), make_para(format_num(recalc_total_vat), 'Small_Right_TH')], 
+        [PB('เลขที่บัญชี', 'Small_TH'), make_para(display_account_number), PB('รวมต้นทุน', 'Small_TH'), make_para(format_num(net_product_cost), 'Small_Right_TH')],
+        [PB('ธนาคาร', 'Small_TH'), make_para(display_bank_name), PB('Vat 7%', 'Small_TH'), make_para(format_num(recalc_total_vat_no_shipping), 'Small_Right_TH')],
         [PB('ประเภท', 'Small_TH'), make_para(display_account_type, 'Small_TH'), PB('รวมทั้งสิ้น', 'Small_TH'), make_para(format_num(recalc_grand_total), 'Small_Right_TH')]
     ]
     unified_payment_data.extend(payment_data_top)
