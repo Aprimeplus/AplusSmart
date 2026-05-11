@@ -5,7 +5,7 @@ import pandas as pd
 import psycopg2.extras
 from datetime import datetime
 import utils
-from custom_widgets import NumericEntry
+from custom_widgets import NumericEntry, DateSelector
 
 class SalesSupportOutstandingManager(ctk.CTkFrame):
     def __init__(self, master, app_container):
@@ -174,7 +174,7 @@ class SalesSupportOutstandingManager(ctk.CTkFrame):
         # --- Create Popup ---
         popup = ctk.CTkToplevel(self)
         popup.title(f"อัปเดตการชำระเงิน: {so_number}")
-        popup.geometry("400x450")
+        popup.geometry("400x530")
         popup.transient(self)
         popup.grab_set()
         
@@ -196,7 +196,11 @@ class SalesSupportOutstandingManager(ctk.CTkFrame):
         
         topup_entry = NumericEntry(popup, placeholder_text="ระบุจำนวนเงิน...")
         topup_entry.pack(pady=5, padx=20, fill="x")
-        
+
+        ctk.CTkLabel(popup, text="วันที่โอน:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 2))
+        topup_date = DateSelector(popup)
+        topup_date.pack(pady=5, padx=20, fill="x")
+
         # Checkbox: จ่ายครบแล้ว?
         is_fully_paid = ctk.CTkCheckBox(popup, text="เคลียร์ยอดทั้งหมด (จ่ายครบแล้ว)")
         is_fully_paid.pack(pady=10)
@@ -228,12 +232,12 @@ class SalesSupportOutstandingManager(ctk.CTkFrame):
                 with conn.cursor() as cursor:
                     # 1. Update Commissions
                     cursor.execute("""
-                        UPDATE commissions 
+                        UPDATE commissions
                         SET total_payment_amount = %s,
                             difference_amount = %s,
                             payment_date = %s
                         WHERE id = %s
-                    """, (new_total_paid, new_diff, datetime.now(), comm_id))
+                    """, (new_total_paid, new_diff, topup_date.get_date(), comm_id))
                     
                     # 2. Audit Log (สำคัญมาก! ต้องรู้ว่า Sales Support คนไหนแก้)
                     log_msg = f"Support Top-up: {top_up_amount:,.2f} | New Paid: {new_total_paid:,.2f} | New Diff: {new_diff:,.2f}"

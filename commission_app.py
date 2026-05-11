@@ -28,7 +28,7 @@ class PaymentUpdateWindow(CTkToplevel):
         self.so_id = self.so_data['id']
 
         self.title(f"อัปเดตยอดชำระ SO: {self.so_data['so_number']}")
-        self.geometry("500x400")
+        self.geometry("560x500")
         self.grid_columnconfigure(0, weight=1)
 
         # --- Display Info ---
@@ -56,16 +56,30 @@ class PaymentUpdateWindow(CTkToplevel):
         payment_frame = CTkFrame(self)
         payment_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
         payment_frame.grid_columnconfigure(1, weight=1)
-        
+        payment_frame.grid_columnconfigure(3, weight=1)
+
         CTkLabel(payment_frame, text="ยอดโอนชำระ 1:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
         self.payment1_entry = NumericEntry(payment_frame)
-        # แสดงยอดโอนเดิมในช่องแรก
         self.payment1_entry.insert(0, f"{original_payment:,.2f}")
         self.payment1_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        CTkLabel(payment_frame, text="วันที่โอน:").grid(row=0, column=2, padx=(10, 2), pady=5, sticky="w")
+        self.payment1_date = DateSelector(payment_frame)
+        self.payment1_date.grid(row=0, column=3, padx=10, pady=5, sticky="ew")
 
         CTkLabel(payment_frame, text="ยอดโอนชำระ 2 (เพิ่มเติม):").grid(row=1, column=0, padx=10, pady=5, sticky="w")
         self.payment2_entry = NumericEntry(payment_frame, placeholder_text="กรอกยอดที่โอนเพิ่ม...")
         self.payment2_entry.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+        CTkLabel(payment_frame, text="วันที่โอน:").grid(row=1, column=2, padx=(10, 2), pady=5, sticky="w")
+        self.payment2_date = DateSelector(payment_frame)
+        self.payment2_date.grid(row=1, column=3, padx=10, pady=5, sticky="ew")
+
+        raw_date = self.so_data.get('payment_date')
+        if raw_date:
+            try:
+                dt = raw_date if not isinstance(raw_date, str) else datetime.strptime(raw_date, "%Y-%m-%d")
+                self.payment1_date.set_date(dt)
+            except (ValueError, TypeError):
+                pass
 
         # --- Buttons ---
         button_frame = CTkFrame(self, fg_color="transparent")
@@ -100,16 +114,16 @@ class PaymentUpdateWindow(CTkToplevel):
             new_status = current_status
             if new_difference >= 0:
                 new_status = 'Edited' # <--- เปลี่ยนตรงนี้ได้ตาม Flow ของบริษัทคุณ
-                
-            # 4. ใช้วันที่ปัจจุบันเป็นวันที่ชำระเงินงวดที่ 2
-            current_date_str = datetime.now().strftime("%Y-%m-%d")
-            
+
+            date1 = self.payment1_date.get_date()
+            date2 = self.payment2_date.get_date() if p2 > 0 else None
+
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
                 # 🟢 [แก้ไข] อัปเดตให้ครบทุกคอลัมน์ที่เกี่ยวข้อง
                 cursor.execute("""
-                    UPDATE commissions SET 
-                        total_payment_amount = %s, 
+                    UPDATE commissions SET
+                        total_payment_amount = %s,
                         payment1_amount = %s,
                         payment2_amount = %s,
                         payment2_date = %s,
@@ -119,14 +133,14 @@ class PaymentUpdateWindow(CTkToplevel):
                         timestamp = %s
                     WHERE id = %s
                 """, (
-                    new_total_payment, 
-                    p1, 
-                    p2, 
-                    current_date_str, # เก็บวันที่โอนเพิ่ม (payment2_date)
-                    current_date_str, # อัปเดตวันที่ชำระหลักด้วย
-                    new_difference, 
+                    new_total_payment,
+                    p1,
+                    p2,
+                    date2,
+                    date1,
+                    new_difference,
                     new_status,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     self.so_id
                 ))
             conn.commit()
@@ -312,12 +326,12 @@ class SalesTasksWindow(CTkToplevel):
         self.tree_comm.heading("SO Number", text="SO Number")
         self.tree_comm.heading("ลูกค้า", text="ลูกค้า")
         self.tree_comm.heading("ยอดขาย", text="ยอดขายสุทธิ")
-        self.tree_comm.heading("สถานะ", text="สถานะ")
-        
+        self.tree_comm.heading("สถานะ", text="สถานะค่าคอม")
+
         self.tree_comm.column("SO Number", width=180)
         self.tree_comm.column("ลูกค้า", width=500)
         self.tree_comm.column("ยอดขาย", width=150, anchor="e")
-        self.tree_comm.column("สถานะ", width=150, anchor="center")
+        self.tree_comm.column("สถานะ", width=160, anchor="center")
         
         self.tree_comm.pack(side="left", fill="both", expand=True)
         vsb_1.pack(side="right", fill="y")
@@ -722,16 +736,23 @@ class SalesTasksWindow(CTkToplevel):
                 
                 sales_str = f"{sales_val:,.2f}" if pd.notna(sales_val) else "0.00"
                 
-                # บังคับ Tag เป็นสีดำ (ตามที่คุณต้องการ)
-                tag = 'normal_text'
-                self.tree_comm.tag_configure('normal_text', foreground="black")
+                # แปลง status → จ่ายแล้ว / ยังไม่จ่าย
+                raw_status = row['status']
+                if raw_status == 'Paid':
+                    display_status = '✅ จ่ายแล้ว'
+                    tag = 'paid'
+                else:
+                    display_status = '⏳ ยังไม่จ่าย'
+                    tag = 'pending'
 
-                # [สำคัญ] ใส่ข้อมูลแค่ 4 ช่อง (SO, ลูกค้า, ยอดขาย, สถานะ) ไม่ใส่ Margin
+                self.tree_comm.tag_configure('paid',    foreground="#16A34A", font=('TH Sarabun New', 13, 'bold'))
+                self.tree_comm.tag_configure('pending', foreground="black")
+
                 self.tree_comm.insert("", "end", values=(
-                    row['so_number'], 
-                    row['customer_name'], 
-                    sales_str, 
-                    row['status']
+                    row['so_number'],
+                    row['customer_name'],
+                    sales_str,
+                    display_status,
                 ), tags=(tag,))
 
             # --- 2. ตารางล่าง: Deferred SOs ---
@@ -1260,6 +1281,109 @@ class DeferralNoticeDialog(CTkToplevel):
             pass
 
 
+class MissedSONoticeDialog(CTkToplevel):
+    """Popup แจ้งเตือน SO ที่รอบเดือนผ่านไปแล้วแต่ยังไม่ถูกจ่ายค่าคอม"""
+
+    STATUS_THAI = {
+        'Forwarded_To_HR': 'ส่งต่อให้ HR',
+        'HR Verified':     'HR ตรวจสอบแล้ว',
+        'Defer Requested': 'ขอเลื่อนจ่าย',
+        'Deferred':        'ถูกเลื่อนการจ่าย',
+    }
+    THAI_MONTHS = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                   "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+
+    def __init__(self, master, rows):
+        super().__init__(master)
+        self.title("⚠️ พบ SO ที่ยังไม่ได้คิดค่าคอม")
+        self.geometry("780x520")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", lambda: None)  # บังคับกด รับทราบ
+
+        # ── Header ──────────────────────────────────────────────────
+        CTkLabel(self, text="⚠️ พบ SO ที่รอบเดือนผ่านไปแล้วแต่ยังไม่ได้คิดค่าคอม",
+                 font=CTkFont(size=16, weight="bold"),
+                 text_color="#DC2626").pack(pady=(20, 4))
+        CTkLabel(self,
+                 text=f"มีทั้งหมด {len(rows)} SO  |  กรุณาแจ้ง HR เพื่อดำเนินการต่อ",
+                 font=CTkFont(size=12), text_color="gray40").pack(pady=(0, 12))
+
+        # ── Table ────────────────────────────────────────────────────
+        from tkinter import ttk
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("MissedSO.Treeview",
+                        background="white", foreground="#1E293B",
+                        rowheight=30, fieldbackground="white",
+                        font=('TH Sarabun New', 12))
+        style.configure("MissedSO.Treeview.Heading",
+                        background="#FEE2E2", foreground="#991B1B",
+                        font=('TH Sarabun New', 12, 'bold'), relief="flat")
+        style.map("MissedSO.Treeview",
+                  background=[('selected', '#FEF2F2')],
+                  foreground=[('selected', '#1E293B')])
+
+        # ── Acknowledge button (pack ก่อนเพื่อให้ติดล่างเสมอ) ──────────
+        CTkButton(self, text="✅ รับทราบแล้ว",
+                  font=CTkFont(size=15, weight="bold"),
+                  fg_color="#DC2626", hover_color="#B91C1C",
+                  height=46, command=self.destroy
+                  ).pack(side="bottom", pady=14, padx=40, fill="x")
+
+        # ── Table ────────────────────────────────────────────────────
+        frame = CTkFrame(self, fg_color="white", corner_radius=8)
+        frame.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 4))
+
+        cols = ('so_number', 'customer', 'amount', 'period', 'status')
+        tree = ttk.Treeview(frame, columns=cols, show='headings',
+                            style="MissedSO.Treeview", height=12)
+        tree.heading('so_number', text='เลขที่ SO')
+        tree.heading('customer',  text='ลูกค้า')
+        tree.heading('amount',    text='ยอดขาย (บาท)')
+        tree.heading('period',    text='รอบคอมที่ค้าง')
+        tree.heading('status',    text='สถานะปัจจุบัน')
+
+        tree.column('so_number', width=130, anchor='center')
+        tree.column('customer',  width=200, anchor='w')
+        tree.column('amount',    width=130, anchor='e')
+        tree.column('period',    width=110, anchor='center')
+        tree.column('status',    width=160, anchor='center')
+
+        tree.tag_configure('odd',  background='#FFF7F7')
+        tree.tag_configure('even', background='white')
+
+        for idx, r in enumerate(rows):
+            amount = (float(r.get('sales_service_amount') or 0)
+                      + float(r.get('cutting_drilling_fee') or 0)
+                      + float(r.get('other_service_fee') or 0))
+            m = int(r.get('commission_month') or 0)
+            y = int(r.get('commission_year') or 0)
+            period_str = f"{self.THAI_MONTHS[m] if 0 < m <= 12 else m} {y + 543 if y else ''}"
+            status_str = self.STATUS_THAI.get(r.get('status', ''), r.get('status', ''))
+            tag = 'odd' if idx % 2 else 'even'
+            tree.insert('', 'end', tags=(tag,), values=(
+                r.get('so_number', '-'),
+                r.get('customer_name', '-'),
+                f"{amount:,.0f}",
+                period_str,
+                status_str,
+            ))
+
+        sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        try:
+            if self.winfo_exists():
+                super()._revert_withdraw_after_windows_set_titlebar_color()
+        except Exception:
+            pass
+
+
 class CommissionApp(CTkFrame):
     def __init__(self, master, sale_key=None, sale_name=None, app_container=None, show_logout_button=True, user_role=None, create_default_header=True):
         super().__init__(master, corner_radius=0, fg_color=app_container.THEME["sale"]["bg"])
@@ -1310,11 +1434,14 @@ class CommissionApp(CTkFrame):
         self.tab_form = self.main_tabview.add("📝 สร้าง/แก้ไข Sales Order")
         self.tab_report = self.main_tabview.add("📊 รายงานประจำวัน (Daily Report)")
         self.tab_outstanding = self.main_tabview.add("💸 ยอดค้างชำระ")
+        self.tab_so_edit = self.main_tabview.add("✏️ แก้ไข SO")
 
         self.tab_form.grid_columnconfigure(0, weight=1)
         self.tab_form.grid_rowconfigure(0, weight=1)
         self.tab_report.grid_columnconfigure(0, weight=1)
         self.tab_report.grid_rowconfigure(0, weight=1)
+        self.tab_so_edit.grid_columnconfigure(0, weight=1)
+        self.tab_so_edit.grid_rowconfigure(0, weight=1)
 
         # 3. เอา Scrollable Container ย้ายไปใส่ใน self.tab_form (แท็บที่ 1)
         self.scrollable_main_container = CTkScrollableFrame(self.tab_form, fg_color="transparent")
@@ -1346,6 +1473,7 @@ class CommissionApp(CTkFrame):
         # 9. แจ้งเตือน SO เลื่อนคอมที่ยังไม่รับทราบ (Sale เท่านั้น)
         if self.user_role and self.user_role.lower() not in ('sales manager', 'director', 'hr', 'sale support'):
             self.after(900, self._check_pending_deferrals)
+            self.after(1500, self._check_missed_sos)
 
 
         # ==========================================================
@@ -1366,11 +1494,20 @@ class CommissionApp(CTkFrame):
         self.daily_report_view.pack(fill="both", expand=True)
 
         self.outstanding_view = OutstandingDashboardTab(
-            self.tab_outstanding, 
+            self.tab_outstanding,
             app_container=self.app_container,
             sale_key_filter=filter_key  # 🟢 เปลี่ยนมาใช้ตัวแปรที่เช็คสิทธิ์แล้ว
         )
         self.outstanding_view.pack(fill="both", expand=True)
+
+        # ✅ แท็บแก้ไข SO (Sale สามารถแก้ไขได้บางฟิลด์)
+        self.so_edit_view = SOEditTabView(
+            self.tab_so_edit,
+            app_container=self.app_container,
+            sale_key=self.sale_key,
+            sale_name=self.sale_name,
+        )
+        self.so_edit_view.pack(fill="both", expand=True)
 
     def _open_my_tasks_window(self):
         if self.tasks_window is None or not self.tasks_window.winfo_exists():
@@ -1427,6 +1564,41 @@ class CommissionApp(CTkFrame):
         except Exception as e:
             if "bad window path name" not in str(e):
                 print(f"[pending_deferral_check] {e}")
+
+    def _check_missed_sos(self):
+        """แจ้งเตือน SO ที่รอบเดือนผ่านไปแล้วแต่ยังไม่ถูกจ่ายค่าคอม (แสดงครั้งเดียวต่อ session)"""
+        try:
+            today = datetime.now()
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT so_number, customer_name,
+                           sales_service_amount, cutting_drilling_fee, other_service_fee,
+                           commission_month, commission_year, status
+                    FROM commissions
+                    WHERE sale_key = %s
+                      AND is_active = 1
+                      AND status IN ('Forwarded_To_HR', 'HR Verified', 'Defer Requested', 'Deferred')
+                      AND (
+                          commission_year < %s
+                          OR (commission_year = %s AND commission_month < %s)
+                      )
+                    ORDER BY commission_year ASC, commission_month ASC, so_number ASC
+                """, (self.sale_key, today.year, today.year, today.month))
+                rows = cursor.fetchall()
+            self.app_container.release_connection(conn)
+
+            if not rows:
+                return
+
+            try:
+                if self.winfo_exists():
+                    MissedSONoticeDialog(self, [dict(r) for r in rows])
+            except Exception as e:
+                if "bad window path name" not in str(e):
+                    print(f"[check_missed_sos] dialog error: {e}")
+        except Exception as e:
+            print(f"[check_missed_sos] query error: {e}")
 
     def _start_polling(self):
         self._update_tasks_badge()
@@ -2927,4 +3099,487 @@ class CommissionApp(CTkFrame):
                 messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้วที่:\n{save_path}", parent=self)
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=self)
+
+
+# ============================================================
+# ✏️ SO Edit Tab — Sale สามารถแก้ไขบางฟิลด์ของ SO ที่ยื่นแล้ว
+# ============================================================
+
+class SOEditTabView(CTkFrame):
+    """แท็บแสดงรายการ SO ของ Sale พร้อมปุ่มแก้ไข + SearchBar + Pagination"""
+
+    PAGE_SIZE = 10
+
+    THAI_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                   "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+
+    def __init__(self, master, app_container, sale_key, sale_name, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.app_container = app_container
+        self.sale_key = sale_key
+        self.sale_name = sale_name
+
+        self._all_rows = []        # ข้อมูลทั้งหมดจาก DB
+        self._filtered_rows = []   # หลัง filter ด้วย search
+        self._current_page = 0     # 0-indexed
+        self._search_after_id = None   # debounce timer
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)   # row 2 = list (ขยายได้)
+
+        # ── Row 0: Title + hint ──────────────────────────────────
+        title_bar = CTkFrame(self, fg_color="transparent")
+        title_bar.grid(row=0, column=0, sticky="ew", padx=15, pady=(10, 4))
+
+        CTkLabel(title_bar, text="✏️ แก้ไข SO ที่ยื่นแล้ว",
+                 font=CTkFont(size=16, weight="bold")).pack(side="left")
+        CTkLabel(title_bar,
+                 text="วันที่จัดส่ง / ค่าจัดส่ง → บันทึกทันที  |  รอบเดือนค่าคอม → รอ SM อนุมัติ",
+                 font=CTkFont(size=12), text_color="gray").pack(side="right")
+
+        # ── Row 1: Search bar + Refresh ─────────────────────────
+        search_bar = CTkFrame(self, fg_color=("gray92", "gray18"), corner_radius=8)
+        search_bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
+        search_bar.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(search_bar, text="🔎", font=CTkFont(size=16)).grid(
+            row=0, column=0, padx=(12, 4), pady=8)
+
+        self._search_var = tk.StringVar()
+        self._search_var.trace_add("write", self._on_search_change)
+        self._search_entry = CTkEntry(
+            search_bar, textvariable=self._search_var,
+            placeholder_text="ค้นหาเลข SO หรือชื่อลูกค้า...",
+            height=34, font=CTkFont(size=13))
+        self._search_entry.grid(row=0, column=1, padx=(0, 8), pady=8, sticky="ew")
+
+        CTkButton(search_bar, text="✕ ล้าง", width=70, height=34,
+                  fg_color="transparent", border_width=1,
+                  text_color=("gray20", "gray80"),
+                  command=self._clear_search).grid(row=0, column=2, padx=(0, 6), pady=8)
+
+        CTkButton(search_bar, text="⟳ รีเฟรช", width=90, height=34,
+                  fg_color="gray", hover_color="#555555",
+                  command=self.load_list).grid(row=0, column=3, padx=(0, 12), pady=8)
+
+        # ── Row 2: Scrollable card list ──────────────────────────
+        self.list_frame = CTkScrollableFrame(self, fg_color="white", corner_radius=8)
+        self.list_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=0)
+
+        # ── Row 3: Pagination bar ────────────────────────────────
+        pag_bar = CTkFrame(self, fg_color="transparent")
+        pag_bar.grid(row=3, column=0, sticky="ew", padx=10, pady=(4, 10))
+        pag_bar.grid_columnconfigure(1, weight=1)
+
+        self._prev_btn = CTkButton(pag_bar, text="◀ ก่อนหน้า", width=110, height=30,
+                                   fg_color="#3B82F6", hover_color="#2563EB",
+                                   command=self._prev_page)
+        self._prev_btn.grid(row=0, column=0, padx=(0, 8))
+
+        self._page_label = CTkLabel(pag_bar, text="", font=CTkFont(size=13))
+        self._page_label.grid(row=0, column=1)
+
+        self._next_btn = CTkButton(pag_bar, text="ถัดไป ▶", width=110, height=30,
+                                   fg_color="#3B82F6", hover_color="#2563EB",
+                                   command=self._next_page)
+        self._next_btn.grid(row=0, column=2, padx=(8, 0))
+
+        self.after(200, self.load_list)
+
+    # ── Data loading ──────────────────────────────────────────────
+    def load_list(self):
+        """โหลดข้อมูลจาก DB ทั้งหมด แล้วแสดงหน้าแรก"""
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute("""
+                    SELECT c.id, c.so_number, c.customer_name, c.bill_date,
+                           c.delivery_date, c.shipping_cost,
+                           c.commission_month, c.commission_year, c.status,
+                           (SELECT ser.status FROM so_edit_requests ser
+                            WHERE ser.commission_id = c.id AND ser.status = 'pending'
+                            ORDER BY ser.id DESC LIMIT 1) AS pending_edit
+                    FROM commissions c
+                    WHERE c.sale_key = %s AND c.is_active = 1
+                      AND c.status NOT IN ('Cancelled')
+                    ORDER BY c.bill_date DESC, c.id DESC
+                """, (self.sale_key,))
+                self._all_rows = [dict(r) for r in cur.fetchall()]
+            self.app_container.release_connection(conn)
+        except Exception as e:
+            if conn:
+                try:
+                    self.app_container.release_connection(conn)
+                except Exception:
+                    pass
+            for w in self.list_frame.winfo_children():
+                w.destroy()
+            CTkLabel(self.list_frame, text=f"❌ โหลดข้อมูลไม่ได้: {e}",
+                     text_color="red", font=CTkFont(size=13)).pack(pady=30)
+            return
+
+        # Reset search + page แล้วแสดงผล
+        self._search_var.set("")
+        self._current_page = 0
+        self._apply_filter_and_render()
+
+    # ── Search (debounced — รอ 250 ms หลังหยุดพิมพ์) ─────────────
+    def _on_search_change(self, *_):
+        # ยกเลิก timer เดิมถ้ายังค้างอยู่
+        if self._search_after_id is not None:
+            self.after_cancel(self._search_after_id)
+        self._search_after_id = self.after(250, self._do_search)
+
+    def _do_search(self):
+        self._search_after_id = None
+        self._current_page = 0
+        self._apply_filter_and_render()
+
+    def _clear_search(self):
+        # ยกเลิก debounce ที่ค้างอยู่ก่อนเคลียร์
+        if self._search_after_id is not None:
+            self.after_cancel(self._search_after_id)
+            self._search_after_id = None
+        self._search_var.set("")
+        self._current_page = 0
+        self._apply_filter_and_render()
+        self._search_entry.focus()
+
+    # ── Filter + Render ───────────────────────────────────────────
+    def _apply_filter_and_render(self):
+        kw = self._search_var.get().strip().lower()
+        if kw:
+            self._filtered_rows = [
+                r for r in self._all_rows
+                if kw in (r.get("so_number") or "").lower()
+                or kw in (r.get("customer_name") or "").lower()
+            ]
+        else:
+            self._filtered_rows = list(self._all_rows)
+
+        self._render_page()
+
+    def _render_page(self):
+        for w in self.list_frame.winfo_children():
+            w.destroy()
+
+        total = len(self._filtered_rows)
+        total_pages = max(1, -(-total // self.PAGE_SIZE))  # ceil division
+
+        # Clamp page
+        self._current_page = max(0, min(self._current_page, total_pages - 1))
+
+        if total == 0:
+            msg = "ไม่พบ SO ที่ตรงกับคำค้นหา" if self._search_var.get() else "ยังไม่มี SO ในระบบ"
+            CTkLabel(self.list_frame, text=msg,
+                     font=CTkFont(size=14), text_color="gray").pack(pady=40)
+            self._page_label.configure(text="")
+            self._prev_btn.configure(state="disabled")
+            self._next_btn.configure(state="disabled")
+            return
+
+        start = self._current_page * self.PAGE_SIZE
+        end = min(start + self.PAGE_SIZE, total)
+        page_rows = self._filtered_rows[start:end]
+
+        for row in page_rows:
+            self._render_card(row)
+
+        # Update pagination controls
+        self._page_label.configure(
+            text=f"หน้า {self._current_page + 1} / {total_pages}   (แสดง {start+1}–{end} จาก {total} รายการ)")
+        self._prev_btn.configure(state="normal" if self._current_page > 0 else "disabled")
+        self._next_btn.configure(state="normal" if self._current_page < total_pages - 1 else "disabled")
+
+    # ── Pagination controls ───────────────────────────────────────
+    def _prev_page(self):
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._render_page()
+
+    def _next_page(self):
+        total_pages = max(1, -(-len(self._filtered_rows) // self.PAGE_SIZE))
+        if self._current_page < total_pages - 1:
+            self._current_page += 1
+            self._render_page()
+
+    # ── Card renderer ─────────────────────────────────────────────
+    def _render_card(self, row):
+        has_pending = row.get("pending_edit") == "pending"
+
+        bg = "#FEF9C3" if has_pending else "#F0F9FF"
+        border = "#EAB308" if has_pending else "#BAE6FD"
+
+        card = CTkFrame(self.list_frame, fg_color=bg,
+                        border_width=1, border_color=border, corner_radius=8)
+        card.pack(fill="x", padx=10, pady=4)
+        card.grid_columnconfigure(0, weight=1)
+
+        info = CTkFrame(card, fg_color="transparent")
+        info.grid(row=0, column=0, sticky="ew", padx=15, pady=8)
+
+        # Line 1 — SO + customer
+        CTkLabel(info,
+                 text=f"SO: {row['so_number']}  |  ลูกค้า: {row['customer_name']}",
+                 font=CTkFont(size=14, weight="bold")).pack(anchor="w")
+
+        # Line 2 — delivery date + shipping cost
+        dd = row.get("delivery_date") or "-"
+        sc_raw = row.get("shipping_cost")
+        sc = f"{float(sc_raw):,.2f}" if sc_raw is not None else "-"
+        CTkLabel(info,
+                 text=f"📅 วันที่จัดส่ง: {dd}   🚚 ค่าจัดส่ง: {sc} บาท",
+                 font=CTkFont(size=13), text_color="#0369A1").pack(anchor="w", pady=(2, 0))
+
+        # Line 3 — commission period + status
+        m, y = row.get("commission_month"), row.get("commission_year")
+        try:
+            month_str = self.THAI_MONTHS[int(m) - 1] if m else "-"
+            year_str = str(int(y) + 543) if y else ""
+        except Exception:
+            month_str, year_str = str(m), str(y)
+
+        raw_status = row.get("status") or ""
+        if raw_status in ("Paid", "HR Verified"):
+            status_display = "✅ จ่ายค่าคอมแล้ว"
+            status_color   = "#16A34A"
+        else:
+            status_display = "🕐 ยังไม่จ่ายค่าคอม"
+            status_color   = "#D97706"
+
+        pending_badge = "  ⏳ รอ SM อนุมัติรอบเดือน" if has_pending else ""
+        CTkLabel(info,
+                 text=f"📆 รอบค่าคอม: {month_str} {year_str}   {status_display}{pending_badge}",
+                 font=CTkFont(size=13),
+                 text_color="#7C3AED" if has_pending else status_color).pack(anchor="w")
+
+        # Edit button
+        btn_frame = CTkFrame(card, fg_color="transparent")
+        btn_frame.grid(row=0, column=1, padx=15, pady=8)
+        CTkButton(btn_frame, text="✏️ แก้ไข",
+                  fg_color="#3B82F6", hover_color="#2563EB",
+                  width=90, height=32,
+                  command=lambda r=row: self._open_edit_dialog(r)).pack()
+
+    # ── Open edit dialog ──────────────────────────────────────────
+    def _open_edit_dialog(self, row_dict):
+        dlg = SOEditDialog(self, self.app_container,
+                           row_dict, self.sale_key, self.sale_name)
+        self.wait_window(dlg)
+        self.load_list()   # reload + reset to page 1 after save
+
+
+# ============================================================
+# ✏️ SO Edit Dialog — กล่องแก้ไข 3 ฟิลด์
+# ============================================================
+
+class SOEditDialog(CTkToplevel):
+    """กล่องแก้ไข SO: วันที่จัดส่ง / ค่าจัดส่ง (บันทึกทันที)
+       และ รอบเดือนค่าคอม (ส่งขออนุมัติ SM)"""
+
+    THAI_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                   "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+
+    def __init__(self, master, app_container, row, sale_key, sale_name):
+        super().__init__(master)
+        self.app_container = app_container
+        self.row = row
+        self.sale_key = sale_key
+        self.sale_name = sale_name
+
+        self.title(f"แก้ไข SO: {row.get('so_number', '')}")
+        self.geometry("520x460")
+        self.resizable(False, False)
+        self.grab_set()
+        self.focus()
+        self._center()
+
+        self._build_ui()
+
+    # ──────────────────────────────────────────────────────────────
+    def _center(self):
+        self.update_idletasks()
+        w, h = 520, 460
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+
+    # ──────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        pad = {"padx": 20, "pady": 8}
+        font_lbl = CTkFont(size=14, weight="bold")
+        font_val = CTkFont(size=14)
+
+        # ── Title ─────────────────────────────────────
+        CTkLabel(self, text=f"✏️ แก้ไข SO: {self.row.get('so_number', '')}",
+                 font=CTkFont(size=16, weight="bold"), text_color="#1D4ED8").pack(**pad)
+
+        CTkLabel(self, text=f"ลูกค้า: {self.row.get('customer_name', '')}",
+                 font=font_val, text_color="gray").pack(padx=20, pady=(0, 10))
+
+        # ── Section 1: ข้อมูลที่บันทึกได้ทันที ─────────
+        sec1 = CTkFrame(self, fg_color="#EFF6FF", corner_radius=8, border_width=1, border_color="#BFDBFE")
+        sec1.pack(fill="x", padx=20, pady=(0, 8))
+
+        CTkLabel(sec1, text="📅 วันที่จัดส่ง / ค่าจัดส่ง  (บันทึกทันที)",
+                 font=font_lbl, text_color="#1D4ED8").pack(anchor="w", padx=15, pady=(10, 4))
+
+        row_dd = CTkFrame(sec1, fg_color="transparent")
+        row_dd.pack(fill="x", padx=15, pady=4)
+        CTkLabel(row_dd, text="วันที่จัดส่ง:", font=font_val, width=130, anchor="w").pack(side="left")
+        self.delivery_date_entry = DateSelector(row_dd)
+        self.delivery_date_entry.pack(side="left")
+        # Pre-fill using set_date (expects datetime object)
+        dd = self.row.get("delivery_date") or ""
+        if dd:
+            try:
+                from datetime import datetime as _dt
+                date_obj = _dt.strptime(str(dd)[:10], "%Y-%m-%d")
+                self.delivery_date_entry.set_date(date_obj)
+            except Exception:
+                pass
+
+        row_sc = CTkFrame(sec1, fg_color="transparent")
+        row_sc.pack(fill="x", padx=15, pady=(4, 12))
+        CTkLabel(row_sc, text="ค่าจัดส่ง (บาท):", font=font_val, width=130, anchor="w").pack(side="left")
+        self.shipping_cost_entry = NumericEntry(row_sc, width=200)
+        current_sc = self.row.get("shipping_cost")
+        if current_sc is not None:
+            self.shipping_cost_entry.insert(0, f"{float(current_sc):,.2f}")
+        self.shipping_cost_entry.pack(side="left")
+
+        # ── Section 2: รอบเดือนค่าคอม (ต้องขออนุมัติ SM) ─
+        sec2 = CTkFrame(self, fg_color="#FFF7ED", corner_radius=8, border_width=1, border_color="#FED7AA")
+        sec2.pack(fill="x", padx=20, pady=(0, 8))
+
+        CTkLabel(sec2, text="📆 รอบเดือนค่าคอม  (ต้องขออนุมัติ SM)",
+                 font=font_lbl, text_color="#C2410C").pack(anchor="w", padx=15, pady=(10, 4))
+
+        row_cm = CTkFrame(sec2, fg_color="transparent")
+        row_cm.pack(fill="x", padx=15, pady=4)
+        CTkLabel(row_cm, text="เดือน:", font=font_val, width=60, anchor="w").pack(side="left")
+
+        self.cm_month_var = tk.StringVar()
+        self.cm_year_var = tk.StringVar()
+
+        months_list = [f"{i} - {self.THAI_MONTHS[i-1]}" for i in range(1, 13)]
+        self.cm_month_menu = CTkOptionMenu(row_cm, variable=self.cm_month_var,
+                                           values=months_list, width=200)
+        self.cm_month_menu.pack(side="left", padx=(0, 10))
+
+        current_y = datetime.now().year
+        years_list = [str(y) for y in range(current_y - 2, current_y + 3)]
+        self.cm_year_menu = CTkOptionMenu(row_cm, variable=self.cm_year_var,
+                                          values=years_list, width=100)
+        self.cm_year_menu.pack(side="left")
+
+        # Pre-fill commission month/year
+        try:
+            m_cur = int(self.row.get("commission_month") or datetime.now().month)
+            y_cur = int(self.row.get("commission_year") or datetime.now().year)
+            self.cm_month_var.set(f"{m_cur} - {self.THAI_MONTHS[m_cur-1]}")
+            self.cm_year_var.set(str(y_cur))
+        except Exception:
+            self.cm_month_var.set(months_list[0])
+            self.cm_year_var.set(str(current_y))
+
+        row_reason = CTkFrame(sec2, fg_color="transparent")
+        row_reason.pack(fill="x", padx=15, pady=(4, 12))
+        CTkLabel(row_reason, text="เหตุผล:", font=font_val, width=60, anchor="w").pack(side="left")
+        self.reason_entry = CTkEntry(row_reason, placeholder_text="ระบุเหตุผลที่ต้องการเปลี่ยนรอบเดือนค่าคอม...",
+                                     width=340, font=font_val)
+        self.reason_entry.pack(side="left")
+
+        # ── Buttons ───────────────────────────────────────
+        btn_row = CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(4, 12))
+
+        CTkButton(btn_row, text="💾 บันทึก", fg_color="#16A34A", hover_color="#15803D",
+                  font=CTkFont(size=14, weight="bold"), height=38,
+                  command=self._save).pack(side="left", padx=(0, 10))
+
+        CTkButton(btn_row, text="ยกเลิก", fg_color="gray", hover_color="#555555",
+                  font=CTkFont(size=14), height=38,
+                  command=self.destroy).pack(side="left")
+
+    # ──────────────────────────────────────────────────────────────
+    def _save(self):
+        conn = None
+        try:
+            # ── Parse delivery date (get_date() returns "YYYY-MM-DD" in CE) ──
+            delivery_date_str = self.delivery_date_entry.get_date() or (self.row.get("delivery_date") or None)
+
+            # ── Parse shipping cost ──────────────────────
+            try:
+                sc_raw = self.shipping_cost_entry.get().replace(",", "").strip()
+                shipping_cost_val = float(sc_raw) if sc_raw else 0.0
+            except Exception:
+                shipping_cost_val = float(self.row.get("shipping_cost") or 0)
+
+            # ── Parse commission month/year ──────────────
+            try:
+                new_m = int(self.cm_month_var.get().split(" - ")[0])
+            except Exception:
+                new_m = int(self.row.get("commission_month") or datetime.now().month)
+            try:
+                new_y = int(self.cm_year_var.get())
+            except Exception:
+                new_y = int(self.row.get("commission_year") or datetime.now().year)
+
+            old_m = int(self.row.get("commission_month") or 0)
+            old_y = int(self.row.get("commission_year") or 0)
+            commission_changed = (new_m != old_m) or (new_y != old_y)
+
+            # ── DB operations ────────────────────────────
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                # 1. Update delivery_date + shipping_cost ทันที
+                cur.execute("""
+                    UPDATE commissions
+                    SET delivery_date = %s, shipping_cost = %s
+                    WHERE id = %s AND sale_key = %s
+                """, (delivery_date_str, shipping_cost_val,
+                      self.row["id"], self.sale_key))
+
+                # 2. ถ้าเปลี่ยนรอบค่าคอม → INSERT คำขอรออนุมัติ
+                if commission_changed:
+                    reason_text = self.reason_entry.get().strip() or "-"
+                    cur.execute("""
+                        INSERT INTO so_edit_requests
+                            (commission_id, so_number, sale_key, sale_name,
+                             requested_commission_month, requested_commission_year,
+                             current_commission_month, current_commission_year,
+                             request_reason, status, requested_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', NOW())
+                    """, (self.row["id"],
+                          self.row.get("so_number"),
+                          self.sale_key,
+                          self.sale_name,
+                          new_m, new_y,
+                          old_m, old_y,
+                          reason_text))
+
+            conn.commit()
+            self.app_container.release_connection(conn)
+            conn = None
+
+            # ── Feedback ─────────────────────────────────
+            if commission_changed:
+                msg = (f"✅ บันทึกแล้ว\n\n"
+                       f"• วันที่จัดส่ง + ค่าจัดส่ง → บันทึกเรียบร้อย\n"
+                       f"• รอบเดือนค่าคอม → ส่งคำขออนุมัติไปยัง SM แล้ว ⏳")
+            else:
+                msg = "✅ บันทึก วันที่จัดส่ง และ ค่าจัดส่ง เรียบร้อยแล้ว"
+            messagebox.showinfo("บันทึกสำเร็จ", msg, parent=self)
+            self.destroy()
+
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                    self.app_container.release_connection(conn)
+                except Exception:
+                    pass
+            messagebox.showerror("ผิดพลาด", f"บันทึกไม่สำเร็จ: {e}", parent=self)
             traceback.print_exc() # สำหรับ Debugging

@@ -359,7 +359,20 @@ class DailyReportWidget(CTkFrame):
                     credit_display = 0.0 
 
                 service_fee = float(row.get('service_total') or 0)
-                d_date = row.get('final_delivery_date'); d_date_str = str(d_date) if d_date else "-"
+                d_date = row.get('final_delivery_date')
+                if d_date:
+                    try:
+                        from datetime import date as _date
+                        if hasattr(d_date, 'year'):
+                            _d = d_date
+                        else:
+                            from datetime import datetime as _dt
+                            _d = _dt.strptime(str(d_date)[:10], "%Y-%m-%d").date()
+                        d_date_str = f"{_d.day:02d}/{_d.month:02d}/{_d.year + 543}"
+                    except Exception:
+                        d_date_str = str(d_date)
+                else:
+                    d_date_str = "-"
                 
                 sum_booking += booking; sum_paid += paid
 

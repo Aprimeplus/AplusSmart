@@ -544,6 +544,27 @@ class AppContainer(CTk):
                     )
                 """)
                 
+                # 4. ตาราง SO Edit Requests (คำขอแก้ไขรอบเดือนค่าคอมจาก Sale)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS so_edit_requests (
+                        id SERIAL PRIMARY KEY,
+                        commission_id INTEGER NOT NULL,
+                        so_number TEXT,
+                        sale_key TEXT,
+                        sale_name TEXT,
+                        requested_commission_month INTEGER,
+                        requested_commission_year INTEGER,
+                        current_commission_month INTEGER,
+                        current_commission_year INTEGER,
+                        request_reason TEXT,
+                        status TEXT DEFAULT 'pending',
+                        requested_at TIMESTAMP DEFAULT NOW(),
+                        reviewed_by TEXT,
+                        reviewed_at TIMESTAMP,
+                        review_note TEXT
+                    )
+                """)
+
                 # ... (ตารางอื่นๆ คงเดิมของคุณ) ...
             conn.commit()
         except Exception as e:

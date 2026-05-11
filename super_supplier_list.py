@@ -57,182 +57,14 @@ WIN_LOSS_REASONS = [
 ]
 
 # =============================================================================
-#  MOCK DATA
+#  CONSTANTS  (filter options, thresholds, in-memory state)
 # =============================================================================
-MOCK_SUPPLIERS = [
-    {"id":  1, "supplier_id": "SW69-0001", "name": "สยามสตีล จำกัด",
-     "category": "เหล็กเส้น",  "tier": "Tier 1", "is_locked": True,  "source_tag": "Legacy",
-     "contact": "คุณสมชาย",   "phone": "081-234-5678", "line_id": "@siamsteel",  "email": "sale@siamsteel.co.th",
-     "coverage_area": "กรุงเทพ, ปริมณฑล",  "availability": "พร้อม",
-     "win_pct": 68, "sla_score": 95, "price_score": 80, "credit_days": 60,
-     "note": "สต็อกแน่น, ส่งด่วนได้",
-     "win_loss_log": [{"date": "2025-03", "result": "Win", "reason": ""}]},
+MOCK_SUPPLIERS = []  # replaced by DB
 
-    {"id":  2, "supplier_id": "SW69-0002", "name": "เจริญเหล็ก จำกัด",
-     "category": "เหล็กเส้น",  "tier": "Tier 1", "is_locked": False, "source_tag": "Legacy",
-     "contact": "คุณสมหญิง",  "phone": "082-345-6789", "line_id": "@charoenlek", "email": "pu@charoenlek.com",
-     "coverage_area": "กรุงเทพ, ชลบุรี",   "availability": "พร้อม",
-     "win_pct": 55, "sla_score": 88, "price_score": 75, "credit_days": 45,
-     "note": "ราคาแข่งขันดี",
-     "win_loss_log": [{"date": "2025-03", "result": "Loss", "reason": "ราคาแพงกว่าคู่แข่ง"}]},
-
-    {"id":  3, "supplier_id": "SW69-0003", "name": "ไทยเมทัล จำกัด",
-     "category": "เหล็กเส้น",  "tier": "Tier 1", "is_locked": False, "source_tag": "Manual",
-     "contact": "คุณวิชัย",   "phone": "083-456-7890", "line_id": "",            "email": "info@thaimetal.co.th",
-     "coverage_area": "ทั่วประเทศ",         "availability": "พร้อม",
-     "win_pct": 48, "sla_score": 92, "price_score": 65, "credit_days": 30,
-     "note": "ISO ได้มาตรฐาน",
-     "win_loss_log": []},
-
-    {"id":  4, "supplier_id": "SW69-0010", "name": "อุดมเหล็ก จำกัด",
-     "category": "เหล็กเส้น",  "tier": "Tier 2", "is_locked": False, "source_tag": "Manual",
-     "contact": "คุณมานะ",    "phone": "084-567-8901", "line_id": "@udomlek",    "email": "",
-     "coverage_area": "กรุงเทพ",            "availability": "สต็อกต่ำ",
-     "win_pct": 35, "sla_score": 72, "price_score": 70, "credit_days": 30,
-     "note": "",
-     "win_loss_log": [{"date": "2025-02", "result": "Loss", "reason": "สินค้าไม่ครบ"}]},
-
-    {"id":  5, "supplier_id": "SN69-0041-USER02", "name": "SSG Steel Co.",
-     "category": "เหล็กเส้น",  "tier": "SN",     "is_locked": False, "source_tag": "System",
-     "contact": "คุณจอห์น",   "phone": "085-678-9012", "line_id": "",            "email": "john@ssgsteel.com",
-     "coverage_area": "กรุงเทพ",            "availability": "พร้อม",
-     "sn_created": "2025-02-10",
-     "win_pct": 28, "sla_score": 60, "price_score": 85, "credit_days": 0,
-     "note": "รอ Convert เป็น SW",
-     "win_loss_log": []},
-
-    {"id":  6, "supplier_id": "SW69-0004", "name": "กรุงเทพท่อ จำกัด",
-     "category": "ท่อ GI",     "tier": "Tier 1", "is_locked": True,  "source_tag": "Legacy",
-     "contact": "คุณอนันต์",  "phone": "086-789-0123", "line_id": "@bkk_pipe",   "email": "sale@bkkpipe.co.th",
-     "coverage_area": "กรุงเทพ, ปริมณฑล, ชลบุรี", "availability": "พร้อม",
-     "win_pct": 72, "sla_score": 97, "price_score": 78, "credit_days": 60,
-     "note": "สต็อกท่อ GI ครบ",
-     "win_loss_log": []},
-
-    {"id":  7, "supplier_id": "SW69-0005", "name": "ไทยไพพ์ จำกัด",
-     "category": "ท่อ GI",     "tier": "Tier 1", "is_locked": False, "source_tag": "Legacy",
-     "contact": "คุณสุดา",    "phone": "087-890-1234", "line_id": "",            "email": "su@thaipipe.co.th",
-     "coverage_area": "กรุงเทพ, สมุทรปราการ", "availability": "พร้อม",
-     "win_pct": 58, "sla_score": 85, "price_score": 72, "credit_days": 30,
-     "note": "",
-     "win_loss_log": []},
-
-    {"id":  8, "supplier_id": "SW69-0011", "name": "เอเซียท่อ จำกัด",
-     "category": "ท่อ GI",     "tier": "Tier 2", "is_locked": False, "source_tag": "Manual",
-     "contact": "คุณประยุทธ์","phone": "088-901-2345", "line_id": "@asiapipe",   "email": "",
-     "coverage_area": "กรุงเทพ",            "availability": "สต็อกต่ำ",
-     "win_pct": 44, "sla_score": 68, "price_score": 80, "credit_days": 0,
-     "note": "สต็อกต่ำบางช่วง",
-     "win_loss_log": [{"date": "2025-01", "result": "Loss", "reason": "ไม่มีรถจัดส่ง"}]},
-
-    {"id":  9, "supplier_id": "SN69-0053-USER04", "name": "สยาม เมทัล จำกัด",
-     "category": "ท่อ GI",     "tier": "SN",     "is_locked": False, "source_tag": "System",
-     "contact": "คุณธนา",     "phone": "089-012-3456", "line_id": "",            "email": "thana@siammet.com",
-     "coverage_area": "กรุงเทพ",            "availability": "พร้อม",
-     "sn_created": "2025-03-15",
-     "win_pct": 38, "sla_score": 75, "price_score": 90, "credit_days": 0,
-     "note": "รอ Convert เป็น SW",
-     "win_loss_log": []},
-
-    {"id": 10, "supplier_id": "SW69-0006", "name": "HDG Pro จำกัด",
-     "category": "ท่อ HDG",    "tier": "Tier 1", "is_locked": False, "source_tag": "Legacy",
-     "contact": "คุณกิตติ",   "phone": "090-123-4567", "line_id": "@hdgpro",     "email": "kitti@hdgpro.co.th",
-     "coverage_area": "ทั่วประเทศ",         "availability": "พร้อม",
-     "win_pct": 65, "sla_score": 90, "price_score": 74, "credit_days": 60,
-     "note": "สเปก HDG ได้มาตรฐาน ISO",
-     "win_loss_log": []},
-
-    {"id": 11, "supplier_id": "SW69-0007", "name": "แกลแวน ไทย จำกัด",
-     "category": "ท่อ HDG",    "tier": "Tier 1", "is_locked": False, "source_tag": "Manual",
-     "contact": "คุณพรรณ",    "phone": "091-234-5678", "line_id": "",            "email": "pan@galvanth.co.th",
-     "coverage_area": "กรุงเทพ, ปริมณฑล",  "availability": "ปิดชั่วคราว",
-     "reopen_date": "2025-05-01",
-     "win_pct": 52, "sla_score": 82, "price_score": 70, "credit_days": 45,
-     "note": "ปิดปรับปรุงคลัง 2 อาทิตย์",
-     "win_loss_log": []},
-
-    {"id": 12, "supplier_id": "SW69-0012", "name": "ยูนิไพพ์ จำกัด",
-     "category": "ท่อ HDG",    "tier": "Tier 2", "is_locked": False, "source_tag": "System",
-     "contact": "คุณนพ",      "phone": "092-345-6789", "line_id": "@unipipe",    "email": "",
-     "coverage_area": "กรุงเทพ",            "availability": "พร้อม",
-     "win_pct": 33, "sla_score": 78, "price_score": 68, "credit_days": 30,
-     "note": "",
-     "win_loss_log": []},
-
-    {"id": 13, "supplier_id": "SW69-0008", "name": "ทีพีไอ โพลีน จำกัด",
-     "category": "ปูนซีเมนต์","tier": "Tier 1", "is_locked": True,  "source_tag": "Legacy",
-     "contact": "คุณธีรชัย",  "phone": "093-456-7890", "line_id": "@tpipolene",  "email": "pu@tpipolene.co.th",
-     "coverage_area": "ทั่วประเทศ",         "availability": "พร้อม",
-     "win_pct": 70, "sla_score": 94, "price_score": 77, "credit_days": 30,
-     "note": "ส่งเร็ว สต็อกเยอะ",
-     "win_loss_log": []},
-
-    {"id": 14, "supplier_id": "SW69-0009", "name": "ปูนซิเมนต์ไทย จำกัด",
-     "category": "ปูนซีเมนต์","tier": "Tier 1", "is_locked": False, "source_tag": "Legacy",
-     "contact": "คุณรัตนา",   "phone": "094-567-8901", "line_id": "@scgthai",    "email": "rat@scg.co.th",
-     "coverage_area": "กรุงเทพ, ปริมณฑล",  "availability": "พร้อม",
-     "win_pct": 62, "sla_score": 89, "price_score": 73, "credit_days": 45,
-     "note": "",
-     "win_loss_log": []},
-
-    {"id": 15, "supplier_id": "SW69-0013", "name": "ปูนตราเพชร จำกัด",
-     "category": "ปูนซีเมนต์","tier": "Tier 2", "is_locked": False, "source_tag": "Manual",
-     "contact": "คุณเอก",     "phone": "095-678-9012", "line_id": "",            "email": "",
-     "coverage_area": "กรุงเทพ",            "availability": "สต็อกต่ำ",
-     "win_pct": 40, "sla_score": 65, "price_score": 82, "credit_days": 0,
-     "note": "",
-     "win_loss_log": []},
-
-    {"id": 16, "supplier_id": "SW69-0014", "name": "สตีลชีท จำกัด",
-     "category": "เหล็กแผ่น", "tier": "Tier 1", "is_locked": False, "source_tag": "Legacy",
-     "contact": "คุณปิยะ",    "phone": "096-789-0123", "line_id": "@steelsheet", "email": "piya@steelsheet.co.th",
-     "coverage_area": "กรุงเทพ, ชลบุรี",   "availability": "พร้อม",
-     "win_pct": 60, "sla_score": 88, "price_score": 76, "credit_days": 60,
-     "note": "",
-     "win_loss_log": []},
-
-    {"id": 17, "supplier_id": "BL69-0001", "name": "ร้านตัวอย่าง Blacklist",
-     "category": "เหล็กแผ่น", "tier": "Blacklist", "is_locked": False, "source_tag": "Manual",
-     "contact": "-",           "phone": "-",            "line_id": "",            "email": "",
-     "coverage_area": "-",                  "availability": "ปิดชั่วคราว",
-     "win_pct": 0,  "sla_score": 0,  "price_score": 0,  "credit_days": 0,
-     "note": "ส่งของไม่ตรงสเปก ระงับการใช้งาน",
-     "win_loss_log": [{"date": "2024-11", "result": "Loss", "reason": "สเปกไม่ตรง"}]},
-]
-
-MOCK_AUDIT_LOG = []
 
 # In-app notifications (demo)
 MOCK_NOTIFICATIONS: list = []   # {"id", "msg", "type": "high"|"medium"|"low", "read": bool}
 
-# D4: Quarterly Snapshots (mock historical data)
-MOCK_SNAPSHOTS = {
-    "เหล็กเส้น": [
-        {"quarter": "Q3/2024", "top5": [("สยามสตีล",   72), ("เจริญเหล็ก", 58), ("ไทยเมทัล",  50), ("อุดมเหล็ก", 40), ("SSG Steel", 20)]},
-        {"quarter": "Q4/2024", "top5": [("สยามสตีล",   70), ("เจริญเหล็ก", 60), ("ไทยเมทัล",  47), ("อุดมเหล็ก", 38), ("SSG Steel", 25)]},
-        {"quarter": "Q1/2025", "top5": [("สยามสตีล",   68), ("เจริญเหล็ก", 55), ("ไทยเมทัล",  48), ("อุดมเหล็ก", 35), ("SSG Steel", 28)]},
-    ],
-    "ท่อ GI": [
-        {"quarter": "Q3/2024", "top5": [("กรุงเทพท่อ", 75), ("ไทยไพพ์",   60), ("เอเซียท่อ", 42), ("สยาม เมทัล", 30), ("",         0)]},
-        {"quarter": "Q4/2024", "top5": [("กรุงเทพท่อ", 74), ("ไทยไพพ์",   58), ("เอเซียท่อ", 44), ("สยาม เมทัล", 35), ("",         0)]},
-        {"quarter": "Q1/2025", "top5": [("กรุงเทพท่อ", 72), ("ไทยไพพ์",   58), ("เอเซียท่อ", 44), ("สยาม เมทัล", 38), ("",         0)]},
-    ],
-    "ท่อ HDG": [
-        {"quarter": "Q3/2024", "top5": [("HDG Pro",    68), ("แกลแวน ไทย", 55), ("ยูนิไพพ์",  30), ("",          0), ("",          0)]},
-        {"quarter": "Q4/2024", "top5": [("HDG Pro",    66), ("แกลแวน ไทย", 54), ("ยูนิไพพ์",  32), ("",          0), ("",          0)]},
-        {"quarter": "Q1/2025", "top5": [("HDG Pro",    65), ("แกลแวน ไทย", 52), ("ยูนิไพพ์",  33), ("",          0), ("",          0)]},
-    ],
-    "ปูนซีเมนต์": [
-        {"quarter": "Q3/2024", "top5": [("ทีพีไอ โพลีน", 72), ("ปูนซิเมนต์ไทย", 64), ("ปูนตราเพชร", 38), ("",  0), ("",  0)]},
-        {"quarter": "Q4/2024", "top5": [("ทีพีไอ โพลีน", 71), ("ปูนซิเมนต์ไทย", 63), ("ปูนตราเพชร", 39), ("",  0), ("",  0)]},
-        {"quarter": "Q1/2025", "top5": [("ทีพีไอ โพลีน", 70), ("ปูนซิเมนต์ไทย", 62), ("ปูนตราเพชร", 40), ("",  0), ("",  0)]},
-    ],
-    "เหล็กแผ่น": [
-        {"quarter": "Q3/2024", "top5": [("สตีลชีท",    62), ("",  0), ("",  0), ("",  0), ("",  0)]},
-        {"quarter": "Q4/2024", "top5": [("สตีลชีท",    61), ("",  0), ("",  0), ("",  0), ("",  0)]},
-        {"quarter": "Q1/2025", "top5": [("สตีลชีท",    60), ("",  0), ("",  0), ("",  0), ("",  0)]},
-    ],
-}
 
 SOURCE_TAG_STYLE = {
     "Legacy": {"bg": "#EDE9FE", "fg": "#5B21B6"},
@@ -243,7 +75,6 @@ SOURCE_TAG_STYLE = {
 DEMOTE_THRESHOLD  = 30   # Win% ต่ำกว่านี้ → แสดง Demote suggestion
 PROMOTE_THRESHOLD = 60   # Tier 2 ที่ Score สูงกว่านี้ → แสดง Promote alert
 
-MOCK_CATEGORIES  = ["ทุกหมวด", "เหล็กเส้น", "ท่อ GI", "ท่อ HDG", "ปูนซีเมนต์", "เหล็กแผ่น"]
 MOCK_TIERS       = ["ทุก Tier", "Tier 1", "Tier 2", "SN", "Blacklist"]
 MOCK_AVAIL       = ["ทุกสถานะ", "พร้อม", "สต็อกต่ำ", "ปิดชั่วคราว"]
 MOCK_SOURCE_TAGS = ["ทุก Source", "Legacy", "Manual", "System"]
@@ -377,6 +208,8 @@ def _row_to_sup(row: dict) -> dict:
                                 row.get("coverage_area",""), row.get("supplier_name","")),
         "service_area":     row.get("service_area")     or "National",
         "logistics_assets": row.get("logistics_assets") or "",
+        "wh_zone":          row.get("wh_zone")          or "",
+        "wh_coordinates":   row.get("wh_coordinates")   or "",
     }
 
 
@@ -394,7 +227,8 @@ def db_get_all_suppliers() -> list:
                        reopen_date, sn_created, win_pct, sla_score,
                        price_score, note, blacklist_reason, win_loss_log,
                        dispatch_zone, service_area, logistics_assets,
-                       business_type, standard_focus, credit_term_label
+                       business_type, standard_focus, credit_term_label,
+                       wh_zone, wh_coordinates
                 FROM suppliers
                 ORDER BY id DESC
             """)
@@ -445,8 +279,9 @@ def db_save_supplier(sup: dict, action: str, user: str):
                          sn_created, win_pct, sla_score, price_score,
                          note, win_loss_log, created_by, created_at,
                          dispatch_zone, service_area, logistics_assets,
-                         business_type, standard_focus, credit_term_label)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s)
+                         business_type, standard_focus, credit_term_label,
+                         wh_zone, wh_coordinates)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,%s,%s)
                     RETURNING id
                 """, (
                     sup["name"], sup["supplier_id"], sup.get("contact",""),
@@ -459,7 +294,8 @@ def db_save_supplier(sup: dict, action: str, user: str):
                     sup.get("dispatch_zone",""), sup.get("service_area","National"),
                     sup.get("logistics_assets",""),
                     sup.get("business_type",""), sup.get("standard_focus",""),
-                    sup.get("credit_term_label","สด")
+                    sup.get("credit_term_label","สด"),
+                    sup.get("wh_zone",""), sup.get("wh_coordinates","")
                 ))
                 new_id = cur.fetchone()[0]
                 sup["id"] = new_id
@@ -474,7 +310,8 @@ def db_save_supplier(sup: dict, action: str, user: str):
                         price_score    = %s, note          = %s, win_loss_log = %s,
                         blacklist_reason = %s,
                         dispatch_zone    = %s, service_area  = %s, logistics_assets = %s,
-                        business_type    = %s, standard_focus = %s, credit_term_label = %s
+                        business_type    = %s, standard_focus = %s, credit_term_label = %s,
+                        wh_zone          = %s, wh_coordinates  = %s
                     WHERE id = %s
                 """, (
                     sup["name"], sup.get("contact",""), sup.get("phone",""),
@@ -490,6 +327,7 @@ def db_save_supplier(sup: dict, action: str, user: str):
                     sup.get("logistics_assets",""),
                     sup.get("business_type",""), sup.get("standard_focus",""),
                     sup.get("credit_term_label","สด"),
+                    sup.get("wh_zone",""), sup.get("wh_coordinates",""),
                     sup["id"]
                 ))
 
@@ -788,15 +626,18 @@ def db_save_quarterly_snapshot():
         saved   = 0
 
         # ดึง scores จาก cost_benchmarks จริง (ทุก category)
+        _all_sups_snap = db_get_all_suppliers()
         bench_scores = _calc_supplier_scores_from_benchmark(cat=None)
-        tier_map = {s["name"]: s["tier"] for s in db_get_all_suppliers()}
+        tier_map = {s["name"]: s["tier"] for s in _all_sups_snap}
+        cat_map_snap = {s["name"]: s["category"] for s in _all_sups_snap}
 
         # จัดกลุ่มตาม category
         import pandas as pd
         rows_all = []
         for sup_name, scores in bench_scores.items():
             tier     = tier_map.get(sup_name, "Tier 2")
-            category = scores.get("category", "")
+            # ใช้ category จาก suppliers table ก่อน (ป้องกัน category เก่าจาก benchmark)
+            category = cat_map_snap.get(sup_name) or scores.get("category", "")
             if not category or tier not in ("Tier 1", "Tier 2"):
                 continue
             win_pct     = scores["win_pct"]
@@ -871,15 +712,17 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
         df["score"] = []
         return df
 
-    # ── Merge กับ benchmark scores ───────────────────────────────────────────
+    # ── Merge กับ benchmark scores (vectorized — ไม่ใช้ lambda closure) ───────
     bench = _calc_supplier_scores_from_benchmark(cat=None)
     if bench:
-        df["win_pct"]     = df["name"].map(
-            lambda n: bench[n]["win_pct"]     if n in bench else df.loc[df["name"]==n,"win_pct"].values[0]
-        )
-        df["price_score"] = df["name"].map(
-            lambda n: bench[n]["price_score"] if n in bench else df.loc[df["name"]==n,"price_score"].values[0]
-        )
+        bench_df = pd.DataFrame([
+            {"name": k, "_bwp": v["win_pct"], "_bps": v["price_score"]}
+            for k, v in bench.items()
+        ])
+        df = df.merge(bench_df, on="name", how="left")
+        df["win_pct"]     = df["_bwp"].fillna(df["win_pct"]).astype(int)
+        df["price_score"] = df["_bps"].fillna(df["price_score"]).astype(int)
+        df = df.drop(columns=["_bwp", "_bps"])
 
     # ── Filters ──────────────────────────────────────────────────────────────
     if cat    != "ทุกหมวด":    df = df[df["category"]    == cat]
@@ -899,7 +742,12 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
             df["coverage_area"].str.lower().str.contains(kw, na=False)
         ]
     df = df.copy()
-    df["score"] = df.apply(calc_score, axis=1)
+    # vectorized score — ไม่ใช้ apply() เพื่อป้องกัน DataFrame expansion
+    df["score"] = (
+        df["price_score"].astype(float) * 0.60 +
+        df["win_pct"].astype(float)     * 0.20 +
+        df["sla_score"].astype(float)   * 0.20
+    ).round().astype(int)
     return df.reset_index(drop=True)
 
 
@@ -1190,10 +1038,11 @@ class SupplierDetailPopup(CTkToplevel):
         self._fields = {}
         for ri, (key, lbl, ph) in enumerate([
             ("contact",       "ผู้ติดต่อ",     ""),
-            ("phone",         "เบอร์โทร",      "0XX-XXX-XXXX"),
+            ("phone",         "เบอร์ติดต่อ",   "0XX-XXX-XXXX"),
             ("line_id",       "Line ID",        "@"),
             ("email",         "Email",          "example@domain.com"),
             ("coverage_area", "พื้นที่จัดส่ง", "เช่น กรุงเทพ, ชลบุรี"),
+            ("wh_zone",       "โซนที่ตั้ง",     "เช่น กรุงเทพตะวันออก, ชลบุรี"),
         ]):
             CTkLabel(cf, text=lbl + ":", text_color=CLR["gray"],
                      font=F(size=12), width=110, anchor="w").grid(
@@ -1203,6 +1052,38 @@ class SupplierDetailPopup(CTkToplevel):
             e.insert(0, str(supplier.get(key, "")))
             e.grid(row=ri, column=1, sticky="ew", pady=5)
             self._fields[key] = e
+
+        # ── พิกัด Warehouse (row ต่อจาก wh_zone) ────────────────────────────
+        coord_row = 6  # ต่อจาก wh_zone ที่ row=5
+        CTkLabel(cf, text="พิกัด Warehouse:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=coord_row, column=0, sticky="w", pady=5, padx=(0, 10))
+
+        coord_inner = CTkFrame(cf, fg_color="transparent")
+        coord_inner.grid(row=coord_row, column=1, sticky="ew", pady=5)
+        coord_inner.grid_columnconfigure(0, weight=1)
+
+        coord_e = CTkEntry(coord_inner, font=F(size=13), height=34,
+                           placeholder_text="Google Maps URL หรือ lat, lng (เช่น 13.7563, 100.5018)")
+        coord_e.insert(0, str(supplier.get("wh_coordinates", "")))
+        coord_e.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._fields["wh_coordinates"] = coord_e
+
+        def _open_map():
+            import webbrowser
+            val = coord_e.get().strip()
+            if not val:
+                return
+            if val.startswith("http"):
+                webbrowser.open(val)
+            else:
+                # สมมติเป็น "lat, lng"
+                query = val.replace(" ", "")
+                webbrowser.open(f"https://maps.google.com/?q={query}")
+
+        CTkButton(coord_inner, text="📍 เปิดแผนที่", width=100,
+                  font=F(size=12), fg_color=CLR["teal"], hover_color="#047481",
+                  height=34, command=_open_map).grid(row=0, column=1)
 
         # ── สถานะ & Tier ──────────────────────────────────────────────────────
         sec_label(2, "สถานะและ Tier")
@@ -1538,7 +1419,7 @@ class AddSupplierPopup(CTkToplevel):
         self.on_success   = on_success
         self.current_user = current_user
         self.title("เพิ่ม Supplier ใหม่ (SN)")
-        _place_popup(self, 640, 700)
+        _place_popup(self, 640, 800)
         self.resizable(False, True)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -1674,11 +1555,44 @@ class AddSupplierPopup(CTkToplevel):
         # มาตรฐานสินค้า
         CTkLabel(zone_section, text="มาตรฐาน:", text_color=CLR["gray"],
                  font=F(size=12), width=90, anchor="w").grid(
-            row=6, column=0, padx=(12, 8), pady=(4, 10), sticky="w")
+            row=6, column=0, padx=(12, 8), pady=(4, 4), sticky="w")
         self._std_var = tk.StringVar(value="— ยังไม่ระบุ —")
         CTkOptionMenu(zone_section, variable=self._std_var,
                       values=["— ยังไม่ระบุ —", "เกรดราชการ / มอก.", "เกรดทั่วไป", "ทั้งสองประเภท"],
-                      font=F(size=12), width=200).grid(row=6, column=1, sticky="w", pady=(4, 10), padx=(0, 12))
+                      font=F(size=12), width=200).grid(row=6, column=1, sticky="w", pady=(4, 4), padx=(0, 12))
+
+        # ── WH Location ─────────────────────────────────────────────────────
+        CTkLabel(zone_section, text="โซนที่ตั้ง WH:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=7, column=0, padx=(12, 8), pady=(4, 4), sticky="w")
+        self._wh_zone_e = CTkEntry(zone_section, font=F(size=13), height=32,
+                                    placeholder_text="เช่น กรุงเทพตะวันออก, ชลบุรี")
+        self._wh_zone_e.grid(row=7, column=1, sticky="ew", pady=(4, 4), padx=(0, 12))
+
+        CTkLabel(zone_section, text="พิกัด WH:", text_color=CLR["gray"],
+                 font=F(size=12), width=90, anchor="w").grid(
+            row=8, column=0, padx=(12, 8), pady=(4, 10), sticky="w")
+        _coord_row = CTkFrame(zone_section, fg_color="transparent")
+        _coord_row.grid(row=8, column=1, sticky="ew", pady=(4, 10), padx=(0, 12))
+        _coord_row.grid_columnconfigure(0, weight=1)
+        self._wh_coord_e = CTkEntry(_coord_row, font=F(size=13), height=32,
+                                     placeholder_text="https://maps.google.com/... หรือ lat, lng")
+        self._wh_coord_e.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        def _open_map_sn():
+            import webbrowser
+            val = self._wh_coord_e.get().strip()
+            if not val:
+                return
+            if val.startswith("http"):
+                webbrowser.open(val)
+            else:
+                # รองรับ "lat, lng" เช่น 13.6428, 100.3898
+                query = val.replace(" ", "")
+                webbrowser.open(f"https://maps.google.com/?q={query}")
+        CTkButton(_coord_row, text="📍 เปิดแผนที่", width=100, height=32,
+                  fg_color="#0EA5E9", hover_color="#0284C7",
+                  font=F(size=11),
+                  command=_open_map_sn).grid(row=0, column=1)
 
         # SN preview — อยู่ใน scroll_body
         self._sn_lbl = CTkLabel(scroll_body, text="", font=F(size=12, weight="bold"),
@@ -1768,6 +1682,8 @@ class AddSupplierPopup(CTkToplevel):
             "business_type":    self._biz_var.get() if hasattr(self, "_biz_var") else "",
             "standard_focus":   self._std_var.get() if hasattr(self, "_std_var") else "",
             "credit_term_label": self._credit_lbl_var.get() if hasattr(self, "_credit_lbl_var") else "สด",
+            "wh_zone":           self._wh_zone_e.get().strip() if hasattr(self, "_wh_zone_e") else "",
+            "wh_coordinates":    self._wh_coord_e.get().strip() if hasattr(self, "_wh_coord_e") else "",
         }
         ok = db_save_supplier(new_sup, action="add", user=self.current_user)
         if ok:
@@ -1947,6 +1863,7 @@ class Top5View(CTkToplevel):
         bench_scores = _calc_supplier_scores_from_benchmark(cat=None)
         _sups        = db_get_all_suppliers()
         tier_map     = {s["name"]: s["tier"] for s in _sups}
+        cat_map      = {s["name"]: s["category"] for s in _sups}
         is_locked_map = {s["name"]: s.get("is_locked", False) for s in _sups}
         avail_map    = {s["name"]: s.get("availability", "พร้อม") for s in _sups}
 
@@ -1954,7 +1871,8 @@ class Top5View(CTkToplevel):
         rows_bench = []
         for sup_name, sc in bench_scores.items():
             tier = tier_map.get(sup_name, "Tier 2")
-            cat  = sc.get("category", "")
+            # ใช้ category จาก suppliers table ก่อน ถ้าไม่มีค่อยใช้จาก benchmark
+            cat  = cat_map.get(sup_name) or sc.get("category", "")
             win_pct     = sc["win_pct"]
             price_score = sc["price_score"]
             score = round(price_score * 0.60 + win_pct * 0.40)
@@ -2007,8 +1925,10 @@ class Top5View(CTkToplevel):
         row_offset = 1
         for ci, cat in enumerate(cats):
             cat_df = df_all[df_all["category"] == cat].copy()
-            active = cat_df[cat_df["tier"].isin(["Tier 1", "Tier 2"])].sort_values(
-                "score", ascending=False).head(5)
+            active = cat_df[
+                cat_df["tier"].isin(["Tier 1", "Tier 2"]) &
+                (cat_df["score"] > 0)
+            ].sort_values("score", ascending=False).head(5)
 
             sec = CTkFrame(body, fg_color=CLR["white"],
                            corner_radius=10, border_width=1,
@@ -3384,20 +3304,22 @@ class SuperSupplierTab(CTkFrame):
         tf.grid_rowconfigure(0, weight=1)
 
         cols = ["supplier_id", "name", "category", "tier",
-                "availability", "contact", "coverage_area",
+                "availability", "contact", "phone", "wh_zone", "wh_coordinates",
                 "score", "win_pct", "credit_days", "note"]
         col_cfg = {
-            "supplier_id":   ("รหัส",           140, "center"),
-            "name":          ("ชื่อ Supplier",   220, "w"),
-            "category":      ("หมวดสินค้า",      100, "center"),
-            "tier":          ("Tier",             80, "center"),
-            "availability":  ("สถานะ",           100, "center"),
-            "contact":       ("ผู้ติดต่อ",        120, "w"),
-            "coverage_area": ("พื้นที่จัดส่ง",    160, "w"),
-            "score":         ("Score",             70, "center"),
-            "win_pct":       ("Win %",             70, "center"),
-            "credit_days":   ("เครดิต",            80, "center"),
-            "note":          ("จุดแข็ง",          200, "w"),
+            "supplier_id":    ("รหัส",           140, "center"),
+            "name":           ("ชื่อ Supplier",   220, "w"),
+            "category":       ("หมวดสินค้า",      100, "center"),
+            "tier":           ("Tier",             80, "center"),
+            "availability":   ("สถานะ",           100, "center"),
+            "contact":        ("ผู้ติดต่อ",        120, "w"),
+            "phone":          ("เบอร์ติดต่อ",      120, "center"),
+            "wh_zone":        ("โซนที่ตั้ง",       130, "w"),
+            "wh_coordinates": ("พิกัด Warehouse",  200, "w"),
+            "score":          ("Score",             70, "center"),
+            "win_pct":        ("Win %",             70, "center"),
+            "credit_days":    ("เครดิต",            80, "center"),
+            "note":           ("จุดแข็ง",          200, "w"),
         }
         self._tree = ttk.Treeview(tf, columns=cols, show="headings",
                                   style="SSL.Treeview")
@@ -3541,6 +3463,8 @@ class SuperSupplierTab(CTkFrame):
             avail_display = avail_map.get(avail, avail)
             if avail == "ปิดชั่วคราว" and row.get("reopen_date"):
                 avail_display += f" ({row['reopen_date']})"
+            coords_raw     = row.get("wh_coordinates", "") or ""
+            coords_display = "📍 ดูแผนที่" if coords_raw.startswith("http") else coords_raw
             values = (
                 row["supplier_id"],
                 lock + row["name"] + (f"  {src}" if src else ""),
@@ -3548,7 +3472,9 @@ class SuperSupplierTab(CTkFrame):
                 tier,
                 avail_display,
                 row["contact"],
-                row["coverage_area"],
+                row.get("phone", "") or "",
+                row.get("wh_zone", "") or "",
+                coords_display,
                 row["score"],
                 f"{row['win_pct']}%",
                 cr,
@@ -3603,9 +3529,13 @@ class SuperSupplierTab(CTkFrame):
             avail_display = avail_map.get(avail, avail)
             if avail == "ปิดชั่วคราว" and row.get("reopen_date"):
                 avail_display += f" ({row['reopen_date']})"
+            # พิกัด: ถ้าเป็น URL ยาว → ย่อแสดงเป็น "📍 ดูแผนที่" แทน
+            coords_raw = row.get("wh_coordinates", "")
+            coords_display = "📍 ดูแผนที่" if coords_raw.startswith("http") else coords_raw
             values = (row["supplier_id"], lock + row["name"] + (f"  {src}" if src else ""),
                       row["category"], tier, avail_display, row["contact"],
-                      row["coverage_area"], row["score"], f"{row['win_pct']}%", cr, row["note"])
+                      row.get("phone", ""), row.get("wh_zone", ""), coords_display,
+                      row["score"], f"{row['win_pct']}%", cr, row["note"])
             tag = "locked" if row.get("is_locked") else \
                   ("closed" if avail == "ปิดชั่วคราว" else tier)
             self._tree.insert("", "end", iid=str(int(row["id"])),

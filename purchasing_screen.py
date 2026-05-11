@@ -1093,16 +1093,48 @@ class ProductEditDialog(CTkToplevel):
     def _open_category_manager(self):
         CategoryManagementDialog(self, self.app_container, on_update_callback=self._load_categories_from_db)
 
+    @staticmethod
+    def _bind_thai_clipboard(entry_widget):
+        """แก้ปัญหา Ctrl+C/V/X/A เมื่อคีบอร์ดเป็นภาษาไทย — ใช้ keycode แทน char"""
+        def _on_ctrl(event):
+            kc = event.keycode
+            w  = event.widget
+            if kc == 86:   # V — Paste
+                try:
+                    clip = w.clipboard_get()
+                    try: w.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                    except Exception: pass
+                    w.insert(tk.INSERT, clip)
+                except Exception: pass
+                return "break"
+            elif kc == 67:  # C — Copy
+                try:
+                    w.clipboard_clear(); w.clipboard_append(w.selection_get())
+                except Exception: pass
+                return "break"
+            elif kc == 88:  # X — Cut
+                try:
+                    w.clipboard_clear(); w.clipboard_append(w.selection_get())
+                    w.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                except Exception: pass
+                return "break"
+            elif kc == 65:  # A — Select All
+                w.select_range(0, tk.END)
+                return "break"
+        entry_widget.bind("<Control-KeyPress>", _on_ctrl, add="+")
+
     def _create_widgets(self):
         row = 0
         CTkLabel(self, text="รหัสสินค้า:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.product_code_entry = CTkEntry(self)
         self.product_code_entry.grid(row=row, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+        self._bind_thai_clipboard(self.product_code_entry._entry)
         row += 1
 
         CTkLabel(self, text="ชื่อสินค้า:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.product_name_entry = CTkEntry(self)
         self.product_name_entry.grid(row=row, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+        self._bind_thai_clipboard(self.product_name_entry._entry)
         row += 1
 
         CTkLabel(self, text="หมวดหมู่:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
@@ -1117,6 +1149,7 @@ class ProductEditDialog(CTkToplevel):
         CTkLabel(self, text="คลัง:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
         self.warehouse_entry = CTkEntry(self)
         self.warehouse_entry.grid(row=row, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+        self._bind_thai_clipboard(self.warehouse_entry._entry)
         row += 1
 
         save_button_text = "บันทึกการแก้ไข" if self.editing_mode else "เพิ่มสินค้า"

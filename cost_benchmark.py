@@ -8,6 +8,25 @@ import re
 import json
 from tkinter import colorchooser
 from thefuzz import fuzz, process
+
+# ── Windows DPI Awareness ────────────────────────────────────────────────────
+# ต้องเรียกก่อน tkinter สร้าง window ใดๆ เพื่อให้ winfo_rooty() และ geometry()
+# ใช้ coordinate space เดียวกัน (physical pixels) — ป้องกัน popup ผิดตำแหน่ง
+# บน Hi-DPI (Display Scale > 100%)
+try:
+    import sys, ctypes
+    if sys.platform == "win32":
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4 (Windows 10 1703+)
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+except Exception:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()   # fallback: system DPI aware
+        except Exception:
+            pass
+# ─────────────────────────────────────────────────────────────────────────────
 try:
     from tksheet import Sheet
     HAS_TKSHEET = True
@@ -118,6 +137,14 @@ class AutoFilterManager:
         search_entry.insert(0, "🔍 ค้นหา...")
         search_entry.bind("<FocusIn>", lambda e: search_entry.delete(0, "end")
                           if search_entry.get().startswith("🔍") else None)
+        search_entry.bind("<Control-c>",  lambda e: (search_entry.event_generate("<<Copy>>"),  "break")[1])
+        search_entry.bind("<Control-C>",  lambda e: (search_entry.event_generate("<<Copy>>"),  "break")[1])
+        search_entry.bind("<Control-v>",  lambda e: (search_entry.event_generate("<<Paste>>"), "break")[1])
+        search_entry.bind("<Control-V>",  lambda e: (search_entry.event_generate("<<Paste>>"), "break")[1])
+        def _se_thai_cb(e):
+            if e.keycode == 86: search_entry.event_generate("<<Paste>>"); return "break"
+            if e.keycode == 67: search_entry.event_generate("<<Copy>>"); return "break"
+        search_entry.bind("<Control-KeyPress>", _se_thai_cb, add="+")
 
         # ── Checkbox list ─────────────────────────────────────────
         check_frame = tk.Frame(inner, bg="white")
@@ -135,36 +162,37 @@ class AutoFilterManager:
         check_vars = {}
         check_widgets = []
 
-        def build_checklist(term=""):
-            for w in check_inner.winfo_children():
-                w.destroy()
-            check_widgets.clear()
-
-            filtered = [
-                v for v in all_vals
-                if term.lower() in v.lower()
-            ] if (term and not term.startswith("🔍")) else all_vals
-
-            # Select All checkbox
-            var_all = tk.BooleanVar(value=all(v in active_set for v in filtered))
-            tk.Checkbutton(
-                check_inner, text="(Select All)", variable=var_all,
-                font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
-                activebackground="#EFF6FF",
-                command=lambda: toggle_all(var_all.get(), filtered)
-            ).pack(fill="x", pady=1)
-            check_widgets.append(("__all__", var_all, filtered))
-
-            for v in filtered:
-                var = check_vars.setdefault(v, tk.BooleanVar(value=v in active_set))
-                var.set(v in active_set)
-                tk.Checkbutton(
-                    check_inner, text=v, variable=var,
+        # สร้าง widget ครั้งเดียว แล้วใช้ pack/pack_forget ซ่อน/แสดง (เร็วกว่า destroy มาก)
+        var_all = tk.BooleanVar()
+        cb_all = tk.Checkbutton(check_inner, text="(Select All)", variable=var_all,
                     font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
-                    activebackground="#EFF6FF",
-                ).pack(fill="x", pady=1)
-                check_widgets.append((v, var, None))
+                    activebackground="#EFF6FF")
+        cb_all.pack(fill="x", pady=1)
+        _row_widgets = []
+        for v in all_vals:
+            var = tk.BooleanVar(value=v in active_set)
+            check_vars[v] = var
+            cb = tk.Checkbutton(check_inner, text=v, variable=var,
+                        font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
+                        activebackground="#EFF6FF")
+            cb.pack(fill="x", pady=1)
+            _row_widgets.append((v, var, cb))
 
+        def build_checklist(term=""):
+            check_widgets.clear()
+            t = term.lower() if (term and not term.startswith("🔍")) else ""
+            filtered = []
+            for v, var, cb in _row_widgets:
+                if not t or t in v.lower():
+                    cb.pack(fill="x", pady=1)
+                    var.set(v in active_set)
+                    check_widgets.append((v, var, None))
+                    filtered.append(v)
+                else:
+                    cb.pack_forget()
+            var_all.set(bool(filtered) and all(v in active_set for v in filtered))
+            cb_all.configure(command=lambda f=filtered: toggle_all(var_all.get(), f))
+            check_widgets.insert(0, ("__all__", var_all, filtered))
             check_inner.update_idletasks()
             canvas_c.configure(scrollregion=canvas_c.bbox("all"))
 
@@ -172,13 +200,18 @@ class AutoFilterManager:
             for v in vals:
                 if v in check_vars:
                     check_vars[v].set(state)
-            if state:
-                active_set.update(vals)
+            if state: active_set.update(vals)
             else:
-                for v in vals:
-                    active_set.discard(v)
+                for v in vals: active_set.discard(v)
 
-        search_var.trace_add("write", lambda *a: build_checklist(search_var.get()))
+        # Debounce 200ms — ไม่ filter จนกว่าจะพิมพ์หยุด
+        _sjob = [None]
+        def _on_search(*a):
+            if _sjob[0]:
+                try: popup.after_cancel(_sjob[0])
+                except Exception: pass
+            _sjob[0] = popup.after(200, lambda: build_checklist(search_var.get()))
+        search_var.trace_add("write", _on_search)
         build_checklist()
 
         # ── OK / Cancel ───────────────────────────────────────────
@@ -214,14 +247,45 @@ class AutoFilterManager:
                       ).pack(anchor="w", padx=8, pady=(0, 4))
 
         # ── วางตำแหน่ง popup ──────────────────────────────────────
-        root = self.screen.winfo_toplevel()
-        win_w = root.winfo_rootx() + root.winfo_width()
-        win_h = root.winfo_rooty() + root.winfo_height()
+        # ✅ ใช้ขอบเขตของ window จริง (รองรับ multi-monitor และ DPI scaling)
+        # แทนการใช้ winfo_screenwidth/height ซึ่งผิดพลาดกับบาง user
+        try:
+            root = self.screen.winfo_toplevel()
+            win_x  = root.winfo_rootx()
+            win_y  = root.winfo_rooty()
+            win_w  = root.winfo_width()
+            win_h  = root.winfo_height()
+        except Exception:
+            win_x, win_y = 0, 0
+            win_w = self.screen.winfo_screenwidth()
+            win_h = self.screen.winfo_screenheight()
+
         pw, ph = 240, 400
-        x = min(x_root, win_w - pw - 5)
-        y = min(y_root + 5, win_h - ph - 5)
+        x = x_root
+        y = y_root + 5
+
+        # กันเกินขอบขวาของ window
+        if x + pw > win_x + win_w - 5:
+            x = win_x + win_w - pw - 5
+        # ถ้าเกินล่าง → เปิดขึ้นบนแทน
+        if y + ph > win_y + win_h - 5:
+            y = y_root - ph - 5
+        # กันออกนอกขอบซ้าย/บน
+        x = max(x, win_x + 5)
+        y = max(y, win_y + 5)
+
+        # withdraw ก่อน set geometry เพื่อป้องกัน popup กระพริบที่ (0,0)
+        popup.withdraw()
         popup.geometry(f"{pw}x{ph}+{x}+{y}")
-        search_entry.focus_set()
+
+        def _show_and_focus():
+            popup.deiconify()
+            try:
+                search_entry.focus_set()
+            except Exception:
+                pass
+
+        popup.after(1, _show_and_focus)
 
         popup.bind("<FocusOut>", lambda e: self.screen.after(
             300, lambda: safe_destroy() if not popup._destroyed and
@@ -384,8 +448,14 @@ class InlineSearchPopup(tk.Toplevel):
         self.configure(bg="#9CA3AF", padx=1, pady=1)
 
         self.data_list = data_list
+        
+        # 🚀 อัปเกรดความเร็ว 1: Precompute ข้อมูลไว้ล่วงหน้าเพื่อไม่ต้องแปลง Type ทุกครั้งที่พิมพ์
+        self._data_lower = [str(x).lower() for x in data_list]
+        self._data_str = [str(x) for x in data_list] 
+        
         self.on_select_callback = on_select_callback
         self._destroyed = False
+        self._search_job = None
 
         self.search_var = tk.StringVar()
         self.entry = tk.Entry(
@@ -399,9 +469,6 @@ class InlineSearchPopup(tk.Toplevel):
         self.entry.pack(fill="x")
         self.search_var.trace_add("write", self._on_type)
 
-        # ----------------------------------------------------
-        # แก้ไขจุดที่ 1: เพิ่ม Frame เพื่อใส่ Scrollbar คู่กับ Listbox
-        # ----------------------------------------------------
         list_frame = tk.Frame(self, bg="#9CA3AF")
         list_frame.pack(fill="both", expand=True)
 
@@ -416,13 +483,11 @@ class InlineSearchPopup(tk.Toplevel):
             height=8,
         )
         
-        # เพิ่ม Scrollbar แนวตั้ง
         scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=scrollbar.set)
         
         scrollbar.pack(side="right", fill="y")
         self.listbox.pack(side="left", fill="both", expand=True)
-        # ----------------------------------------------------
 
         self.listbox.bind("<ButtonRelease-1>", self._on_click)
         self.entry.bind("<Down>", self._on_down)
@@ -431,12 +496,16 @@ class InlineSearchPopup(tk.Toplevel):
         self.entry.bind("<KP_Enter>", self._on_return)
         self.entry.bind("<Escape>", self._on_escape)
         self.entry.bind("<FocusOut>", self._on_focus_out)
+        self.entry.bind("<Control-c>",  lambda e: (self.entry.event_generate("<<Copy>>"),  "break")[1])
+        self.entry.bind("<Control-C>",  lambda e: (self.entry.event_generate("<<Copy>>"),  "break")[1])
+        self.entry.bind("<Control-v>",  lambda e: (self.entry.event_generate("<<Paste>>"), "break")[1])
+        self.entry.bind("<Control-V>",  lambda e: (self.entry.event_generate("<<Paste>>"), "break")[1])
+        self.entry.bind("<Control-KeyPress>", self._entry_thai_clipboard, add="+")
 
         self.filter_list("")
         self.entry.focus_set()
 
     def place_at_mouse(self, ref_widget=None):
-        """วาง popup ที่ตำแหน่ง mouse ปัจจุบัน"""
         try:
             x = self.winfo_pointerx()
             y = self.winfo_pointery() + 15
@@ -446,80 +515,39 @@ class InlineSearchPopup(tk.Toplevel):
 
     def place_near_cell(self, sheet_widget, row, col, row_h=30, header_h=35,
                         anchor_x=None, anchor_y=None, data_col=None):
-        """วาง popup ใต้เซลล์ที่คลิก
-        data_col = LOCAL data-column index ใน sheet widget (ใช้ col_positions)
-        ถ้าไม่ส่งมา จะ fallback ไปใช้ mouse pointer position
-        """
         try:
-            mt = sheet_widget.MT
-            # ใช้ data_col (not display col) สำหรับ col_positions lookup
-            # col_positions ใน tksheet เป็น DATA index; display index != data index เมื่อมีซ่อน
-            pos_col = data_col if data_col is not None else col
-
-            # ── X ────────────────────────────────────────────────────────────
-            try:
-                col_canvas_x = mt.col_positions[pos_col]
-            except (IndexError, AttributeError):
-                col_canvas_x = pos_col * 120  # rough fallback
-
-            try: scroll_x = mt.canvasx(0)
-            except Exception: scroll_x = 0
-
-            rx = mt.winfo_rootx() + int(col_canvas_x - scroll_x)
-
-            # ── Y ────────────────────────────────────────────────────────────
-            try:
-                row_canvas_y_bottom = mt.row_positions[row + 1]
-            except (IndexError, AttributeError):
-                row_canvas_y_bottom = (row + 1) * row_h
-
-            try: scroll_y = mt.canvasy(0)
-            except Exception: scroll_y = 0
-
-            ry = mt.winfo_rooty() + int(row_canvas_y_bottom - scroll_y)
-
-            self._set_geometry(rx, ry + 2, 400, ref_widget=sheet_widget)
+            rx = sheet_widget.winfo_pointerx()
+            ry = sheet_widget.winfo_pointery() + 8
+            self._set_geometry(rx, ry, 400, ref_widget=sheet_widget)
         except Exception as e:
             print(f"place_near_cell error: {e}")
-            # Fallback: mouse pointer position
-            try:
-                fx = anchor_x or sheet_widget.winfo_pointerx()
-                fy = anchor_y or sheet_widget.winfo_pointery()
-                self._set_geometry(fx, fy + 15, 400, ref_widget=sheet_widget)
-            except Exception:
-                pass
 
     def _set_geometry(self, rx, ry, popup_w, popup_h=240, ref_widget=None):
-        """Set geometry โดยกันไม่ให้ออกนอกขอบของ window ที่ popup สังกัดอยู่"""
         try:
-            # ✅ ใช้ขอบเขตของ window จริง (toplevel ที่ popup อยู่ใน) แทน screenwidth
             if ref_widget is not None:
-                # หา root window (Tk หรือ Toplevel)
                 root = ref_widget.winfo_toplevel()
                 win_x = root.winfo_rootx()
                 win_y = root.winfo_rooty()
                 win_w = root.winfo_width()
                 win_h = root.winfo_height()
             else:
-                # fallback ใช้ screen
-                win_x = 0
-                win_y = 0
+                win_x, win_y = 0, 0
                 win_w = self.winfo_screenwidth()
                 win_h = self.winfo_screenheight()
 
-            # กันเกินขอบขวาของ window
-            if rx + popup_w > win_x + win_w:
-                rx = win_x + win_w - popup_w - 5
+            if rx + popup_w > win_x + win_w: rx = win_x + win_w - popup_w - 5
+            if ry + popup_h > win_y + win_h: ry = ry - popup_h - 30
 
-            # ถ้า popup จะเกินล่าง window → เปิดขึ้นบนแทน
-            if ry + popup_h > win_y + win_h:
-                ry = ry - popup_h - 30
-
-            # กันออกนอกขอบซ้าย/บนของ window
             rx = max(rx, win_x)
             ry = max(ry, win_y)
 
+            self.withdraw()
             self.geometry(f"{popup_w}x{popup_h}+{rx}+{ry}")
+            def _show_and_focus():
+                self.deiconify()
+                try: self.entry.focus_set()
+                except Exception: pass
+            self.after(1, _show_and_focus)
         except Exception:
             pass
 
@@ -527,44 +555,63 @@ class InlineSearchPopup(tk.Toplevel):
         term = (term or "").lower().strip()
         self.listbox.delete(0, tk.END)
         
-        # ถ้าไม่ได้พิมพ์อะไรเลย ให้โชว์ข้อมูลทั้งหมดที่มีในระบบ
+        # 🚀 อัปเกรดความเร็ว 2: ถ้าไม่ได้พิมพ์อะไร จำกัดการโชว์แค่ 150 รายการแรกเพื่อไม่ให้ค้าง
         if not term:
             if self.data_list:
-                # ใช้ * (unpacking) เพื่อความเร็วในการ insert ข้อมูลจำนวนมาก
-                self.listbox.insert(tk.END, *self.data_list)
+                self.listbox.insert(tk.END, *self.data_list[:150]) 
             return
 
         search_terms = term.split()
+
+        def _is_thai_char(c): return 'ก' <= c <= '๛'
+        def _sort_key(item, term):
+            item_lower = str(item).lower()
+            starts = item_lower.startswith(term)
+            if starts:
+                rest = item_lower[len(term):]
+                if not rest or _is_thai_char(rest[0]): return (0, len(item))
+                else: return (1, len(item))
+            else: return (2, len(item))
+
+        # ค้นหาแบบธรรมดา (ใช้ตัวแปรที่ precompute แล้ว)
+        normal_matches = []
+        for i, item_lower in enumerate(self._data_lower):
+            if all(t in item_lower for t in search_terms):
+                normal_matches.append(self.data_list[i])
         
-        # ค้นหาแบบธรรมดา (เจอทุกคำที่พิมพ์ เช่น "เหลี่ยม ดำ" ไม่เรียงลำดับคำก็ได้)
-        normal_matches = [
-            item for item in self.data_list
-            if all(t in str(item).lower() for t in search_terms)
-        ]
+        # 🚀 อัปเกรดความเร็ว 3: จำกัดผลลัพธ์ปกติก่อนไป Sort เพื่อลดภาระ CPU
+        normal_matches = normal_matches[:150]
+        normal_matches.sort(key=lambda item: _sort_key(item, term))
         
-        # ค้นหาแบบใกล้เคียง (Fuzzy)
-        try:
-            fuzzy_results = process.extractBests(
-                term, [str(i) for i in self.data_list],
-                scorer=fuzz.token_set_ratio, limit=50, score_cutoff=55 # ขยาย fuzzy limit
-            )
-            fuzzy_matches = [m[0] for m in fuzzy_results]
-        except Exception:
-            fuzzy_matches = []
+        # 🚀 อัปเกรดความเร็ว 4: ค้นหาแบบ Fuzzy เมื่อพิมพ์อย่างน้อย 2 ตัวอักษรขึ้นไปเท่านั้น (พิมพ์ 1 ตัวแล้วทำ Fuzzy มันหาเยอะเกินจนค้าง)
+        fuzzy_matches = []
+        if len(normal_matches) < 10 and len(term) > 1:
+            try:
+                # ใช้ _data_str ที่เตรียมไว้แล้ว ไม่ต้องสั่ง str(i) ทุกรอบ
+                fuzzy_results = process.extractBests(
+                    term, self._data_str,
+                    scorer=fuzz.token_set_ratio, limit=20, score_cutoff=55
+                )
+                normal_set = set(str(x) for x in normal_matches)
+                fuzzy_matches = [m[0] for m in fuzzy_results if m[0] not in normal_set]
+            except Exception:
+                pass
             
-        # รวมผลลัพธ์และตัดตัวที่ซ้ำกันออก
         combined = list(dict.fromkeys(normal_matches + fuzzy_matches))
         
-        # ยกเลิกการจำกัด [:60] แล้วโชว์ผลลัพธ์ทั้งหมดที่หาเจอ
+        # 🚀 อัปเกรดความเร็ว 5: จำกัดผลลัพธ์สุดท้ายที่จะส่งไปแสดงบนหน้าจอไม่เกิน 150 รายการ
         if combined:
-            self.listbox.insert(tk.END, *combined)
+            self.listbox.insert(tk.END, *combined[:150])
 
     def _on_type(self, *args):
-        self.filter_list(self.search_var.get())
+        # Debounce 120ms ลดลงนิดหน่อยเพื่อให้รู้สึกตอบสนองเร็วขึ้น 
+        if self._search_job:
+            try: self.after_cancel(self._search_job)
+            except Exception: pass
+        self._search_job = self.after(120, lambda: self.filter_list(self.search_var.get()))
 
     def _on_click(self, e=None):
-        if not self.listbox.curselection():
-            return
+        if not self.listbox.curselection(): return
         self._commit(self.listbox.get(self.listbox.curselection()))
 
     def _on_down(self, e=None):
@@ -594,6 +641,22 @@ class InlineSearchPopup(tk.Toplevel):
             self._commit(self.listbox.get(0))
         return "break"
 
+    def _entry_thai_clipboard(self, event):
+        if event.keycode == 86:
+            try: clip = self.entry.clipboard_get()
+            except Exception: return "break"
+            try: self.entry.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            except Exception: pass
+            self.entry.insert(tk.INSERT, clip)
+            return "break"
+        elif event.keycode == 67:
+            try:
+                text = self.entry.selection_get()
+                self.entry.clipboard_clear()
+                self.entry.clipboard_append(text)
+            except Exception: pass
+            return "break"
+
     def _on_escape(self, e=None):
         self.safe_destroy()
 
@@ -602,8 +665,7 @@ class InlineSearchPopup(tk.Toplevel):
 
     def _check_focus_and_close(self):
         try:
-            if self._destroyed:
-                return
+            if self._destroyed: return
             focused = self.focus_get()
             if focused not in (self.entry, self.listbox):
                 self.safe_destroy()
@@ -617,10 +679,8 @@ class InlineSearchPopup(tk.Toplevel):
     def safe_destroy(self):
         if not self._destroyed:
             self._destroyed = True
-            try:
-                self.destroy()
-            except Exception:
-                pass
+            try: self.destroy()
+            except Exception: pass
 
 
 class CostBenchmarkScreen(CTkFrame):
@@ -874,6 +934,7 @@ class CostBenchmarkScreen(CTkFrame):
                     settings = json.loads(raw) if isinstance(raw, str) else raw
                     self.hidden_cols_list = settings.get("hidden_cols", [])
                     self.custom_header_colors = settings.get("header_colors", {})
+                    self.cell_highlights_cache = settings.get("cell_highlights", {})
                     
                     # Merge saved widths on top of defaults (ไม่ reset เพื่อ preserve defaults)
                     saved_widths = settings.get("col_widths", {})
@@ -910,17 +971,59 @@ class CostBenchmarkScreen(CTkFrame):
         finally:
             if conn: self.app_container.release_connection(conn)
 
+    def _apply_saved_highlights(self):
+        """สาดสีไฮไลท์ที่โหลดมาจาก DB คืนลงในตาราง"""
+        if not hasattr(self, 'cell_highlights_cache') or not self.cell_highlights_cache:
+            return
+        
+        for key, color in self.cell_highlights_cache.items():
+            try:
+                side, pos = key.split(':')
+                r, c = map(int, pos.split(','))
+                # กัน list/tuple จาก tksheet version เก่าที่บันทึกไว้
+                if isinstance(color, (list, tuple)):
+                    color = color[0] if color else None
+                if not isinstance(color, str):
+                    continue
+                if side == 'main':
+                    self.sheet.highlight_cells(row=r, column=c, bg=color, redraw=False)
+                elif side == 'frozen' and self.sheet_frozen:
+                    self.sheet_frozen.highlight_cells(row=r, column=c, bg=color, redraw=False)
+            except Exception: pass
+        
+        self.sheet.redraw()
+        if self.sheet_frozen: self.sheet_frozen.redraw()
+
     def _save_user_settings(self):
-        # เก็บ col widths จาก col_widths_cache (up-to-date ทันทีที่ user resize)
-        # ✅ ไม่ดึงจาก sheet โดยตรง เพราะ sheet อาจถูก rebuild หรือค่าเปลี่ยนก่อน debounce fire
         col_widths_to_save = {str(k): v for k, v in self.col_widths_cache.items() if v and v > 0}
+
+        # 🔹 เพิ่มส่วนนี้: ดึงรหัสสีไฮไลท์จากตาราง (ต้องแปลง tuple เป็น string เพราะ JSON รับ tuple ไม่ได้)
+        highlights_to_save = {}
+        try:
+            def _extract_color(c):
+                # tksheet version ใหม่ return เป็น list/tuple [bg, fg, ...]
+                if isinstance(c, (list, tuple)):
+                    c = c[0] if c else None
+                return c if isinstance(c, str) and c.startswith("#") else None
+
+            for (r, c), color in self.sheet.get_highlighted_cells().items():
+                col_str = _extract_color(color)
+                if col_str:
+                    highlights_to_save[f"main:{r},{c}"] = col_str
+            if self.sheet_frozen:
+                for (r, c), color in self.sheet_frozen.get_highlighted_cells().items():
+                    col_str = _extract_color(color)
+                    if col_str:
+                        highlights_to_save[f"frozen:{r},{c}"] = col_str
+        except Exception: pass
 
         settings = {
             "hidden_cols": self.hidden_cols_list,
             "header_colors": self.custom_header_colors,
             "col_widths": col_widths_to_save,
             "frozen_col_count": self.frozen_col_count,
-            "zoom_level": self.zoom_level, # <--- ⚠️ เพิ่มให้จำค่า Zoom ตรงนี้ครับ
+            "zoom_level": self.zoom_level,
+            "cell_highlights": highlights_to_save, # 🔹 เพิ่มเข้าไปใน JSON
         }
         settings_json = json.dumps(settings)
         conn = self.app_container.get_connection()
@@ -1180,17 +1283,23 @@ class CostBenchmarkScreen(CTkFrame):
                 w = w if w >= 8 else 120 # กัน 0/1px bug
                 frozen_width += w
             frozen_width += 4
+        self._current_frozen_width = frozen_width  # store ไว้ให้ _on_table_resize อ่านค่าล่าสุดเสมอ
 
         if n_freeze == 0:
             self.table_frame.grid_columnconfigure(0, weight=1, minsize=0)
             self.table_frame.grid_columnconfigure(1, weight=0, minsize=0)
+            
+            # --- ให้เพิ่มโค้ดคำนวณความสูง 2 บรรทัดนี้ ---
+            current_row_h = int(30 * (self.zoom_level / 11.0))
+            current_header_h = int(35 * (self.zoom_level / 11.0))
+
             self.sheet = Sheet(
                 self.table_frame,
                 headers=self.columns,
                 data=current_data,
                 theme="light blue",
-                row_height=30,
-                header_height=35,
+                row_height=current_row_h,       # เปลี่ยนจาก 30 เป็น current_row_h
+                header_height=current_header_h, # เปลี่ยนจาก 35 เป็น current_header_h
                 font=("Tahoma", self.zoom_level, "normal"),
                 header_font=("Tahoma", self.zoom_level, "bold"),
                 show_row_index=True,
@@ -1256,8 +1365,10 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet.place(x=frozen_width, y=0, relwidth=1.0, relheight=1.0, width=-frozen_width)
 
             _fw = frozen_width
-            def _on_table_resize(event, fw=_fw):
-                try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+            def _on_table_resize(event):
+                try:
+                    fw = getattr(self, '_current_frozen_width', _fw)
+                    self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
                 except Exception: pass
             self.table_frame.bind("<Configure>", _on_table_resize)
             self._sync_vertical_scroll()
@@ -1271,27 +1382,44 @@ class CostBenchmarkScreen(CTkFrame):
         self.after(50, lambda: self._setup_header_filters(n_freeze))
 
         def _restore_after_build():
-            self._restore_col_widths()
-            if hasattr(self, '_apply_hidden_columns'):
-                self._apply_hidden_columns()
-            
-            try:
-                rh = int(30 * (self.zoom_level / 11.0))
-                total_rows = max(self.sheet.get_total_rows(), self.sheet_frozen.get_total_rows())
-                for r in range(total_rows):
-                    self.sheet_frozen.row_height(r, rh)
-                    self.sheet.row_height(r, rh)
-                self.sheet_frozen.redraw()
-                self.sheet.redraw()
-            except Exception: 
-                pass
-            
-            self.after(200, self._hide_frozen_scrollbars)
-            self.after(600, self._hide_frozen_scrollbars)
-            # ✅ เพิ่ม: restore อีกรอบหลัง render เสร็จสมบูรณ์
-            self.after(500, self._restore_col_widths)
+            def _do_restore():
+                self._restore_col_widths()
+                if hasattr(self, '_apply_hidden_columns'):
+                    self._apply_hidden_columns()
+
+                try:
+                    rh = int(30 * (self.zoom_level / 11.0))
+                    # เช็คว่ามีตารางตรึงไหม ถ้าไม่มีให้ใช้แถวตารางหลักแทน
+                    if self.sheet_frozen:
+                        total_rows = max(self.sheet.get_total_rows(), self.sheet_frozen.get_total_rows())
+                    else:
+                        total_rows = self.sheet.get_total_rows()
+                        
+                    for r in range(total_rows):
+                        if self.sheet_frozen:
+                            self.sheet_frozen.row_height(r, rh)
+                        self.sheet.row_height(r, rh)
+                        
+                    if self.sheet_frozen:
+                        self.sheet_frozen.redraw()
+                    self.sheet.redraw()
+                except Exception:
+                    pass
+
+                self.after(200, self._hide_frozen_scrollbars)
+                self.after(600, self._hide_frozen_scrollbars)
+
+                # ── แก้ช่องขาว: เรียก _zoom จริงๆ เลย zoom in แล้ว zoom out ──
+                # ทำใน after() ที่ต่อเนื่องกัน user จะไม่เห็นการเปลี่ยนแปลง
+                if self.sheet_frozen:
+                    self.after(50, lambda: self._zoom(1))
+                    self.after(100, lambda: self._zoom(-1))
+
+            self.after(0, _do_restore)
 
         self.after(150, _restore_after_build)
+
+
         
     def _sync_vertical_scroll(self):
         if not getattr(self, "sheet_frozen", None):
@@ -1356,18 +1484,26 @@ class CostBenchmarkScreen(CTkFrame):
             try:
                 units = -3 if event.delta > 0 else 3
                 self.sheet.MT.yview_scroll(units, "units")
+                try: self.sheet.redraw()
+                except Exception: pass
             except Exception: pass
             self.after_idle(_sync_to_frozen)
             return "break"
 
         def _frozen_wheel_up(event=None):
-            try: self.sheet.MT.yview_scroll(-3, "units")
+            try:
+                self.sheet.MT.yview_scroll(-3, "units")
+                try: self.sheet.redraw()
+                except Exception: pass
             except Exception: pass
             self.after_idle(_sync_to_frozen)
             return "break"
 
         def _frozen_wheel_down(event=None):
-            try: self.sheet.MT.yview_scroll(3, "units")
+            try:
+                self.sheet.MT.yview_scroll(3, "units")
+                try: self.sheet.redraw()
+                except Exception: pass
             except Exception: pass
             self.after_idle(_sync_to_frozen)
             return "break"
@@ -1433,30 +1569,26 @@ class CostBenchmarkScreen(CTkFrame):
     def _get_selected_row_idx(self):
         try:
             curr = self.sheet.get_currently_selected()
-            print(f"DEBUG move - get_currently_selected: {curr}")  # ← เพิ่ม
             if curr:
                 return int(curr[0])
-        except Exception as e:
-            print(f"DEBUG move error: {e}")
-        
+        except Exception:
+            pass
+
         if self.sheet_frozen:
             try:
                 curr = self.sheet_frozen.get_currently_selected()
-                print(f"DEBUG move frozen - get_currently_selected: {curr}")  # ← เพิ่ม
                 if curr:
                     return int(curr[0])
             except Exception:
                 pass
-        
+
         try:
             selected_rows = self.sheet.get_selected_rows()
-            print(f"DEBUG move - get_selected_rows: {selected_rows}")  # ← เพิ่ม
             if selected_rows:
                 return min(int(r) for r in selected_rows)
         except Exception:
             pass
-        
-        print("DEBUG move - ไม่พบ selection")  # ← เพิ่ม
+
         return None
 
     def _swap_rows(self, idx_a, idx_b):
@@ -1591,29 +1723,32 @@ class CostBenchmarkScreen(CTkFrame):
                 if col_name in self.columns:
                     col_to_style[col_name] = (bg_color, "black")
 
-        def get_display_idx(col_name):
-            # คำนวณ display index สำหรับ readonly_columns (ต้องการ display index ไม่ใช่ data index)
+        def get_data_idx(col_name):
+            # ใช้ Data Index (ไม่นับ hidden cols) เพื่อให้ readonly_columns ถูกต้องเสมอ
             try:
                 real_idx = self.columns.index(col_name)
             except ValueError:
                 return None
-            hidden_set_disp = set(getattr(self, "hidden_cols_list", []))
-            if real_idx in hidden_set_disp or real_idx < col_offset:
+            if real_idx < col_offset:
                 return None
-            main_visible_disp = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set_disp]
-            try:
-                return main_visible_disp.index(real_idx)
-            except ValueError:
-                return None
+            return real_idx - col_offset
 
-        auto_display_indices = []
+        auto_data_indices = []
         readonly_cols = self._get_auto_cols()
         for c in readonly_cols:
-            idx = get_display_idx(c)
+            idx = get_data_idx(c)
             if idx is not None:
-                auto_display_indices.append(idx)
-        if auto_display_indices:
-            self.sheet.readonly_columns(columns=auto_display_indices, readonly=True)
+                auto_data_indices.append(idx)
+        if auto_data_indices:
+            self.sheet.readonly_columns(columns=auto_data_indices, readonly=True)
+        # ✅ ปลดล็อค Markup Guide (%) และ WIN RATE % เสมอ (ไม่ขึ้นกับ hidden cols)
+        for _editable_col in ["Markup Guide (%)", "WIN RATE %"]:
+            try:
+                _ei = get_data_idx(_editable_col)
+                if _ei is not None:
+                    self.sheet.readonly_columns(columns=[_ei], readonly=False)
+            except Exception:
+                pass
 
         display_cols = self.columns[col_offset:]
         for di, col in enumerate(display_cols):
@@ -1689,6 +1824,15 @@ class CostBenchmarkScreen(CTkFrame):
                 self.sheet_frozen.readonly_columns(columns=auto_frozen_indices, readonly=True)
             except Exception:
                 pass
+
+        # ✅ ปลดล็อค Markup Guide (%) และ WIN RATE % ฝั่ง frozen ด้วย
+        for _editable_col in ["Markup Guide (%)", "WIN RATE %"]:
+            if _editable_col in frozen_col_names:
+                try:
+                    idx = frozen_col_names.index(_editable_col)
+                    self.sheet_frozen.readonly_columns(columns=[idx], readonly=False)
+                except Exception:
+                    pass
 
         self.sheet_frozen.set_options(
             grid_color="#000000", outline_color="#000000", table_bg="white", table_fg="black",
@@ -1867,6 +2011,10 @@ class CostBenchmarkScreen(CTkFrame):
             search_entry.insert(0, "🔍 ค้นหา...")
             search_entry.bind("<FocusIn>", lambda e: search_entry.delete(0, "end")
                             if search_entry.get().startswith("🔍") else None)
+            def _hf_thai_cb(e, _se=search_entry):
+                if e.keycode == 86: _se.event_generate("<<Paste>>"); return "break"
+                if e.keycode == 67: _se.event_generate("<<Copy>>"); return "break"
+            search_entry.bind("<Control-KeyPress>", _hf_thai_cb, add="+")
 
             # Checkbox list
             check_frame = tk.Frame(inner, bg="white")
@@ -1883,30 +2031,37 @@ class CostBenchmarkScreen(CTkFrame):
             check_widgets = []
             active_set = set(current_filter) if current_filter is not None else set(all_values)
 
-            def build_checklist(term=""):
-                for w in check_inner.winfo_children():
-                    w.destroy()
-                check_widgets.clear()
-
-                filtered = [v for v in all_values
-                            if term.lower() in v.lower()] \
-                        if (term and not term.startswith("🔍")) else all_values
-
-                var_all = tk.BooleanVar(value=all(v in active_set for v in filtered))
-                tk.Checkbutton(check_inner, text="(Select All)", variable=var_all,
+            # สร้าง widget ครั้งเดียวตอนเปิด แล้วใช้ pack/pack_forget ซ่อน/แสดง (เร็วกว่า destroy มาก)
+            var_all = tk.BooleanVar()
+            cb_all = tk.Checkbutton(check_inner, text="(Select All)", variable=var_all,
+                        font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
+                        activebackground="#EFF6FF")
+            cb_all.pack(fill="x", pady=1)
+            _row_widgets = []  # [(value, BooleanVar, Checkbutton)]
+            for v in all_values:
+                var = tk.BooleanVar(value=v in active_set)
+                check_vars[v] = var
+                cb = tk.Checkbutton(check_inner, text=v, variable=var,
                             font=("Tahoma", 10), bg="white", anchor="w", relief="flat",
-                            command=lambda: toggle_all(var_all.get(), filtered)
-                            ).pack(fill="x", pady=1)
-                check_widgets.append(("__all__", var_all, filtered))
+                            activebackground="#EFF6FF")
+                cb.pack(fill="x", pady=1)
+                _row_widgets.append((v, var, cb))
 
-                for v in filtered:
-                    var = check_vars.setdefault(v, tk.BooleanVar(value=v in active_set))
-                    var.set(v in active_set)
-                    tk.Checkbutton(check_inner, text=v, variable=var,
-                                font=("Tahoma", 10), bg="white", anchor="w", relief="flat"
-                                ).pack(fill="x", pady=1)
-                    check_widgets.append((v, var, None))
-
+            def build_checklist(term=""):
+                check_widgets.clear()
+                t = term.lower() if (term and not term.startswith("🔍")) else ""
+                filtered = []
+                for v, var, cb in _row_widgets:
+                    if not t or t in v.lower():
+                        cb.pack(fill="x", pady=1)
+                        var.set(v in active_set)
+                        check_widgets.append((v, var, None))
+                        filtered.append(v)
+                    else:
+                        cb.pack_forget()
+                var_all.set(bool(filtered) and all(v in active_set for v in filtered))
+                cb_all.configure(command=lambda f=filtered: toggle_all(var_all.get(), f))
+                check_widgets.insert(0, ("__all__", var_all, filtered))
                 check_inner.update_idletasks()
                 canvas_c.configure(scrollregion=canvas_c.bbox("all"))
 
@@ -1914,13 +2069,18 @@ class CostBenchmarkScreen(CTkFrame):
                 for v in vals:
                     if v in check_vars:
                         check_vars[v].set(state)
-                if state:
-                    active_set.update(vals)
+                if state: active_set.update(vals)
                 else:
-                    for v in vals:
-                        active_set.discard(v)
+                    for v in vals: active_set.discard(v)
 
-            search_var.trace_add("write", lambda *a: build_checklist(search_var.get()))
+            # Debounce 200ms — ไม่ filter จนกว่าจะพิมพ์หยุด
+            _sjob = [None]
+            def _on_search(*a):
+                if _sjob[0]:
+                    try: popup.after_cancel(_sjob[0])
+                    except Exception: pass
+                _sjob[0] = popup.after(200, lambda: build_checklist(search_var.get()))
+            search_var.trace_add("write", _on_search)
             build_checklist()
 
             # OK / Cancel
@@ -1952,13 +2112,58 @@ class CostBenchmarkScreen(CTkFrame):
                                         self._apply_header_filters()]
                         ).pack(anchor="w", padx=8, pady=(0, 4))
 
-            root = self.winfo_toplevel()
-            x = min(event.x_root, root.winfo_rootx() + root.winfo_width() - 240 - 5)
-            y = min(event.y_root + 5, root.winfo_rooty() + root.winfo_height() - 400 - 5)
-            popup.geometry(f"240x400+{x}+{y}")
+            # ── วางตำแหน่ง popup ──────────────────────────────────────────────
+            pw, ph = 240, 400
+
+            # เมื่อ SetProcessDpiAwarenessContext ถูกเรียกแล้ว winfo_rooty() และ
+            # geometry("+x+y") ใช้ physical pixels เหมือนกัน — คำนวณได้ตรง
+            try:
+                ch = target_sheet.CH
+                header_bottom_y = ch.winfo_rooty() + ch.winfo_height()
+            except Exception:
+                header_bottom_y = event.y_root + 5
+
+            # ขอบเขต window จริงสำหรับ clamp
+            try:
+                root_win = self.winfo_toplevel()
+                win_x = root_win.winfo_rootx()
+                win_y = root_win.winfo_rooty()
+                win_w = root_win.winfo_width()
+                win_h = root_win.winfo_height()
+            except Exception:
+                win_x, win_y = 0, 0
+                win_w = self.winfo_screenwidth()
+                win_h = self.winfo_screenheight()
+
+            x = event.x_root
+            y = header_bottom_y + 2
+
+            # กันเกินขอบขวาของ window
+            if x + pw > win_x + win_w - 5:
+                x = win_x + win_w - pw - 5
+            # ถ้า popup เกินล่าง window → เปิดขึ้นบน header แทน
+            if y + ph > win_y + win_h - 5:
+                y = header_bottom_y - ph - 2
+            # กันออกนอกขอบซ้าย/บน
+            x = max(x, win_x + 5)
+            y = max(y, win_y + 5)
+
+            # วาง geometry ขณะที่ popup ถูก withdraw (ซ่อน) ก่อน
+            # ป้องกัน popup กระพริบที่ (0,0) แล้ว jump มาตำแหน่งจริง
+            # และป้องกัน DPI-scaled window แสดงตำแหน่งผิดบน Windows Hi-DPI
+            popup.withdraw()
+            popup.geometry(f"{pw}x{ph}+{x}+{y}")
+
+            def _show_and_focus():
+                popup.deiconify()
+                try:
+                    search_entry.focus_set()
+                except Exception:
+                    pass
+
+            popup.after(1, _show_and_focus)
 
             self._active_filter_popup = popup
-            search_entry.focus_set()
             popup.bind("<FocusOut>", lambda e: self.after(300, lambda:
                     safe_destroy() if not popup._destroyed else None))
 
@@ -2165,40 +2370,6 @@ class CostBenchmarkScreen(CTkFrame):
         self._header_filter_values = {}
         self._apply_header_filters()
 
-    def _undo(self, event=None):
-        if not self._undo_stack:
-            self.save_status_label.configure(text="⚠️ ไม่มีประวัติ Undo", text_color="#F59E0B")
-            return "break"
-        try:
-            main_now = [list(row) for row in self.sheet.get_sheet_data()]
-            frozen_now = [list(row) for row in self.sheet_frozen.get_sheet_data()] \
-                        if self.sheet_frozen else []
-            self._redo_stack.append((frozen_now, main_now))
-            frozen_data, main_data = self._undo_stack.pop()
-            self._restore_snapshot(frozen_data, main_data)
-            self.save_status_label.configure(
-                text=f"↩ Undo ({len(self._undo_stack)} ขั้นตอนเหลือ)", text_color="#6366F1")
-        except Exception as e:
-            print(f"_undo error: {e}")
-        return "break"
-
-    def _redo(self, event=None):
-        if not self._redo_stack:
-            self.save_status_label.configure(text="⚠️ ไม่มีประวัติ Redo", text_color="#F59E0B")
-            return "break"
-        try:
-            main_now = [list(row) for row in self.sheet.get_sheet_data()]
-            frozen_now = [list(row) for row in self.sheet_frozen.get_sheet_data()] \
-                        if self.sheet_frozen else []
-            self._undo_stack.append((frozen_now, main_now))
-            frozen_data, main_data = self._redo_stack.pop()
-            self._restore_snapshot(frozen_data, main_data)
-            self.save_status_label.configure(
-                text=f"↪ Redo ({len(self._redo_stack)} ขั้นตอนเหลือ)", text_color="#6366F1")
-        except Exception as e:
-            print(f"_redo error: {e}")
-        return "break"
-
     def _restore_snapshot(self, frozen_data, main_data):
         col_offset = self.frozen_col_count
         target_rows = max(len(main_data), len(frozen_data))
@@ -2252,55 +2423,74 @@ class CostBenchmarkScreen(CTkFrame):
             truly_auto = set(self._get_auto_cols())
             truly_auto.discard("Product SKU.")
 
-            # หา selection ปัจจุบันใน main sheet
-            sel = self.sheet.get_currently_selected()
-            if not sel:
-                return "break"
-
-            start_row = int(sel[0])
-            start_col_display = int(sel[1])  # display index (หลังซ่อนคอลัมน์)
-
             # สร้าง map display -> real สำหรับ main sheet
             hidden_set = set(getattr(self, 'hidden_cols_list', []))
             main_visible = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
 
             # parse clipboard: แยก row ด้วย \n, แยก column ด้วย \t
-            rows_data = clip.rstrip('\r\n').split('\n')
+            import csv
+            import io
+            clip_cleaned = clip.strip('\r\n')
+            if not clip_cleaned: return "break"
+            
+            reader = csv.reader(io.StringIO(clip_cleaned), delimiter='\t')
+            clip_grid = list(reader)
 
             modified_rows = set()
-            for ri, row_str in enumerate(rows_data):
-                row_idx = start_row + ri
-                if row_idx >= self.sheet.get_total_rows():
-                    break
+            sel_cells = self.sheet.get_selected_cells()
 
-                cells = row_str.rstrip('\r').split('\t')
-                ci = 0
-                disp_offset = 0
-                while ci < len(cells):
-                    disp_idx = start_col_display + disp_offset
-                    if disp_idx >= len(main_visible):
-                        break
-                    real_col = main_visible[disp_idx]
+            # 🚀 ฟีเจอร์ใหม่: ถ้าก๊อปปี้มาแค่ 1 ช่อง แต่ระบายเลือกไว้หลายช่อง ให้เติมลงทุกช่อง (Fill Paste)
+            if len(clip_grid) == 1 and len(clip_grid[0]) == 1 and len(sel_cells) > 1:
+                val_to_paste = clip_grid[0][0].strip()
+                for r, c_disp in sel_cells:
+                    if c_disp >= len(main_visible): continue
+                    real_col = main_visible[c_disp]
                     col_name = self.columns[real_col]
-                    if col_name in truly_auto:
-                        disp_offset += 1
-                        continue
-                    # data_col = local data index ใน main sheet (ไม่ใช่ display index)
-                    # set_cell_data ของ tksheet ใช้ data index เสมอ
+                    if col_name in truly_auto: continue
+                    
                     data_col = real_col - col_offset
-                    # เขียนตรง ไม่ผ่าน popup ไม่สนใจ readonly flag
-                    self.sheet.set_cell_data(row_idx, data_col, cells[ci].strip(), redraw=False)
-                    modified_rows.add(row_idx)
-                    ci += 1
-                    disp_offset += 1
+                    self.sheet.set_cell_data(r, data_col, val_to_paste, redraw=False)
+                    modified_rows.add(r)
+            else:
+                # 📌 การวางข้อมูลแบบปกติ (เริ่มจากช่องบนซ้ายสุด)
+                sel = self.sheet.get_currently_selected()
+                if not sel: return "break"
+                
+                start_row = int(sel[0])
+                start_col_display = int(sel[1])
+
+                for ri, cells in enumerate(clip_grid):
+                    row_idx = start_row + ri
+                    if row_idx >= self.sheet.get_total_rows(): break
+
+                    ci = 0
+                    disp_offset = 0
+                    while ci < len(cells):
+                        disp_idx = start_col_display + disp_offset
+                        if disp_idx >= len(main_visible): break
+                        
+                        real_col = main_visible[disp_idx]
+                        col_name = self.columns[real_col]
+                        if col_name in truly_auto:
+                            disp_offset += 1
+                            continue
+                            
+                        data_col = real_col - col_offset
+                        self.sheet.set_cell_data(row_idx, data_col, cells[ci].strip(), redraw=False)
+                        modified_rows.add(row_idx)
+                        ci += 1
+                        disp_offset += 1
 
             # คำนวณและ redraw ทุก row ที่เปลี่ยน
-            for row_idx in sorted(modified_rows):
-                self._auto_calculate_sheet(row_idx)
+            def _calc_after_paste(rows=sorted(modified_rows)):
+                for row_idx in rows:
+                    self._auto_calculate_sheet(row_idx)
+                self.sheet.redraw()
+                if self.sheet_frozen:
+                    self.sheet_frozen.redraw()
+                self._push_undo()
 
-            self.sheet.redraw()
-            if self.sheet_frozen:   # ← auto-fill อาจเขียนลง frozen sheet ด้วย
-                self.sheet_frozen.redraw()
+            self.after(30, _calc_after_paste)
 
             if self.auto_save_job_id:
                 self.after_cancel(self.auto_save_job_id)
@@ -2313,63 +2503,84 @@ class CostBenchmarkScreen(CTkFrame):
 
         return "break"
 
+
     def _smart_paste_frozen(self, event=None):
         """Ctrl+V สำหรับ frozen sheet — paste แล้ว auto-fill product SKU / supplier code"""
         try:
             clip = self.clipboard_get()
         except Exception:
             return "break"
+            
         if not clip:
             return "break"
+            
         try:
             truly_auto = set(self._get_auto_cols())
             truly_auto.discard("Product SKU.")
 
-            sel = self.sheet_frozen.get_currently_selected()
-            print(f"[DEBUG smart_paste_frozen] sel={sel}  clip={repr(clip[:40])}")
-            if not sel:
-                print(f"[DEBUG smart_paste_frozen] ABORT — no selection")
-                return "break"
-
-            start_row = int(sel[0])
-            start_display_col = int(sel[1])  # display index (หลังซ่อนคอลัมน์)
-
-            # สร้าง map display -> real สำหรับ frozen sheet
             hidden_set = set(getattr(self, 'hidden_cols_list', []))
             frozen_visible = [c for c in range(self.frozen_col_count) if c not in hidden_set]
 
-            rows_data = clip.rstrip('\r\n').split('\n')
+            import csv
+            import io
+            clip_cleaned = clip.strip('\r\n')
+            if not clip_cleaned: return "break"
+            
+            reader = csv.reader(io.StringIO(clip_cleaned), delimiter='\t')
+            clip_grid = list(reader)
+
             modified_rows = set()
+            sel_cells = self.sheet_frozen.get_selected_cells()
 
-            for ri, row_str in enumerate(rows_data):
-                row_idx = start_row + ri
-                if row_idx >= self.sheet_frozen.get_total_rows():
-                    break
-                cells = row_str.rstrip('\r').split('\t')
-                print(f"[DEBUG smart_paste_frozen] cells={cells}  start_display_col={start_display_col}")
-                ci = 0
-                disp_offset = 0
-                while ci < len(cells):
-                    disp_idx = start_display_col + disp_offset
-                    if disp_idx >= len(frozen_visible):
-                        break
-                    real_col = frozen_visible[disp_idx]
+            # 🚀 ฟีเจอร์ใหม่: ถ้าก๊อปปี้มาแค่ 1 ช่อง แต่ระบายเลือกไว้หลายช่อง ให้เติมลงทุกช่อง (Fill Paste)
+            if len(clip_grid) == 1 and len(clip_grid[0]) == 1 and len(sel_cells) > 1:
+                val_to_paste = clip_grid[0][0].strip()
+                for r, c_disp in sel_cells:
+                    if c_disp >= len(frozen_visible): continue
+                    real_col = frozen_visible[c_disp]
                     col_name = self.columns[real_col]
-                    if col_name in truly_auto:
+                    if col_name in truly_auto: continue
+                    
+                    data_col = real_col
+                    self.sheet_frozen.set_cell_data(r, data_col, val_to_paste, redraw=False)
+                    modified_rows.add(r)
+            else:
+                sel = self.sheet_frozen.get_currently_selected()
+                if not sel: return "break"
+                
+                start_row = int(sel[0])
+                start_display_col = int(sel[1])
+
+                for ri, cells in enumerate(clip_grid):
+                    row_idx = start_row + ri
+                    if row_idx >= self.sheet_frozen.get_total_rows(): break
+                    
+                    disp_offset = 0
+                    ci = 0
+                    while ci < len(cells):
+                        disp_idx = start_display_col + disp_offset
+                        if disp_idx >= len(frozen_visible): break
+                        
+                        real_col = frozen_visible[disp_idx]
+                        col_name = self.columns[real_col]
+                        if col_name in truly_auto:
+                            disp_offset += 1
+                            continue
+                            
+                        data_col = real_col
+                        self.sheet_frozen.set_cell_data(row_idx, data_col, cells[ci].strip(), redraw=False)
+                        modified_rows.add(row_idx)
+                        ci += 1
                         disp_offset += 1
-                        continue
-                    print(f"[DEBUG] ci={ci} disp_idx={disp_idx} real_col={real_col} col_name={col_name!r} val={cells[ci]!r}")
-                    # data_col = real_col โดยตรง (frozen sheet มี index 0..frozen_col_count-1)
-                    self.sheet_frozen.set_cell_data(row_idx, real_col, cells[ci].strip(), redraw=False)
-                    modified_rows.add(row_idx)
-                    ci += 1
-                    disp_offset += 1
 
-            for row_idx in sorted(modified_rows):
-                self._auto_calculate_sheet(row_idx)
+            def _calc_after_paste_frozen(rows=sorted(modified_rows)):
+                for row_idx in rows:
+                    self._auto_calculate_sheet(row_idx)
+                self.sheet_frozen.redraw()
+                self.sheet.redraw()
+                self._push_undo()
 
-            self.sheet_frozen.redraw()
-            self.sheet.redraw()  # auto-fill อาจเขียนลง main sheet ด้วย
+            self.after(30, _calc_after_paste_frozen)
 
             if self.auto_save_job_id:
                 self.after_cancel(self.auto_save_job_id)
@@ -2379,6 +2590,7 @@ class CostBenchmarkScreen(CTkFrame):
 
         except Exception as e:
             print(f"_smart_paste_frozen error: {e}")
+            
         return "break"
 
     # ================================================================== #
@@ -2397,7 +2609,11 @@ class CostBenchmarkScreen(CTkFrame):
 
         try:
             self.sheet.MT.bind("<ButtonPress-1>", self._capture_click_pos, add="+")
-            self.sheet.MT.bind("<ButtonPress-1>", self._on_mt_click, add="+")
+            self.sheet.MT.bind("<Double-ButtonPress-1>", self._on_mt_click, add="+")
+            # KeyPress: เปิด popup เมื่อพิมพ์บน popup columns
+            # ใช้ bind โดยตรงแทน begin_edit_cell เพราะ tksheet ไม่ fire begin_edit_cell
+            # เมื่อ column ถูกซ่อนด้วย display_columns()
+            self.sheet.MT.bind("<KeyPress>", self._on_mt_keypress, add="+")
             
             # 🟢 เพิ่ม 2 บรรทัดนี้: ให้คำนวณ Auto Sum เมื่อ "ปล่อยเมาส์" หรือ "ปล่อยปุ่มคีย์บอร์ด"
             self.sheet.MT.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
@@ -2414,14 +2630,17 @@ class CostBenchmarkScreen(CTkFrame):
         self.sheet.enable_bindings((
             "single_select", "drag_select", "multi_select", "row_select", "column_select",
             "column_width_resize", "arrowkeys", "right_click_popup_menu", "rc_select",
-            "copy", "cut", "paste", "delete", "undo", "edit_cell", "row_drag_and_drop",
+            "copy", "cut", "paste", "delete", "edit_cell", "row_drag_and_drop",
         ))
 
         self.sheet.extra_bindings([
+            ("begin_edit_cell", self._on_begin_edit_cell),
             ("end_edit_cell", self._on_end_edit_combined),
+            ("cell_select", lambda e: self._on_cell_select_combined(e, is_frozen=False)),
             ("column_width_resize", lambda e: (self._save_col_widths(), self.after(60, self._draw_filter_arrows))),
             ("row_drag_and_drop", lambda e: self._on_row_drag_drop(e)),
             ("paste", lambda e: self._on_paste_event(e, is_frozen=False)),
+            ("delete", lambda e: self._on_delete_event(e, is_frozen=False)),
         ])
 
         # ==========================================================
@@ -2430,6 +2649,9 @@ class CostBenchmarkScreen(CTkFrame):
         try:
             self.sheet.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", self._insert_selected_row)
             self.sheet.popup_menu_add_command("🗑️ ลบบรรทัด (Delete Row)", self._delete_selected_rows)
+            # เพิ่ม 2 บรรทัดนี้ครับ 👇
+            self.sheet.popup_menu_add_command("🎨 ไฮไลท์สีช่อง (Highlight)", self._highlight_selected_cells)
+            self.sheet.popup_menu_add_command("✨ ล้างสีไฮไลท์ (Clear Highlight)", self._clear_highlight_selected_cells)
         except Exception as e:
             print(f"Cannot add popup menu to main sheet: {e}")
             
@@ -2446,12 +2668,101 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet.MT.bind("<Control-v>", self._mt_paste_router)
             self.sheet.MT.bind("<Control-V>", self._mt_paste_router)
             self.sheet.MT.bind("<Control-r>", self._copy_selected_rows, add="+")
+            self.sheet.MT.bind("<Control-z>", self._undo)
+            self.sheet.MT.bind("<Control-Z>", self._undo)
+            self.sheet.MT.bind("<Control-y>", self._redo)
+            self.sheet.MT.bind("<Control-Y>", self._redo)
+            self.sheet.MT.bind("<Control-KeyPress>", self._on_ctrl_keypress_thai, add="+")
         except Exception: pass
 
         # Safety-net: dialog-level binding เผื่อ focus ไม่อยู่บน sheet ใดเลย
         self.bind("<Control-v>", self._mt_paste_router)
         self.bind("<Control-V>", self._mt_paste_router)
         self.bind("<Control-c>", self._mt_copy_router)
+        self.bind("<Control-z>", self._undo)
+        self.bind("<Control-Z>", self._undo)
+        self.bind("<Control-y>", self._redo)
+        self.bind("<Control-Y>", self._redo)
+        try:
+            self.bind("<Control-KeyPress>", self._on_ctrl_keypress_thai, add="+")
+        except Exception: pass
+
+        # ── text_editor_user_bound_keys ──────────────────────────────────────────
+        # tksheet applies this dict to tktext EVERY time the text editor opens
+        # (main_table.py line ~7505). Plain bind() each time = no accumulation.
+        # This is the official hook for customising the in-cell text editor.
+        def _editor_thai_cb(e):
+            """Thai IME Ctrl+C/V/Z inside the cell text editor."""
+            if e.keycode == 86:  # physical V key → Paste
+                try:
+                    clip = e.widget.clipboard_get()
+                except Exception:
+                    return "break"
+                try: e.widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                except Exception: pass
+                try: e.widget.insert(tk.INSERT, clip)
+                except Exception: pass
+                return "break"
+            if e.keycode == 67:  # physical C key → Copy
+                try:
+                    sel_text = e.widget.selection_get()
+                    e.widget.clipboard_clear()
+                    e.widget.clipboard_append(sel_text)
+                except Exception: pass
+                return "break"
+            if e.keycode == 90:  # 🚀 physical Z key → บังคับออกจากการพิมพ์แล้ว Undo ตาราง
+                try: self.sheet.cancel_edit()
+                except Exception: pass
+                self._undo()
+                return "break"
+
+        # edit mode: ลูกศรใน text editor → commit + เลื่อน + เปิด editor ใหม่
+        _editor_keys = {
+            "<Up>":               lambda e: self._commit_and_move("up",    is_frozen=False),
+            "<Down>":             lambda e: self._commit_and_move("down",  is_frozen=False),
+            "<Left>":             lambda e: self._commit_and_move("left",  is_frozen=False),
+            "<Right>":            lambda e: self._commit_and_move("right", is_frozen=False),
+            "<Control-KeyPress>": _editor_thai_cb,
+        }
+        _editor_keys_frozen = {
+            "<Up>":               lambda e: self._commit_and_move("up",    is_frozen=True),
+            "<Down>":             lambda e: self._commit_and_move("down",  is_frozen=True),
+            "<Left>":             lambda e: self._commit_and_move("left",  is_frozen=True),
+            "<Right>":            lambda e: self._commit_and_move("right", is_frozen=True),
+            "<Control-KeyPress>": _editor_thai_cb,
+        }
+        try:
+            self.sheet.MT.text_editor_user_bound_keys = _editor_keys
+        except Exception: pass
+        try:
+            if self.sheet_frozen:
+                self.sheet_frozen.MT.text_editor_user_bound_keys = _editor_keys_frozen
+        except Exception: pass
+
+        # navigation mode: ลูกศรบน MT โดยตรง → เลื่อน + เปิด editor ทันที
+        def _make_nav_handler(direction, is_frozen):
+            def _handler(event):
+                mt = (self.sheet_frozen.MT if is_frozen and self.sheet_frozen else self.sheet.MT)
+                if getattr(mt, 'text_editor', None) and getattr(mt.text_editor, 'open', False):
+                    return  # edit mode → ปล่อยให้ text_editor_user_bound_keys จัดการ
+                self._nav_move_and_edit(direction, is_frozen=is_frozen)
+                return "break"
+            return _handler
+
+        try:
+            for _d in ("up", "down", "left", "right"):
+                _key = f"<{_d.capitalize()}>"
+                self.sheet.MT.bind(_key, _make_nav_handler(_d, False), add="+")
+        except Exception: pass
+
+        # ── Cross-sheet deselect via FocusIn (main side) ─────────────────────
+        try:
+            self.sheet.MT.bind(
+                "<FocusIn>",
+                lambda e: self.sheet_frozen.deselect("all") if self.sheet_frozen else None,
+                add="+"
+            )
+        except Exception: pass
 
     def _mt_paste_router(self, event=None):
         """Ctrl+V router — ตรวจ focus และ _last_active_sheet เพื่อ route paste ไปฝั่งที่ถูกต้อง
@@ -2459,17 +2770,15 @@ class CostBenchmarkScreen(CTkFrame):
         try:
             focused = self.focus_get()
             focused_class = focused.winfo_class() if focused else 'None'
-            print(f"[DEBUG paste_router] focused={focused_class}  last_active={getattr(self, '_last_active_sheet','?')}")
             # ถ้า focus อยู่บน Entry/Text (formula bar, search, etc.) → อย่าแทรกแซง
             if focused and focused_class in ('Entry', 'Text', 'TEntry'):
-                print(f"[DEBUG paste_router] skipped — focus is text input")
                 return
             if getattr(self, '_last_active_sheet', 'main') == 'frozen' and self.sheet_frozen:
                 return self._smart_paste_frozen()
             else:
                 return self._smart_paste()
-        except Exception as e:
-            print(f"[DEBUG paste_router] exception: {e}")
+        except Exception:
+            pass
 
     def _mt_copy_router(self, event=None):
         """Ctrl+C router — copy จาก sheet ที่ user click ล่าสุด"""
@@ -2483,6 +2792,358 @@ class CostBenchmarkScreen(CTkFrame):
                 self.sheet.copy()
         except Exception:
             pass
+        return "break"
+
+    def _on_ctrl_keypress_thai(self, event):
+        """Route Thai IME Ctrl+V/C/Z — keycode 86=V, 67=C, 90=Z (reliable across IME versions)."""
+        if event.keycode == 86:
+            return self._mt_paste_router(event)
+        elif event.keycode == 67:
+            return self._mt_copy_router(event)
+        elif event.keycode == 90:
+            return self._undo(event)
+
+    def _on_begin_edit_cell(self, event):
+        try:
+            if isinstance(event, dict):
+                row = event.get('row')
+                col = event.get('column')
+                typed = event.get('value', '') or ''
+            else:
+                row = getattr(event, 'row', None)
+                col = getattr(event, 'column', None)
+                typed = getattr(event, 'value', '') or ''
+
+            if row is None or col is None:
+                return typed
+
+            col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+            hidden_set = set(getattr(self, 'hidden_cols_list', []))
+
+            # 🛠️ แปลง Display Index เป็น Real Index เพื่อหาชื่อคอลัมน์ให้ถูกต้อง
+            visible_main = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
+            if int(col) >= len(visible_main):
+                return typed
+            real_col = visible_main[int(col)]
+            col_name = self.columns[real_col]
+
+            popup_cols = {
+                "รายการสินค้า": self.product_list,
+                "ชื่อ Supplier":  self.supplier_list,
+                "รหัส Sale":      self.sales_list,
+            }
+            if col_name not in popup_cols:
+                return typed
+
+            # data_col สำหรับใช้ดึง/เซ็ตข้อมูล (Data Index ของ Main Sheet คือ real_col - col_offset)
+            _data_col_for_popup = real_col - col_offset
+
+            if getattr(self, '_popup_opening', False):
+                return None
+            if (self._active_popup is not None
+                    and not self._active_popup._destroyed
+                    and getattr(self, '_last_popup_cell', None) == (int(row), int(col))):
+                if typed and typed not in ('\r', '\n', '\t'):
+                    try:
+                        self._active_popup.entry.insert(tk.END, typed)
+                        self._active_popup.filter_list(self._active_popup.search_var.get())
+                    except Exception: pass
+                return None
+
+            self._popup_opening = True
+            _row, _col = int(row), int(col)
+            _typed = str(typed).strip() if typed and typed not in ('\r', '\n', '\t') else ''
+            _data_col = _data_col_for_popup
+            _data_list = popup_cols[col_name]
+
+            def _open_popup():
+                self._popup_opening = False
+                try: self.sheet.close_text_editor(set_data=False)
+                except Exception: pass
+                try: self.sheet.cancel_edit()
+                except Exception: pass
+
+                try:
+                    current_val = str(self.sheet.get_cell_data(_row, _data_col) or '').strip()
+                except Exception:
+                    current_val = ''
+                prefill = _typed if _typed else current_val
+
+                if (self._active_popup is not None and not self._active_popup._destroyed):
+                    try: self._active_popup.safe_destroy()
+                    except Exception: pass
+                    self._active_popup = None
+
+                def on_select(value):
+                    try:
+                        self.sheet.set_cell_data(_row, _data_col, value, redraw=True)
+                        self._auto_calculate_sheet(_row)
+                        self.sheet.redraw()
+                        if self.auto_save_job_id is not None:
+                            self.after_cancel(self.auto_save_job_id)
+                        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                        if hasattr(self, 'save_status_label'):
+                            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+                        self._last_popup_cell = None
+                        self.after(50, lambda: self._move_right(_row, _col))
+                    except Exception as ex:
+                        print(f"on_select error: {ex}")
+
+                popup = InlineSearchPopup(self, _data_list, on_select)
+                popup.place_near_cell(sheet_widget=self.sheet, row=_row, col=_col,
+                                      row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
+                                      data_col=_data_col)
+                if prefill:
+                    popup.entry.delete(0, tk.END)
+                    popup.entry.insert(0, prefill)
+                    if _typed: popup.entry.icursor(tk.END)
+                    else: popup.entry.select_range(0, tk.END)
+                    popup.filter_list(prefill)
+
+                self._active_popup = popup
+                self._last_popup_cell = (_row, _col)
+
+            self.after(0, _open_popup)
+            return None
+
+        except Exception as e:
+            self._popup_opening = False
+            print(f"_on_begin_edit_cell error: {e}")
+            return ""
+
+    def _on_begin_edit_cell_frozen(self, event):
+        try:
+            if isinstance(event, dict):
+                row = event.get('row')
+                col = event.get('column')
+                typed = event.get('value', '') or ''
+            else:
+                row = getattr(event, 'row', None)
+                col = getattr(event, 'column', None)
+                typed = getattr(event, 'value', '') or ''
+
+            if row is None or col is None:
+                return typed
+
+            hidden_set = set(getattr(self, 'hidden_cols_list', []))
+
+            # 🛠️ แปลง Display Index เป็น Real Index เพื่อหาชื่อคอลัมน์ให้ถูกต้อง
+            visible_frozen = [c for c in range(self.frozen_col_count) if c not in hidden_set]
+            if int(col) >= len(visible_frozen):
+                return typed
+            real_col = visible_frozen[int(col)]
+            col_name = self.columns[real_col]
+
+            popup_cols_frozen = {
+                "รายการสินค้า": self.product_list,
+                "ชื่อ Supplier":  self.supplier_list,
+                "รหัส Sale":      self.sales_list,
+            }
+            if col_name not in popup_cols_frozen:
+                return typed
+
+            if getattr(self, '_popup_opening', False):
+                return None
+            _row, _col = int(row), int(col)
+            if (self._active_popup is not None
+                    and not self._active_popup._destroyed
+                    and getattr(self, '_last_popup_cell', None) == (_row, _col)):
+                if typed and typed not in ('\r', '\n', '\t'):
+                    try:
+                        self._active_popup.entry.insert(tk.END, typed)
+                        self._active_popup.filter_list(self._active_popup.search_var.get())
+                    except Exception: pass
+                return None
+
+            self._popup_opening = True
+            _typed = str(typed).strip() if typed and typed not in ('\r', '\n', '\t') else ''
+            _data_list = popup_cols_frozen[col_name]
+            _data_col = real_col  # 🛠️ Data Index ของ Frozen Sheet จะเท่ากับ real_col ตรงๆ
+
+            def _open_popup_frozen():
+                self._popup_opening = False
+                try: self.sheet_frozen.close_text_editor(set_data=False)
+                except Exception: pass
+                try: self.sheet_frozen.cancel_edit()
+                except Exception: pass
+
+                try:
+                    current_val = str(self.sheet_frozen.get_cell_data(_row, _data_col) or '').strip()
+                except Exception:
+                    current_val = ''
+                prefill = _typed if _typed else current_val
+
+                if (self._active_popup is not None and not self._active_popup._destroyed):
+                    try: self._active_popup.safe_destroy()
+                    except Exception: pass
+                    self._active_popup = None
+
+                def on_select(value):
+                    try:
+                        self.sheet_frozen.set_cell_data(_row, _data_col, value, redraw=True)
+                        self._auto_calculate_sheet(_row)
+                        self.sheet_frozen.redraw()
+                        if self.auto_save_job_id is not None:
+                            self.after_cancel(self.auto_save_job_id)
+                        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                        if hasattr(self, 'save_status_label'):
+                            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+                        self._last_popup_cell = None
+                        self.after(50, lambda: self._move_right(_row, _col, is_frozen=True))
+                    except Exception as ex:
+                        print(f"on_select frozen error: {ex}")
+
+                popup = InlineSearchPopup(self, _data_list, on_select)
+                popup.place_near_cell(sheet_widget=self.sheet_frozen, row=_row, col=_col,
+                                      row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
+                                      data_col=_data_col)
+                if prefill:
+                    popup.entry.delete(0, tk.END)
+                    popup.entry.insert(0, prefill)
+                    if _typed: popup.entry.icursor(tk.END)
+                    else: popup.entry.select_range(0, tk.END)
+                    popup.filter_list(prefill)
+
+                self._active_popup = popup
+                self._last_popup_cell = (_row, _col)
+
+            self.after(0, _open_popup_frozen)
+            return None
+
+        except Exception as e:
+            self._popup_opening = False
+            print(f"_on_begin_edit_cell_frozen error: {e}")
+            return ""
+
+    def _open_editor_on_sheet(self, tgt, row, col):
+        """เปิด editor บน sheet ที่ระบุ พร้อม fallback F2"""
+        try:
+            tgt.open_cell_editor(row=row, column=col)
+        except Exception:
+            try:
+                tgt.MT.focus_set()
+                tgt.MT.event_generate("<F2>")
+            except Exception:
+                tgt.MT.focus_set()
+
+    def _nav_move_and_edit(self, direction, is_frozen=False):
+        """Navigation mode: เลื่อน selection ตามลูกศร แล้วเปิด editor ทันที
+        รองรับการข้ามฝั่ง frozen→main (Right) และ main→frozen (Left)
+        - deselect อีกฝั่งเสมอ เพื่อไม่ให้เห็น selection 2 อันพร้อมกัน"""
+        try:
+            # ── 1. หา selection — fallback ตรวจทั้งสองฝั่ง ────────────────────
+            tgt = self.sheet_frozen if is_frozen and self.sheet_frozen else self.sheet
+            sel = tgt.get_currently_selected()
+            if not sel or len(sel) < 2:
+                # focus อาจเพี้ยน ลองอีกฝั่ง
+                other = self.sheet if is_frozen else self.sheet_frozen
+                if other:
+                    sel2 = other.get_currently_selected()
+                    if sel2 and len(sel2) >= 2:
+                        sel = sel2
+                        is_frozen = not is_frozen
+                        tgt = other
+            if not sel or len(sel) < 2:
+                return
+
+            row, col = int(sel[0]), int(sel[1])
+            row_count = len(tgt.get_sheet_data())
+            col_count = len(tgt.MT.col_positions) - 1  # displayed cols only (col_positions has n+1 entries)
+
+            # ── 2. เคลียร์ selection อีกฝั่งเสมอ ────────────────────────────
+            if is_frozen:
+                self.sheet.deselect("all")
+            elif self.sheet_frozen:
+                self.sheet_frozen.deselect("all")
+
+            # ── 3. ตรวจว่าต้องข้ามฝั่ง ───────────────────────────────────────
+            cross_to_main   = is_frozen and self.sheet_frozen and direction == "right" and col >= col_count - 1
+            cross_to_frozen = (not is_frozen) and self.sheet_frozen and direction == "left" and col <= 0
+
+            if cross_to_main:
+                tgt2 = self.sheet
+                tgt.deselect("all")
+                tgt2.set_currently_selected(row, 0)
+                tgt2.see(row, 0)
+                self._last_active_sheet = 'main'
+                tgt2.MT.focus_set()
+                self.after(20, lambda: self._open_editor_on_sheet(tgt2, row, 0))
+                return
+
+            if cross_to_frozen:
+                tgt2 = self.sheet_frozen
+                last_col = len(tgt2.MT.col_positions) - 2  # last displayed col index
+                tgt.deselect("all")
+                tgt2.set_currently_selected(row, last_col)
+                tgt2.see(row, last_col)
+                self._last_active_sheet = 'frozen'
+                tgt2.MT.focus_set()
+                self.after(20, lambda lc=last_col: self._open_editor_on_sheet(tgt2, row, lc))
+                return
+
+            # ── 4. เลื่อนปกติในฝั่งเดิม ──────────────────────────────────────
+            if   direction == "up":    new_r, new_c = max(0, row - 1), col
+            elif direction == "down":  new_r, new_c = min(row_count - 1, row + 1), col
+            elif direction == "left":  new_r, new_c = row, max(0, col - 1)
+            elif direction == "right": new_r, new_c = row, min(col_count - 1, col + 1)
+            else: return
+
+            tgt.set_currently_selected(new_r, new_c)
+            tgt.see(new_r, new_c)
+            self.after(20, lambda: self._open_editor_on_sheet(tgt, new_r, new_c))
+        except Exception as ex:
+            print(f"_nav_move_and_edit error: {ex}")
+
+    def _commit_and_move(self, direction, is_frozen=False):
+        """Commit cell edit แล้วเลื่อน + เปิด editor ใหม่ทันที (Excel-like)
+        รองรับทั้ง main sheet และ frozen sheet รวมถึงการข้ามฝั่ง"""
+        try:
+            tgt = self.sheet_frozen if is_frozen and self.sheet_frozen else self.sheet
+            sel = tgt.get_currently_selected()
+            if not sel or len(sel) < 2:
+                return "break"
+            row, col = int(sel[0]), int(sel[1])
+            row_count = len(tgt.get_sheet_data())
+            col_count = len(tgt.MT.col_positions) - 1  # displayed cols only
+
+            # ตรวจสอบการข้ามฝั่ง
+            cross_to_main   = is_frozen and direction == "right" and col >= col_count - 1
+            cross_to_frozen = (not is_frozen) and direction == "left" and col <= 0 and self.sheet_frozen
+
+            if   direction == "up":    new_r, new_c = max(0, row - 1), col
+            elif direction == "down":  new_r, new_c = min(row_count - 1, row + 1), col
+            elif direction == "left":  new_r, new_c = row, max(0, col - 1)
+            elif direction == "right": new_r, new_c = row, min(col_count - 1, col + 1)
+            else: return "break"
+
+            self._arrow_nav_in_progress = True
+            tgt.MT.focus_set()  # commit via FocusOut
+
+            def _do_move():
+                self._arrow_nav_in_progress = False
+                if cross_to_main:
+                    tgt2 = self.sheet
+                    tgt.deselect("all")
+                    tgt2.set_currently_selected(row, 0)
+                    tgt2.see(row, 0)
+                    self._last_active_sheet = 'main'
+                    self._open_editor_on_sheet(tgt2, row, 0)
+                elif cross_to_frozen:
+                    tgt2 = self.sheet_frozen
+                    last_col = len(tgt2.MT.col_positions) - 2  # last displayed col index
+                    self.sheet.deselect("all")
+                    tgt2.set_currently_selected(row, last_col)
+                    tgt2.see(row, last_col)
+                    self._last_active_sheet = 'frozen'
+                    self._open_editor_on_sheet(tgt2, row, last_col)
+                else:
+                    tgt.set_currently_selected(new_r, new_c)
+                    tgt.see(new_r, new_c)
+                    self._open_editor_on_sheet(tgt, new_r, new_c)
+
+            self.after(30, _do_move)
+        except Exception as ex:
+            print(f"_commit_and_move error: {ex}")
         return "break"
 
     def _draw_filter_arrows(self):
@@ -2594,15 +3255,20 @@ class CostBenchmarkScreen(CTkFrame):
 
         self.sheet_frozen.enable_bindings((
             "single_select", "drag_select", "multi_select", "row_select", "column_select",
-            "column_width_resize", "arrowkeys", "right_click_popup_menu", "rc_select",
-            "copy", "cut", "paste", "delete", "undo", "edit_cell",
+            "column_width_resize", "right_click_popup_menu", "rc_select",
+            "copy", "cut", "paste", "delete", "edit_cell",
         ))
+        # หมายเหตุ: ไม่ใส่ "arrowkeys" ใน frozen sheet
+        # เพราะ custom handler ใน _make_nav_frozen จัดการเอง
+        # ถ้าเปิดทั้งคู่จะได้ selection 2 อันพร้อมกัน
 
         self.sheet_frozen.extra_bindings([
+            ("begin_edit_cell", self._on_begin_edit_cell_frozen),
             ("cell_select", lambda e: self._on_cell_select_combined(e, is_frozen=True)),
             ("end_edit_cell", lambda e: self._on_end_edit_combined(e, is_frozen=True)),
             ("column_width_resize", lambda e: (self._save_col_widths(), self.after(60, self._draw_filter_arrows))),
             ("paste", lambda e: self._on_paste_event(e, is_frozen=True)),
+            ("delete", lambda e: self._on_delete_event(e, is_frozen=True)),
         ])
 
         # ==========================================================
@@ -2611,6 +3277,9 @@ class CostBenchmarkScreen(CTkFrame):
         try:
             self.sheet_frozen.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", self._insert_selected_row)
             self.sheet_frozen.popup_menu_add_command("🗑️ ลบบรรทัด (Delete Row)", self._delete_selected_rows)
+            # เพิ่ม 2 บรรทัดนี้ครับ 👇
+            self.sheet_frozen.popup_menu_add_command("🎨 ไฮไลท์สีช่อง (Highlight)", self._highlight_selected_cells)
+            self.sheet_frozen.popup_menu_add_command("✨ ล้างสีไฮไลท์ (Clear Highlight)", self._clear_highlight_selected_cells)
         except Exception as e:
             print(f"Cannot add popup menu to frozen sheet: {e}")
 
@@ -2627,7 +3296,8 @@ class CostBenchmarkScreen(CTkFrame):
 
         try:
             self.sheet_frozen.MT.bind("<ButtonPress-1>", self._capture_click_pos, add="+")
-            self.sheet_frozen.MT.bind("<ButtonPress-1>", self._on_mt_click_frozen, add="+")
+            # ✅ popup เปิดเฉพาะ double-click — single click แค่ select เซลล์ปกติ
+            self.sheet_frozen.MT.bind("<Double-ButtonPress-1>", self._on_mt_click_frozen, add="+")
             
             # 🟢 ปรับปรุงใหม่อีก 2 บรรทัด: ให้ครอบคลุมการลากและการใช้ปุ่ม Shift+ลูกศร
             self.sheet_frozen.MT.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
@@ -2647,22 +3317,172 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet_frozen.MT.bind("<Control-v>", self._mt_paste_router)
             self.sheet_frozen.MT.bind("<Control-V>", self._mt_paste_router)
             self.sheet_frozen.MT.bind("<Control-r>", self._copy_selected_rows, add="+")
+            self.sheet_frozen.MT.bind("<Control-z>", self._undo)
+            self.sheet_frozen.MT.bind("<Control-Z>", self._undo)
+            self.sheet_frozen.MT.bind("<Control-y>", self._redo)
+            self.sheet_frozen.MT.bind("<Control-Y>", self._redo)
+            self.sheet_frozen.MT.bind("<Control-KeyPress>", self._on_ctrl_keypress_thai, add="+")
+            self.sheet_frozen.MT.bind("<KeyPress>", self._on_mt_keypress_frozen, add="+")
         except Exception: pass
-        
-    def _push_undo(self):
+
+        # ✅ navigation mode arrow บน frozen MT (รองรับข้ามฝั่ง frozen→main)
         try:
-            main_data = [list(row) for row in self.sheet.get_sheet_data()]
-            frozen_data = [list(row) for row in self.sheet_frozen.get_sheet_data()] \
-                        if self.sheet_frozen else []
-            self._undo_stack.append((frozen_data, main_data))
-            if len(self._undo_stack) > self._max_undo:
-                self._undo_stack.pop(0)
-            self._redo_stack.clear()
+            def _make_nav_frozen(direction):
+                def _handler(event):
+                    mt = self.sheet_frozen.MT
+                    if getattr(mt, 'text_editor', None) and getattr(mt.text_editor, 'open', False):
+                        return
+                    self._nav_move_and_edit(direction, is_frozen=True)
+                    return "break"
+                return _handler
+            for _d in ("up", "down", "left", "right"):
+                _key = f"<{_d.capitalize()}>"
+                self.sheet_frozen.MT.bind(_key, _make_nav_frozen(_d), add="+")
+        except Exception: pass
+
+        # text_editor_user_bound_keys สำหรับ frozen — ต้องใช้ is_frozen=True เสมอ
+        # (ห้าม copy จาก main เพราะ main ใช้ is_frozen=False)
+        # text_editor_user_bound_keys สำหรับ frozen — ต้องใช้ is_frozen=True เสมอ
+        def _frozen_editor_thai_cb(e):
+            if e.keycode == 86:
+                try: clip = e.widget.clipboard_get()
+                except Exception: return "break"
+                try: e.widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                except Exception: pass
+                try: e.widget.insert(tk.INSERT, clip)
+                except Exception: pass
+                return "break"
+            if e.keycode == 67:
+                try:
+                    t = e.widget.selection_get()
+                    e.widget.clipboard_clear()
+                    e.widget.clipboard_append(t)
+                except Exception: pass
+                return "break"
+            if e.keycode == 90:  # 🚀 physical Z key → บังคับออกจากการพิมพ์แล้ว Undo ตาราง
+                try: self.sheet_frozen.cancel_edit()
+                except Exception: pass
+                self._undo()
+                return "break"
+
+        # ── Cross-sheet deselect via FocusIn ──────────────────────────────────
+        # เมื่อ frozen MT ได้ focus → deselect main เพื่อป้องกัน selection 2 อัน
+        try:
+            self.sheet_frozen.MT.bind(
+                "<FocusIn>",
+                lambda e: self.sheet.deselect("all"),
+                add="+"
+            )
+        except Exception: pass
+
+    def _on_sheet_modified(self, event=None):
+        try:
+            # หน่วงเวลา 50ms ให้ระบบตารางบันทึกค่าลงเซลล์เสร็จก่อน ค่อยจำประวัติ
+            self.after(50, self._push_undo)
+            if self.auto_save_job_id is not None:
+                self.after_cancel(self.auto_save_job_id)
+            if hasattr(self, 'save_status_label'):
+                self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
         except Exception:
             pass
 
+    def _push_undo(self):
+        try:
+            if not hasattr(self, '_history'):
+                self._history = []
+                self._history_idx = -1
+
+            main_data = [list(row) for row in self.sheet.get_sheet_data()]
+            frozen_data = [list(row) for row in self.sheet_frozen.get_sheet_data()] if getattr(self, 'sheet_frozen', None) else []
+            
+            # กันซ้ำกับสถานะล่าสุด (ถ้าไม่มีอะไรเปลี่ยน ไม่ต้องจำ)
+            if self._history and self._history_idx >= 0:
+                if self._history[self._history_idx] == (frozen_data, main_data):
+                    return
+
+            # ตัดประวัติอนาคตทิ้ง ถ้าเราย้อนกลับแล้วพิมพ์ใหม่แตกกิ่งไปทางอื่น
+            if self._history_idx < len(self._history) - 1:
+                self._history = self._history[:self._history_idx + 1]
+
+            self._history.append((frozen_data, main_data))
+            
+            # จำกัดประวัติไม่เกิน 50 ครั้งเพื่อประหยัด RAM
+            if len(self._history) > 50:
+                self._history.pop(0)
+            else:
+                self._history_idx += 1
+                
+        except Exception as e:
+            print(f"_push_undo error: {e}")
+
+    def _undo(self, event=None):
+        # 🚀 ป้องกันการ Undo ตาราง ถ้ายูสเซอร์กำลังพิมพ์อยู่ในช่อง (Focus อยู่ที่ Entry/Text)
+        try:
+            focused = self.focus_get()
+            if focused and focused.winfo_class() in ('Entry', 'Text', 'TEntry'):
+                return "break"
+        except Exception: pass
+
+        if not hasattr(self, '_history') or self._history_idx <= 0:
+            if hasattr(self, 'save_status_label'):
+                self.save_status_label.configure(text="⚠️ ย้อนกลับไม่ได้แล้ว", text_color="#F59E0B")
+            return "break"
+        try:
+            self._history_idx -= 1
+            frozen_data, main_data = self._history[self._history_idx]
+            
+            # ถอด Event ออกชั่วคราว ป้องกัน loop พังตอนกำลังกู้คืนข้อมูล
+            self.sheet.unbind("<<SheetModified>>")
+            if getattr(self, 'sheet_frozen', None):
+                self.sheet_frozen.unbind("<<SheetModified>>")
+                
+            self._restore_snapshot(frozen_data, main_data)
+            
+            self.sheet.bind("<<SheetModified>>", self._on_sheet_modified)
+            if getattr(self, 'sheet_frozen', None):
+                self.sheet_frozen.bind("<<SheetModified>>", self._on_sheet_modified)
+
+            if hasattr(self, 'save_status_label'):
+                self.save_status_label.configure(text=f"↩ ย้อนกลับ ({self._history_idx} ขั้นตอน)", text_color="#6366F1")
+        except Exception as e:
+            print(f"_undo error: {e}")
+        return "break"
+
+    def _redo(self, event=None):
+        # 🚀 ป้องกันการ Redo ตาราง ถ้ายูสเซอร์กำลังพิมพ์อยู่ในช่อง
+        try:
+            focused = self.focus_get()
+            if focused and focused.winfo_class() in ('Entry', 'Text', 'TEntry'):
+                return "break"
+        except Exception: pass
+
+        if not hasattr(self, '_history') or self._history_idx >= len(self._history) - 1:
+            if hasattr(self, 'save_status_label'):
+                self.save_status_label.configure(text="⚠️ ไปข้างหน้าไม่ได้แล้ว", text_color="#F59E0B")
+            return "break"
+        try:
+            self._history_idx += 1
+            frozen_data, main_data = self._history[self._history_idx]
+            
+            self.sheet.unbind("<<SheetModified>>")
+            if getattr(self, 'sheet_frozen', None):
+                self.sheet_frozen.unbind("<<SheetModified>>")
+                
+            self._restore_snapshot(frozen_data, main_data)
+            
+            self.sheet.bind("<<SheetModified>>", self._on_sheet_modified)
+            if getattr(self, 'sheet_frozen', None):
+                self.sheet_frozen.bind("<<SheetModified>>", self._on_sheet_modified)
+                
+            steps_left = len(self._history) - 1 - self._history_idx
+            if hasattr(self, 'save_status_label'):
+                self.save_status_label.configure(text=f"↪ ทำซ้ำ ({steps_left} ขั้นตอน)", text_color="#6366F1")
+        except Exception as e:
+            print(f"_redo error: {e}")
+        return "break"
+
     def _on_row_drag_drop(self, event=None):
-        print(f"DEBUG drag drop event: {event}") 
         """หลัง drag row ใน main sheet → sync ข้อมูลไป frozen sheet ด้วย"""
         try:
             # ดึงข้อมูลใหม่จาก main sheet แล้ว rebuild frozen ให้ตรงกัน
@@ -2716,7 +3536,6 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _on_mt_click_frozen(self, event=None):
         try:
-            print(f"[DEBUG _on_mt_click_frozen] CALLED — setting last_active=frozen")
             self._last_active_sheet = 'frozen'
             if hasattr(self, 'sheet') and self.sheet:
                 self.sheet.deselect("all")
@@ -2763,13 +3582,63 @@ class CostBenchmarkScreen(CTkFrame):
                 "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
             ]
             popup_cols = {
-                "รายการสินค้า": self.product_list,
-                "ชื่อ Supplier":  self.supplier_list,
-                "รหัส Sale":      self.sales_list,
+                # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
                 "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
                 "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
             }
+
+            # รายการสินค้า / ชื่อ Supplier / รหัส Sale → เปิด popup โดยตรง
+            if col_name in ("รายการสินค้า", "ชื่อ Supplier", "รหัส Sale"):
+                if self._active_popup and not self._active_popup._destroyed:
+                    if self._last_popup_cell == (row, col):
+                        try: self._active_popup.entry.focus_set()
+                        except Exception: pass
+                        return
+                    self._active_popup.safe_destroy()
+                    self._active_popup = None
+                    self._last_popup_cell = None
+
+                data_map = {
+                    "รายการสินค้า": self.product_list,
+                    "ชื่อ Supplier":  self.supplier_list,
+                    "รหัส Sale":      self.sales_list,
+                }
+                _data_list = data_map[col_name]
+                _data_col = real_col  # frozen sheet ใช้ real_col ตรงๆ
+                try:
+                    current_val = str(self.sheet_frozen.get_cell_data(row, _data_col) or '').strip()
+                except Exception:
+                    current_val = ''
+
+                _row, _col = row, col
+                def on_select(value, r=_row, dc=_data_col, c=_col):
+                    try:
+                        self.sheet_frozen.set_cell_data(r, dc, value, redraw=True)
+                        self._auto_calculate_sheet(r)
+                        self.sheet_frozen.redraw()
+                        if self.auto_save_job_id is not None:
+                            self.after_cancel(self.auto_save_job_id)
+                        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                        if hasattr(self, 'save_status_label'):
+                            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+                        self._last_popup_cell = None
+                        self.after(50, lambda: self._move_right(r, c, is_frozen=True))
+                    except Exception as ex:
+                        print(f"on_select frozen error: {ex}")
+
+                popup = InlineSearchPopup(self, _data_list, on_select)
+                popup.place_near_cell(sheet_widget=self.sheet_frozen, row=_row, col=_col,
+                                      row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
+                                      data_col=_data_col)
+                if current_val:
+                    popup.entry.delete(0, tk.END)
+                    popup.entry.insert(0, current_val)
+                    popup.entry.select_range(0, tk.END)
+                    popup.filter_list(current_val)
+                self._active_popup = popup
+                self._last_popup_cell = (_row, _col)
+                return
 
             if col_name not in popup_cols:
                 if self._active_popup and not self._active_popup._destroyed:
@@ -2835,6 +3704,221 @@ class CostBenchmarkScreen(CTkFrame):
         self.product_category_map = {}
         self._load_dropdown_data()
 
+    def _on_mt_keypress(self, event=None):
+        """KeyPress บน main sheet MT — เปิด popup สำหรับ รายการสินค้า / ชื่อ Supplier / รหัส Sale
+        ใช้วิธีนี้แทน begin_edit_cell เพราะ tksheet ไม่ fire begin_edit_cell
+        เมื่อ column ถูกซ่อนด้วย display_columns()"""
+        try:
+            if not event or not event.char or ord(event.char) < 32:
+                return
+            # ตรวจ modifier keys — ถ้ากด Ctrl/Alt ให้ข้ามไป
+            if event.state & 0x4 or event.state & 0x8:  # Ctrl or Alt
+                return
+
+            # ดู selected cell
+            sel = self.sheet.get_currently_selected()
+            if not sel or len(sel) < 2:
+                return
+            row, col = int(sel[0]), int(sel[1])
+
+            col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+            hidden_set = set(getattr(self, 'hidden_cols_list', []))
+            visible_real = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
+            
+            if col >= len(visible_real):
+                return
+            real_col = visible_real[col]
+            col_name = self.columns[real_col]
+
+            popup_cols = {
+                "รายการสินค้า": self.product_list,
+                "ชื่อ Supplier":  self.supplier_list,
+                "รหัส Sale":      self.sales_list,
+            }
+            if col_name not in popup_cols:
+                return
+
+            # ถ้า popup เปิดอยู่แล้วในเซลล์นี้ ให้ส่ง char ไปที่ entry แทน
+            if (self._active_popup is not None
+                    and not self._active_popup._destroyed
+                    and getattr(self, '_last_popup_cell', None) == (row, col)):
+                try:
+                    self._active_popup.entry.focus_set()
+                    self._active_popup.entry.insert(tk.END, event.char)
+                    self._active_popup.filter_list(self._active_popup.search_var.get())
+                except Exception:
+                    pass
+                return "break"
+
+            if getattr(self, '_popup_opening', False):
+                return
+
+            # ปิด popup เก่า
+            if self._active_popup is not None and not self._active_popup._destroyed:
+                try: self._active_popup.safe_destroy()
+                except Exception: pass
+                self._active_popup = None
+
+            self._popup_opening = True
+            _row, _col = row, col
+            _typed = event.char
+            _data_list = popup_cols[col_name]
+            # data col = นับ visible cols ก่อน real_col (ถูกต้องแม้มี hidden cols)
+            _data_col = real_col - col_offset
+
+            def _open_popup():
+                self._popup_opening = False
+                try: self.sheet.close_text_editor(set_data=False)
+                except Exception: pass
+                try: self.sheet.cancel_edit()
+                except Exception: pass
+
+                try:
+                    current_val = str(self.sheet.get_cell_data(_row, _data_col) or '').strip()
+                except Exception:
+                    current_val = ''
+
+                if self._active_popup is not None and not self._active_popup._destroyed:
+                    try: self._active_popup.safe_destroy()
+                    except Exception: pass
+                    self._active_popup = None
+
+                def on_select(value, r=_row, dc=_data_col, c=_col):
+                    try:
+                        self.sheet.set_cell_data(r, dc, value, redraw=True)
+                        self._auto_calculate_sheet(r)
+                        self.sheet.redraw()
+                        if self.auto_save_job_id is not None:
+                            self.after_cancel(self.auto_save_job_id)
+                        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                        if hasattr(self, 'save_status_label'):
+                            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+                        self._last_popup_cell = None
+                        self.after(50, lambda: self._move_right(r, c))
+                    except Exception as ex:
+                        print(f"on_select error: {ex}")
+
+                popup = InlineSearchPopup(self, _data_list, on_select)
+                popup.place_near_cell(sheet_widget=self.sheet, row=_row, col=_col,
+                                      row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
+                                      data_col=_data_col)
+                popup.entry.delete(0, tk.END)
+                popup.entry.insert(0, _typed)
+                popup.entry.icursor(tk.END)
+                popup.filter_list(_typed)
+                self._active_popup = popup
+                self._last_popup_cell = (_row, _col)
+
+            self.after(0, _open_popup)
+            return "break"  # บล็อก tksheet ไม่ให้เปิด inline editor
+
+        except Exception as e:
+            self._popup_opening = False
+            print(f"_on_mt_keypress error: {e}")
+    
+    def _on_mt_keypress_frozen(self, event=None):
+        """ดักจับตอนพิมพ์ในฝั่งที่ตรึงคอลัมน์ไว้"""
+        try:
+            if not event or not event.char or ord(event.char) < 32:
+                return
+            if event.state & 0x4 or event.state & 0x8:  # Ctrl or Alt
+                return
+
+            sel = self.sheet_frozen.get_currently_selected()
+            if not sel or len(sel) < 2:
+                return
+            row, col = int(sel[0]), int(sel[1])
+
+            hidden_set = set(getattr(self, 'hidden_cols_list', []))
+            visible_frozen = [c for c in range(self.frozen_col_count) if c not in hidden_set]
+            if col >= len(visible_frozen):
+                return
+            real_col = visible_frozen[col]
+            col_name = self.columns[real_col]
+
+            popup_cols = {
+                "รายการสินค้า": self.product_list,
+                "ชื่อ Supplier":  self.supplier_list,
+                "รหัส Sale":      self.sales_list,
+            }
+            if col_name not in popup_cols:
+                return
+
+            if (self._active_popup is not None
+                    and not self._active_popup._destroyed
+                    and getattr(self, '_last_popup_cell', None) == (row, col)):
+                try:
+                    self._active_popup.entry.focus_set()
+                    self._active_popup.entry.insert(tk.END, event.char)
+                    self._active_popup.filter_list(self._active_popup.search_var.get())
+                except Exception:
+                    pass
+                return "break"
+
+            if getattr(self, '_popup_opening', False):
+                return
+
+            if self._active_popup is not None and not self._active_popup._destroyed:
+                try: self._active_popup.safe_destroy()
+                except Exception: pass
+                self._active_popup = None
+
+            self._popup_opening = True
+            _row, _col = row, col
+            _typed = event.char
+            _data_list = popup_cols[col_name]
+            _data_col = real_col
+
+            def _open_popup():
+                self._popup_opening = False
+                try: self.sheet_frozen.close_text_editor(set_data=False)
+                except Exception: pass
+                try: self.sheet_frozen.cancel_edit()
+                except Exception: pass
+
+                try:
+                    current_val = str(self.sheet_frozen.get_cell_data(_row, _data_col) or '').strip()
+                except Exception:
+                    current_val = ''
+
+                if self._active_popup is not None and not self._active_popup._destroyed:
+                    try: self._active_popup.safe_destroy()
+                    except Exception: pass
+                    self._active_popup = None
+
+                def on_select(value, r=_row, dc=_data_col, c=_col):
+                    try:
+                        self.sheet_frozen.set_cell_data(r, dc, value, redraw=True)
+                        self._auto_calculate_sheet(r)
+                        self.sheet_frozen.redraw()
+                        if self.auto_save_job_id is not None:
+                            self.after_cancel(self.auto_save_job_id)
+                        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                        if hasattr(self, 'save_status_label'):
+                            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+                        self._last_popup_cell = None
+                        self.after(50, lambda: self._move_right(r, c, is_frozen=True))
+                    except Exception as ex:
+                        print(f"on_select error: {ex}")
+
+                popup = InlineSearchPopup(self, _data_list, on_select)
+                popup.place_near_cell(sheet_widget=self.sheet_frozen, row=_row, col=_col,
+                                      row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
+                                      data_col=_data_col)
+                popup.entry.delete(0, tk.END)
+                popup.entry.insert(0, _typed)
+                popup.entry.icursor(tk.END)
+                popup.filter_list(_typed)
+                self._active_popup = popup
+                self._last_popup_cell = (_row, _col)
+
+            self.after(0, _open_popup)
+            return "break"
+
+        except Exception as e:
+            self._popup_opening = False
+            print(f"_on_mt_keypress_frozen error: {e}")
+
     def _on_mt_click(self, event=None):
         try:
             self._last_active_sheet = 'main'
@@ -2875,13 +3959,64 @@ class CostBenchmarkScreen(CTkFrame):
                 "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
             ]
             popup_cols = {
-                "รายการสินค้า": self.product_list,
-                "ชื่อ Supplier":  self.supplier_list,
-                "รหัส Sale":      self.sales_list,
+                # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
                 "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
                 "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
             }
+
+            # รายการสินค้า / ชื่อ Supplier / รหัส Sale → เปิด popup โดยตรง
+            if col_name in ("รายการสินค้า", "ชื่อ Supplier", "รหัส Sale"):
+                if self._active_popup and not self._active_popup._destroyed:
+                    if self._last_popup_cell == (row, col):
+                        try: self._active_popup.entry.focus_set()
+                        except Exception: pass
+                        return
+                    self._active_popup.safe_destroy()
+                    self._active_popup = None
+                    self._last_popup_cell = None
+
+                data_map = {
+                    "รายการสินค้า": self.product_list,
+                    "ชื่อ Supplier":  self.supplier_list,
+                    "รหัส Sale":      self.sales_list,
+                }
+                _data_list = data_map[col_name]
+                # นับ visible cols ก่อน real_col (รองรับคอลัมน์ซ่อน)
+                _data_col = real_col - col_offset
+                try:
+                    current_val = str(self.sheet.get_cell_data(row, _data_col) or '').strip()
+                except Exception:
+                    current_val = ''
+
+                _row, _col = row, col
+                def on_select(value, r=_row, dc=_data_col, c=_col):
+                    try:
+                        self.sheet.set_cell_data(r, dc, value, redraw=True)
+                        self._auto_calculate_sheet(r)
+                        self.sheet.redraw()
+                        if self.auto_save_job_id is not None:
+                            self.after_cancel(self.auto_save_job_id)
+                        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                        if hasattr(self, 'save_status_label'):
+                            self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+                        self._last_popup_cell = None
+                        self.after(50, lambda: self._move_right(r, c))
+                    except Exception as ex:
+                        print(f"on_select error: {ex}")
+
+                popup = InlineSearchPopup(self, _data_list, on_select)
+                popup.place_near_cell(sheet_widget=self.sheet, row=_row, col=_col,
+                                      row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
+                                      data_col=_data_col)
+                if current_val:
+                    popup.entry.delete(0, tk.END)
+                    popup.entry.insert(0, current_val)
+                    popup.entry.select_range(0, tk.END)
+                    popup.filter_list(current_val)
+                self._active_popup = popup
+                self._last_popup_cell = (_row, _col)
+                return
 
             if col_name not in popup_cols:
                 if self._active_popup and not self._active_popup._destroyed:
@@ -2911,7 +4046,7 @@ class CostBenchmarkScreen(CTkFrame):
             _row, _col = row, col
 
             # data_col = local data index ใน scroll sheet (ใช้สำหรับ set/get_cell_data)
-            # ต้องคำนวณก่อน เพราะเมื่อมีคอลัมน์ซ่อน display col ≠ data col
+            # นับเฉพาะ visible cols ก่อน real_col เพื่อรองรับคอลัมน์ซ่อน
             _data_col = real_col - col_offset
 
             try:
@@ -2960,106 +4095,40 @@ class CostBenchmarkScreen(CTkFrame):
             self.after(10000, self._start_dropdown_refresh_timer)
 
     def _on_cell_select_combined(self, event=None, is_frozen=False):
+        # 1. รองรับระบบคลิกเพื่อสร้างสูตร
         self._on_sheet_click_for_formula(event)
 
+        # 🚀 2. บังคับดึง Focus ทันทีที่คลิกเซลล์ (แก้ปัญหา Ctrl+Z, C, V ไม่ติดตอนแรก)
         if is_frozen:
+            self._last_active_sheet = 'frozen'
+            if hasattr(self, 'sheet_frozen') and self.sheet_frozen:
+                self.after(10, lambda: self.sheet_frozen.MT.focus_set())
             if hasattr(self, 'sheet') and self.sheet:
                 self.sheet.deselect("all")
         else:
+            self._last_active_sheet = 'main'
+            if hasattr(self, 'sheet') and self.sheet:
+                self.after(10, lambda: self.sheet.MT.focus_set())
             if hasattr(self, 'sheet_frozen') and self.sheet_frozen:
                 self.sheet_frozen.deselect("all")
 
-        try:
-            if isinstance(event, dict):
-                row = event.get('row')
-                col = event.get('column')
-            elif isinstance(event, (tuple, list)) and len(event) >= 2:
-                row, col = event[0], event[1]
-            else:
-                row = getattr(event, 'row', None)
-                col = getattr(event, 'column', None)
-
-            if row is None or col is None: return
-            row, col = int(row), int(col)
-
-            col_offset = 0 if is_frozen else (self.frozen_col_count if self.sheet_frozen is not None else 0)
-            hidden_set = set(getattr(self, 'hidden_cols_list', []))
-            if is_frozen:
-                visible = [c for c in range(col_offset) if c not in hidden_set]
-            else:
-                visible = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
-            if col >= len(visible): return
-            real_col = visible[col]
-            if real_col >= len(self.columns): return
-
-            col_name = self.columns[real_col]
-            status_opts = [
-                "WIN", "STOCK",
-                "LOSE - เซลล์ไม่ทราบสาเหตุ",
-                "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
-                "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
-                "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
-                "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
-                "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
-                "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
-            ]
-            popup_cols = {
-                "รายการสินค้า": self.product_list,
-                "ชื่อ Supplier":  self.supplier_list,
-                "รหัส Sale":      self.sales_list,
-                "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
-                "สถานะ":          status_opts,
-                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
-            }
-
-            if col_name not in popup_cols:
-                if self._active_popup and not self._active_popup._destroyed:
-                    self._active_popup.safe_destroy()
-                    self._active_popup = None
-                    self._last_popup_cell = None
-                return
-
-            if (self._active_popup is not None and not self._active_popup._destroyed and self._last_popup_cell == (row, col)):
-                try: self._active_popup.entry.focus_set()
-                except: pass
-                return
-
-            if self._active_popup is not None:
-                try:
-                    if not self._active_popup._destroyed:
-                        self._active_popup.safe_destroy()
-                except: pass
-                self._active_popup = None
-
-            data_list = popup_cols[col_name]
-            _row, _col = row, col
-
-            target_sheet = self.sheet_frozen if is_frozen else self.sheet
-            # data_col = data index สำหรับ set/get_cell_data (ต่างจาก display col เมื่อมีคอลัมน์ซ่อน)
-            _data_col = real_col if is_frozen else (real_col - col_offset)
+        # 3. ปิด Popup ค้นหาทันทีถ้ามีการคลิกเลือกเซลล์ใหม่
+        if self._active_popup is not None and not self._active_popup._destroyed:
             try:
-                current_val = str(target_sheet.get_cell_data(_row, _data_col) or "").strip()
+                self._active_popup.safe_destroy()
             except Exception:
-                current_val = ""
+                pass
+            self._active_popup = None
+            self._last_popup_cell = None
 
-            def on_select(value):
-                try:
-                    target_sheet.set_cell_data(_row, _data_col, value, redraw=True)
-                    self._auto_calculate_sheet(_row)
-                    target_sheet.redraw()
-                    if self.auto_save_job_id is not None: self.after_cancel(self.auto_save_job_id)
-                    self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
-                    if hasattr(self, 'save_status_label'): self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
-                    self._last_popup_cell = None
-                    self.after(50, lambda: self._move_right(_row, _col, is_frozen))
-                except Exception as ex:
-                    print(f"on_select error: {ex}")
-
-            self._last_popup_cell = (_row, _col)
-            self.after(80, lambda r=_row, c=_col, dl=data_list, cv=current_val, os=on_select, fz=is_frozen, dc=_data_col:
-                self._open_popup_delayed(r, c, dl, cv, os, fz, data_col=dc))
-        except Exception as e:
-            print(f"_on_cell_select_combined error: {e}")
+        # 🚀 3. ปิด Popup ค้นหาทันทีถ้ามีการคลิกเลือกเซลล์ใหม่
+        if self._active_popup is not None and not self._active_popup._destroyed:
+            try:
+                self._active_popup.safe_destroy()
+            except Exception:
+                pass
+            self._active_popup = None
+            self._last_popup_cell = None
 
     def _open_popup_delayed(self, row, col, data_list, current_val, on_select, is_frozen=False, data_col=None):
         try:
@@ -3174,7 +4243,12 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-            real_col = col + col_offset
+            hidden_set = set(getattr(self, 'hidden_cols_list', []))
+            # แปลง display col → real col (รองรับคอลัมน์ซ่อน)
+            visible_real = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
+            if col >= len(visible_real):
+                return
+            real_col = visible_real[col]
             if real_col >= len(self.columns):
                 return
             col_name = self.columns[real_col]
@@ -3220,6 +4294,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             data_list = popup_cols[col_name]
             _row, _col = row, col
+            # นับ visible cols ก่อน real_col เพื่อได้ data index ที่ถูกต้อง
             _data_col = real_col - col_offset
 
             try:
@@ -3291,7 +4366,12 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-            real_col = col + col_offset
+            hidden_set = set(getattr(self, 'hidden_cols_list', []))
+            # แปลง display col → real col (รองรับคอลัมน์ซ่อน)
+            visible_real = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
+            if col >= len(visible_real):
+                return
+            real_col = visible_real[col]
             if real_col >= len(self.columns):
                 return
             col_name = self.columns[real_col]
@@ -3329,6 +4409,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             data_list = popup_cols[col_name]
             _row, _col = row, col
+            # นับ visible cols ก่อน real_col เพื่อได้ data index ที่ถูกต้อง
             _data_col = real_col - col_offset
 
             try:
@@ -3368,8 +4449,7 @@ class CostBenchmarkScreen(CTkFrame):
             traceback.print_exc()
 
     def _debug_cell_select(self, event=None):
-        print(f"DEBUG cell_select event type: {type(event)}")
-        print(f"DEBUG cell_select event value: {repr(event)}")
+        pass
 
     def _on_cell_single_click_popup(self, event=None):
         """Single click → เปิด popup ทันที"""
@@ -3398,7 +4478,12 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-            real_col = col + col_offset
+            hidden_set = set(getattr(self, 'hidden_cols_list', []))
+            # แปลง display col → real col (รองรับคอลัมน์ซ่อน)
+            visible_real = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
+            if col >= len(visible_real):
+                return
+            real_col = visible_real[col]
             if real_col >= len(self.columns):
                 return
             col_name = self.columns[real_col]
@@ -3438,6 +4523,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             data_list = popup_cols[col_name]
 
+            # นับ visible cols ก่อน real_col เพื่อได้ data index ที่ถูกต้อง
             _data_col = real_col - col_offset
             try:
                 current_val = str(self.sheet.get_cell_data(row, _data_col) or "").strip()
@@ -3513,7 +4599,7 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-            real_col = col + col_offset
+            real_col = int(col) + col_offset
             if real_col >= len(self.columns):
                 return
             col_name = self.columns[real_col]
@@ -3621,12 +4707,15 @@ class CostBenchmarkScreen(CTkFrame):
                     try: self.after_cancel(self._resize_layout_job)
                     except: pass
 
-                def _update_frames():
+                def _update_frames(fw=frozen_width):
                     try:
-                        self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
-                        self.sheet.place(x=frozen_width, y=0, relwidth=1.0, relheight=1.0, width=-frozen_width)
-                        def _on_table_resize(event, fw=frozen_width):
-                            try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                        self._current_frozen_width = fw
+                        self.sheet_frozen.place(x=0, y=0, width=fw, relheight=1.0)
+                        self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                        def _on_table_resize(event):
+                            try:
+                                _fw = getattr(self, '_current_frozen_width', fw)
+                                self.sheet.place(x=_fw, y=0, relwidth=1.0, relheight=1.0, width=-_fw)
                             except Exception: pass
                         self.table_frame.bind("<Configure>", _on_table_resize)
                     except Exception: pass
@@ -3760,10 +4849,15 @@ class CostBenchmarkScreen(CTkFrame):
 
                 frozen_width += 4
                 try:
+                    self._current_frozen_width = frozen_width  # อัปเดตค่าล่าสุดเพื่อให้ _on_table_resize ใช้ค่าถูกต้องเสมอ
+                    try: self.table_frame.update_idletasks()
+                    except Exception: pass
                     self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
                     self.sheet.place(x=frozen_width, y=0, relwidth=1.0, relheight=1.0, width=-frozen_width)
-                    def _on_table_resize(event, fw=frozen_width):
-                        try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                    def _on_table_resize(event):
+                        try:
+                            fw = getattr(self, '_current_frozen_width', frozen_width)
+                            self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
                         except Exception: pass
                     self.table_frame.bind("<Configure>", _on_table_resize)
                 except Exception: pass
@@ -3842,7 +4936,9 @@ class CostBenchmarkScreen(CTkFrame):
                     self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
 
                 # 4. เลื่อนเคอร์เซอร์ไปทางขวาเมื่อพิมพ์เสร็จ
-                self.after(10, lambda: self._move_right(row, col, is_frozen))
+                # (ข้ามถ้า arrow navigation กำลังทำงาน — _commit_and_move จัดการเองแล้ว)
+                if not getattr(self, '_arrow_nav_in_progress', False):
+                    self.after(10, lambda: self._move_right(row, col, is_frozen))
                 
         except Exception as e:
             print(f"_on_end_edit_combined error: {e}")
@@ -3920,18 +5016,6 @@ class CostBenchmarkScreen(CTkFrame):
 
 
     # ================================================================== #
-    def _on_sheet_modified(self, event=None):
-        try:
-            self._push_undo()
-            # <<SheetModified>> ไม่ได้ส่ง row info → ไม่ทำ auto-calc ที่นี่
-            # auto-calc ทำผ่าน end_edit_cell + "paste" extra_binding แทน
-            if self.auto_save_job_id is not None:
-                self.after_cancel(self.auto_save_job_id)
-            if hasattr(self, 'save_status_label'):
-                self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
-            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
-        except Exception:
-            pass
 
     def _on_paste_event(self, event=None, is_frozen=False):
         """extra_binding 'paste' — ยิงหลัง right-click paste เสร็จ (รู้ row ที่แน่นอน)"""
@@ -3979,6 +5063,52 @@ class CostBenchmarkScreen(CTkFrame):
         except Exception as e:
             print(f"_on_paste_event error: {e}")
 
+
+    def _on_delete_event(self, event=None, is_frozen=False):
+        """extra_binding 'delete' — ยิงหลัง user กด Delete/Backspace เพื่อล้างข้อมูล
+        แล้ว trigger _auto_calculate_sheet ให้คำนวณคอลัมน์ที่เกี่ยวข้องใหม่ทันที"""
+        try:
+            rows = set()
+            if event is not None:
+                try:
+                    for item in event:
+                        if isinstance(item, (list, tuple)) and len(item) >= 1:
+                            rows.add(int(item[0]))
+                except TypeError:
+                    if isinstance(event, dict):
+                        for key in ("cells after", "cells", "rows"):
+                            val = event.get(key)
+                            if val:
+                                try:
+                                    for item in val:
+                                        rows.add(int(item[0]) if isinstance(item, (list, tuple)) else int(item))
+                                except Exception:
+                                    pass
+
+            if not rows:
+                # fallback: อ่านจาก selection ปัจจุบัน
+                try:
+                    sheet = self.sheet_frozen if is_frozen else self.sheet
+                    sel = sheet.get_currently_selected()
+                    if sel:
+                        rows.add(int(sel[0]))
+                except Exception:
+                    pass
+
+            for r in sorted(rows):
+                self._auto_calculate_sheet(r)
+
+            self.sheet.redraw()
+            if self.sheet_frozen:
+                self.sheet_frozen.redraw()
+
+            if self.auto_save_job_id:
+                self.after_cancel(self.auto_save_job_id)
+            if hasattr(self, 'save_status_label'):
+                self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+        except Exception as e:
+            print(f"_on_delete_event error: {e}")
 
     def _auto_calculate_sheet(self, row_idx):
         col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
@@ -4389,6 +5519,86 @@ class CostBenchmarkScreen(CTkFrame):
             self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
             self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
     # ================================================================== #
+
+    def _highlight_selected_cells(self):
+        """ระบายสีไฮไลท์ช่องที่ถูกเลือก"""
+        if not HAS_TKSHEET: return
+        
+        # เปิดหน้าต่างให้เลือกสี
+        color_tuple = colorchooser.askcolor(title="เลือกสีสำหรับไฮไลท์ช่อง", parent=self)
+        if not color_tuple or not color_tuple[1]: return
+        
+        color_code = color_tuple[1]
+        
+        # ดึงข้อมูลคอลัมน์ที่ถูกซ่อน เพื่อแปลง Index ให้ถูกต้อง
+        col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+        hidden_set = set(getattr(self, 'hidden_cols_list', []))
+        
+        # ระบายสีฝั่งตารางหลัก
+        try:
+            visible_main = [col for col in range(col_offset, len(self.columns)) if col not in hidden_set]
+            cells = self.sheet.get_selected_cells()
+            for r, c in cells:
+                if c < len(visible_main):
+                    real_col = visible_main[c]
+                    data_col = real_col - col_offset  # แปลงเป็น Data Index ของตารางหลัก
+                    self.sheet.highlight_cells(row=r, column=data_col, bg=color_code)
+        except Exception as e: 
+            print(f"Highlight main error: {e}")
+        
+        # ระบายสีฝั่งตารางที่ตรึงไว้
+        if self.sheet_frozen:
+            try:
+                visible_frozen = [col for col in range(self.frozen_col_count) if col not in hidden_set]
+                f_cells = self.sheet_frozen.get_selected_cells()
+                for r, c in f_cells:
+                    if c < len(visible_frozen):
+                        data_col = visible_frozen[c] # ฝั่งตรึง Data Index คือ real_col ตรงๆ
+                        self.sheet_frozen.highlight_cells(row=r, column=data_col, bg=color_code)
+            except Exception as e:
+                print(f"Highlight frozen error: {e}")
+            
+        self.sheet.redraw()
+        if self.sheet_frozen: self.sheet_frozen.redraw()
+        
+        # 🔹 บันทึกสีลงฐานข้อมูลทันที
+        self._save_user_settings()
+
+    def _clear_highlight_selected_cells(self):
+        """ล้างสีไฮไลท์ช่องที่ถูกเลือก"""
+        if not HAS_TKSHEET: return
+        
+        col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+        hidden_set = set(getattr(self, 'hidden_cols_list', []))
+        
+        try:
+            visible_main = [col for col in range(col_offset, len(self.columns)) if col not in hidden_set]
+            cells = self.sheet.get_selected_cells()
+            for r, c in cells:
+                if c < len(visible_main):
+                    real_col = visible_main[c]
+                    data_col = real_col - col_offset
+                    self.sheet.dehighlight_cells(row=r, column=data_col)
+        except Exception as e: 
+            print(f"Clear highlight main error: {e}")
+        
+        if self.sheet_frozen:
+            try:
+                visible_frozen = [col for col in range(self.frozen_col_count) if col not in hidden_set]
+                f_cells = self.sheet_frozen.get_selected_cells()
+                for r, c in f_cells:
+                    if c < len(visible_frozen):
+                        data_col = visible_frozen[c]
+                        self.sheet_frozen.dehighlight_cells(row=r, column=data_col)
+            except Exception as e:
+                print(f"Clear highlight frozen error: {e}")
+            
+        self.sheet.redraw()
+        if self.sheet_frozen: self.sheet_frozen.redraw()
+        
+        # 🔹 บันทึกการล้างสีลงฐานข้อมูลทันที
+        self._save_user_settings()
+
     def _load_from_db(self, *args):
         if not HAS_TKSHEET: return
         month_val = self.month_var.get()
@@ -4440,6 +5650,12 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet.redraw()
             if self.sheet_frozen:
                 self.sheet_frozen.redraw()
+            self._apply_saved_highlights()
+            self._history = []
+            self._history_idx = -1
+            self._push_undo()
+
+            self.after(50, lambda: self.sheet.MT.focus_set())
 
         except Exception as e:
             messagebox.showerror("Error", f"โหลดข้อมูลล้มเหลว: {e}", parent=self)
@@ -4487,14 +5703,18 @@ class CostBenchmarkScreen(CTkFrame):
         # sync row height
         try:
             rh = int(30 * (self.zoom_level / 11.0))
-            total_rows = max(
-                self.sheet_frozen.get_total_rows(),
-                self.sheet.get_total_rows()
-            )
+            if self.sheet_frozen:
+                total_rows = max(self.sheet_frozen.get_total_rows(), self.sheet.get_total_rows())
+            else:
+                total_rows = self.sheet.get_total_rows()
+                
             for r in range(total_rows):
-                self.sheet_frozen.row_height(r, rh)
+                if self.sheet_frozen:
+                    self.sheet_frozen.row_height(r, rh)
                 self.sheet.row_height(r, rh)
-            self.sheet_frozen.redraw()
+                
+            if self.sheet_frozen:
+                self.sheet_frozen.redraw()
             self.sheet.redraw()
         except Exception:
             pass
@@ -4941,11 +6161,14 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception: pass
                 
                 frozen_width += 4
+                self._current_frozen_width = frozen_width
                 self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
                 self.sheet.place(x=frozen_width, y=0, relwidth=1.0, relheight=1.0, width=-frozen_width)
 
-                def _on_resize_after_zoom(event, fw=frozen_width):
-                    try: self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
+                def _on_resize_after_zoom(event):
+                    try:
+                        fw = getattr(self, '_current_frozen_width', frozen_width)
+                        self.sheet.place(x=fw, y=0, relwidth=1.0, relheight=1.0, width=-fw)
                     except Exception: pass
                 self.table_frame.bind("<Configure>", _on_resize_after_zoom)
         except Exception as e:
@@ -4959,15 +6182,21 @@ class CostBenchmarkScreen(CTkFrame):
 
         def _sync_after_zoom():
             try:
+                rh = int(30 * (self.zoom_level / 11.0))
                 if self.sheet_frozen:
-                    rh = int(30 * (self.zoom_level / 11.0))
                     total_rows = max(self.sheet.get_total_rows(), self.sheet_frozen.get_total_rows())
-                    for r in range(total_rows):
+                else:
+                    total_rows = self.sheet.get_total_rows()
+                    
+                for r in range(total_rows):
+                    if self.sheet_frozen:
                         self.sheet_frozen.row_height(r, rh)
-                        self.sheet.row_height(r, rh)
+                    self.sheet.row_height(r, rh)
+                    
+                if self.sheet_frozen:
                     self.sheet_frozen.redraw()
-                    self.sheet.redraw()
                     self._hide_frozen_scrollbars()
+                self.sheet.redraw()
             except Exception: pass
 
         self.after(100, _sync_after_zoom)

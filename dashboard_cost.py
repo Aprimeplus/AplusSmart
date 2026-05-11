@@ -81,7 +81,8 @@ class DashboardCostScreen(CTkFrame):
         self.grid_rowconfigure(0, weight=1)
 
         self.raw_df = pd.DataFrame()
-        self.all_order_nos = [] 
+        self.current_filtered_df = pd.DataFrame()   # เก็บ filtered ล่าสุดสำหรับ Export
+        self.all_order_nos = []
         self.all_sale_order_nos = []
         self.all_product_names = []
         self.all_suppliers = []
@@ -261,7 +262,144 @@ class DashboardCostScreen(CTkFrame):
             font=CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
             corner_radius=6, height=36,
             command=self._load_data_from_db
+        ).pack(fill="x", padx=12, pady=(0, 8))
+
+        CTkButton(
+            sidebar, text="📥  Export Excel",
+            fg_color="#16A34A", hover_color="#15803D",
+            font=CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+            corner_radius=6, height=36,
+            command=self._export_to_excel
         ).pack(fill="x", padx=12, pady=(0, 20))
+
+    # =========================================================
+    # EXPORT TO EXCEL
+    # =========================================================
+    def _export_to_excel(self):
+        from tkinter import filedialog
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        df = self.current_filtered_df
+        if df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล",
+                "ยังไม่มีข้อมูลที่จะ Export\nกรุณาโหลดหรือ Filter ข้อมูลก่อน",
+                parent=self)
+            return
+
+        # ── เลือกที่บันทึก ────────────────────────────────────────
+        from datetime import datetime
+        default_name = f"CostBenchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=default_name,
+            title="บันทึกไฟล์ Excel",
+            parent=self
+        )
+        if not save_path:
+            return
+
+        try:
+            # ── ซ่อนคอลัมน์ internal ที่ไม่ต้องการ export ────────────
+            hide_cols = {"benchmark_year", "benchmark_month"}
+            export_df = df[[c for c in df.columns if c not in hide_cols]].copy()
+
+            # ── สร้าง Workbook ────────────────────────────────────────
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Cost Benchmark"
+
+            # สี theme
+            HDR_BG   = "1E3A5F"   # navy
+            HDR_FG   = "FFFFFF"
+            ROW_ALT  = "EFF6FF"   # ฟ้าอ่อน
+            ROW_NORM = "FFFFFF"
+            BORDER_C = "CBD5E1"
+
+            thin = Side(style="thin", color=BORDER_C)
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            # ── Header row ────────────────────────────────────────────
+            headers = list(export_df.columns)
+            for col_idx, col_name in enumerate(headers, start=1):
+                cell = ws.cell(row=1, column=col_idx, value=col_name)
+                cell.font      = Font(bold=True, color=HDR_FG, size=11)
+                cell.fill      = PatternFill("solid", fgColor=HDR_BG)
+                cell.alignment = Alignment(horizontal="center",
+                                           vertical="center", wrap_text=True)
+                cell.border    = border
+            ws.row_dimensions[1].height = 28
+
+            # ── Data rows ─────────────────────────────────────────────
+            for row_idx, (_, row_data) in enumerate(export_df.iterrows(), start=2):
+                bg = ROW_ALT if row_idx % 2 == 0 else ROW_NORM
+                fill = PatternFill("solid", fgColor=bg)
+                for col_idx, value in enumerate(row_data, start=1):
+                    # แปลงค่า NaN → ว่าง
+                    if pd.isna(value) if not isinstance(value, str) else False:
+                        value = ""
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell.fill      = fill
+                    cell.border    = border
+                    cell.alignment = Alignment(vertical="center")
+
+            # ── Auto-fit column width ─────────────────────────────────
+            for col_idx, col_name in enumerate(headers, start=1):
+                col_letter = get_column_letter(col_idx)
+                max_len = max(
+                    len(str(col_name)),
+                    *[len(str(r[col_idx - 1]))
+                      for r in export_df.itertuples(index=False)
+                      if r[col_idx - 1] is not None],
+                    0
+                )
+                ws.column_dimensions[col_letter].width = min(max_len + 3, 40)
+
+            # ── Freeze header row ─────────────────────────────────────
+            ws.freeze_panes = "A2"
+
+            # ── Info sheet — บันทึก filter ที่ใช้ ─────────────────────
+            ws_info = wb.create_sheet("Filter Info")
+            ws_info.append(["Filter", "ค่าที่เลือก"])
+            ws_info.append(["Export เมื่อ", datetime.now().strftime("%d/%m/%Y %H:%M:%S")])
+            ws_info.append(["จำนวนแถวที่ export", len(export_df)])
+
+            filter_label_map = {
+                "date_from":      "วันที่ (จาก)",
+                "date_to":        "วันที่ (ถึง)",
+                "order_no":       "Order No.",
+                "sale_order_no":  "Sale Order No.",
+                "product_name":   "รายการสินค้า",
+                "supplier":       "ชื่อ Supplier",
+                "sale_name":      "ชื่อ Sale",
+                "status":         "สถานะ",
+                "priority":       "PRIORITY",
+                "select":         "Select",
+                "year":           "ปี (Year)",
+                "month":          "เดือน (Month)",
+                "pu_user":        "ผู้ทำตาราง (PU User)",
+            }
+            for key, label in filter_label_map.items():
+                val = self.filter_vars.get(key, tk.StringVar()).get()
+                if val and val != "All":
+                    ws_info.append([label, val])
+
+            for cell in ws_info["A"]:
+                cell.font = Font(bold=True)
+
+            wb.save(save_path)
+
+            messagebox.showinfo(
+                "Export สำเร็จ",
+                f"✅ Export ข้อมูล {len(export_df):,} แถว เรียบร้อยแล้ว\n\n{save_path}",
+                parent=self
+            )
+
+        except Exception as e:
+            messagebox.showerror("Export ผิดพลาด", f"ไม่สามารถ Export ได้:\n{e}", parent=self)
+            import traceback; traceback.print_exc()
 
     # 🟢 ฟังก์ชันอัจฉริยะ สำหรับค้นหา Order No. ใน Dropdown แบบเรียลไทม์
     def _on_order_search(self, event):
@@ -856,6 +994,7 @@ class DashboardCostScreen(CTkFrame):
                 else:
                     df = df[df[col].astype(str) == str(val)]
 
+        self.current_filtered_df = df.copy()   # เก็บไว้สำหรับ Export
         self._update_kpis(df)
         self._update_table(df)
 
@@ -872,7 +1011,11 @@ class DashboardCostScreen(CTkFrame):
         if "รายการสินค้า" in df.columns:
             df_active = df[df["รายการสินค้า"].astype(str).str.strip() != ""]
 
-        total_orders = len(df_active)
+        # นับ Unique Sale Order No. (ไม่นับซ้ำ)
+        if "Sale Order No." in df_active.columns:
+            total_orders = df_active["Sale Order No."].astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+        else:
+            total_orders = len(df_active)
 
         total_qty    = (df_active["จำนวน"].sum()
                         if "จำนวน" in df_active.columns else 0)

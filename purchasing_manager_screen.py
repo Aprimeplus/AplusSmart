@@ -860,7 +860,13 @@ class PurchasingManagerScreen(CTkFrame):
             self._populate_pending_list(self.filtered_df)
 
     def _load_data(self):
-        # แก้ไขให้เรียก _load_pending_pos โดยตรงเมื่อ Refresh
+        # Debounce — ยุบการเรียกซ้ำภายใน 500ms ให้เหลือครั้งเดียว
+        if hasattr(self, "_load_data_job") and self._load_data_job:
+            self.after_cancel(self._load_data_job)
+        self._load_data_job = self.after(500, self._do_load_data)
+
+    def _do_load_data(self):
+        self._load_data_job = None
         self._update_manager_dashboard()
         self._load_pending_pos()
 
@@ -2493,9 +2499,16 @@ class PurchasingManagerScreen(CTkFrame):
             if conn: self.app_container.release_connection(conn)
         
     def _load_data(self):
+        # Debounce — ยุบการเรียกซ้ำภายใน 500ms ให้เหลือครั้งเดียว
+        if hasattr(self, "_load_data_job") and self._load_data_job:
+            self.after_cancel(self._load_data_job)
+        self._load_data_job = self.after(500, self._do_load_data)
+
+    def _do_load_data(self):
+        self._load_data_job = None
         self._update_manager_dashboard()
         self._load_pending_pos()
-        
+
     def _check_and_complete_so(self, so_number):
         if not so_number:
             return

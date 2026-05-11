@@ -11,16 +11,21 @@ import psycopg2.extras
 import traceback
 import utils
 import os
+import numpy as np
 
 # เพิ่ม matplotlib สำหรับกราฟ
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.ticker import FuncFormatter
 import matplotlib
+import matplotlib.patheffects as pe
 matplotlib.use('TkAgg')
 
 # --- นำเข้า Class ที่จำเป็น ---
 from history_windows import SOPopupWindow, DeferralHistoryWindow, ManagerDeferApprovalDialog
 from daily_report_widget import DailyReportWidget
+from hr_screen import SalesFilterDialog
 
 STATUS_THAI_MAP = {
     'Draft': 'ฉบับร่าง',
@@ -41,6 +46,496 @@ STATUS_THAI_MAP = {
     'Cancelled': 'ยกเลิก',
     'Cancelled by PU': 'ยกเลิกโดยจัดซื้อ'
 }
+
+# =============================================================================
+#  SALES TARGET WIDGET  —  standalone widget แสดง ยอดขาย vs เป้าหมาย
+# =============================================================================
+class SalesTargetWidget(CTkFrame):
+    THAI_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                   "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+    THAI_MONTH_MAP = {m: i+1 for i, m in enumerate(THAI_MONTHS)}
+    EXCLUDE_KEYS   = {'s','d','p','mp','ms','hr','sm','Sale Center','Pimhathai'}
+    PERSON_MERGE   = {
+        'VOW-P': ('ภาณุพงศ์ / ฐรินทร์ญา', 'ภาณุพงศ์'),
+        'VOW-S': ('ภาณุพงศ์ / ฐรินทร์ญา', 'ฐรินทร์ญา'),
+    }
+
+    def __init__(self, master, app_container, **kwargs):
+        super().__init__(master, **kwargs)
+        self.app_container = app_container
+        self.pg_engine     = app_container.pg_engine
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # state
+        self.sales_view_mode       = 'chart'
+        self.selected_sales_filter = None
+        self.custom_target_start   = None
+        self.custom_target_end     = None
+        self.sales_target_chart_canvas = None
+
+        # fonts
+        self._font_bold = CTkFont(size=13, weight="bold")
+        self._font_hdr  = CTkFont(size=15, weight="bold")
+
+        self._build_ui()
+        self.after(300, self._update_dashboard)
+
+    # ── UI ────────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        today = datetime.now()
+        current_year = today.year
+        years = [str(y + 543) for y in range(current_year - 2, current_year + 3)]
+
+        # Filter bar
+        fbar = CTkFrame(self, fg_color="transparent")
+        fbar.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+
+        self._filter_btn = CTkButton(fbar, text="👤 กรองพนักงาน (ทั้งหมด)",
+                                     fg_color="#6366F1",
+                                     command=self._open_filter_dialog)
+        self._filter_btn.pack(side="left", padx=(5, 15))
+
+        def _mk_picker(label):
+            f = CTkFrame(fbar, fg_color="transparent")
+            f.pack(side="left", padx=8)
+            CTkLabel(f, text=label, font=self._font_bold).pack(side="left", padx=(0, 5))
+            m_idx = today.month - 1
+            mv = tk.StringVar(value=self.THAI_MONTHS[m_idx])
+            CTkOptionMenu(f, variable=mv, values=self.THAI_MONTHS, width=110).pack(side="left", padx=2)
+            yv = tk.StringVar(value=str(current_year + 543))
+            CTkOptionMenu(f, variable=yv, values=years, width=80).pack(side="left", padx=2)
+            return mv, yv
+
+        self.start_m_var, self.start_y_var = _mk_picker("จากรอบ:")
+        self.end_m_var,   self.end_y_var   = _mk_picker("ถึงรอบ:")
+
+        CTkButton(fbar, text="🔍 ค้นหา", width=100, fg_color="#2563EB",
+                  command=self._on_search).pack(side="left", padx=20)
+
+        # Toggle กราฟ/ตาราง
+        tgl = CTkFrame(fbar, fg_color="transparent")
+        tgl.pack(side="right", padx=(0, 5))
+
+        def _set_view(mode):
+            self.sales_view_mode = mode
+            btn_chart.configure(fg_color="#2563EB" if mode == 'chart' else "#E2E8F0",
+                                text_color="white"   if mode == 'chart' else "#475569")
+            btn_table.configure(fg_color="#2563EB" if mode == 'table' else "#E2E8F0",
+                                text_color="white"   if mode == 'table' else "#475569")
+            self._update_dashboard()
+
+        btn_chart = CTkButton(tgl, text="📊 กราฟ",  width=90,
+                              fg_color="#2563EB", text_color="white",
+                              corner_radius=6, command=lambda: _set_view('chart'))
+        btn_chart.pack(side="left", padx=2)
+        btn_table = CTkButton(tgl, text="📋 ตาราง", width=90,
+                              fg_color="#E2E8F0", text_color="#475569",
+                              corner_radius=6, command=lambda: _set_view('table'))
+        btn_table.pack(side="left", padx=2)
+
+        # Chart area
+        self._chart_frame = CTkFrame(self, border_width=1, corner_radius=10)
+        self._chart_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _show_loading(self):
+        for w in self._chart_frame.winfo_children():
+            w.destroy()
+        lbl = CTkLabel(self._chart_frame, text="กำลังโหลดข้อมูล...",
+                       font=CTkFont(size=18, slant="italic"), text_color="gray50")
+        lbl.pack(expand=True, pady=20)
+        self.update_idletasks()
+        return lbl
+
+    # ── Filter dialog ─────────────────────────────────────────────────────────
+    def _open_filter_dialog(self):
+        try:
+            df = pd.read_sql(
+                "SELECT sale_key, sale_name FROM sales_users WHERE status='Active' AND role='Sale' ORDER BY sale_name",
+                self.pg_engine
+            )
+            sales_list = list(zip(df['sale_key'], df['sale_name']))
+        except Exception:
+            sales_list = []
+        SalesFilterDialog(self, sales_list, self.selected_sales_filter, self._on_filter_confirmed)
+
+    def _on_filter_confirmed(self, selected_keys):
+        self.selected_sales_filter = selected_keys if selected_keys else None
+        try:
+            total = len(pd.read_sql(
+                "SELECT sale_key FROM sales_users WHERE status='Active' AND role='Sale'",
+                self.pg_engine
+            ))
+        except Exception:
+            total = 0
+        count = len(selected_keys) if selected_keys else total
+        if not selected_keys or count >= total:
+            self._filter_btn.configure(text="👤 กรองพนักงาน (ทั้งหมด)")
+            self.selected_sales_filter = None
+        else:
+            self._filter_btn.configure(text=f"👤 กรองพนักงาน ({count} คน)")
+        self._on_search()
+
+    # ── Search / Update ───────────────────────────────────────────────────────
+    def _on_search(self):
+        import calendar
+        try:
+            def _get_my(mv, yv):
+                m = self.THAI_MONTHS.index(mv.get()) + 1
+                y = int(yv.get()) - 543
+                return m, y
+            s_m, s_y = _get_my(self.start_m_var, self.start_y_var)
+            e_m, e_y = _get_my(self.end_m_var,   self.end_y_var)
+            start_date = datetime(s_y, s_m, 1)
+            last_day   = calendar.monthrange(e_y, e_m)[1]
+            end_date   = datetime(e_y, e_m, last_day)
+            if start_date > end_date:
+                messagebox.showerror("รอบเดือนไม่ถูกต้อง",
+                                     "รอบเริ่มต้นต้องมาก่อนหรือเท่ากับรอบสิ้นสุด", parent=self)
+                return
+            self.custom_target_start = start_date
+            self.custom_target_end   = end_date
+            self._update_dashboard()
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
+            traceback.print_exc()
+
+    def _update_dashboard(self):
+        loading = self._show_loading()
+        try:
+            df = self._get_data()
+            loading.destroy()
+            if self.sales_view_mode == 'table':
+                self._create_table(self._chart_frame, df)
+            else:
+                self._create_chart(self._chart_frame, df)
+        except Exception as e:
+            loading.destroy()
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
+            traceback.print_exc()
+
+    # ── Data fetch ────────────────────────────────────────────────────────────
+    def _get_data(self):
+        today = datetime.now()
+        params = []
+        date_clauses = []
+        target_mult  = 1.0
+
+        s = self.custom_target_start
+        e = self.custom_target_end
+        if s and e:
+            date_clauses.append(
+                "MAKE_DATE(c.commission_year, c.commission_month, 1) BETWEEN %s::date AND %s::date"
+            )
+            params.extend([s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")])
+            months_diff   = (e.year - s.year) * 12 + (e.month - s.month) + 1
+            target_mult   = max(1, months_diff)
+        else:
+            date_clauses.append("c.commission_month = %s")
+            params.append(today.month)
+            date_clauses.append("c.commission_year = %s")
+            params.append(today.year)
+
+        date_sql = " AND ".join(date_clauses)
+
+        sale_filter = ""
+        if self.selected_sales_filter:
+            ph = ','.join(["REPLACE(LOWER(%s), ' ', '')"] * len(self.selected_sales_filter))
+            sale_filter = f" AND REPLACE(LOWER(su.sale_key), ' ', '') IN ({ph})"
+            params.extend(self.selected_sales_filter)
+
+        query = f"""
+            SELECT su.sale_name, su.sale_key,
+                   COALESCE(su.sales_target, 0) * %s AS sales_target,
+                   COALESCE(SUM(c.total_sales), 0)   AS total_sales,
+                   0                                  AS total_outstanding
+            FROM   sales_users su
+            LEFT JOIN commission_payout_logs c
+                   ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
+                  AND {date_sql}
+            WHERE  su.status = 'Active'
+                   {sale_filter}
+            GROUP  BY su.sale_name, su.sale_key, su.sales_target, su.role
+            HAVING (su.role = 'Sale' OR COALESCE(SUM(c.total_sales), 0) > 0)
+            ORDER  BY su.sale_name ASC;
+        """
+        final_params = tuple([target_mult] + params)
+        df = pd.read_sql_query(query, self.pg_engine, params=final_params)
+        df['sales_target']      = df['sales_target'].fillna(0)
+        df['total_sales']       = df['total_sales'].fillna(0)
+        df['total_outstanding'] = df['total_outstanding'].fillna(0)
+        return df
+
+    # ── Chart ─────────────────────────────────────────────────────────────────
+    def _create_chart(self, parent_frame, data_df):
+        if self.sales_target_chart_canvas:
+            try: self.sales_target_chart_canvas.get_tk_widget().destroy()
+            except Exception: pass
+        for w in parent_frame.winfo_children():
+            w.destroy()
+
+        EXCLUDE = self.EXCLUDE_KEYS
+        MERGE   = self.PERSON_MERGE
+
+        df2 = data_df[~data_df['sale_key'].isin(EXCLUDE)].copy()
+        if df2.empty:
+            CTkLabel(parent_frame, text="ไม่พบข้อมูลพนักงานขาย",
+                     font=self._font_hdr).pack(expand=True)
+            return
+
+        df2['_group']     = df2.apply(lambda r: MERGE[r['sale_key']][0] if r['sale_key'] in MERGE else r['sale_name'], axis=1)
+        df2['_seg_label'] = df2.apply(lambda r: MERGE[r['sale_key']][1] if r['sale_key'] in MERGE else r['sale_name'], axis=1)
+
+        people_data = []
+        for name, grp in df2.groupby('_group', sort=False):
+            subs = [{'sale_key': r['sale_key'], 'label': r['_seg_label'],
+                     'sales': float(r['total_sales'])} for _, r in grp.iterrows()]
+            subs.sort(key=lambda s: s['sales'], reverse=True)
+            people_data.append({
+                'name':              name,
+                'total_sales':       float(grp['total_sales'].sum()),
+                'total_outstanding': float(grp['total_outstanding'].sum()),
+                'target':            float(grp['sales_target'].sum()),
+                'sub_items':         subs,
+            })
+        people_data.sort(key=lambda p: p['total_sales'], reverse=True)
+        people_data = [p for p in people_data if p['total_sales'] > 0 or p['target'] > 0]
+
+        n       = len(people_data)
+        names   = [p['name']        for p in people_data]
+        sales   = [p['total_sales'] for p in people_data]
+        targets = [p['target']      for p in people_data]
+
+        ACHIEVE_COLORS = {
+            'green':  ('#22C55E', '#86EFAC'),
+            'yellow': ('#F59E0B', '#FCD34D'),
+            'red':    ('#EF4444', '#FCA5A5'),
+            'gray':   ('#94A3B8', '#CBD5E1'),
+        }
+        def achievement_key(s, t):
+            if t <= 0: return 'gray'
+            return 'green' if s/t >= 1.0 else ('yellow' if s/t >= 0.7 else 'red')
+
+        pct_labels = [f"{s/t*100:.0f}%" if t > 0 else "N/A" for s, t in zip(sales, targets)]
+
+        BG = '#F8FAFC'; GRID_C = '#E2E8F0'
+        chart_width = max(10, n * 1.6)
+        fig = Figure(figsize=(chart_width, 7.2), dpi=100, facecolor=BG)
+        ax  = fig.add_subplot(111)
+        ax.set_facecolor(BG)
+
+        x     = np.arange(n)
+        width = 0.65
+        max_t = max(targets or [1])
+
+        # แท่งพื้นหลัง (ส่วนที่ยังไม่ถึงเป้า)
+        for i, p in enumerate(people_data):
+            gap = max(0.0, p['target'] - p['total_sales'])
+            if gap > 0:
+                ax.bar(x[i], gap, width, bottom=p['total_sales'],
+                       color='#E2E8F0', zorder=2, linewidth=0)
+
+        # แท่งยอดขาย (stacked)
+        for i, p in enumerate(people_data):
+            total_s = p['total_sales']; target = p['target']
+            akey = achievement_key(total_s, target)
+            colors = ACHIEVE_COLORS[akey]
+            subs   = p['sub_items']
+            multi_id = len([s for s in subs if s['sales'] > 0]) > 1
+            bottom = 0.0
+            for idx, sub in enumerate(subs):
+                seg_h = sub['sales']
+                if seg_h <= 0: continue
+                color = colors[min(idx, 1)]
+                is_partner = (idx > 0)
+                ax.bar(x[i], seg_h, width, bottom=bottom, color=color, zorder=3,
+                       linewidth=0.8 if is_partner else 0,
+                       edgecolor='white' if is_partner else 'none',
+                       hatch='//' if is_partner else None, alpha=0.92)
+                mid_y = bottom + seg_h / 2
+                seg_top = bottom + seg_h; t_line = p['target']
+                if t_line > 0 and bottom < t_line < seg_top:
+                    mid_y = (bottom + (t_line - bottom)/2) if (t_line - bottom) >= seg_h*0.35 else (t_line + (seg_top - t_line)/2)
+                txt_color   = '#1a5c1a' if is_partner else 'white'
+                stroke_color = 'white' if txt_color != 'white' else '#00000066'
+                fx = [pe.withStroke(linewidth=3, foreground=stroke_color)]
+                if multi_id:
+                    if seg_h > max_t * 0.10:
+                        ax.text(x[i], mid_y, f"{sub['label']}\n{seg_h:,.0f}",
+                                ha='center', va='center', fontsize=14, weight='medium',
+                                color=txt_color, zorder=7, linespacing=1.4, path_effects=fx)
+                    elif seg_h > max_t * 0.04:
+                        ax.text(x[i], mid_y, f"{seg_h:,.0f}",
+                                ha='center', va='center', fontsize=13, weight='medium',
+                                color=txt_color, zorder=7, path_effects=fx)
+                else:
+                    if seg_h > max_t * 0.06:
+                        ax.text(x[i], mid_y, f"{seg_h:,.0f}",
+                                ha='center', va='center', fontsize=14, weight='medium',
+                                color=txt_color, zorder=7, path_effects=fx)
+                bottom += seg_h
+
+        # เส้น target
+        half = width / 2
+        for i, t in enumerate(targets):
+            if t > 0:
+                ax.hlines(t, x[i]-half, x[i]+half, colors='#6366F1', linewidths=2.2, linestyles='--', zorder=5)
+                ax.text(x[i], t + max_t*0.012, f"Target  {t:,.0f}",
+                        ha='center', va='bottom', fontsize=9.5, weight='bold', color='#6366F1', zorder=6)
+
+        # % badge
+        for i, (p, pct) in enumerate(zip(people_data, pct_labels)):
+            s = p['total_sales']; t = p['target']
+            if s == 0 and t > 0:
+                ax.text(x[i], t*0.5, "ยังไม่มี\nข้อมูล SO",
+                        ha='center', va='center', fontsize=11, weight='bold',
+                        color='#94A3B8', zorder=8, style='italic', linespacing=1.4)
+            else:
+                pct_y = max(s, t) + max_t * 0.16
+                ax.text(x[i], pct_y, pct, ha='center', va='bottom', fontsize=16,
+                        weight='medium', color='black', zorder=8,
+                        path_effects=[pe.withStroke(linewidth=2, foreground='white')])
+                if s <= max_t * 0.08:
+                    ax.text(x[i], s + max_t*0.012, f"{s:,.0f}",
+                            ha='center', va='bottom', fontsize=12, weight='bold', color='black', zorder=7)
+
+        # Axes
+        max_sales = max((p['total_sales'] for p in people_data), default=0)
+        ax.set_ylim(0, max(max_sales, max_t) + max_t * 0.55)
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}'))
+        ax.tick_params(axis='y', labelsize=13); ax.tick_params(axis='x', pad=8)
+
+        def _fmt_name(nm, tgt):
+            short = nm.replace(' / ', '\n').replace(' ', '\n', 1)
+            return f"{short}\nเป้า {tgt:,.0f}" if tgt > 0 else short
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([_fmt_name(nm, tgt) for nm, tgt in zip(names, targets)],
+                           rotation=0, ha='center', fontsize=10, weight='medium',
+                           color='black', linespacing=1.35)
+        ax.set_ylabel('จำนวนเงิน (บาท)', fontsize=12, weight='medium', color='black', labelpad=10)
+
+        team_sales  = sum(p['total_sales'] for p in people_data)
+        team_target = sum(p['target']      for p in people_data)
+        team_pct    = (team_sales / team_target * 100) if team_target > 0 else 0
+        n_hit  = sum(1 for p in people_data if p['target'] > 0 and p['total_sales'] >= p['target'])
+        n_miss = sum(1 for p in people_data if p['target'] > 0 and p['total_sales'] < p['target'])
+        summary = (f"ทีมรวม  {team_sales:,.0f} / {team_target:,.0f} บาท  ({team_pct:.0f}%)     "
+                   f"ถึงเป้า {n_hit} คน  ·  ยังไม่ถึง {n_miss} คน")
+        ax.set_title('ยอดขาย vs เป้าหมาย  (เฉพาะ SO ที่คิดค่าคอมแล้ว)',
+                     fontsize=16, weight='semibold', color='#0F172A', loc='left', pad=36)
+        ax.text(0, 1.015, summary, transform=ax.transAxes,
+                fontsize=10.5, color='#64748B', ha='left', va='bottom', weight='medium')
+
+        ax.yaxis.grid(True, color=GRID_C, linewidth=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color(GRID_C); ax.spines['bottom'].set_color(GRID_C)
+        ax.tick_params(colors='black')
+
+        from matplotlib.patches import Patch
+        from matplotlib.lines   import Line2D
+        has_multi = any(len(p['sub_items']) > 1 for p in people_data)
+        legend_items = [
+            Patch(facecolor='#22C55E', label='≥ 100% เป้า'),
+            Patch(facecolor='#F59E0B', label='70–99% เป้า'),
+            Patch(facecolor='#EF4444', label='< 70% เป้า'),
+            Line2D([0],[0], color='#6366F1', lw=2, linestyle='--', label='เป้าหมาย'),
+            Patch(facecolor='#E2E8F0', edgecolor='#CBD5E1', label='ส่วนที่ยังไม่ถึงเป้า'),
+        ]
+        if has_multi:
+            legend_items.append(Patch(facecolor='#86EFAC', label='ยอดขายของพาร์ทเนอร์'))
+        ax.legend(handles=legend_items, loc='upper right', bbox_to_anchor=(1.0, 1.0),
+                  ncol=2, frameon=True, framealpha=0.95, edgecolor='#CBD5E1', fontsize=10,
+                  prop={'weight': 'bold', 'size': 10}, borderpad=0.7, labelspacing=0.4, columnspacing=1.0)
+
+        fig.tight_layout(rect=[0, 0.05, 1, 1])
+        canvas = FigureCanvasTkAgg(fig, master=parent_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.sales_target_chart_canvas = canvas
+
+    # ── Table ─────────────────────────────────────────────────────────────────
+    def _create_table(self, parent_frame, data_df):
+        for w in parent_frame.winfo_children():
+            w.destroy()
+        if data_df.empty:
+            CTkLabel(parent_frame, text="ไม่พบข้อมูล", font=self._font_hdr).pack(expand=True)
+            return
+
+        EXCLUDE = self.EXCLUDE_KEYS; MERGE = self.PERSON_MERGE
+        df2 = data_df[~data_df['sale_key'].isin(EXCLUDE)].copy()
+        df2['_group'] = df2.apply(
+            lambda r: MERGE[r['sale_key']][0] if r['sale_key'] in MERGE else r['sale_name'], axis=1)
+        rows = []
+        for name, grp in df2.groupby('_group', sort=False):
+            t = float(grp['sales_target'].sum()); s = float(grp['total_sales'].sum())
+            pct = (s/t*100) if t > 0 else 0.0
+            rows.append({'name': name, 'target': t, 'sales': s, 'pct': pct, 'diff': s-t})
+        rows.sort(key=lambda r: r['sales'], reverse=True)
+
+        total_t = sum(r['target'] for r in rows); total_s = sum(r['sales'] for r in rows)
+        total_pct = (total_s/total_t*100) if total_t > 0 else 0.0
+
+        # Period label
+        try:
+            s_m = self.THAI_MONTHS.index(self.start_m_var.get()) + 1
+            e_m = self.THAI_MONTHS.index(self.end_m_var.get())   + 1
+            s_y = int(self.start_y_var.get()); e_y = int(self.end_y_var.get())
+            period_label = f"{self.start_m_var.get()} {s_y}" if (s_m == e_m and s_y == e_y) else \
+                           f"{self.start_m_var.get()} {s_y} – {self.end_m_var.get()} {e_y}"
+        except Exception:
+            period_label = "รอบที่เลือก"
+
+        outer = CTkScrollableFrame(parent_frame, fg_color="white", corner_radius=10)
+        outer.pack(fill="both", expand=True, padx=10, pady=10)
+        CTkLabel(outer, text=f"สรุปยอดขาย vs เป้าหมาย  —  {period_label}",
+                 font=CTkFont(size=15, weight="bold"), text_color="#0F172A"
+                 ).pack(anchor="w", padx=16, pady=(12, 8))
+
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("SMSalesTable.Treeview", background="white", foreground="#1E293B",
+                        rowheight=34, fieldbackground="white", font=('TH Sarabun New', 13))
+        style.configure("SMSalesTable.Treeview.Heading", background="#D1FAE5", foreground="#065F46",
+                        font=('TH Sarabun New', 13, 'bold'), relief="flat")
+        style.map("SMSalesTable.Treeview", background=[('selected', '#EDE9FE')],
+                  foreground=[('selected', '#1E293B')])
+
+        cols = ('name','target','sales','pct','diff')
+        tree = ttk.Treeview(outer, columns=cols, show='headings',
+                            style="SMSalesTable.Treeview", height=len(rows)+1)
+        tree.heading('name',   text='พนักงาน');       tree.column('name',   width=200, anchor='w')
+        tree.heading('target', text='เป้าหมาย (บาท)'); tree.column('target', width=170, anchor='e')
+        tree.heading('sales',  text='ยอดขายจริง (บาท)'); tree.column('sales', width=170, anchor='e')
+        tree.heading('pct',    text='%');              tree.column('pct',    width=90,  anchor='center')
+        tree.heading('diff',   text='ส่วนต่าง (บาท)'); tree.column('diff',   width=170, anchor='e')
+
+        tree.tag_configure('odd',      background='#F8FAFC')
+        tree.tag_configure('even',     background='white')
+        tree.tag_configure('negative', foreground='#DC2626')
+        tree.tag_configure('positive', foreground='#16A34A')
+        tree.tag_configure('total',    background='#EFF6FF',
+                           font=('TH Sarabun New', 13, 'bold'), foreground='#1D4ED8')
+
+        for idx, r in enumerate(rows):
+            diff_str = f"+{r['diff']:,.0f}" if r['diff'] >= 0 else f"{r['diff']:,.0f}"
+            tree.insert('', 'end', tags=('odd' if idx % 2 else 'even',
+                                         'positive' if r['diff'] >= 0 else 'negative'),
+                        values=(r['name'],
+                                f"{r['target']:,.0f}" if r['target'] > 0 else '—',
+                                f"{r['sales']:,.0f}",
+                                f"{r['pct']:.1f}%",
+                                diff_str if r['target'] > 0 else '—'))
+
+        total_diff = total_s - total_t
+        tree.insert('', 'end', tags=('total',),
+                    values=('รวมทีม', f"{total_t:,.0f}", f"{total_s:,.0f}",
+                            f"{total_pct:.1f}%",
+                            f"+{total_diff:,.0f}" if total_diff >= 0 else f"{total_diff:,.0f}"))
+        tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
 
 class ToastNotification(CTkToplevel):
     """หน้าต่างแจ้งเตือนมุมขวาล่าง เด้งโชว์แล้วหายไปเอง (ไม่บล็อกการทำงาน)"""
@@ -121,14 +616,16 @@ class SalesManagerScreen(CTkFrame):
         self.daily_report_tab = self.tab_view.add("📅 รายงานประจำวัน (SO Report)")
         self.master_tab = self.tab_view.add("🛠️ ค้นหาและจัดการ (Master)")
         self.cancelled_tab = self.tab_view.add("❌ ยกเลิก SO (Cancel)")
+        self.target_tab = self.tab_view.add("📊 เป้าการขาย")
 
         # สร้างเนื้อหาในแต่ละ Tab
         self._create_approval_tab(self.approval_tab)
         self._create_defer_approval_tab(self.defer_approval_tab)
-        self._create_daily_report_widget(self.daily_report_tab) 
-        self._create_master_tab(self.master_tab)           
-        self._create_cancelled_so_tab(self.cancelled_tab) 
-        
+        self._create_daily_report_widget(self.daily_report_tab)
+        self._create_master_tab(self.master_tab)
+        self._create_cancelled_so_tab(self.cancelled_tab)
+        self._create_sales_target_tab(self.target_tab)
+
         # ตั้งค่าหน้าแรกที่เปิดขึ้นมา
         self.tab_view.set("🗳️ รายการรออนุมัติ (SM Approval)")
 
@@ -143,6 +640,17 @@ class SalesManagerScreen(CTkFrame):
         # ดักจับตอนปิดหน้าจอให้หยุด Noti ด้วย
         self.bind("<Destroy>", self._on_destroy)
     
+    def _create_sales_target_tab(self, parent_tab):
+        """Embed SalesTargetWidget ใน tab เป้าการขาย"""
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(0, weight=1)
+        widget = SalesTargetWidget(
+            master=parent_tab,
+            app_container=self.app_container,
+            fg_color="transparent"
+        )
+        widget.grid(row=0, column=0, sticky="nsew")
+
     def _create_cancelled_so_tab(self, parent_tab):
         # --- Grid Setup: แบ่งหน้าจอเป็น 2 ส่วน (บน-เล็ก / ล่าง-ใหญ่) ---
         parent_tab.grid_columnconfigure(0, weight=1)
@@ -573,55 +1081,266 @@ class SalesManagerScreen(CTkFrame):
             print(traceback.format_exc())
 
     def _load_approval_data(self):
-        """ดึงรายการรออนุมัติ พร้อมระบบค้นหา"""
-        for widget in self.approval_results_frame.winfo_children(): 
+        """ดึงรายการรออนุมัติ + คำขอแก้ไขรอบเดือนค่าคอม รวมในแท็บเดียวกัน"""
+        for widget in self.approval_results_frame.winfo_children():
             widget.destroy()
-        
+
         search_txt = self.approval_search_var.get().strip().upper()
-        
+
+        # ── ส่วนที่ 1: SO รออนุมัติปกติ ─────────────────────────────
         try:
-            # Base Query
             query = """
-                SELECT c.id, c.so_number, c.customer_name, c.sale_key, c.status, u.sale_name, c.sales_service_amount
+                SELECT c.id, c.so_number, c.customer_name, c.sale_key, c.status,
+                       u.sale_name, c.sales_service_amount,
+                       c.bill_date, c.delivery_date, c.shipping_cost,
+                       c.commission_month, c.commission_year
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
                 WHERE c.status = 'Pending Sale Manager Approval' AND c.is_active = 1
             """
             params = []
-
-            # ✅ ถ้ามีการพิมพ์ค้นหา ให้เพิ่มเงื่อนไข SQL
             if search_txt:
                 term = search_txt.replace("SO", "")
                 query += " AND (c.so_number ILIKE %s OR c.customer_name ILIKE %s)"
                 params.extend([f"%{term}%", f"%{term}%"])
-
             query += " ORDER BY c.timestamp ASC"
-            
+
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
 
             if df.empty:
-                # Empty State
                 empty_frame = CTkFrame(self.approval_results_frame, fg_color="transparent")
-                empty_frame.pack(expand=True, pady=50)
-                
+                empty_frame.pack(pady=30)
                 icon = "✅" if not search_txt else "🔍"
-                CTkLabel(empty_frame, text=icon, font=CTkFont(size=48)).pack(pady=(0, 10))
-                
+                CTkLabel(empty_frame, text=icon, font=CTkFont(size=40)).pack(pady=(0, 6))
                 msg = "ไม่มีรายการรออนุมัติในขณะนี้" if not search_txt else "ไม่พบรายการที่ตรงกับคำค้นหา"
                 CTkLabel(empty_frame, text=msg,
-                        font=CTkFont(size=14),
-                        text_color="#6B7280").pack()
-                return
+                         font=CTkFont(size=14), text_color="#6B7280").pack()
+            else:
+                for _, row in df.iterrows():
+                    self._create_so_card(self.approval_results_frame, row.to_dict(), is_approval_mode=True)
 
-            for _, row in df.iterrows():
-                self._create_so_card(self.approval_results_frame, row.to_dict(), is_approval_mode=True)
-                
         except Exception as e:
             print(f"Load Approval Error: {e}")
             CTkLabel(self.approval_results_frame,
-                    text=f"⚠️ เกิดข้อผิดพลาด: {str(e)[:100]}",
-                    font=CTkFont(size=12),
-                    text_color="#DC2626").pack(pady=20)
+                     text=f"⚠️ เกิดข้อผิดพลาด: {str(e)[:100]}",
+                     font=CTkFont(size=12), text_color="#DC2626").pack(pady=20)
+
+        # ── ส่วนที่ 2: คำขอแก้ไขรอบเดือนค่าคอม (Sale Edit Requests) ────
+        try:
+            edit_query = """
+                SELECT ser.id, ser.commission_id, ser.so_number,
+                       ser.sale_key, ser.sale_name,
+                       ser.current_commission_month, ser.current_commission_year,
+                       ser.requested_commission_month, ser.requested_commission_year,
+                       ser.request_reason, ser.requested_at
+                FROM so_edit_requests ser
+                WHERE ser.status = 'pending'
+            """
+            edit_params = []
+            if search_txt:
+                term = search_txt.replace("SO", "")
+                edit_query += " AND ser.so_number ILIKE %s"
+                edit_params.append(f"%{term}%")
+            edit_query += " ORDER BY ser.requested_at ASC"
+
+            df_edit = pd.read_sql_query(edit_query, self.pg_engine,
+                                        params=tuple(edit_params))
+
+            if not df_edit.empty:
+                # Section header
+                sep = CTkFrame(self.approval_results_frame,
+                               fg_color="#FFF7ED", corner_radius=6,
+                               border_width=1, border_color="#FED7AA")
+                sep.pack(fill="x", padx=8, pady=(14, 4))
+                CTkLabel(sep,
+                         text="✏️  คำขอแก้ไขรอบเดือนค่าคอม  (Sale Edit Requests)",
+                         font=CTkFont(size=13, weight="bold"),
+                         text_color="#C2410C").pack(anchor="w", padx=14, pady=6)
+
+                for _, row in df_edit.iterrows():
+                    self._create_so_edit_card(self.approval_results_frame, row)
+
+        except Exception as e:
+            print(f"Load SO Edit Requests Error: {e}")
+
+    # =========================================================================
+    # TAB: SO EDIT APPROVAL — อนุมัติ/ปฏิเสธ คำขอเปลี่ยนรอบเดือนค่าคอมจาก Sale
+    # =========================================================================
+
+    THAI_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                   "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+
+    def _create_so_edit_approval_tab(self, parent_tab):
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1)
+
+        header = CTkFrame(parent_tab, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=15, pady=10)
+        CTkLabel(header, text="✏️ คำขอแก้ไขรอบเดือนค่าคอมจาก Sale",
+                 font=CTkFont(size=16, weight="bold")).pack(side="left")
+        CTkButton(header, text="⟳ รีเฟรช", command=self._load_so_edit_requests,
+                  width=90, fg_color="gray").pack(side="right")
+
+        self.so_edit_req_frame = CTkScrollableFrame(parent_tab, fg_color="white", corner_radius=8)
+        self.so_edit_req_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
+        self.after(200, self._load_so_edit_requests)
+
+    def _load_so_edit_requests(self):
+        for w in self.so_edit_req_frame.winfo_children():
+            w.destroy()
+
+        try:
+            query = """
+                SELECT ser.id, ser.commission_id, ser.so_number,
+                       ser.sale_key, ser.sale_name,
+                       ser.current_commission_month, ser.current_commission_year,
+                       ser.requested_commission_month, ser.requested_commission_year,
+                       ser.request_reason, ser.requested_at
+                FROM so_edit_requests ser
+                WHERE ser.status = 'pending'
+                ORDER BY ser.requested_at DESC
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+        except Exception as e:
+            CTkLabel(self.so_edit_req_frame, text=f"❌ โหลดข้อมูลไม่ได้: {e}",
+                     text_color="red", font=CTkFont(size=13)).pack(pady=30)
+            return
+
+        if df.empty:
+            CTkLabel(self.so_edit_req_frame,
+                     text="✅ ไม่มีคำขอแก้ไขรอบเดือนค่าคอมที่รอการอนุมัติ",
+                     font=CTkFont(size=14)).pack(pady=40)
+            return
+
+        for _, row in df.iterrows():
+            self._render_so_edit_card(row)
+
+    def _render_so_edit_card(self, row):
+        card = CTkFrame(self.so_edit_req_frame, fg_color="#FFF7ED",
+                        border_width=1, border_color="#FED7AA", corner_radius=8)
+        card.pack(fill="x", padx=10, pady=5)
+
+        info = CTkFrame(card, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, padx=15, pady=10)
+
+        CTkLabel(info, text=f"SO: {row['so_number']}  |  Sale: {row['sale_name']} ({row['sale_key']})",
+                 font=CTkFont(size=14, weight="bold")).pack(anchor="w")
+
+        try:
+            m_cur = int(row["current_commission_month"])
+            y_cur = int(row["current_commission_year"]) + 543
+            m_req = int(row["requested_commission_month"])
+            y_req = int(row["requested_commission_year"]) + 543
+            from_str = f"{self.THAI_MONTHS[m_cur-1]} {y_cur}"
+            to_str = f"{self.THAI_MONTHS[m_req-1]} {y_req}"
+        except Exception:
+            from_str, to_str = str(row["current_commission_month"]), str(row["requested_commission_month"])
+
+        CTkLabel(info,
+                 text=f"🔄 ขอเปลี่ยนจาก: {from_str}  ➔  เป็น: {to_str}",
+                 font=CTkFont(size=13, weight="bold"), text_color="#2563EB").pack(anchor="w", pady=(2, 0))
+        CTkLabel(info,
+                 text=f"💬 เหตุผล: {row.get('request_reason') or '-'}",
+                 font=CTkFont(size=13), text_color="#C2410C").pack(anchor="w")
+        try:
+            req_at = str(row["requested_at"])[:16]
+        except Exception:
+            req_at = ""
+        CTkLabel(info, text=f"🕐 ขอเมื่อ: {req_at}",
+                 font=CTkFont(size=12), text_color="gray").pack(anchor="w")
+
+        btn_f = CTkFrame(card, fg_color="transparent")
+        btn_f.pack(side="right", padx=15, pady=10)
+
+        CTkButton(btn_f, text="✅ อนุมัติ",
+                  fg_color="#16A34A", hover_color="#15803D", width=100,
+                  command=lambda r=row: self._decide_so_edit(r, approve=True)).pack(side="left", padx=5)
+        CTkButton(btn_f, text="❌ ปฏิเสธ",
+                  fg_color="#DC2626", hover_color="#B91C1C", width=100,
+                  command=lambda r=row: self._decide_so_edit(r, approve=False)).pack(side="left", padx=5)
+
+    def _decide_so_edit(self, row, approve):
+        action_word = "อนุมัติ" if approve else "ปฏิเสธ"
+        try:
+            m_req = int(row["requested_commission_month"])
+            y_req = int(row["requested_commission_year"]) + 543
+            to_str = f"{self.THAI_MONTHS[m_req-1]} {y_req}"
+        except Exception:
+            to_str = str(row.get("requested_commission_month"))
+
+        confirm_msg = (f"{action_word}การเปลี่ยนรอบค่าคอม\n"
+                       f"SO: {row['so_number']}\n"
+                       f"รอบใหม่: {to_str}")
+        if not messagebox.askyesno(f"{action_word}?", confirm_msg):
+            return
+
+        note = ""
+        if not approve:
+            from tkinter.simpledialog import askstring
+            note = askstring("หมายเหตุ", "ระบุเหตุผลที่ปฏิเสธ (ไม่บังคับ):", parent=self) or ""
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            reviewer = getattr(self.app_container, 'current_user_key', 'Manager')
+            with conn.cursor() as cur:
+                new_status = "approved" if approve else "rejected"
+                cur.execute("""
+                    UPDATE so_edit_requests
+                    SET status = %s, reviewed_by = %s, reviewed_at = NOW(), review_note = %s
+                    WHERE id = %s
+                """, (new_status, reviewer, note, int(row["id"])))
+
+                if approve:
+                    # อัปเดต commission_month/year ใน commissions ทันที
+                    cur.execute("""
+                        UPDATE commissions
+                        SET commission_month = %s, commission_year = %s
+                        WHERE id = %s
+                    """, (int(row["requested_commission_month"]),
+                          int(row["requested_commission_year"]),
+                          int(row["commission_id"])))
+
+                    # แจ้ง Sale ผ่าน notifications
+                    try:
+                        m_req = int(row["requested_commission_month"])
+                        y_req = int(row["requested_commission_year"]) + 543
+                        to_str_noti = f"{self.THAI_MONTHS[m_req-1]} {y_req}"
+                        msg_noti = (f"[SO_EDIT] ✅ SM อนุมัติเปลี่ยนรอบค่าคอม SO: {row['so_number']}\n"
+                                    f"📆 รอบใหม่: {to_str_noti}")
+                    except Exception:
+                        msg_noti = f"[SO_EDIT] ✅ อนุมัติเปลี่ยนรอบค่าคอม SO: {row['so_number']}"
+
+                    cur.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read)
+                        VALUES (%s, %s, FALSE)
+                    """, (row["sale_key"], msg_noti))
+                else:
+                    # แจ้ง Sale ว่าถูกปฏิเสธ
+                    msg_noti = (f"[SO_EDIT] ❌ SM ปฏิเสธคำขอเปลี่ยนรอบค่าคอม SO: {row['so_number']}\n"
+                                f"💬 เหตุผล: {note or '-'}")
+                    cur.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read)
+                        VALUES (%s, %s, FALSE)
+                    """, (row["sale_key"], msg_noti))
+
+            conn.commit()
+            self.app_container.release_connection(conn)
+            conn = None
+            messagebox.showinfo("สำเร็จ", f"{action_word}เรียบร้อยแล้ว")
+            # refresh ทั้ง approval tab (main) และ so_edit tab (ถ้ามี)
+            self._load_approval_data()
+            if hasattr(self, "so_edit_req_frame"):
+                self._load_so_edit_requests()
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                    self.app_container.release_connection(conn)
+                except Exception:
+                    pass
+            messagebox.showerror("ผิดพลาด", f"ไม่สำเร็จ: {e}")
 
     # =========================================================================
     # TAB 1: DAILY REPORT WIDGET
@@ -779,7 +1498,7 @@ class SalesManagerScreen(CTkFrame):
             CTkButton(btn_frame, text="✅ อนุมัติ", width=85, height=32,
                       fg_color="#16A34A", hover_color="#15803D",
                       font=CTkFont(size=12, weight="bold"),
-                      command=lambda: self._approve_so(so_id, so_number)).pack(side="left", padx=3)
+                      command=lambda d=so_data: self._approve_so(d["id"], d["so_number"], d)).pack(side="left", padx=3)
 
         CTkButton(btn_frame, text="🛠️ แก้ไข", width=80, height=32,
                   fg_color="#4F46E5", hover_color="#4338CA",
@@ -792,9 +1511,11 @@ class SalesManagerScreen(CTkFrame):
                       font=CTkFont(size=12, weight="bold"),
                       command=lambda: self._reject_so(so_id, so_number)).pack(side="left", padx=3)
 
-    # ✅ ฟังก์ชันอนุมัติ SO
-    def _approve_so(self, so_id, so_number):
-        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการอนุมัติ SO: {so_number} ใช่หรือไม่?"):
+    # ✅ ฟังก์ชันอนุมัติ SO — เปิด dialog รายละเอียดก่อนยืนยัน
+    def _approve_so(self, so_id, so_number, so_data=None):
+        dlg = SMApproveConfirmDialog(self, so_data or {"so_number": so_number, "id": so_id})
+        self.wait_window(dlg)
+        if not dlg.confirmed:
             return
 
         conn = None
@@ -802,17 +1523,17 @@ class SalesManagerScreen(CTkFrame):
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    UPDATE commissions 
-                    SET status = 'Pending PU', 
-                        approver_sale_manager_key = %s, 
+                    UPDATE commissions
+                    SET status = 'Pending PU',
+                        approver_sale_manager_key = %s,
                         approval_date_sale_manager = CURRENT_TIMESTAMP,
                         claim_timestamp = NULL
                     WHERE id = %s
                 """, (self.user_key, so_id))
-                
+
                 cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Staff' AND status = 'Active'")
                 pu_keys = [row[0] for row in cursor.fetchall()]
-                
+
                 for pu_key in pu_keys:
                     cursor.execute("""
                         INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
@@ -822,12 +1543,50 @@ class SalesManagerScreen(CTkFrame):
             conn.commit()
             messagebox.showinfo("สำเร็จ", f"อนุมัติ SO: {so_number} เรียบร้อยแล้ว")
             self._refresh_all_tabs()
-            
+
         except Exception as e:
             if conn: conn.rollback()
             messagebox.showerror("Error", f"Approve Failed: {e}")
         finally:
             if conn: self.app_container.release_connection(conn)
+
+    # ── SO Edit card (ยุบรวมในแท็บ Approval) ──────────────────────
+    def _create_so_edit_card(self, parent, row):
+        _tm = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+               "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+
+        card = CTkFrame(parent, fg_color="#FFF7ED",
+                        border_width=1, border_color="#FED7AA", corner_radius=8)
+        card.pack(fill="x", padx=8, pady=4)
+
+        info = CTkFrame(card, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, padx=15, pady=10)
+
+        CTkLabel(info,
+                 text=f"📋 SO: {row['so_number']}  |  👤 Sale: {row['sale_name']} ({row['sale_key']})",
+                 font=CTkFont(size=13, weight="bold")).pack(anchor="w")
+
+        try:
+            m_c = int(row["current_commission_month"]); y_c = int(row["current_commission_year"]) + 543
+            m_r = int(row["requested_commission_month"]); y_r = int(row["requested_commission_year"]) + 543
+            from_s = f"{_tm[m_c-1]} {y_c}"; to_s = f"{_tm[m_r-1]} {y_r}"
+        except Exception:
+            from_s, to_s = str(row["current_commission_month"]), str(row["requested_commission_month"])
+
+        CTkLabel(info, text=f"🔄 ขอเปลี่ยนรอบค่าคอม: {from_s}  ➔  {to_s}",
+                 font=CTkFont(size=12, weight="bold"), text_color="#2563EB").pack(anchor="w", pady=(2, 0))
+        CTkLabel(info, text=f"💬 เหตุผล: {row.get('request_reason') or '-'}",
+                 font=CTkFont(size=12), text_color="#C2410C").pack(anchor="w")
+
+        btn_f = CTkFrame(card, fg_color="transparent")
+        btn_f.pack(side="right", padx=12, pady=10)
+
+        CTkButton(btn_f, text="✅ อนุมัติ", fg_color="#16A34A", hover_color="#15803D",
+                  width=90, height=32,
+                  command=lambda r=row: self._decide_so_edit(r, approve=True)).pack(side="left", padx=4)
+        CTkButton(btn_f, text="❌ ปฏิเสธ", fg_color="#DC2626", hover_color="#B91C1C",
+                  width=90, height=32,
+                  command=lambda r=row: self._decide_so_edit(r, approve=False)).pack(side="left", padx=4)
 
     def _reject_so(self, so_id, so_number):
         """เปิดหน้าต่างเลือกเหตุผลการตีกลับ"""
@@ -1690,4 +2449,112 @@ class SMNotificationDialog(CTkToplevel):
             print(f"SMNotificationDialog: ไม่สามารถอัปเดต is_read: {e}")
             # ถ้า UPDATE ล้มเหลว ก็ยังปิด dialog ได้
         self.grab_release()
+
+
+# =============================================================================
+# ✅ SM Approval Confirm Dialog — popup รายละเอียดก่อนอนุมัติ SO
+# =============================================================================
+
+class SMApproveConfirmDialog(CTkToplevel):
+    """Popup รายละเอียดครบก่อนกด อนุมัติ SO"""
+
+    THAI_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                   "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+
+    def __init__(self, master, so_data: dict):
+        super().__init__(master)
+        self.so_data = so_data
+        self.confirmed = False
+
+        self.title("ยืนยันการอนุมัติ SO")
+        self.resizable(False, False)
+        self.grab_set()
+        self.focus()
+        self._build()
+        self.update_idletasks()
+        w, h = self.winfo_width(), self.winfo_height()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"+{(sw-w)//2}+{(sh-h)//2}")
+
+    def _build(self):
+        d = self.so_data
+        pad = {"padx": 24, "pady": 5}
+
+        # ── Header ──────────────────────────────────────────────
+        hdr = CTkFrame(self, fg_color="#1D4ED8", corner_radius=0)
+        hdr.pack(fill="x")
+        CTkLabel(hdr, text="🗳️  ยืนยันการอนุมัติ SO",
+                 font=CTkFont(size=16, weight="bold"),
+                 text_color="white").pack(anchor="w", padx=20, pady=12)
+
+        # ── Body ────────────────────────────────────────────────
+        body = CTkFrame(self, fg_color="white", corner_radius=0)
+        body.pack(fill="both", expand=True)
+
+        def row(label, value, value_color="#111827"):
+            f = CTkFrame(body, fg_color="transparent")
+            f.pack(fill="x", padx=24, pady=4)
+            CTkLabel(f, text=label, font=CTkFont(size=13),
+                     text_color="#6B7280", width=150, anchor="w").pack(side="left")
+            CTkLabel(f, text=str(value), font=CTkFont(size=13, weight="bold"),
+                     text_color=value_color, anchor="w").pack(side="left")
+
+        CTkFrame(body, height=1, fg_color="#E5E7EB").pack(fill="x", padx=24, pady=(14, 8))
+
+        row("เลข SO :", d.get("so_number", "-"))
+        row("ลูกค้า :", d.get("customer_name", "-"))
+        row("เซลล์ :", f"{d.get('sale_name', '-')}  ({d.get('sale_key', '-')})")
+
+        # ยอดขาย
+        try:
+            amt = float(d.get("sales_service_amount") or 0)
+            row("ยอดขาย :", f"{amt:,.2f}  บาท", "#1D4ED8")
+        except Exception:
+            row("ยอดขาย :", str(d.get("sales_service_amount", "-")))
+
+        # ค่าจัดส่ง
+        try:
+            sc = float(d.get("shipping_cost") or 0)
+            row("ค่าจัดส่ง :", f"{sc:,.2f}  บาท")
+        except Exception:
+            pass
+
+        # วันที่บิล
+        row("วันที่บิล :", d.get("bill_date", "-"))
+        # วันที่จัดส่ง
+        row("วันที่จัดส่ง :", d.get("delivery_date", "-"))
+
+        # รอบเดือนค่าคอม
+        try:
+            m = int(d.get("commission_month") or 0)
+            y = int(d.get("commission_year") or 0) + 543
+            com_str = f"{self.THAI_MONTHS[m-1]}  {y}"
+        except Exception:
+            com_str = f"{d.get('commission_month', '-')} / {d.get('commission_year', '-')}"
+        row("รอบค่าคอม :", com_str, "#7C3AED")
+
+        CTkFrame(body, height=1, fg_color="#E5E7EB").pack(fill="x", padx=24, pady=(10, 6))
+
+        # คำเตือน
+        CTkLabel(body,
+                 text="⚠️  เมื่ออนุมัติแล้ว SO จะเข้าสู่ขั้นตอน PU ต่อไป",
+                 font=CTkFont(size=12), text_color="#D97706").pack(padx=24, pady=(0, 14))
+
+        # ── Buttons ─────────────────────────────────────────────
+        btn_row = CTkFrame(self, fg_color=("gray95", "gray15"), corner_radius=0)
+        btn_row.pack(fill="x")
+
+        CTkButton(btn_row, text="✅  ยืนยันอนุมัติ",
+                  fg_color="#16A34A", hover_color="#15803D",
+                  font=CTkFont(size=14, weight="bold"), height=42, width=160,
+                  command=self._confirm).pack(side="left", padx=20, pady=12)
+
+        CTkButton(btn_row, text="ยกเลิก",
+                  fg_color="gray", hover_color="#555555",
+                  font=CTkFont(size=14), height=42, width=100,
+                  command=self.destroy).pack(side="left", padx=(0, 20), pady=12)
+
+    def _confirm(self):
+        self.confirmed = True
+        self.destroy()
         self.destroy()
