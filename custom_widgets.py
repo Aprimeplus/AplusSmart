@@ -268,9 +268,6 @@ class AutoCompleteEntry(ctk.CTkEntry):
     def _hide_popup(self, event=None):
         if self.popup:
             self.after(100, lambda: self.popup.withdraw() if self.popup and self.popup.winfo_exists() else None)
-        # คืน focus กลับให้ entry (หรือ toplevel) หลัง popup ปิด
-        try: self.focus_set()
-        except Exception: pass
 
     def _reposition_popup(self, event=None):
         if self.popup and self.popup.winfo_viewable():

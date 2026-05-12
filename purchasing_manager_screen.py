@@ -363,6 +363,7 @@ class PurchasingManagerScreen(CTkFrame):
         self.super_supplier_frame = SuperSupplierTab(
             master=self.ssl_tab,
             app_container=self.app_container,
+            current_user=self.user_key or "USER_DEMO",
         )
         self.super_supplier_frame.grid(row=0, column=0, sticky="nsew")
         # --- END ---
