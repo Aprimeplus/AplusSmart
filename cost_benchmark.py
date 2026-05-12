@@ -5017,83 +5017,74 @@ class CostBenchmarkScreen(CTkFrame):
 
     # ================================================================== #
 
-    def _on_paste_event(self, event=None, is_frozen=False):
-        """extra_binding 'paste' — ยิงหลัง right-click paste เสร็จ (รู้ row ที่แน่นอน)"""
+    def _extract_rows_from_event(self, event, is_frozen=False) -> set:
+        """Helper: ดึง row indices ที่ได้รับผลกระทบจาก event payload ของ tksheet"""
+        rows = set()
+        sheet = self.sheet_frozen if is_frozen else self.sheet
+
+        # 1) อ่านจาก event payload โดยตรง (tksheet ส่งมาเป็น list หรือ dict)
+        if event is not None:
+            try:
+                for item in event:
+                    if isinstance(item, (list, tuple)) and len(item) >= 1:
+                        rows.add(int(item[0]))
+            except TypeError:
+                if isinstance(event, dict):
+                    for key in ("cells after", "cells", "rows"):
+                        val = event.get(key)
+                        if val:
+                            try:
+                                for item in val:
+                                    rows.add(int(item[0]) if isinstance(item, (list, tuple)) else int(item))
+                            except Exception:
+                                pass
+
+        # 2) Fallback — ดึงจาก selection ปัจจุบัน (ครอบคลุมกรณี drag-select)
         try:
-            rows = set()
-            # tksheet ส่ง event เป็น sequence ของ (row, col, old, new) หรือ dict
-            if event is not None:
-                try:
-                    for item in event:
-                        if isinstance(item, (list, tuple)) and len(item) >= 1:
-                            rows.add(int(item[0]))
-                except TypeError:
-                    if isinstance(event, dict):
-                        for key in ("cells after", "cells", "rows"):
-                            val = event.get(key)
-                            if val:
-                                try:
-                                    for item in val:
-                                        rows.add(int(item[0]) if isinstance(item, (list, tuple)) else int(item))
-                                except Exception:
-                                    pass
+            for r, _ in (sheet.get_selected_cells() or []):
+                rows.add(int(r))
+        except Exception:
+            pass
+        try:
+            for r in (sheet.get_selected_rows() or []):
+                rows.add(int(r))
+        except Exception:
+            pass
 
+        return rows
+
+    def _on_paste_event(self, event=None, is_frozen=False):
+        """extra_binding 'paste' — ยิงหลัง right-click paste เสร็จ
+        (Ctrl+V ถูก intercept โดย _smart_paste แล้ว — ฟังก์ชันนี้จัดการเฉพาะ RC-paste)"""
+        try:
+            rows = self._extract_rows_from_event(event, is_frozen)
             if not rows:
-                # fallback สั้น: อ่านจาก selection ปัจจุบัน
-                try:
-                    sheet = self.sheet_frozen if is_frozen else self.sheet
-                    sel = sheet.get_currently_selected()
-                    if sel:
-                        rows.add(int(sel[0]))
-                except Exception:
-                    pass
+                return
 
-            for r in sorted(rows):
-                self._auto_calculate_sheet(r)
+            # หน่วง 50ms ให้ tksheet commit ข้อมูลลงเซลล์ก่อนค่อยคำนวณ
+            def _do_calc():
+                for r in sorted(rows):
+                    self._auto_calculate_sheet(r)
+                self.sheet.redraw()
+                if self.sheet_frozen:
+                    self.sheet_frozen.redraw()
+                if self.auto_save_job_id:
+                    self.after_cancel(self.auto_save_job_id)
+                if hasattr(self, 'save_status_label'):
+                    self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+                self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
 
-            self.sheet.redraw()
-            if self.sheet_frozen:
-                self.sheet_frozen.redraw()
-
-            if self.auto_save_job_id:
-                self.after_cancel(self.auto_save_job_id)
-            if hasattr(self, 'save_status_label'):
-                self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
-            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+            self.after(50, _do_calc)
         except Exception as e:
             print(f"_on_paste_event error: {e}")
 
-
     def _on_delete_event(self, event=None, is_frozen=False):
-        """extra_binding 'delete' — ยิงหลัง user กด Delete/Backspace เพื่อล้างข้อมูล
-        แล้ว trigger _auto_calculate_sheet ให้คำนวณคอลัมน์ที่เกี่ยวข้องใหม่ทันที"""
+        """extra_binding 'delete' — ยิงหลัง user กด Delete/Backspace
+        คำนวณทุกบรรทัดที่โดนลบ รองรับ drag-select หลายบรรทัด"""
         try:
-            rows = set()
-            if event is not None:
-                try:
-                    for item in event:
-                        if isinstance(item, (list, tuple)) and len(item) >= 1:
-                            rows.add(int(item[0]))
-                except TypeError:
-                    if isinstance(event, dict):
-                        for key in ("cells after", "cells", "rows"):
-                            val = event.get(key)
-                            if val:
-                                try:
-                                    for item in val:
-                                        rows.add(int(item[0]) if isinstance(item, (list, tuple)) else int(item))
-                                except Exception:
-                                    pass
-
+            rows = self._extract_rows_from_event(event, is_frozen)
             if not rows:
-                # fallback: อ่านจาก selection ปัจจุบัน
-                try:
-                    sheet = self.sheet_frozen if is_frozen else self.sheet
-                    sel = sheet.get_currently_selected()
-                    if sel:
-                        rows.add(int(sel[0]))
-                except Exception:
-                    pass
+                return
 
             for r in sorted(rows):
                 self._auto_calculate_sheet(r)

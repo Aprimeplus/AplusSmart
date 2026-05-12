@@ -3304,8 +3304,9 @@ class SuperSupplierTab(CTkFrame):
         tf.grid_rowconfigure(0, weight=1)
 
         cols = ["supplier_id", "name", "category", "tier",
-                "availability", "contact", "phone", "wh_zone", "wh_coordinates",
-                "score", "win_pct", "credit_days", "note"]
+                "availability", "contact", "phone",
+                "score", "win_pct", "credit_days", "note",
+                "wh_zone", "wh_coordinates"]
         col_cfg = {
             "supplier_id":    ("รหัส",           140, "center"),
             "name":           ("ชื่อ Supplier",   220, "w"),
@@ -3314,12 +3315,12 @@ class SuperSupplierTab(CTkFrame):
             "availability":   ("สถานะ",           100, "center"),
             "contact":        ("ผู้ติดต่อ",        120, "w"),
             "phone":          ("เบอร์ติดต่อ",      120, "center"),
-            "wh_zone":        ("โซนที่ตั้ง",       130, "w"),
-            "wh_coordinates": ("พิกัด Warehouse",  200, "w"),
             "score":          ("Score",             70, "center"),
             "win_pct":        ("Win %",             70, "center"),
             "credit_days":    ("เครดิต",            80, "center"),
             "note":           ("จุดแข็ง",          200, "w"),
+            "wh_zone":        ("โซนที่ตั้ง",       130, "w"),
+            "wh_coordinates": ("พิกัด Warehouse",  200, "w"),
         }
         self._tree = ttk.Treeview(tf, columns=cols, show="headings",
                                   style="SSL.Treeview")
@@ -3328,7 +3329,7 @@ class SuperSupplierTab(CTkFrame):
             self._tree.heading(col, text=lbl,
                                command=lambda c=col: self._sort_by(c))
             self._tree.column(col, width=w, anchor=anchor,
-                              stretch=(col == "note"))
+                              stretch=(col == "wh_coordinates"))
 
         self._tree.tag_configure("Tier 1",    background="#F0FDF4")
         self._tree.tag_configure("Tier 2",    background="#EFF6FF")

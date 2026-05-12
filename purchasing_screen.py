@@ -2417,19 +2417,19 @@ class PurchasingScreen(CTkFrame):
                         utils.set_entry_text(self.shipping_to_stock_driver_entry, driver)
                         utils.set_entry_text(self.shipping_to_stock_plate_entry, plate)
                         utils.set_entry_text(self.shipping_to_stock_notes_entry, remark)
-                        
+
                         self.shipping_to_stock_vat_var.set(vat_option)
-                        self.shipping_to_stock_wht_var.set(wht_option) 
+                        self.shipping_to_stock_wht_var.set(wht_option)
                         self.shipping_to_stock_type_var.set("Aplus Logistic")
-                        
+
                     elif t_type == 'Site':
                         utils.set_entry_text(self.shipping_to_site_cost_entry, f"{cost:.2f}")
                         utils.set_entry_text(self.shipping_to_site_driver_entry, driver)
                         utils.set_entry_text(self.shipping_to_site_plate_entry, plate)
-                        utils.set_entry_text(self.shipping_to_site_notes_entry, remark) 
-                        
+                        utils.set_entry_text(self.shipping_to_site_notes_entry, remark)
+
                         self.shipping_to_site_vat_var.set(vat_option)
-                        self.shipping_to_site_wht_var.set(wht_option) 
+                        self.shipping_to_site_wht_var.set(wht_option)
                         self.shipping_to_site_type_var.set("Aplus Logistic")
 
                 self._update_summary()
@@ -2464,7 +2464,7 @@ class PurchasingScreen(CTkFrame):
                 if not default_acc_type: 
                     default_acc_type = 'ออมทรัพย์'
                 widgets['acc_type_var'].set(default_acc_type)
-            
+
     def _save_or_update_supplier(self):
         name, code, term = self.supplier_name_combo.get().strip(), self.supplier_code_entry.get().strip(), self.credit_term_entry.get().strip()
         if not name or not code: messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณากรอกชื่อและรหัสซัพพลายเออร์", parent=self); return
