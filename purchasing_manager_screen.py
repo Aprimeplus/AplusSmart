@@ -26,6 +26,7 @@ from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow , Cancel
 from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
 from reject_history import RejectionHistoryWindow
 from super_supplier_list import SuperSupplierTab   # <-- Demo Tab
+from markup_tiers_screen import MarkupTiersScreen  # <-- Markup Tiers Manager
 
 
 class RejectionReasonDialog(CTkToplevel):
@@ -344,6 +345,12 @@ class PurchasingManagerScreen(CTkFrame):
         self.ssl_tab.grid_rowconfigure(0, weight=1)
         # --- END ---
 
+        # --- START: เพิ่มแท็บ Markup Tiers ---
+        self.markup_tab = self.tab_view.add("📊 Markup Tiers")
+        self.markup_tab.grid_columnconfigure(0, weight=1)
+        self.markup_tab.grid_rowconfigure(0, weight=1)
+        # --- END ---
+
         # --- Rejection Dashboard Tab ---
         self.rejection_dashboard_tab = self.tab_view.add("📊 สถิติการตีกลับ")
         self.rejection_dashboard_tab.grid_columnconfigure(0, weight=1)
@@ -366,6 +373,15 @@ class PurchasingManagerScreen(CTkFrame):
             current_user=self.user_key or "USER_DEMO",
         )
         self.super_supplier_frame.grid(row=0, column=0, sticky="nsew")
+        # --- END ---
+
+        # --- START: Mount MarkupTiersScreen ---
+        self.markup_tiers_frame = MarkupTiersScreen(
+            master=self.markup_tab,
+            app_container=self.app_container,
+            current_user=self.user_key or "MANAGER",
+        )
+        self.markup_tiers_frame.grid(row=0, column=0, sticky="nsew")
         # --- END ---
         
         # +++ START: แก้ไขการสร้าง PurchasingScreen ตรงนี้ +++

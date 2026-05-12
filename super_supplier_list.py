@@ -2938,7 +2938,6 @@ class SuggestedSupplierPopup(CTkToplevel):
             return
 
         rank_colors = ["#F59E0B","#9CA3AF","#D97706","#6B7280","#6B7280"]
-        src_badge   = {"Legacy":"[L]","Manual":"[M]","System":"[S]"}
 
         for rank, (_, row) in enumerate(df.iterrows(), 1):
             tier  = row["tier"]
@@ -2964,17 +2963,7 @@ class SuggestedSupplierPopup(CTkToplevel):
             CTkLabel(card, text=f" {tier} ",
                      fg_color=ts["bg"], text_color=ts["fg"],
                      corner_radius=4, font=F(size=11, weight="bold")).grid(
-                row=0, column=1, padx=(0,8), pady=(10,2), sticky="w")
-
-            # source badge
-            src = src_badge.get(row.get("source_tag",""), "")
-            src_sty = SOURCE_TAG_STYLE.get(row.get("source_tag",""), {})
-            if src:
-                CTkLabel(card, text=f" {src} ",
-                         fg_color=src_sty.get("bg", CLR["gray_lt"]),
-                         text_color=src_sty.get("fg", CLR["gray"]),
-                         corner_radius=4, font=F(size=10)).grid(
-                    row=1, column=1, padx=(0,8), pady=(0,10), sticky="w")
+                row=0, column=1, padx=(0,8), pady=10, rowspan=2, sticky="w")
 
             # name + contact
             lock = "🔒 " if row.get("is_locked") else ""

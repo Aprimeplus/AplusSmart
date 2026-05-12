@@ -25,6 +25,7 @@ from cost_benchmark import CostBenchmarkScreen
 from dashboard_cost import DashboardCostScreen
 from pdf_utils import export_approved_pos_to_pdf
 from po_selection_dialog import POSelectionDialog
+from super_supplier_list import SuggestedSupplierPopup
 import utils
 
 # 🟢 พจนานุกรมแปลสถานะเป็นภาษาไทย (เอาไว้แสดงผลบนหน้าจอ UI)
@@ -2325,8 +2326,18 @@ class PurchasingScreen(CTkFrame):
         sup_frame = CTkFrame(top_frame, fg_color="transparent"); sup_frame.grid(row=2, column=0, columnspan=8, sticky="ew", padx=5, pady=5)
         sup_frame.grid_columnconfigure(1, weight=4); sup_frame.grid_columnconfigure(3, weight=2); sup_frame.grid_columnconfigure(5, weight=2); sup_frame.grid_columnconfigure(6, weight=1); sup_frame.grid_columnconfigure(7, weight=1)
         CTkLabel(sup_frame, text="Supplier Name:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
-        self.supplier_name_combo = AutoCompleteEntry(master=sup_frame, completion_list=self.supplier_completion_data, display_key='name', command=self._on_supplier_selected, placeholder_text="พิมพ์เพื่อค้นหาซัพพลายเออร์...")
-        self.supplier_name_combo.grid(row=0, column=1, sticky="ew", padx=(0,10), pady=3)
+        sup_name_frame = CTkFrame(sup_frame, fg_color="transparent")
+        sup_name_frame.grid(row=0, column=1, sticky="ew", padx=(0,10), pady=3)
+        sup_name_frame.grid_columnconfigure(0, weight=1)
+        self.supplier_name_combo = AutoCompleteEntry(
+            master=sup_name_frame, completion_list=self.supplier_completion_data,
+            display_key='name', command=self._on_supplier_selected,
+            placeholder_text="พิมพ์เพื่อค้นหาซัพพลายเออร์...")
+        self.supplier_name_combo.grid(row=0, column=0, sticky="ew")
+        CTkButton(sup_name_frame, text="⭐ แนะนำ", width=95,
+                  fg_color="#1A56DB", hover_color="#1E429F",
+                  font=CTkFont(size=13),
+                  command=self._open_suggested_supplier).grid(row=0, column=1, padx=(6, 0))
         CTkLabel(sup_frame, text="Supplier Code:").grid(row=0, column=2, sticky="w", padx=5, pady=3)
         self.supplier_code_entry = CTkEntry(sup_frame, font=self.entry_font); self.supplier_code_entry.grid(row=0, column=3, sticky="ew", padx=(0,10), pady=3)
         CTkLabel(sup_frame, text="Credit Term:").grid(row=0, column=4, sticky="w", padx=5, pady=3)
@@ -2464,6 +2475,28 @@ class PurchasingScreen(CTkFrame):
                 if not default_acc_type: 
                     default_acc_type = 'ออมทรัพย์'
                 widgets['acc_type_var'].set(default_acc_type)
+
+    def _open_suggested_supplier(self):
+        """เปิด Popup Top-5 Super Supplier แล้วเติมข้อมูลลงฟอร์มอัตโนมัติ"""
+        # ให้ super_supplier_list ใช้ connection pool ของ app แทนการ connect ตรง
+        import super_supplier_list as _ssl
+        _ssl._app_container = self.app_container
+
+        def _on_selected(sup_dict):
+            # เคลียร์ก่อน แล้วค่อยเติม
+            self.supplier_name_combo.delete(0, tk.END)
+            self.supplier_code_entry.delete(0, tk.END)
+            self.credit_term_entry.delete(0, tk.END)
+
+            self.supplier_name_combo.insert(0, sup_dict.get("name", ""))
+            self.supplier_code_entry.insert(0, sup_dict.get("supplier_id", ""))
+
+            credit = int(sup_dict.get("credit_days", 0) or 0)
+            self.credit_term_entry.insert(0, f"Cr {credit}" if credit > 0 else "เงินสด")
+
+            self.editing_supplier_id = sup_dict.get("id")
+
+        SuggestedSupplierPopup(self, on_select=_on_selected)
 
     def _save_or_update_supplier(self):
         name, code, term = self.supplier_name_combo.get().strip(), self.supplier_code_entry.get().strip(), self.credit_term_entry.get().strip()
