@@ -782,23 +782,23 @@ class AppContainer(CTk):
             traceback.print_exc()
     
     def _on_window_configure(self, event):
-        """Freeze repaint ระหว่างลากหน้าต่าง แล้ว redraw ครั้งเดียวตอนหยุด"""
+        """ทำให้หน้าต่างโปร่งแสงระหว่างลาก → redraw ครั้งเดียวตอนหยุด"""
         if event.widget is not self:
             return
         try:
-            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
             if self._drag_job is None:
-                ctypes.windll.user32.LockWindowUpdate(hwnd)
+                # เริ่มลาก → โปร่งแสง 40% ลด repaint load
+                self.attributes("-alpha", 0.4)
             else:
                 self.after_cancel(self._drag_job)
-            self._drag_job = self.after(150, self._on_drag_end)
+            self._drag_job = self.after(180, self._on_drag_end)
         except Exception:
             pass
 
     def _on_drag_end(self):
         self._drag_job = None
         try:
-            ctypes.windll.user32.LockWindowUpdate(0)
+            self.attributes("-alpha", 1.0)
         except Exception:
             pass
 
@@ -807,8 +807,6 @@ class AppContainer(CTk):
 
         # --- [1] หยุดการโต้ตอบกับ UI ทันที ---
         try:
-            # unlock ก่อนถ้า drag lock ยังค้างอยู่
-            ctypes.windll.user32.LockWindowUpdate(0)
             # หยุดรับ Event การปรับขนาดหน้าจอ (ตัวต้นเรื่องของ error 'update')
             self.unbind("<Configure>")
             # ซ่อนหน้าต่างทันที เพื่อไม่ให้ CustomTkinter พยายามวาดใหม่
