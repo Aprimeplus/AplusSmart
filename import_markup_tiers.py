@@ -9,7 +9,7 @@ import psycopg2
 import psycopg2.extras
 from datetime import datetime
 
-_DB_CFG = dict(host="192.168.1.60", dbname="aplus_com_test",
+_DB_CFG = dict(host="Server-APrime", dbname="aplus_com_test",
                user="app_user", password="cailfornia123")
 
 EXCEL_PATH = r"C:\Users\Nitro V15\Downloads\Markup Guide.xlsx"
@@ -38,18 +38,25 @@ def _safe_float(val):
 def _safe_str(val):
     if val is None:
         return None
-    if isinstance(val, float) and pd.isna(val):
-        return None
+    try:
+        if pd.isna(val):
+            return None
+    except Exception:
+        pass
     s = str(val).strip()
-    return s if s else None
+    return s if s and s != "NaT" and s != "nan" else None
 
 
 def _safe_date(val):
     if val is None:
         return None
     try:
+        if pd.isna(val):
+            return None
+    except Exception:
+        pass
+    try:
         if isinstance(val, datetime):
-            # กรอง datetime ที่ดูแปลก (ค.ศ. < 1900 หรือ > 2100)
             if val.year < 1900 or val.year > 2100:
                 return None
             return val.date()
@@ -57,7 +64,10 @@ def _safe_date(val):
             val = val.strip()
             if not val:
                 return None
-        return pd.to_datetime(val).date()
+        ts = pd.to_datetime(val)
+        if pd.isna(ts):
+            return None
+        return ts.date()
     except Exception:
         return None
 
@@ -129,7 +139,7 @@ def import_to_db(records: list[dict], reset: bool = False):
     cur = conn.cursor()
 
     if reset:
-        print("  ⚠️  Deleting existing rows...")
+        print("  [RESET] Deleting existing rows...")
         cur.execute("DELETE FROM markup_tiers")
         print(f"  Deleted. Re-inserting {len(records)} records...")
 
@@ -148,7 +158,7 @@ def import_to_db(records: list[dict], reset: bool = False):
     """
     psycopg2.extras.execute_batch(cur, INSERT_SQL, records, page_size=200)
     conn.commit()
-    print(f"  ✅ Inserted {len(records)} records into markup_tiers.")
+    print(f"  OK: Inserted {len(records)} records into markup_tiers.")
     cur.close()
     conn.close()
 

@@ -414,7 +414,7 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     # 5. สรุปยอดรวม (Grand Total) และ ภาษีหัก ณ ที่จ่าย (WHT)
     recalc_total_vat = recalc_product_vat + shipping_stock_vat + shipping_site_vat + cutting_vat
 
-    # ยอดรวมทั้งหมด (รวมค่ารถ) — ใช้คำนวณยอดค้างชำระ
+    # ยอดรวมทั้งหมด (รวมค่ารถ) — ใช้คำนวณยอดค้างชำระและ WHT
     recalc_grand_total_with_shipping = net_product_cost + total_shipping_cost + cutting_cost + recalc_total_vat
 
     # "รวมทั้งสิ้น" ฝั่งขวาของ PO — ไม่รวมค่ารถ และไม่รวม Vat ของค่ารถ
