@@ -153,6 +153,7 @@ class AppContainer(CTk):
 
         # freeze repaint ระหว่างลากหน้าต่าง → redraw ครั้งเดียวตอนหยุด
         self._drag_job = None
+        self._drag_hwnd = None
         self.bind("<Configure>", self._on_window_configure)
         try:
             icon_image = Image.open(resource_path("app_icon.ico"))
@@ -782,23 +783,39 @@ class AppContainer(CTk):
             traceback.print_exc()
     
     def _on_window_configure(self, event):
-        """ทำให้หน้าต่างโปร่งแสงระหว่างลาก → redraw ครั้งเดียวตอนหยุด"""
+        """ปิด repaint ครั้งเดียวตอนเริ่มลาก แล้วใช้ poll แทน reschedule ทุก event"""
         if event.widget is not self:
             return
+        if self._drag_job is not None:
+            return  # กำลัง poll อยู่แล้ว ไม่ต้องทำอะไร
         try:
-            if self._drag_job is None:
-                # เริ่มลาก → โปร่งแสง 40% ลด repaint load
-                self.attributes("-alpha", 0.4)
-            else:
-                self.after_cancel(self._drag_job)
-            self._drag_job = self.after(180, self._on_drag_end)
+            hwnd = ctypes.windll.user32.GetAncestor(self.winfo_id(), 2)  # GA_ROOT=2
+            if hwnd:
+                self._drag_hwnd = hwnd
+                ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 0, 0)  # WM_SETREDRAW off
+            self._drag_job = self.after(50, self._poll_drag_end)
         except Exception:
             pass
+
+    def _poll_drag_end(self):
+        """ตรวจสอบทุก 50ms ว่าปล่อยเมาส์แล้วหรือยัง"""
+        try:
+            left_down = ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000  # VK_LBUTTON
+            if left_down:
+                self._drag_job = self.after(50, self._poll_drag_end)
+                return
+        except Exception:
+            pass
+        self._on_drag_end()
 
     def _on_drag_end(self):
         self._drag_job = None
         try:
-            self.attributes("-alpha", 1.0)
+            hwnd = self._drag_hwnd
+            if hwnd:
+                ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 1, 0)  # WM_SETREDRAW on
+                # RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW
+                ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100)
         except Exception:
             pass
 

@@ -1578,7 +1578,7 @@ class CommissionApp(CTkFrame):
                     FROM commissions
                     WHERE sale_key = %s
                       AND is_active = 1
-                      AND status IN ('Forwarded_To_HR', 'HR Verified', 'Defer Requested', 'Deferred')
+                      AND status IN ('Forwarded_To_HR', 'HR Verified', 'Defer Requested')
                       AND (
                           commission_year < %s
                           OR (commission_year = %s AND commission_month < %s)

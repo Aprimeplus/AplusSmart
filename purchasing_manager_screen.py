@@ -351,6 +351,7 @@ class PurchasingManagerScreen(CTkFrame):
         self.rejection_dashboard_tab.grid_rowconfigure(1, weight=1)
 
         self.manager_view_tab.grid_columnconfigure(0, weight=1)
+        self.manager_view_tab.grid_rowconfigure(0, minsize=280)  # chart row ต้องสูงพอ
         self.manager_view_tab.grid_rowconfigure(1, weight=1)
 
         self._create_dashboard_view(parent_tab=self.manager_view_tab)
@@ -1643,9 +1644,10 @@ class PurchasingManagerScreen(CTkFrame):
         # --- ปุ่มสำหรับกดค้นหา ---
         CTkButton(filter_container, text="แสดงผล", command=self._update_manager_dashboard).pack(side="left", padx=10)
 
-        # --- Frame สำหรับแสดงกราฟ ---
-        self.rejection_chart_frame = CTkFrame(dashboard_frame)
-        self.rejection_chart_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # --- Frame สำหรับแสดงกราฟ (tk.Frame เพื่อให้ height propagate จากลูกได้) ---
+        self.rejection_chart_frame = tk.Frame(dashboard_frame, bg=self.theme.get("bg", "#F8FAFC"),
+                                              relief="flat", bd=0)
+        self.rejection_chart_frame.pack(fill="x", padx=10, pady=10)
 
     def _update_manager_dashboard(self):
         for widget in self.rejection_chart_frame.winfo_children():
@@ -1710,15 +1712,39 @@ class PurchasingManagerScreen(CTkFrame):
         if hasattr(self, 'rejection_chart_canvas') and self.rejection_chart_canvas: self.rejection_chart_canvas.get_tk_widget().destroy()
         for widget in parent_frame.winfo_children(): widget.destroy()
         if data_df.empty: CTkLabel(parent_frame, text="ไม่พบข้อมูลการตีกลับ", font=self.header_font).pack(expand=True, pady=20); return
-        fig = Figure(figsize=(8, 4), dpi=100, facecolor=self.theme["bg"]); ax = fig.add_subplot(111); ax.set_facecolor(self.theme["bg"])
-        colors = ['#e76f51', '#f4a261', '#e9c46a', '#2a9d8f', '#264653']; bar_colors = [colors[i % len(colors)] for i in range(len(data_df))]
-        bars = ax.barh(data_df['sale_name'], data_df['rejection_count'], color=bar_colors); ax.invert_yaxis(); font_name = 'Tahoma'
-        ax.set_xlabel('จำนวนครั้งที่ถูกตีกลับ', fontname=font_name, fontsize=12); ax.set_title('สรุปสถิติการตีกลับงาน (Rejected POs)', fontname=font_name, fontsize=16, weight="bold")
-        ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False); ax.tick_params(axis='y', labelsize=12, labelfontfamily=font_name)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True)); ax.set_xlim(left=0)
+        n = len(data_df)
+        fig_h = max(2.2, min(3.2, n * 0.38 + 1.0))  # ~38px/แถว cap ที่ 320px
+        fig = Figure(figsize=(8, fig_h), dpi=100, facecolor=self.theme["bg"])
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(self.theme["bg"])
+        colors = ['#e76f51', '#f4a261', '#e9c46a', '#2a9d8f', '#264653']
+        bar_colors = [colors[i % len(colors)] for i in range(n)]
+        bars = ax.barh(data_df['sale_name'], data_df['rejection_count'], color=bar_colors, height=0.6)
+        ax.invert_yaxis()
+        font_name = 'Tahoma'
+        ax.set_xlabel('จำนวนครั้งที่ถูกตีกลับ', fontname=font_name, fontsize=12)
+        ax.set_title('สรุปสถิติการตีกลับงาน (Rejected POs)', fontname=font_name, fontsize=16, weight="bold")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.tick_params(axis='y', labelsize=11, labelfontfamily=font_name)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_xlim(left=0)
         for bar in bars:
-            width = bar.get_width(); ax.text(width + 0.1, bar.get_y() + bar.get_height()/2, f'{int(width)}', va='center', fontname=font_name)
-        fig.tight_layout(pad=2); canvas = FigureCanvasTkAgg(fig, master=parent_frame); canvas.draw(); canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10); self.rejection_chart_canvas = canvas
+            width = bar.get_width()
+            ax.text(width + 0.1, bar.get_y() + bar.get_height() / 2, f'{int(width)}', va='center', fontname=font_name)
+        try:
+            fig.tight_layout(pad=1.2)
+        except Exception:
+            fig.subplots_adjust(left=0.25, right=0.92, top=0.88, bottom=0.14)
+        canvas = FigureCanvasTkAgg(fig, master=parent_frame)
+        canvas.draw()
+        pixel_h = int(fig_h * 100)
+        # บังคับ parent_frame (tk.Frame) ให้สูงพอ แล้ว canvas fill เต็ม
+        parent_frame.configure(height=pixel_h + 20)
+        parent_frame.pack_propagate(False)
+        w = canvas.get_tk_widget()
+        w.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.rejection_chart_canvas = canvas
         
 
     # =========================================================================

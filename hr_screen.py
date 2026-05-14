@@ -2662,17 +2662,18 @@ class HRScreen(CTkFrame):
             legend_items.append(
                 Patch(facecolor='#86EFAC', label='ยอดขายของพาร์ทเนอร์')
             )
-        ax.legend(handles=legend_items,
-                  loc='upper right',
-                  bbox_to_anchor=(1.0, 1.0),
-                  ncol=2,
-                  frameon=True, framealpha=0.95,
-                  edgecolor='#CBD5E1', fontsize=10,
-                  prop={'weight': 'bold', 'size': 10},
-                  borderpad=0.7, labelspacing=0.4,
-                  columnspacing=1.0)
+        leg = ax.legend(handles=legend_items,
+                        loc='upper right',
+                        ncol=1,
+                        frameon=True, framealpha=0.95,
+                        edgecolor='#CBD5E1', fontsize=10,
+                        prop={'weight': 'bold', 'size': 10},
+                        borderpad=0.7, labelspacing=0.4)
 
-        fig.tight_layout(rect=[0, 0.05, 1, 1])
+        try:
+            fig.tight_layout(rect=[0, 0.08, 1, 1])
+        except Exception:
+            fig.subplots_adjust(left=0.08, right=0.92, top=0.92, bottom=0.10)
 
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
         canvas.draw()
