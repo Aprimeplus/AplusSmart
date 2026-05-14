@@ -140,6 +140,14 @@ class LoadingWindow(CTkToplevel):
 
 class AppContainer(CTk):
     def __init__(self):
+        # แก้ lag เวลาย้ายหน้าต่างระหว่างจอ — ป้องกัน Windows trigger DPI rescale ทุก widget
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+        import customtkinter as _ctk
+        _ctk.deactivate_automatic_dpi_awareness()
+
         super().__init__()
         self.hr_screen = None
         try:
