@@ -26,6 +26,7 @@ from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow , Cancel
 from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
 from reject_history import RejectionHistoryWindow
 from super_supplier_list import SuperSupplierTab   # <-- Demo Tab
+from markup_tiers_screen import MarkupTiersScreen  # <-- Markup Tiers Manager
 
 
 class RejectionReasonDialog(CTkToplevel):
@@ -344,6 +345,12 @@ class PurchasingManagerScreen(CTkFrame):
         self.ssl_tab.grid_rowconfigure(0, weight=1)
         # --- END ---
 
+        # --- START: เพิ่มแท็บ Markup Tiers ---
+        self.markup_tab = self.tab_view.add("📊 Markup Tiers")
+        self.markup_tab.grid_columnconfigure(0, weight=1)
+        self.markup_tab.grid_rowconfigure(0, weight=1)
+        # --- END ---
+
         # --- Rejection Dashboard Tab ---
         self.rejection_dashboard_tab = self.tab_view.add("📊 สถิติการตีกลับ")
         self.rejection_dashboard_tab.grid_columnconfigure(0, weight=1)
@@ -363,8 +370,14 @@ class PurchasingManagerScreen(CTkFrame):
         self.super_supplier_frame = SuperSupplierTab(
             master=self.ssl_tab,
             app_container=self.app_container,
+            current_user=self.user_key or "USER_DEMO",
         )
         self.super_supplier_frame.grid(row=0, column=0, sticky="nsew")
+        # --- END ---
+
+        # --- START: Mount MarkupTiersScreen (lazy — สร้างตอนคลิกแท็บครั้งแรก) ---
+        self.markup_tiers_frame = None
+        self.tab_view.configure(command=self._on_tab_changed)
         # --- END ---
         
         # +++ START: แก้ไขการสร้าง PurchasingScreen ตรงนี้ +++
@@ -382,6 +395,17 @@ class PurchasingManagerScreen(CTkFrame):
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)
+
+        # Hook tab-change → show/hide header buttons (wrap original command, don't replace it)
+        try:
+            original_cmd = self.tab_view._segmented_button.cget("command")
+            def _combined_tab_cmd(tab_name, _orig=original_cmd, _self=self):
+                if _orig:
+                    _orig(tab_name)
+                _self._on_tab_changed(tab_name)
+            self.tab_view._segmented_button.configure(command=_combined_tab_cmd)
+        except Exception:
+            pass
     
     # --- START: เพิ่ม 6 ฟังก์ชันใหม่สำหรับแท็บ Master Edit ---
     
@@ -849,7 +873,13 @@ class PurchasingManagerScreen(CTkFrame):
             self._populate_pending_list(self.filtered_df)
 
     def _load_data(self):
-        # แก้ไขให้เรียก _load_pending_pos โดยตรงเมื่อ Refresh
+        # Debounce — ยุบการเรียกซ้ำภายใน 500ms ให้เหลือครั้งเดียว
+        if hasattr(self, "_load_data_job") and self._load_data_job:
+            self.after_cancel(self._load_data_job)
+        self._load_data_job = self.after(500, self._do_load_data)
+
+    def _do_load_data(self):
+        self._load_data_job = None
         self._update_manager_dashboard()
         self._load_pending_pos()
 
@@ -1115,9 +1145,10 @@ class PurchasingManagerScreen(CTkFrame):
                  font=CTkFont(size=22, weight="bold"), 
                  text_color=self.theme["header"]).pack(side="left")
         
-        # Container สำหรับปุ่มด้านขวา
+        # Container สำหรับปุ่มด้านขวา (show/hide ตาม active tab)
         button_container = CTkFrame(header_frame, fg_color="transparent")
         button_container.pack(side="right")
+        self.header_btn_container = button_container  # เก็บ ref ไว้ toggle
         
         # 1. ปุ่มอนุมัติ
         self.approve_all_button = CTkButton(button_container, 
@@ -1165,6 +1196,23 @@ class PurchasingManagerScreen(CTkFrame):
         
         # 5. ปุ่ม Logout
         CTkButton(button_container, text="ออก", width=60, command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="left", padx=5)
+
+    def _on_tab_changed(self, tab_name=None):
+        """แสดง/ซ่อน header buttons ตาม active tab + lazy-load Markup Tiers"""
+        active = self.tab_view.get()
+        if active == "ภาพรวมและอนุมัติ (Manager View)":
+            self.header_btn_container.pack(side="right")
+        else:
+            self.header_btn_container.pack_forget()
+
+        # lazy-load MarkupTiersScreen ตอนคลิกแท็บครั้งแรก
+        if active == "📊 Markup Tiers" and self.markup_tiers_frame is None:
+            self.markup_tiers_frame = MarkupTiersScreen(
+                master=self.markup_tab,
+                app_container=self.app_container,
+                current_user=self.user_key or "MANAGER",
+            )
+            self.markup_tiers_frame.grid(row=0, column=0, sticky="nsew")
 
     # -------------------------------------------------------------------------
     #  ฟังก์ชันสำหรับระบบยกเลิก SO (Manual Cancel)
@@ -2473,9 +2521,16 @@ class PurchasingManagerScreen(CTkFrame):
             if conn: self.app_container.release_connection(conn)
         
     def _load_data(self):
+        # Debounce — ยุบการเรียกซ้ำภายใน 500ms ให้เหลือครั้งเดียว
+        if hasattr(self, "_load_data_job") and self._load_data_job:
+            self.after_cancel(self._load_data_job)
+        self._load_data_job = self.after(500, self._do_load_data)
+
+    def _do_load_data(self):
+        self._load_data_job = None
         self._update_manager_dashboard()
         self._load_pending_pos()
-        
+
     def _check_and_complete_so(self, so_number):
         if not so_number:
             return

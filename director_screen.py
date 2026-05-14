@@ -1,10 +1,11 @@
 import tkinter as tk
 from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkButton
 
-# --- Import หน้าจอทั้ง 3 ส่วน ---
+# --- Import หน้าจอทั้ง 4 ส่วน ---
 from purchasing_manager_screen import PurchasingManagerScreen
 from hr_screen import HRScreen
 from sales_manager_screen import SalesManagerScreen
+from management_report_screen import ManagementReportScreen
 
 class DirectorScreen(CTkFrame):
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None):
@@ -48,7 +49,7 @@ class DirectorScreen(CTkFrame):
         
         # จัดให้อยู่กึ่งกลาง
         menu_container.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
-        menu_container.grid_rowconfigure(0, weight=1)
+        menu_container.grid_rowconfigure((0, 1), weight=1)
 
         # --- สไตล์ของปุ่มการ์ด ---
         btn_kwargs = {
@@ -69,9 +70,14 @@ class DirectorScreen(CTkFrame):
                   command=lambda: self.open_module("purchase", "🛒 ฝ่ายจัดซื้อและสต๊อก")).grid(row=0, column=1, padx=15, pady=20, sticky="ew")
 
         # 3. การ์ดฝ่ายบุคคล/บัญชี (HR & Accounting)
-        CTkButton(menu_container, text="👥\n\nฝ่ายบุคคลและคอมมิชชั่น\n(HR & Commission)", 
+        CTkButton(menu_container, text="👥\n\nฝ่ายบุคคลและคอมมิชชั่น\n(HR & Commission)",
                   fg_color="#7C3AED", hover_color="#6D28D9", **btn_kwargs,
                   command=lambda: self.open_module("hr", "👥 ฝ่ายบุคคลและคอมมิชชั่น")).grid(row=0, column=2, padx=15, pady=20, sticky="ew")
+
+        # 4. การ์ด Management Report
+        CTkButton(menu_container, text="📑\n\nรายงานผู้บริหาร\n(Management Report)",
+                  fg_color="#0F172A", hover_color="#1E293B", **btn_kwargs,
+                  command=lambda: self.open_module("report", "📑 รายงานผู้บริหาร")).grid(row=1, column=0, padx=15, pady=20, sticky="ew")
 
     def show_home(self):
         """แสดงหน้า Home Menu และซ่อนหน้าเนื้อหา"""
@@ -128,5 +134,13 @@ class DirectorScreen(CTkFrame):
                 user_name=self.user_name,
                 user_role=self.user_role
             )
-            
+        elif module_name == "report":
+            screen = ManagementReportScreen(
+                master=module_container,
+                app_container=self.app_container,
+                user_key=self.user_key,
+                user_name=self.user_name,
+                user_role=self.user_role
+            )
+
         screen.pack(fill="both", expand=True)
