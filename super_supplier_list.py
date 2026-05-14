@@ -85,7 +85,7 @@ SN_AGING_DAYS = 30   # SN ที่ค้างเกินกี่วันถ
 # =============================================================================
 #  DATABASE LAYER  — แทนที่ MOCK_DATA ทั้งหมด
 # =============================================================================
-_DB_CFG = dict(host="192.168.1.60", dbname="aplus_com_test",
+_DB_CFG = dict(host="Server-APrime", dbname="aplus_com_test",
                user="app_user", password="cailfornia123")
 
 # _app_container เก็บ reference ที่ SuperSupplierTab ส่งมาให้
@@ -1370,15 +1370,46 @@ class SupplierDetailPopup(CTkToplevel):
         self.destroy()
 
     def _save(self):
-        for key, widget in self._fields.items():
-            self.sup[key] = widget.get().strip()
-        self.sup.update({
-            "availability": self._avail_var.get(),
-            "reopen_date":  self._reopen_entry.get().strip(),
-            "tier":         self._tier_var.get(),
-            "is_locked":    self._lock_var.get(),
-            "note":         self._note_e.get().strip(),
-            # ── Zoning ──────────────────────────────────────────────────
+        name  = self._inputs["name"].get().strip()
+        phone = self._inputs["phone"].get().strip()
+        manual_id = self._inputs["supplier_id"].get().strip() # ดึงค่ารหัสที่กรอก
+
+        if not name:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุชื่อบริษัท", parent=self)
+            return
+        if not phone:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุเบอร์โทร", parent=self)
+            return
+
+        # 🟢 เช็คว่า User พิมพ์รหัสมาเองหรือไม่
+        if manual_id:
+            if db_check_sw_duplicate(manual_id):
+                messagebox.showerror("รหัสซ้ำ", f"รหัส '{manual_id}' มีอยู่ในระบบแล้ว", parent=self)
+                return
+            final_code = manual_id
+            tier = "Tier 2"  # มีรหัสทางการแล้ว ให้เป็น Tier 2
+        else:
+            final_code = db_next_sn_code(self.current_user)
+            tier = "SN"      # ไม่มีรหัส ให้เป็นระบบชั่วคราว SN
+
+        new_sup = {
+            "id": 0,
+            "supplier_id":   final_code,  # ใช้รหัสที่ตัดสินใจแล้ว
+            "name":          name,
+            "category":      self._cat_var.get(),
+            "tier":          tier,        # ใช้ Tier ที่ตัดสินใจแล้ว
+            "is_locked": False,
+            "source_tag":    "Manual",
+            "contact":       self._inputs["contact"].get().strip(),
+            "phone":         phone,
+            "line_id":       self._inputs["line_id"].get().strip(),
+            "email":         self._inputs["email"].get().strip(),
+            "coverage_area": self._inputs["coverage_area"].get().strip(),
+            "availability":  "พร้อม",
+            "sn_created":    datetime.now().strftime("%Y-%m-%d"),
+            "win_pct": 0, "sla_score": 0, "price_score": 0, "credit_days": 0,
+            "note": "", "win_loss_log": [],
+            # ── Zoning ──────────────────────────────────────────────────────
             "dispatch_zone":    self._zone_var.get() if hasattr(self, "_zone_var") else "",
             "service_area":     self._service_var.get() if hasattr(self, "_service_var") else "National",
             "logistics_assets": ",".join(
@@ -1387,26 +1418,17 @@ class SupplierDetailPopup(CTkToplevel):
             "business_type":    self._biz_var.get() if hasattr(self, "_biz_var") else "",
             "standard_focus":   self._std_var.get() if hasattr(self, "_std_var") else "",
             "credit_term_label": self._credit_lbl_var.get() if hasattr(self, "_credit_lbl_var") else "สด",
-        })
-        result = self._wl_result.get()
-        # Bug fix: ถ้า result="Win" ให้ reason เป็น "" เสมอ (ไม่ส่งค่า dropdown)
-        reason = self._wl_reason.get() if result == "Loss" else ""
-        # บันทึก log เฉพาะเมื่อ user กดตั้งใจ (ไม่ใช่ค่า default Win ที่ไม่ได้แตะ)
-        if hasattr(self, "_wl_touched") and self._wl_touched:
-            self.sup.setdefault("win_loss_log", []).append({
-                "date":   datetime.now().strftime("%Y-%m"),
-                "result": result,
-                "reason": reason,
-            })
-        ok = db_save_supplier(self.sup, action="edit", user=self.current_user)
+            "wh_zone":           self._wh_zone_e.get().strip() if hasattr(self, "_wh_zone_e") else "",
+            "wh_coordinates":    self._wh_coord_e.get().strip() if hasattr(self, "_wh_coord_e") else "",
+        }
+        ok = db_save_supplier(new_sup, action="add", user=self.current_user)
         if ok:
-            messagebox.showinfo("บันทึกสำเร็จ",
-                                f"อัปเดตข้อมูล '{self.sup['name']}' เรียบร้อยแล้ว",
-                                parent=self)
+            messagebox.showinfo("สร้างสำเร็จ",
+                                f"เพิ่ม Supplier เรียบร้อยแล้ว\nรหัส: {final_code}", parent=self)
         else:
             messagebox.showerror("ผิดพลาด", "บันทึกลงฐานข้อมูลไม่สำเร็จ", parent=self)
-        if self.on_save:
-            self.on_save(self.sup)
+        if self.on_success:
+            self.on_success()
         self.destroy()
 
 # =============================================================================
@@ -1442,6 +1464,7 @@ class AddSupplierPopup(CTkToplevel):
         form.grid_columnconfigure(1, weight=1)
 
         fields_cfg = [
+            ("supplier_id",   "รหัสซัพพลายเออร์", "เว้นว่างเพื่อสร้าง SN อัตโนมัติ", False), # <--- เพิ่มบรรทัดนี้
             ("name",          "ชื่อบริษัท *",   "พิมพ์ชื่อ Supplier...",  True),
             ("category",      "หมวดสินค้า *",   None,                      True),
             ("contact",       "ผู้ติดต่อ",       "",                       False),
@@ -1614,7 +1637,7 @@ class AddSupplierPopup(CTkToplevel):
 
     def _refresh_sn_preview(self):
         sn_code = db_next_sn_code(self.current_user)
-        self._sn_lbl.configure(text=f"รหัสที่จะได้รับ:  {sn_code}")
+        self._sn_lbl.configure(text=f"หากไม่ระบุรหัส ระบบจะสร้าง:  {sn_code}")
         return sn_code
 
     def _on_name_key(self, _=None):
@@ -3367,48 +3390,106 @@ class SuperSupplierTab(CTkFrame):
                        border_width=1, border_color=CLR["border"])
         bot.grid(row=3, column=0, sticky="ew")
 
+        # ── 1. ปุ่มหลัก (Primary Actions) ให้โชว์ตลอด ──
         CTkButton(bot, text="+ เพิ่ม Supplier ใหม่",
                   fg_color=CLR["navy"], hover_color=CLR["blue"],
                   font=CTkFont(size=13, weight="bold"), height=34,
                   command=self._open_add).pack(side="left", padx=12, pady=8)
+                  
         CTkButton(bot, text="แก้ไขที่เลือก",
                   fg_color=CLR["blue"], hover_color="#1e40af", height=34,
                   command=self._open_detail).pack(side="left", padx=(0, 6), pady=8)
+                  
         CTkButton(bot, text="Convert SN → SW",
                   fg_color=CLR["amber"], hover_color="#92400E",
                   text_color=CLR["white"], height=34,
                   command=self._quick_convert).pack(side="left", padx=(0, 6), pady=8)
+                  
         CTkButton(bot, text="🏆 Top 5 ต่อหมวด",
                   fg_color=CLR["teal"], hover_color="#0F6E56", height=34,
                   command=lambda: Top5View(self)).pack(side="left", padx=(0, 6), pady=8)
-        CTkButton(bot, text="📊 Quarterly Snapshot",
-                  fg_color="#7C3AED", hover_color="#6D28D9", height=34,
-                  command=lambda: QuarterlySnapshotPopup(self)).pack(side="left", padx=(0, 6), pady=8)
-        CTkButton(bot, text="📋 Audit Log",
-                  fg_color="gray50", hover_color="gray40", height=34,
-                  command=lambda: AuditLogPopup(self)).pack(side="left", padx=(0, 6), pady=8)
-        CTkButton(bot, text="⏰ SN Aging",
-                  fg_color=CLR["red"], hover_color="#991B1B", height=34,
-                  command=lambda: SNAgingPopup(self)).pack(side="left", padx=(0, 6), pady=8)
-        CTkButton(bot, text="📈 Win-Loss",
-                  fg_color="#059669", hover_color="#047857", height=34,
-                  command=self._open_win_loss).pack(side="left", padx=(0, 6), pady=8)
-        CTkButton(bot, text="⬇ Export",
-                  fg_color="#0369A1", hover_color="#075985", height=34,
-                  command=self._open_export).pack(side="left", padx=(0, 6), pady=8)
-        CTkButton(bot, text="📥 Bulk Import",
-                  fg_color="#7C3AED", hover_color="#6D28D9", height=34,
-                  command=self._open_bulk_import).pack(side="left", padx=(0, 6), pady=8)
+                  
         CTkButton(bot, text="⭐ แนะนำ Supplier",
                   fg_color="#D97706", hover_color="#B45309", height=34,
                   command=self._open_suggested).pack(side="left", padx=(0, 6), pady=8)
-        CTkButton(bot, text="📅 Timeline",
-                  fg_color="#059669", hover_color="#047857", height=34,
-                  command=lambda: RankingTimelinePopup(self)).pack(side="left", pady=8)
 
-        self._row_lbl = CTkLabel(bot, text="", font=CTkFont(size=12),
-                                 text_color=CLR["gray"])
+        # ── 2. สร้าง Custom Dropdown แบบ Modern (แก้ไขใหม่) ──
+        # ── 2. สร้าง Custom Dropdown แบบ Modern (แก้ไขใหม่ล่าสุด) ──
+        def _show_modern_more_menu():
+            popup = tk.Toplevel(self)
+            popup.wm_overrideredirect(True)
+            popup.configure(bg="white")
+            
+            # [Fix Bug 1]: แปะฟังก์ชันดัมมี่ เพื่อป้องกัน CustomTkinter แจ้ง Error Scaling
+            popup.block_update_dimensions_event = lambda: None
+            popup.unblock_update_dimensions_event = lambda: None
+            popup.set_scaling = lambda *args, **kwargs: None
+            
+            # ซ่อนหน้าต่างตอนกำลังโหลดเพื่อป้องกันการกระพริบ
+            popup.attributes("-alpha", 0.0)
+            
+            # [Fix Bug 2]: ล็อกขนาดเป๊ะๆ ป้องกันพื้นที่เหลือด้านล่าง (ปุ่ม 32x7=224 + เส้นคั่น 13 + ขอบ 8 = 245)
+            menu_width = 200
+            menu_height = 245 
+            
+            menu_frame = CTkFrame(popup, fg_color="white", corner_radius=0, 
+                                  border_width=1, border_color="#D1D5DB")
+            menu_frame.pack(fill="both", expand=True)
+
+            CTkFrame(menu_frame, height=4, fg_color="white").pack(fill="x")
+            
+            def add_menu_btn(text, cmd, icon="", text_color="#1F2937", hover_color="#F3F4F6"):
+                btn = CTkButton(menu_frame, text=f"  {icon}   {text}", anchor="w",
+                                fg_color="transparent", text_color=text_color, hover_color=hover_color,
+                                font=CTkFont(size=13), height=32, corner_radius=0,
+                                command=lambda: [popup.destroy(), cmd()])
+                btn.pack(fill="x", pady=0)
+                return btn
+
+            # เพิ่มรายการเมนู
+            add_menu_btn("Quarterly Snapshot", lambda: QuarterlySnapshotPopup(self), icon="📊")
+            add_menu_btn("Audit Log",          lambda: AuditLogPopup(self),          icon="📋")
+            add_menu_btn("SN Aging",           lambda: SNAgingPopup(self),           icon="⏰")
+            add_menu_btn("Win-Loss",           self._open_win_loss,                  icon="📈")
+            add_menu_btn("Timeline",           lambda: RankingTimelinePopup(self),   icon="📅")
+            
+            separator = CTkFrame(menu_frame, height=1, fg_color="#E5E7EB")
+            separator.pack(fill="x", pady=6, padx=12)
+            
+            add_menu_btn("Export",             self._open_export,                    icon="📤")
+            add_menu_btn("Bulk Import",        self._open_bulk_import,               icon="📥")
+
+            popup.update_idletasks()
+            
+            # หาพิกัดเริ่มต้น
+            x = btn_more.winfo_rootx()
+            y = btn_more.winfo_rooty() + btn_more.winfo_height() + 2
+            
+            # เช็คขอบจอด้านล่าง หากล้นให้เด้งขึ้นบน
+            screen_height = btn_more.winfo_screenheight()
+            if (y + menu_height) > (screen_height - 40):
+                y = btn_more.winfo_rooty() - menu_height - 2
+                
+            popup.geometry(f"{menu_width}x{menu_height}+{x}+{y}")
+            
+            # โชว์หน้าต่างกลับมาตามปกติ
+            popup.attributes("-alpha", 1.0)
+            
+            # หายไปเมื่อคลิกที่อื่น
+            popup.bind("<FocusOut>", lambda e: popup.destroy())
+            popup.focus_force()
+
+        # ปุ่มกดเพื่อเรียก Custom Dropdown
+        btn_more = CTkButton(bot, text="เครื่องมือเพิ่มเติม ▾",
+                             fg_color="gray85", hover_color="gray75", text_color="black",
+                             height=34, font=CTkFont(size=12, weight="bold"),
+                             command=_show_modern_more_menu)
+        btn_more.pack(side="left", padx=(6, 6), pady=8)
+
+        # ── 3. Label และ ปุ่ม Refresh (ชิดขวา) ──
+        self._row_lbl = CTkLabel(bot, text="", font=CTkFont(size=12), text_color=CLR["gray"])
         self._row_lbl.pack(side="right", padx=12)
+        
         CTkButton(bot, text="Refresh", width=80, height=34,
                   fg_color="gray50", hover_color="gray40",
                   command=self._refresh_table).pack(side="right", padx=(0, 8), pady=8)

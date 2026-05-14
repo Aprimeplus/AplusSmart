@@ -2599,10 +2599,12 @@ class CostBenchmarkScreen(CTkFrame):
         self.sheet.bind("<Shift-MouseWheel>", self._lock_horizontal_scroll)
         self.sheet.bind("<Return>", self._on_enter_pressed)
         self.sheet.bind("<KP_Enter>", self._on_enter_pressed)
-        self.sheet.bind("<Control-c>", lambda e: self.sheet.copy())
-        self.sheet.bind("<Control-v>", self._smart_paste)   # ← ใช้ smart paste แทน
-        self.sheet.bind("<Control-C>", lambda e: self.sheet.copy())
-        self.sheet.bind("<Control-V>", self._smart_paste)   # ← ใช้ smart paste แทน
+        
+        self.sheet.bind("<Control-c>", self._mt_copy_router)
+        self.sheet.bind("<Control-v>", self._smart_paste)   
+        self.sheet.bind("<Control-C>", self._mt_copy_router)
+        self.sheet.bind("<Control-V>", self._smart_paste)   
+        
         self.sheet.bind("<<SheetModified>>", self._on_sheet_modified)
         self.sheet.bind("<Control-r>", self._copy_selected_rows)
         self.sheet.bind("<Control-R>", self._copy_selected_rows)
@@ -2790,9 +2792,36 @@ class CostBenchmarkScreen(CTkFrame):
                 self.sheet_frozen.copy()
             else:
                 self.sheet.copy()
+                
+            # ✅ หน่วงเวลา 50ms ให้ tksheet ทำงานเสร็จ แล้วเรียกฟังก์ชันล้างฟันหนู
+            self.after(50, self._clean_clipboard_quotes)
         except Exception:
             pass
         return "break"
+
+    def _clean_clipboard_quotes(self):
+        """ล้างเครื่องหมาย Double Quote ที่เกิดจากระบบ CSV ตอน Copy"""
+        try:
+            clip = self.clipboard_get()
+            if not clip: return
+
+            import csv
+            import io
+            # 1. ใช้โมดูล csv ช่วยอ่านข้อความที่มีการครอบ "" (tksheet คั่นคอลัมน์ด้วย Tab)
+            reader = csv.reader(io.StringIO(clip), delimiter='\t')
+            
+            # 2. เอาข้อความที่ถอดฟันหนูส่วนเกินออกแล้ว มารวมกันใหม่
+            cleaned_rows = []
+            for row in reader:
+                cleaned_rows.append('\t'.join(row))
+
+            new_clip = '\n'.join(cleaned_rows)
+
+            # 3. ยัดข้อมูลที่สะอาดแล้วกลับเข้า Clipboard ทับของเดิม
+            self.clipboard_clear()
+            self.clipboard_append(new_clip)
+        except Exception as e:
+            print(f"Clean clipboard error: {e}")
 
     def _on_ctrl_keypress_thai(self, event):
         """Route Thai IME Ctrl+V/C/Z — keycode 86=V, 67=C, 90=Z (reliable across IME versions)."""
@@ -3283,13 +3312,14 @@ class CostBenchmarkScreen(CTkFrame):
         except Exception as e:
             print(f"Cannot add popup menu to frozen sheet: {e}")
 
-        # CH bind หลัง enable_bindings เท่านั้น
         try:
             self.sheet_frozen.CH.bind("<ButtonPress-1>", self._on_header_press, add="+")
         except Exception: pass
         
         self.sheet_frozen.bind("<<SheetModified>>", self._on_sheet_modified)
-        self.sheet_frozen.bind("<Control-c>", lambda e: self.sheet_frozen.copy())
+        
+        self.sheet_frozen.bind("<Control-c>", self._mt_copy_router)
+        
         self.sheet_frozen.bind("<Control-v>", self._smart_paste_frozen)
         self.sheet_frozen.bind("<Control-V>", self._smart_paste_frozen)
         self.sheet_frozen.bind("<Return>", lambda e: self._on_enter_pressed(e, is_frozen=True))
@@ -5287,6 +5317,11 @@ class CostBenchmarkScreen(CTkFrame):
         set_val("ราคาขาย รวม", sell_total)
         set_val("Vat. รวม", sell_total * 0.07)
         set_val("ราคาขาย รวม + Vat.", sell_total * 1.07)
+
+        if getattr(self, '_header_filter_values', None):
+            if hasattr(self, '_fix_render_job'):
+                self.after_cancel(self._fix_render_job)
+            self._fix_render_job = self.after(150, self._apply_header_filters)
 
     # ================================================================== #
     def _add_new_row(self):

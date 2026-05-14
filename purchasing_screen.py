@@ -25,7 +25,7 @@ from cost_benchmark import CostBenchmarkScreen
 from dashboard_cost import DashboardCostScreen
 from pdf_utils import export_approved_pos_to_pdf
 from po_selection_dialog import POSelectionDialog
-from super_supplier_list import SuggestedSupplierPopup
+from super_supplier_list import SuggestedSupplierPopup, SuperSupplierTab
 import utils
 
 # 🟢 พจนานุกรมแปลสถานะเป็นภาษาไทย (เอาไว้แสดงผลบนหน้าจอ UI)
@@ -1223,257 +1223,6 @@ class ProductEditDialog(CTkToplevel):
         finally:
             if conn: self.app_container.release_connection(conn)
 
-class SupplierManagementWindow(CTkToplevel):
-    def __init__(self, master, purchasing_screen_instance):
-        super().__init__(master)
-        self.purchasing_screen = purchasing_screen_instance
-        self.app_container = purchasing_screen_instance.app_container
-        self.user_name = purchasing_screen_instance.user_name 
-
-        self.title("จัดการข้อมูลซัพพลายเออร์ (Supplier Management)")
-        self.geometry("1250x600") 
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        self._create_widgets()
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.after(20, self.load_suppliers)
-
-        self.transient(master)
-        self.grab_set()
-
-    def on_close(self):
-        self.purchasing_screen.supplier_management_window = None
-        self.destroy()
-        self.purchasing_screen._load_supplier_data()
-
-    def _create_widgets(self):
-        header_frame = CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        CTkLabel(header_frame, text="🏢 จัดการข้อมูลซัพพลายเออร์", font=CTkFont(size=18, weight="bold")).pack(side="left")
-
-        button_frame = CTkFrame(header_frame, fg_color="transparent")
-        button_frame.pack(side="right")
-        
-        CTkButton(button_frame, text="➕ เพิ่มซัพพลายเออร์", width=120, command=self._add_supplier, fg_color="#10B981", hover_color="#059669").pack(side="left", padx=5)
-        CTkButton(button_frame, text="✏️ แก้ไข", width=80, command=self._edit_supplier).pack(side="left", padx=5)
-        CTkButton(button_frame, text="🗑️ ลบ", width=60, command=self._delete_supplier, fg_color="#D32F2F", hover_color="#B71C1C").pack(side="left", padx=5)
-        CTkButton(button_frame, text="🔄", width=40, command=self.load_suppliers).pack(side="left", padx=5)
-
-        self.search_entry = CTkEntry(self, placeholder_text="🔍 ค้นหา (ชื่อ/รหัสซัพพลายเออร์/ชื่อผู้ติดต่อ)...")
-        self.search_entry.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
-        self.search_entry.bind("<KeyRelease>", self._filter_suppliers)
-
-        self.tree_frame = CTkFrame(self, fg_color="transparent")
-        self.tree_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
-        self.tree_frame.grid_rowconfigure(0, weight=1)
-        self.tree_frame.grid_columnconfigure(0, weight=1)
-
-        columns = ("id", "supplier_name", "supplier_code", "contact_name", "phone_number", "credit_term", "bank_account_type", "created_by", "created_at")
-        self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings", selectmode="browse")
-
-        self.tree.heading("id", text="ID")
-        self.tree.heading("supplier_name", text="ชื่อซัพพลายเออร์")
-        self.tree.heading("supplier_code", text="รหัสซัพฯ")
-        self.tree.heading("contact_name", text="ชื่อผู้ติดต่อ")
-        self.tree.heading("phone_number", text="เบอร์โทร")
-        self.tree.heading("credit_term", text="เครดิต (วัน)")
-        self.tree.heading("bank_account_type", text="ประเภทบัญชี")
-        self.tree.heading("created_by", text="เพิ่มโดย (ประวัติ)")
-        self.tree.heading("created_at", text="วันที่เพิ่ม")
-
-        self.tree.column("id", width=50, anchor="center")
-        self.tree.column("supplier_name", width=220, anchor="w")
-        self.tree.column("supplier_code", width=80, anchor="center")
-        self.tree.column("contact_name", width=150, anchor="w") 
-        self.tree.column("phone_number", width=120, anchor="center") 
-        self.tree.column("credit_term", width=80, anchor="center")
-        self.tree.column("bank_account_type", width=100, anchor="center")
-        self.tree.column("created_by", width=120, anchor="w")
-        self.tree.column("created_at", width=120, anchor="center")
-
-        self.tree.pack(fill="both", expand=True)
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Treeview", background="#F5F5F5", rowheight=25, fieldbackground="#F5F5F5")
-        style.map('Treeview', background=[('selected', '#3B82F6')])
-        style.configure("Treeview.Heading", font=CTkFont(size=12, weight="bold"), background="#E0E0E0")
-
-        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
-        vsb.pack(side='right', fill='y')
-        self.tree.configure(yscrollcommand=vsb.set)
-
-    def load_suppliers(self, search_term=""):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
-        conn = self.app_container.get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                base_query = "SELECT id, supplier_name, supplier_code, contact_name, phone_number, credit_term, bank_account_type, created_by, created_at FROM suppliers "
-                if search_term:
-                    query = base_query + "WHERE LOWER(supplier_name) LIKE %s OR LOWER(supplier_code) LIKE %s OR LOWER(contact_name) LIKE %s ORDER BY id DESC"
-                    cursor.execute(query, (f"%{search_term.lower()}%", f"%{search_term.lower()}%", f"%{search_term.lower()}%"))
-                else:
-                    query = base_query + "ORDER BY id DESC"
-                    cursor.execute(query)
-
-                for row in cursor.fetchall():
-                    dt = row['created_at'].strftime("%Y-%m-%d %H:%M") if row['created_at'] else "-"
-                    self.tree.insert("", "end", values=(
-                        row['id'], row['supplier_name'], row['supplier_code'], 
-                        row['contact_name'] or "-", row['phone_number'] or "-", 
-                        row['credit_term'], row['bank_account_type'], 
-                        row['created_by'] or "-", dt
-                    ))
-        except Exception as e:
-            messagebox.showerror("Error", f"ไม่สามารถโหลดข้อมูลซัพพลายเออร์ได้: {e}", parent=self)
-        finally:
-            if conn: self.app_container.release_connection(conn)
-
-    def _filter_suppliers(self, event):
-        self.load_suppliers(self.search_entry.get().strip())
-
-    def _add_supplier(self):
-        SupplierEditDialog(self, supplier_data=None, sm_window=self)
-
-    def _edit_supplier(self):
-        selected_item = self.tree.focus()
-        if not selected_item:
-            messagebox.showwarning("เลือกรายการ", "กรุณาเลือกซัพพลายเออร์ที่ต้องการแก้ไข", parent=self)
-            return
-
-        values = self.tree.item(selected_item, 'values')
-        supp_data = {
-            'id': values[0], 'supplier_name': values[1], 'supplier_code': values[2],
-            'contact_name': values[3] if values[3] != "-" else "", 
-            'phone_number': values[4] if values[4] != "-" else "",
-            'credit_term': values[5], 'bank_account_type': values[6]
-        }
-        SupplierEditDialog(self, supplier_data=supp_data, sm_window=self)
-
-    def _delete_supplier(self):
-        selected_item = self.tree.focus()
-        if not selected_item:
-            messagebox.showwarning("เลือกรายการ", "กรุณาเลือกซัพพลายเออร์ที่ต้องการลบ", parent=self)
-            return
-
-        values = self.tree.item(selected_item, 'values')
-        sup_id, supp_name = values[0], values[1]
-
-        if not messagebox.askyesno("ยืนยัน", f"คุณต้องการลบซัพพลายเออร์ '{supp_name}' ใช่หรือไม่?", icon="warning", parent=self):
-            return
-
-        conn = self.app_container.get_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM suppliers WHERE id = %s", (sup_id,))
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", "ลบซัพพลายเออร์เรียบร้อยแล้ว", parent=self)
-            self.load_suppliers()
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Error", f"ไม่สามารถลบซัพพลายเออร์ได้ (อาจมีการอ้างอิงใน PO แล้ว): {e}", parent=self)
-        finally:
-            if conn: self.app_container.release_connection(conn)
-
-class SupplierEditDialog(CTkToplevel):
-    def __init__(self, master, supplier_data, sm_window):
-        super().__init__(master)
-        self.sm_window = sm_window
-        self.app_container = sm_window.app_container
-        self.supplier_data = supplier_data
-        self.editing_mode = supplier_data is not None
-
-        self.title("แก้ไขซัพพลายเออร์" if self.editing_mode else "เพิ่มซัพพลายเออร์ใหม่")
-        self.geometry("450x400") 
-        self.grid_columnconfigure(1, weight=1)
-
-        self._create_widgets()
-        if self.editing_mode: self._populate_form()
-
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.transient(master)
-        self.grab_set()
-
-    def on_close(self): self.destroy()
-
-    def _create_widgets(self):
-        CTkLabel(self, text="ชื่อซัพพลายเออร์: *").grid(row=0, column=0, padx=10, pady=(15,5), sticky="w")
-        self.name_entry = CTkEntry(self)
-        self.name_entry.grid(row=0, column=1, padx=10, pady=(15,5), sticky="ew")
-
-        CTkLabel(self, text="รหัสซัพพลายเออร์:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        self.code_entry = CTkEntry(self)
-        self.code_entry.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
-
-        CTkLabel(self, text="ชื่อผู้ติดต่อ:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        self.contact_entry = CTkEntry(self, placeholder_text="ชื่อเซลส์ หรือ ผู้ดูแลบัญชี")
-        self.contact_entry.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
-
-        CTkLabel(self, text="เบอร์โทรศัพท์:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
-        self.phone_entry = CTkEntry(self, placeholder_text="08X-XXX-XXXX")
-        self.phone_entry.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
-
-        CTkLabel(self, text="เครดิตเทอม (วัน):").grid(row=4, column=0, padx=10, pady=5, sticky="w")
-        self.term_entry = CTkEntry(self)
-        self.term_entry.grid(row=4, column=1, padx=10, pady=5, sticky="ew")
-
-        CTkLabel(self, text="ประเภทบัญชี:").grid(row=5, column=0, padx=10, pady=5, sticky="w")
-        self.bank_type_var = tk.StringVar(value="ออมทรัพย์")
-        self.bank_type_menu = CTkOptionMenu(self, variable=self.bank_type_var, values=["ออมทรัพย์", "กระแสรายวัน"])
-        self.bank_type_menu.grid(row=5, column=1, padx=10, pady=5, sticky="w")
-
-        btn_text = "บันทึกการแก้ไข" if self.editing_mode else "➕ เพิ่มซัพพลายเออร์"
-        CTkButton(self, text=btn_text, command=self._save_data).grid(row=6, column=0, columnspan=2, pady=20)
-
-    def _populate_form(self):
-        self.name_entry.insert(0, self.supplier_data.get('supplier_name', ''))
-        self.code_entry.insert(0, self.supplier_data.get('supplier_code', ''))
-        self.contact_entry.insert(0, self.supplier_data.get('contact_name', '')) 
-        self.phone_entry.insert(0, self.supplier_data.get('phone_number', ''))     
-        self.term_entry.insert(0, self.supplier_data.get('credit_term', ''))
-        self.bank_type_var.set(self.supplier_data.get('bank_account_type', 'ออมทรัพย์'))
-
-    def _save_data(self):
-        name = self.name_entry.get().strip()
-        code = self.code_entry.get().strip()
-        contact = self.contact_entry.get().strip() 
-        phone = self.phone_entry.get().strip()     
-        term = self.term_entry.get().strip()
-        b_type = self.bank_type_var.get()
-
-        if not name:
-            messagebox.showwarning("แจ้งเตือน", "กรุณากรอกชื่อซัพพลายเออร์", parent=self); return
-
-        conn = self.app_container.get_connection()
-        try:
-            with conn.cursor() as cursor:
-                if self.editing_mode:
-                    sup_id = self.supplier_data['id']
-                    cursor.execute("""
-                        UPDATE suppliers 
-                        SET supplier_name=%s, supplier_code=%s, contact_name=%s, phone_number=%s, credit_term=%s, bank_account_type=%s
-                        WHERE id=%s
-                    """, (name, code, contact, phone, term, b_type, sup_id))
-                else:
-                    cursor.execute("""
-                        INSERT INTO suppliers (supplier_name, supplier_code, contact_name, phone_number, credit_term, bank_account_type, created_by, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-                    """, (name, code, contact, phone, term, b_type, self.sm_window.user_name))
-            
-            conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
-            self.sm_window.load_suppliers()
-            self.on_close()
-
-        except Exception as e:
-            if conn: conn.rollback()
-            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
-        finally:
-            if conn: self.app_container.release_connection(conn)
-
 class PurchasingScreen(CTkFrame):
     
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None, initial_so_number=None):
@@ -1538,7 +1287,7 @@ class PurchasingScreen(CTkFrame):
 
         self._create_header()
 
-        self.tab_view = CTkTabview(self, text_color="black")
+        self.tab_view = CTkTabview(self, text_color="black", command=self._on_tab_changed)
         self.tab_view.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
 
         self.tab_view.add("สร้างใบสั่งซื้อ (PO)")
@@ -1571,6 +1320,12 @@ class PurchasingScreen(CTkFrame):
         
         self.dashboard_cost_view = DashboardCostScreen(dashboard_cost_tab, self.app_container)
         self.dashboard_cost_view.pack(fill="both", expand=True)
+
+        self.tab_view.add("Super Supplier List")
+        ssl_tab = self.tab_view.tab("Super Supplier List")
+        ssl_tab.grid_columnconfigure(0, weight=1)
+        ssl_tab.grid_rowconfigure(0, weight=1)
+        SuperSupplierTab(master=ssl_tab, app_container=self.app_container).grid(row=0, column=0, sticky="nsew")
 
         self._load_supplier_data()
         self._load_product_master_data()
@@ -1971,7 +1726,7 @@ class PurchasingScreen(CTkFrame):
 
         CTkButton(button_container, text="📖 ดูประวัติ PO", command=lambda: self.app_container.show_history_window(), fg_color="#64748B").pack(side="left", padx=5)
         CTkButton(button_container, text="🔧 จัดการสินค้า", command=self._open_product_management_window, fg_color="#6D28D9", hover_color="#5B21B6").pack(side="left", padx=5)
-        CTkButton(button_container, text="🏢 จัดการซัพพลายเออร์", command=self._open_supplier_management_window, fg_color="#F59E0B", hover_color="#D97706").pack(side="left", padx=5)
+        CTkButton(button_container, text="🏢 จัดการซัพพลายเออร์", command=self._switch_to_super_supplier_tab, fg_color="#F59E0B", hover_color="#D97706").pack(side="left", padx=5)
 
         CTkButton(button_container, text="Export PDF (PO อนุมัติ)", command=lambda: export_approved_pos_to_pdf(self, self.pg_engine), fg_color="#c026d3", hover_color="#a21caf").pack(side="left", padx=5)
         export_button = CTkButton(button_container, text="Export Excel (PO อนุมัติ)", command=lambda: export_approved_pos_to_excel(self, self.pg_engine), fg_color="#107C41", hover_color="#0B532B")
@@ -1980,6 +1735,21 @@ class PurchasingScreen(CTkFrame):
         self.toggle_so_data_button.pack(side="left", padx=5)
         CTkButton(button_container, text="ออกจากระบบ", command=self.app_container.show_login_screen, fg_color="transparent", border_color="#D32F2F", text_color="#D32F2F", border_width=2, hover_color="#FFEBEE").pack(side="right", padx=(5, 0))
     
+    def _switch_to_super_supplier_tab(self):
+        """สลับหน้าจอไปยัง Tab 'Super Supplier List'"""
+        try:
+            # ใช้ชื่อ Tab ให้ตรงกับที่คุณอู๋ตั้งไว้ตอน .add("Super Supplier List")
+            self.tab_view.set("Super Supplier List") 
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("ไม่พบหน้าต่าง", "ไม่สามารถเปิดหน้า Super Supplier List ได้")
+
+    def _on_tab_changed(self):
+        """เมื่อสลับ Tab ให้โหลดข้อมูล Supplier ใหม่ เพื่ออัปเดต Data ที่เพิ่มมาจากหน้าอื่น"""
+        current_tab = self.tab_view.get()
+        if current_tab == "สร้างใบสั่งซื้อ (PO)":
+            self._load_supplier_data()
+
     def _open_so_selection_dialog(self):
         self.app_container.open_so_print_dialog()
 
@@ -2050,12 +1820,6 @@ class PurchasingScreen(CTkFrame):
                 print(f"Error updating tasks badge: {e}")
         finally:
             if conn: self.app_container.release_connection(conn)
-
-    def _open_supplier_management_window(self):
-        if not hasattr(self, 'supplier_management_window') or self.supplier_management_window is None or not self.supplier_management_window.winfo_exists():
-            self.supplier_management_window = SupplierManagementWindow(self, purchasing_screen_instance=self)
-        else:
-            self.supplier_management_window.focus()
 
     def _open_my_tasks_window(self):
         try:
@@ -2333,13 +2097,15 @@ class PurchasingScreen(CTkFrame):
             master=sup_name_frame, completion_list=self.supplier_completion_data,
             display_key='name', command=self._on_supplier_selected,
             placeholder_text="พิมพ์เพื่อค้นหาซัพพลายเออร์...")
+            
+        # 🟢 1. เติมคำสั่ง grid กลับมา (เพื่อให้ช่องกรอกแสดงผลเต็มกรอบ)
         self.supplier_name_combo.grid(row=0, column=0, sticky="ew")
-        CTkButton(sup_name_frame, text="⭐ แนะนำ", width=95,
-                  fg_color="#1A56DB", hover_color="#1E429F",
-                  font=CTkFont(size=13),
-                  command=self._open_suggested_supplier).grid(row=0, column=1, padx=(6, 0))
+        
+        # 🟢 2. เติม Label "Supplier Code:" กลับมาใน column=2
         CTkLabel(sup_frame, text="Supplier Code:").grid(row=0, column=2, sticky="w", padx=5, pady=3)
-        self.supplier_code_entry = CTkEntry(sup_frame, font=self.entry_font); self.supplier_code_entry.grid(row=0, column=3, sticky="ew", padx=(0,10), pady=3)
+
+        self.supplier_code_entry = CTkEntry(sup_frame, font=self.entry_font)
+        self.supplier_code_entry.grid(row=0, column=3, sticky="ew", padx=(0,10), pady=3)
         CTkLabel(sup_frame, text="Credit Term:").grid(row=0, column=4, sticky="w", padx=5, pady=3)
         self.credit_term_entry = CTkEntry(sup_frame, font=self.entry_font); self.credit_term_entry.grid(row=0, column=5, sticky="ew", padx=(0,10), pady=3)
         self.update_supplier_button = CTkButton(sup_frame, text="บันทึก/อัปเดต", width=120, command=self._save_or_update_supplier)
@@ -2475,28 +2241,6 @@ class PurchasingScreen(CTkFrame):
                 if not default_acc_type: 
                     default_acc_type = 'ออมทรัพย์'
                 widgets['acc_type_var'].set(default_acc_type)
-
-    def _open_suggested_supplier(self):
-        """เปิด Popup Top-5 Super Supplier แล้วเติมข้อมูลลงฟอร์มอัตโนมัติ"""
-        # ให้ super_supplier_list ใช้ connection pool ของ app แทนการ connect ตรง
-        import super_supplier_list as _ssl
-        _ssl._app_container = self.app_container
-
-        def _on_selected(sup_dict):
-            # เคลียร์ก่อน แล้วค่อยเติม
-            self.supplier_name_combo.delete(0, tk.END)
-            self.supplier_code_entry.delete(0, tk.END)
-            self.credit_term_entry.delete(0, tk.END)
-
-            self.supplier_name_combo.insert(0, sup_dict.get("name", ""))
-            self.supplier_code_entry.insert(0, sup_dict.get("supplier_id", ""))
-
-            credit = int(sup_dict.get("credit_days", 0) or 0)
-            self.credit_term_entry.insert(0, f"Cr {credit}" if credit > 0 else "เงินสด")
-
-            self.editing_supplier_id = sup_dict.get("id")
-
-        SuggestedSupplierPopup(self, on_select=_on_selected)
 
     def _save_or_update_supplier(self):
         name, code, term = self.supplier_name_combo.get().strip(), self.supplier_code_entry.get().strip(), self.credit_term_entry.get().strip()

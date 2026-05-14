@@ -346,9 +346,6 @@ class PurchasingManagerScreen(CTkFrame):
         # --- END ---
 
         # --- START: เพิ่มแท็บ Markup Tiers ---
-        self.markup_tab = self.tab_view.add("📊 Markup Tiers")
-        self.markup_tab.grid_columnconfigure(0, weight=1)
-        self.markup_tab.grid_rowconfigure(0, weight=1)
         # --- END ---
 
         # --- Rejection Dashboard Tab ---
@@ -376,12 +373,6 @@ class PurchasingManagerScreen(CTkFrame):
         # --- END ---
 
         # --- START: Mount MarkupTiersScreen ---
-        self.markup_tiers_frame = MarkupTiersScreen(
-            master=self.markup_tab,
-            app_container=self.app_container,
-            current_user=self.user_key or "MANAGER",
-        )
-        self.markup_tiers_frame.grid(row=0, column=0, sticky="nsew")
         # --- END ---
         
         # +++ START: แก้ไขการสร้าง PurchasingScreen ตรงนี้ +++
