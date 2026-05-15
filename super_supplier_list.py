@@ -1441,11 +1441,11 @@ class SupplierDetailPopup(CTkToplevel):
         CTkLabel(manual_row, text="/ 100  (อัตโนมัติ)", font=F(size=11),
                  text_color=CLR["gray"]).grid(row=0, column=5, padx=(4, 4), pady=4)
 
-        # ── Quality Events (row 51-52: ระหว่าง Weighted Score row5 กับ Win-Loss row6) ──
-        sec_label(51, "คุณภาพสินค้า — Event History")
+        # ── Quality Events (row 6-7: ทันทีหลัง Weighted Score row5) ──────────
+        sec_label(6, "คุณภาพสินค้า — Event History")
         qe_wrap = CTkFrame(body, fg_color=CLR["white"], corner_radius=8,
                            border_width=1, border_color=CLR["border"])
-        qe_wrap.grid(row=52, column=0, sticky="ew", padx=20, pady=(0, 6))
+        qe_wrap.grid(row=7, column=0, sticky="ew", padx=20, pady=(0, 6))
         qe_wrap.grid_columnconfigure(0, weight=1)
 
         self._qe_frame = qe_wrap
@@ -1566,8 +1566,8 @@ class SupplierDetailPopup(CTkToplevel):
         _refresh_qe()
 
         # ── Win-Loss Log ───────────────────────────────────────────────────────
-        sec_label(6, "Win-Loss Log")
-        wl_f = make_grid(7)
+        sec_label(8, "Win-Loss Log")
+        wl_f = make_grid(9)
         logs = supplier.get("win_loss_log", [])
         if logs:
             for li, entry in enumerate(logs[-3:]):
@@ -1585,7 +1585,7 @@ class SupplierDetailPopup(CTkToplevel):
 
         # เพิ่ม log
         add_f = CTkFrame(body, fg_color=CLR["gray_lt"], corner_radius=8)
-        add_f.grid(row=8, column=0, sticky="ew", padx=20, pady=(4, 0))
+        add_f.grid(row=10, column=0, sticky="ew", padx=20, pady=(4, 0))
         add_f.grid_columnconfigure(1, weight=1)
         CTkLabel(add_f, text="บันทึกผล:", font=F(size=12),
                  text_color=CLR["gray"]).grid(row=0, column=0, padx=(10, 6), pady=8)
@@ -1623,11 +1623,10 @@ class SupplierDetailPopup(CTkToplevel):
                    ("tier", "blacklist", "convert", "edit"))
         ]
         if tier_logs:
-            sec_label(8, "ประวัติการเปลี่ยน Tier")
-            th_f = make_grid(81)   # ใช้ row 81 ระหว่าง 8 กับ 9
+            sec_label(11, "ประวัติการเปลี่ยน Tier")
             th_f = CTkFrame(body, fg_color=CLR["white"], corner_radius=8,
                             border_width=1, border_color=CLR["border"])
-            th_f.grid(row=81, column=0, sticky="ew", padx=20, pady=(0, 4))
+            th_f.grid(row=12, column=0, sticky="ew", padx=20, pady=(0, 4))
             for li, entry in enumerate(reversed(tier_logs[-5:])):
                 rf2 = CTkFrame(th_f, fg_color="transparent")
                 rf2.pack(fill="x", padx=12, pady=3)
@@ -1649,7 +1648,7 @@ class SupplierDetailPopup(CTkToplevel):
         # ── Zoning Phase 1 ────────────────────────────────────────────────────
         # Section header
         _z_hdr = CTkFrame(body, fg_color="transparent")
-        _z_hdr.grid(row=9, column=0, sticky="ew", padx=20, pady=(14, 4))
+        _z_hdr.grid(row=13, column=0, sticky="ew", padx=20, pady=(14, 4))
         CTkLabel(_z_hdr, text="Zoning & การขนส่ง",
                  font=F(size=12, weight="bold"),
                  text_color=CLR["blue"]).pack(anchor="w")
@@ -1671,7 +1670,7 @@ class SupplierDetailPopup(CTkToplevel):
         LOGISTICS_OPTS = ["กระบะ", "6 ล้อ", "10 ล้อ", "เทรลเลอร์"]
 
         zf = CTkFrame(body, fg_color="transparent")
-        zf.grid(row=10, column=0, sticky="ew", padx=20)
+        zf.grid(row=14, column=0, sticky="ew", padx=20)
         zf.grid_columnconfigure(1, weight=1)
 
         # โซนที่ตั้ง
@@ -1733,19 +1732,19 @@ class SupplierDetailPopup(CTkToplevel):
                       values=["— ยังไม่ระบุ —", "เกรดราชการ / มอก.", "เกรดทั่วไป", "ทั้งสองประเภท"],
                       font=F(size=13), width=220).grid(row=5, column=1, sticky="w", pady=5)
 
-        sec_label(11, "จุดแข็ง / หมายเหตุ")
+        sec_label(15, "จุดแข็ง / หมายเหตุ")
         self._note_e = CTkEntry(body, font=F(size=13), height=36,
                                 placeholder_text="เช่น ให้เครดิต 60 วัน, ส่งด่วน, ISO ผ่าน...")
-        self._note_e.grid(row=12, column=0, sticky="ew", padx=20, pady=4)
+        self._note_e.grid(row=16, column=0, sticky="ew", padx=20, pady=4)
         if supplier.get("note"):
             self._note_e.insert(0, supplier["note"])
 
         # ── Convert (SN only) ─────────────────────────────────────────────────
         if supplier.get("tier") == "SN":
-            sec_label(13, "SN → SW Conversion")
+            sec_label(17, "SN → SW Conversion")
             conv_f = CTkFrame(body, fg_color=CLR["amber_lt"], corner_radius=8,
                               border_width=1, border_color="#F59E0B")
-            conv_f.grid(row=14, column=0, sticky="ew", padx=20, pady=4)
+            conv_f.grid(row=18, column=0, sticky="ew", padx=20, pady=4)
             CTkLabel(conv_f,
                      text="Supplier นี้ยังเป็นรหัสชั่วคราว (SN)\n"
                           "เมื่อบัญชีอนุมัติรหัส Express แล้ว กด Convert เพื่อผูกรหัส",
