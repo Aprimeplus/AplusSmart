@@ -83,6 +83,13 @@ KNOCKOUT_QUALITY    = 15   # quality_score ต้องไม่ต่ำกว�
 WIN_GRACE_PERIOD_MO = 3    # เดือน grace period สำหรับ Supplier ใหม่
 WIN_GRACE_DEFAULT   = 50   # win_pct default (= 10/20) ระหว่าง grace period
 
+# Quality event-based scoring (0-100 scale; doc values ×5)
+QUALITY_START           = 100  # เริ่มต้น 20/20
+QUALITY_CLAIM_DELTA     = -50  # เคลม/return → -10/20
+QUALITY_RECOVER_GREAT   =  40  # แก้ปัญหาเยี่ยม → +8/20
+QUALITY_RECOVER_NORMAL  =  25  # แก้ปัญหาปกติ  → +5/20
+QUALITY_RECOVER_BAD     = -25  # ทิ้งงาน       → -5/20
+
 MOCK_TIERS       = ["ทุก Tier", "Tier 1", "Tier 2", "Tier 3", "SN", "Blacklist"]
 MOCK_AVAIL       = ["ทุกสถานะ", "พร้อม", "สต็อกต่ำ", "ปิดชั่วคราว"]
 MOCK_SOURCE_TAGS = ["ทุก Source", "Legacy", "Manual", "System"]
@@ -775,6 +782,119 @@ def _calc_all_sla_scores() -> dict:
     finally:
         _release_conn(conn, use_pool)
 
+
+# =============================================================================
+#  QUALITY EVENT-BASED SCORING
+# =============================================================================
+
+def _ensure_quality_events_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS supplier_quality_events (
+            id              SERIAL PRIMARY KEY,
+            supplier_name   TEXT    NOT NULL,
+            event_type      TEXT    NOT NULL,
+            delta           INT     NOT NULL,
+            reason          TEXT,
+            recovery_label  TEXT,
+            resolved        BOOLEAN DEFAULT FALSE,
+            parent_event_id INT,
+            created_by      TEXT,
+            created_at      TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+
+def db_add_quality_event(supplier_name: str, reason: str, user: str) -> int:
+    """เพิ่ม claim event: หัก quality_score และบันทึก history, คืน event_id"""
+    conn, use_pool = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            _ensure_quality_events_table(cur)
+            cur.execute("""
+                INSERT INTO supplier_quality_events
+                    (supplier_name, event_type, delta, reason, resolved, created_by)
+                VALUES (%s, 'claim', %s, %s, FALSE, %s)
+                RETURNING id
+            """, (supplier_name, QUALITY_CLAIM_DELTA, reason, user))
+            event_id = cur.fetchone()[0]
+            cur.execute("""
+                UPDATE suppliers
+                SET quality_score = GREATEST(0, LEAST(100, quality_score + %s))
+                WHERE name = %s
+            """, (QUALITY_CLAIM_DELTA, supplier_name))
+            conn.commit()
+            return event_id
+    except Exception as e:
+        conn.rollback()
+        print(f"[SSL] db_add_quality_event error: {e}")
+        return -1
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_resolve_quality_event(event_id: int, recovery_label: str,
+                              supplier_name: str, user: str) -> bool:
+    """Resolve claim event ด้วย recovery type และอัปเดต quality_score"""
+    delta_map = {
+        "great":  QUALITY_RECOVER_GREAT,
+        "normal": QUALITY_RECOVER_NORMAL,
+        "bad":    QUALITY_RECOVER_BAD,
+    }
+    delta = delta_map.get(recovery_label, 0)
+    conn, use_pool = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            _ensure_quality_events_table(cur)
+            cur.execute("""
+                UPDATE supplier_quality_events
+                SET resolved = TRUE
+                WHERE id = %s AND resolved = FALSE
+            """, (event_id,))
+            cur.execute("""
+                INSERT INTO supplier_quality_events
+                    (supplier_name, event_type, delta, recovery_label,
+                     resolved, parent_event_id, created_by)
+                VALUES (%s, 'recovery', %s, %s, TRUE, %s, %s)
+            """, (supplier_name, delta, recovery_label, event_id, user))
+            cur.execute("""
+                UPDATE suppliers
+                SET quality_score = GREATEST(0, LEAST(100, quality_score + %s))
+                WHERE name = %s
+            """, (delta, supplier_name))
+            conn.commit()
+            return True
+    except Exception as e:
+        conn.rollback()
+        print(f"[SSL] db_resolve_quality_event error: {e}")
+        return False
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_get_quality_events(supplier_name: str) -> list:
+    """ดึง quality event history ของ supplier (ล่าสุด 10 รายการ)"""
+    conn, use_pool = _get_conn()
+    try:
+        import psycopg2.extras
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            _ensure_quality_events_table(cur)
+            cur.execute("""
+                SELECT id, event_type, delta, reason, recovery_label,
+                       resolved, created_by,
+                       TO_CHAR(created_at, 'DD/MM/YY HH24:MI') AS ts
+                FROM supplier_quality_events
+                WHERE supplier_name = %s
+                ORDER BY created_at DESC
+                LIMIT 10
+            """, (supplier_name,))
+            return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        print(f"[SSL] db_get_quality_events error: {e}")
+        return []
+    finally:
+        _release_conn(conn, use_pool)
+
+
 # =============================================================================
 #  QUERY
 # =============================================================================
@@ -1308,15 +1428,139 @@ class SupplierDetailPopup(CTkToplevel):
         CTkLabel(manual_row, text="/ 100", font=F(size=11),
                  text_color=CLR["gray"]).grid(row=0, column=2, padx=(4, 20), pady=4)
 
+        q_score = int(supplier.get("quality_score") or QUALITY_START)
         CTkLabel(manual_row, text="คุณภาพ (20%):", font=F(size=12),
                  text_color=CLR["gray"]).grid(row=0, column=3, padx=(4, 6), pady=4)
-        self._quality_score_var = tk.StringVar(
-            value=str(supplier.get("quality_score", 0)))
-        CTkEntry(manual_row, textvariable=self._quality_score_var,
-                 width=70, font=F(size=13), justify="center").grid(
-            row=0, column=4, sticky="w", pady=4)
-        CTkLabel(manual_row, text="/ 100", font=F(size=11),
+        self._quality_score_lbl = CTkLabel(
+            manual_row, text=str(q_score), font=F(size=14, weight="bold"),
+            text_color=CLR["green"] if q_score >= 75 else (CLR["amber"] if q_score >= 50 else CLR["red"]))
+        self._quality_score_lbl.grid(row=0, column=4, sticky="w", pady=4)
+        CTkLabel(manual_row, text="/ 100  (อัตโนมัติ)", font=F(size=11),
                  text_color=CLR["gray"]).grid(row=0, column=5, padx=(4, 4), pady=4)
+
+        # ── Quality Events ────────────────────────────────────────────────────
+        sec_label(5, "คุณภาพสินค้า — Event History")
+        qe_wrap = CTkFrame(body, fg_color=CLR["white"], corner_radius=8,
+                           border_width=1, border_color=CLR["border"])
+        qe_wrap.grid(row=6, column=0, sticky="ew", padx=20, pady=(0, 6))
+        qe_wrap.grid_columnconfigure(0, weight=1)
+
+        self._qe_frame = qe_wrap
+        self._supplier_for_qe = supplier
+
+        def _refresh_qe():
+            for w in self._qe_frame.winfo_children():
+                w.destroy()
+            events = db_get_quality_events(self._supplier_for_qe["name"])
+            if not events:
+                CTkLabel(self._qe_frame,
+                         text="ยังไม่มีเหตุการณ์  (คะแนนเต็ม 100/100)",
+                         text_color=CLR["gray"], font=F(size=12)).pack(
+                    padx=14, pady=8, anchor="w")
+            else:
+                for ev in events:
+                    row_f = CTkFrame(self._qe_frame, fg_color="transparent")
+                    row_f.pack(fill="x", padx=10, pady=3)
+                    is_claim    = ev["event_type"] == "claim"
+                    is_resolved = ev["resolved"]
+                    dot_color   = CLR["red"] if is_claim else CLR["green"]
+                    dot_txt     = "● เคลม" if is_claim else "  ↩ recovery"
+                    CTkLabel(row_f, text=dot_txt, font=F(size=11, weight="bold"),
+                             text_color=dot_color, width=80).pack(side="left")
+                    detail = ev.get("reason") or ev.get("recovery_label") or ""
+                    delta_txt = f"{ev['delta']:+d}"
+                    CTkLabel(row_f, text=f"{ev['ts']}  {delta_txt}  {detail}",
+                             font=F(size=11), text_color=CLR["gray"]).pack(
+                        side="left", padx=(6, 0))
+                    if is_claim and not is_resolved:
+                        def _open_recovery(eid=ev["id"]):
+                            _show_recovery_popup(eid)
+                        CTkButton(row_f, text="แก้ปัญหาแล้ว",
+                                  fg_color=CLR["blue"], hover_color="#1e40af",
+                                  height=24, width=100, font=F(size=11),
+                                  command=_open_recovery).pack(
+                            side="right", padx=(6, 0))
+
+            # ปุ่มแจ้งปัญหา
+            btn_row = CTkFrame(self._qe_frame, fg_color="transparent")
+            btn_row.pack(fill="x", padx=10, pady=(4, 8))
+            CTkButton(btn_row, text="+ แจ้งปัญหา / เคลม",
+                      fg_color=CLR["red"], hover_color="#991b1b",
+                      height=28, font=F(size=12),
+                      command=_open_claim_popup).pack(side="left")
+
+        def _open_claim_popup():
+            pop = CTkToplevel(self)
+            pop.title("แจ้งปัญหา / เคลม")
+            _place_popup(pop, 400, 200)
+            pop.resizable(False, False)
+            pop.transient(self)
+            pop.grab_set()
+            pop.grid_columnconfigure(0, weight=1)
+            CTkLabel(pop, text="เหตุผล / รายละเอียดปัญหา:",
+                     font=F(size=12), text_color=CLR["gray"]).grid(
+                row=0, column=0, padx=20, pady=(16, 4), sticky="w")
+            reason_e = CTkEntry(pop, font=F(size=13), height=34,
+                                placeholder_text="เช่น สเปกไม่ตรง, ของแตก, ส่งผิดรุ่น...")
+            reason_e.grid(row=1, column=0, padx=20, sticky="ew")
+            def _confirm_claim():
+                reason = reason_e.get().strip() or "ไม่ระบุเหตุผล"
+                eid = db_add_quality_event(
+                    self._supplier_for_qe["name"], reason, self.current_user)
+                if eid > 0:
+                    # อัปเดต score label
+                    updated_q = max(0, int(self._quality_score_lbl.cget("text")) + QUALITY_CLAIM_DELTA)
+                    self._quality_score_lbl.configure(
+                        text=str(updated_q),
+                        text_color=CLR["green"] if updated_q >= 75 else (
+                            CLR["amber"] if updated_q >= 50 else CLR["red"]))
+                    _refresh_qe()
+                pop.destroy()
+            CTkButton(pop, text="ยืนยัน หัก -50 คะแนน",
+                      fg_color=CLR["red"], hover_color="#991b1b",
+                      command=_confirm_claim).grid(
+                row=2, column=0, padx=20, pady=14, sticky="e")
+
+        def _show_recovery_popup(event_id: int):
+            pop = CTkToplevel(self)
+            pop.title("ประเมินการแก้ปัญหา")
+            _place_popup(pop, 400, 230)
+            pop.resizable(False, False)
+            pop.transient(self)
+            pop.grab_set()
+            pop.grid_columnconfigure(0, weight=1)
+            CTkLabel(pop, text="Supplier แก้ปัญหาอย่างไร?",
+                     font=F(size=13, weight="bold")).grid(
+                row=0, column=0, padx=20, pady=(16, 12))
+            options = [
+                ("แก้ปัญหาเยี่ยม / รวดเร็ว",   "great",  CLR["green"],  f"+{QUALITY_RECOVER_GREAT}"),
+                ("แก้ปัญหาปกติ / ใช้เวลา",      "normal", CLR["blue"],   f"+{QUALITY_RECOVER_NORMAL}"),
+                ("ทิ้งงาน / บ่ายเบี่ยง",        "bad",    CLR["red"],    f"{QUALITY_RECOVER_BAD}"),
+            ]
+            for ri, (label, rtype, color, delta_txt) in enumerate(options, 1):
+                def _pick(rt=rtype):
+                    ok = db_resolve_quality_event(
+                        event_id, rt,
+                        self._supplier_for_qe["name"], self.current_user)
+                    if ok:
+                        delta = {"great": QUALITY_RECOVER_GREAT,
+                                 "normal": QUALITY_RECOVER_NORMAL,
+                                 "bad": QUALITY_RECOVER_BAD}[rt]
+                        cur_q = int(self._quality_score_lbl.cget("text"))
+                        updated_q = max(0, min(100, cur_q + delta))
+                        self._quality_score_lbl.configure(
+                            text=str(updated_q),
+                            text_color=CLR["green"] if updated_q >= 75 else (
+                                CLR["amber"] if updated_q >= 50 else CLR["red"]))
+                        _refresh_qe()
+                    pop.destroy()
+                CTkButton(pop, text=f"{label}  ({delta_txt})",
+                          fg_color=color, hover_color="#374151",
+                          height=30, font=F(size=12),
+                          command=_pick).grid(
+                    row=ri, column=0, padx=20, pady=4, sticky="ew")
+
+        _refresh_qe()
 
         # ── Win-Loss Log ───────────────────────────────────────────────────────
         sec_label(6, "Win-Loss Log")
@@ -1555,7 +1799,7 @@ class SupplierDetailPopup(CTkToplevel):
             "note":         self._note_e.get().strip(),
             # ── Manual scores ────────────────────────────────────────────
             "service_score": _clamp_score("_service_score_var"),
-            "quality_score": _clamp_score("_quality_score_var"),
+            # quality_score ไม่ save จาก manual — อัปเดตผ่าน event เท่านั้น
             # ── Zoning ──────────────────────────────────────────────────
             "dispatch_zone":    self._zone_var.get() if hasattr(self, "_zone_var") else "",
             "service_area":     self._service_var.get() if hasattr(self, "_service_var") else "National",
