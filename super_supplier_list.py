@@ -3403,7 +3403,7 @@ class SuperSupplierTab(CTkFrame):
 
         cols = ["supplier_id", "name", "category", "tier",
                 "availability", "contact", "phone",
-                "score", "win_pct", "credit_days", "note",
+                "score", "credit_days", "note",
                 "wh_zone", "wh_coordinates"]
         col_cfg = {
             "supplier_id":    ("รหัส",           140, "center"),
@@ -3414,7 +3414,6 @@ class SuperSupplierTab(CTkFrame):
             "contact":        ("ผู้ติดต่อ",        120, "w"),
             "phone":          ("เบอร์ติดต่อ",      120, "center"),
             "score":          ("Score",             70, "center"),
-            "win_pct":        ("Win %",             70, "center"),
             "credit_days":    ("เครดิต",            80, "center"),
             "note":           ("จุดแข็ง",          200, "w"),
             "wh_zone":        ("โซนที่ตั้ง",       130, "w"),
@@ -3633,7 +3632,6 @@ class SuperSupplierTab(CTkFrame):
                 row["contact"],
                 row.get("phone", "") or "",
                 row["score"],
-                f"{row['win_pct']}%",
                 cr,
                 row["note"],
                 row.get("wh_zone", "") or "",
@@ -3694,7 +3692,7 @@ class SuperSupplierTab(CTkFrame):
             coords_display = "📍 ดูแผนที่" if coords_raw.startswith("http") else coords_raw
             values = (row["supplier_id"], lock + row["name"] + (f"  {src}" if src else ""),
                       row["category"], tier, avail_display, row["contact"],
-                      row.get("phone", ""), row["score"], f"{row['win_pct']}%",
+                      row.get("phone", ""), row["score"],
                       cr, row["note"], row.get("wh_zone", ""), coords_display)
             tag = "locked" if row.get("is_locked") else \
                   ("closed" if avail == "ปิดชั่วคราว" else tier)
@@ -3764,7 +3762,7 @@ class SuperSupplierTab(CTkFrame):
 
         # เช็คว่า hover คอลัมน์ score — ใช้ column list เดียวกับที่ตารางสร้าง
         _tree_cols = ["supplier_id", "name", "category", "tier", "availability",
-                      "contact", "phone", "score", "win_pct", "credit_days",
+                      "contact", "phone", "score", "credit_days",
                       "note", "wh_zone", "wh_coordinates"]
         try:
             col_idx  = int(col_id.replace("#", "")) - 1
