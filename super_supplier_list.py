@@ -710,11 +710,10 @@ def calc_score(sup) -> int:
     return round((p + w + sv + s + q) / 5)
 
 
-def _calc_sla_score_from_pos(supplier_name: str) -> int:
+def _calc_all_sla_scores() -> dict:
     """
-    คำนวณ SLA score จาก purchase_orders:
-      SLA % = (PO ส่งตรงเวลา / PO ที่มีวันนัด) × 100
-    คืน 0 ถ้าไม่มีข้อมูล (expected_delivery_date ยังไม่ได้กรอก)
+    คำนวณ SLA score ทุก Supplier พร้อมกันใน 1 query (GROUP BY)
+    คืน dict: {supplier_name: sla_score (0-100)}
     """
     conn, use_pool = _get_conn()
     try:
@@ -722,23 +721,27 @@ def _calc_sla_score_from_pos(supplier_name: str) -> int:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute("""
                 SELECT
-                    COUNT(*)  AS total,
+                    supplier_name,
+                    COUNT(*) AS total,
                     SUM(CASE WHEN actual_received_date IS NOT NULL
                               AND actual_received_date <= expected_delivery_date
                              THEN 1 ELSE 0 END) AS on_time
                 FROM purchase_orders
-                WHERE supplier_name = %s
-                  AND expected_delivery_date IS NOT NULL
-            """, (supplier_name,))
-            row = cur.fetchone()
-            if not row or not row["total"]:
-                return 0
-            total   = int(row["total"] or 0)
-            on_time = int(row["on_time"] or 0)
-            return round(on_time / total * 100) if total > 0 else 0
+                WHERE expected_delivery_date IS NOT NULL
+                  AND supplier_name IS NOT NULL AND supplier_name != ''
+                GROUP BY supplier_name
+            """)
+            rows = cur.fetchall()
+            result = {}
+            for r in rows:
+                total   = int(r["total"]   or 0)
+                on_time = int(r["on_time"] or 0)
+                if total > 0:
+                    result[r["supplier_name"]] = round(on_time / total * 100)
+            return result
     except Exception as e:
-        print(f"[SSL] _calc_sla_score_from_pos error: {e}")
-        return 0
+        print(f"[SSL] _calc_all_sla_scores error: {e}")
+        return {}
     finally:
         _release_conn(conn, use_pool)
 
@@ -773,11 +776,13 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
         df["price_score"] = df["_bps"].fillna(df["price_score"]).astype(int)
         df = df.drop(columns=["_bwp", "_bps"])
 
-    # ── Merge SLA จาก purchase_orders (ถ้ามีข้อมูล expected_delivery_date) ──
-    def _live_sla(row):
-        live = _calc_sla_score_from_pos(row["name"])
-        return live if live > 0 else row.get("sla_score", 0)
-    df["sla_score"] = df.apply(_live_sla, axis=1)
+    # ── Merge SLA จาก purchase_orders (1 batch query แทน N queries) ──────────
+    sla_map = _calc_all_sla_scores()
+    if sla_map:
+        df["sla_score"] = df.apply(
+            lambda row: sla_map.get(row["name"]) or int(row.get("sla_score") or 0),
+            axis=1
+        )
 
     # ── Filters ──────────────────────────────────────────────────────────────
     if cat    != "ทุกหมวด":    df = df[df["category"]    == cat]
@@ -3287,7 +3292,8 @@ class SuperSupplierTab(CTkFrame):
         self.current_user  = current_user
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
-        self._debounce_job = None
+        self._debounce_job  = None
+        self._refresh_token = 0   # ป้องกัน race condition เมื่อ refresh ซ้อนกัน
         # ผูก app_container กับ DB layer
         global _app_container
         _app_container = app_container
@@ -3599,69 +3605,83 @@ class SuperSupplierTab(CTkFrame):
         self._debounce_job = self.after(350, self._refresh_table)
 
     def _refresh_table(self):
-        for item in self._tree.get_children():
-            self._tree.delete(item)
+        import threading
 
-        df = get_suppliers_df(
-            self._cat_var.get(), self._tier_var.get(),
-            self._avail_var.get(), self._search_e.get().strip(),
-            self._source_var.get(), self._credit_var.get())
-        self._df = df  # cache for tooltip lookup
+        # เพิ่ม token เพื่อยกเลิก result ที่ค้างจาก request เก่า
+        self._refresh_token += 1
+        token = self._refresh_token
 
-        avail_map = {"พร้อม": "✓ พร้อม", "สต็อกต่ำ": "⚠ ต่ำ", "ปิดชั่วคราว": "✗ ปิด"}
-        src_badge = {"Legacy": "[L]", "Manual": "[M]", "System": "[S]"}
+        self._row_lbl.configure(text="กำลังโหลด...")
 
-        for _, row in df.iterrows():
-            tier    = row["tier"]
-            avail   = row["availability"]
-            lock    = "🔒 " if row.get("is_locked") else ""
-            src     = src_badge.get(row.get("source_tag",""), "")
-            cr      = f"{int(row['credit_days'])} วัน" if row["credit_days"] else "เงินสด"
-            # แสดง reopen_date ถ้าปิดชั่วคราว
-            avail_display = avail_map.get(avail, avail)
-            if avail == "ปิดชั่วคราว" and row.get("reopen_date"):
-                avail_display += f" ({row['reopen_date']})"
-            coords_raw     = row.get("wh_coordinates", "") or ""
-            coords_display = "📍 ดูแผนที่" if coords_raw.startswith("http") else coords_raw
-            values = (
-                row["supplier_id"],
-                lock + row["name"] + (f"  {src}" if src else ""),
-                row["category"],
-                tier,
-                avail_display,
-                row["contact"],
-                row.get("phone", "") or "",
-                row["score"],
-                cr,
-                row["note"],
-                row.get("wh_zone", "") or "",
-                coords_display,
-            )
-            tag = "locked" if row.get("is_locked") else \
-                  ("closed" if avail == "ปิดชั่วคราว" else tier)
-            self._tree.insert("", "end", iid=str(int(row["id"])),
-                              values=values, tags=(tag,))
+        # snapshot filter values ก่อน thread เริ่ม (ป้องกัน StringVar race)
+        cat    = self._cat_var.get()
+        tier   = self._tier_var.get()
+        avail  = self._avail_var.get()
+        search = self._search_e.get().strip()
+        source = self._source_var.get()
+        credit = self._credit_var.get()
 
-        # ── check SN aging → แสดง badge ใน row_lbl ────────────────────────
-        aging_count = len(get_aging_sns(SN_AGING_DAYS))
-        aging_txt   = f"  ⚠ SN aging: {aging_count}" if aging_count else ""
-        self._row_lbl.configure(text=f"แสดง {len(df)} รายการ{aging_txt}")
+        def _load():
+            df       = get_suppliers_df(cat, tier, avail, search, source, credit)
+            all_sups = db_get_all_suppliers()
+            aging    = get_aging_sns(SN_AGING_DAYS)
+            audit    = db_get_audit_log()
+            self.after(0, lambda: _apply(df, all_sups, aging, audit))
 
-        all_sups = db_get_all_suppliers()
-        all_df   = pd.DataFrame(all_sups) if all_sups else pd.DataFrame(
-            columns=["id","supplier_id","tier"])
-        total_sn  = len(all_df[all_df["supplier_id"].str.startswith("SN")]) if not all_df.empty else 0
-        audit     = db_get_audit_log()
-        converted = sum(1 for l in audit if l.get("action") == "convert")
-        conv_pct  = f"{round(converted / max(total_sn + converted, 1) * 100)}%" \
-                    if (total_sn + converted) else "0%"
+        def _apply(df, all_sups, aging, audit):
+            if token != self._refresh_token:
+                return  # มี refresh ใหม่กว่าแล้ว ยกเลิก
 
-        self._kpi_vals["total"].configure(    text=str(len(all_df)))
-        self._kpi_vals["tier1"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 1"])) if not all_df.empty else "0")
-        self._kpi_vals["tier2"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 2"])) if not all_df.empty else "0")
-        self._kpi_vals["sn"].configure(       text=str(len(all_df[all_df["tier"] == "SN"]))      if not all_df.empty else "0")
-        self._kpi_vals["blacklist"].configure(text=str(len(all_df[all_df["tier"] == "Blacklist"])) if not all_df.empty else "0")
-        self._kpi_vals["conv_rate"].configure(text=conv_pct)
+            for item in self._tree.get_children():
+                self._tree.delete(item)
+
+            self._df = df
+
+            avail_map = {"พร้อม": "✓ พร้อม", "สต็อกต่ำ": "⚠ ต่ำ", "ปิดชั่วคราว": "✗ ปิด"}
+            src_badge = {"Legacy": "[L]", "Manual": "[M]", "System": "[S]"}
+
+            for _, row in df.iterrows():
+                t     = row["tier"]
+                av    = row["availability"]
+                lock  = "\U0001f512 " if row.get("is_locked") else ""
+                src   = src_badge.get(row.get("source_tag",""), "")
+                cr    = f"{int(row['credit_days'])} วัน" if row["credit_days"] else "เงินสด"
+                av_d  = avail_map.get(av, av)
+                if av == "ปิดชั่วคราว" and row.get("reopen_date"):
+                    av_d += f" ({row['reopen_date']})"
+                coords_raw = row.get("wh_coordinates", "") or ""
+                coords_d   = "\U0001f4cd ดูแผนที่" if coords_raw.startswith("http") else coords_raw
+                values = (
+                    row["supplier_id"],
+                    lock + row["name"] + (f"  {src}" if src else ""),
+                    row["category"], t, av_d,
+                    row["contact"], row.get("phone", "") or "",
+                    row["score"], cr, row["note"],
+                    row.get("wh_zone", "") or "", coords_d,
+                )
+                tag = "locked" if row.get("is_locked") else \
+                      ("closed" if av == "ปิดชั่วคราว" else t)
+                self._tree.insert("", "end", iid=str(int(row["id"])),
+                                  values=values, tags=(tag,))
+
+            aging_txt = f"  ⚠ SN aging: {len(aging)}" if aging else ""
+            self._row_lbl.configure(text=f"แสดง {len(df)} รายการ{aging_txt}")
+
+            all_df   = pd.DataFrame(all_sups) if all_sups else pd.DataFrame(
+                columns=["id","supplier_id","tier"])
+            total_sn  = len(all_df[all_df["supplier_id"].str.startswith("SN")]) if not all_df.empty else 0
+            converted = sum(1 for l in audit if l.get("action") == "convert")
+            conv_pct  = f"{round(converted / max(total_sn + converted, 1) * 100)}%" \
+                        if (total_sn + converted) else "0%"
+
+            self._kpi_vals["total"].configure(    text=str(len(all_df)))
+            self._kpi_vals["tier1"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 1"])) if not all_df.empty else "0")
+            self._kpi_vals["tier2"].configure(    text=str(len(all_df[all_df["tier"] == "Tier 2"])) if not all_df.empty else "0")
+            self._kpi_vals["sn"].configure(       text=str(len(all_df[all_df["tier"] == "SN"]))      if not all_df.empty else "0")
+            self._kpi_vals["blacklist"].configure(text=str(len(all_df[all_df["tier"] == "Blacklist"])) if not all_df.empty else "0")
+            self._kpi_vals["conv_rate"].configure(text=conv_pct)
+
+        threading.Thread(target=_load, daemon=True).start()
 
     _sort_state = {}
 

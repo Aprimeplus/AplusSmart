@@ -36,15 +36,15 @@ def run():
     try:
         with conn.cursor() as cur:
             for sql in MIGRATIONS:
-                print(f"▶ {sql}")
+                print(">> " + sql)
                 cur.execute(sql)
             conn.commit()
-        print("\n✅ Migration สำเร็จ")
-        print("   suppliers       ← service_score, quality_score")
-        print("   purchase_orders ← expected_delivery_date, actual_received_date")
+        print("\nMigration OK")
+        print("   suppliers       <- service_score, quality_score")
+        print("   purchase_orders <- expected_delivery_date, actual_received_date")
     except Exception as e:
         conn.rollback()
-        print(f"❌ Error: {e}")
+        print("ERROR: " + str(e))
     finally:
         conn.close()
 
