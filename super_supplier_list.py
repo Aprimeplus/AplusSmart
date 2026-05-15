@@ -820,7 +820,7 @@ def db_add_quality_event(supplier_name: str, reason: str, user: str) -> int:
             cur.execute("""
                 UPDATE suppliers
                 SET quality_score = GREATEST(0, LEAST(100, quality_score + %s))
-                WHERE name = %s
+                WHERE supplier_name = %s
             """, (QUALITY_CLAIM_DELTA, supplier_name))
             conn.commit()
             return event_id
@@ -859,7 +859,7 @@ def db_resolve_quality_event(event_id: int, recovery_label: str,
             cur.execute("""
                 UPDATE suppliers
                 SET quality_score = GREATEST(0, LEAST(100, quality_score + %s))
-                WHERE name = %s
+                WHERE supplier_name = %s
             """, (delta, supplier_name))
             conn.commit()
             return True
