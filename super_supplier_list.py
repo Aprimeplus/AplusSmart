@@ -990,15 +990,15 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
     # ── Auto-Tier: คำนวณ tier จาก score + Knockout Rule ──────────────────────
     if "_bench_total" in df.columns:
         df = df.drop(columns=["_bench_total"])
-    df["tier"] = df.apply(
-        lambda r: calc_auto_tier(
-            int(r["score"]),
-            int(r.get("quality_score", 0)),
-            bool(r.get("is_locked", False)),
-            str(r.get("tier", "Tier 2"))
-        ),
-        axis=1
-    )
+    # ใช้ zip บน numpy arrays แทน df.apply เพื่อป้องกัน pandas คืน DataFrame
+    _scores   = df["score"].to_numpy()
+    _quality  = df["quality_score"].fillna(0).astype(int).to_numpy()
+    _locked   = df["is_locked"].fillna(False).astype(bool).to_numpy()
+    _tiers    = df["tier"].fillna("Tier 2").astype(str).to_numpy()
+    df["tier"] = [
+        calc_auto_tier(int(s), int(q), bool(lk), str(t))
+        for s, q, lk, t in zip(_scores, _quality, _locked, _tiers)
+    ]
     return df.reset_index(drop=True)
 
 
