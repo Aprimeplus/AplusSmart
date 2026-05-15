@@ -956,9 +956,8 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
             axis=1
         )
 
-    # ── Filters ──────────────────────────────────────────────────────────────
+    # ── Filters (ยกเว้น tier — ต้องคำนวณ auto-tier ก่อน) ──────────────────────
     if cat    != "ทุกหมวด":    df = df[df["category"]    == cat]
-    if tier   != "ทุก Tier":   df = df[df["tier"]         == tier]
     if avail  != "ทุกสถานะ":   df = df[df["availability"] == avail]
     if source != "ทุก Source": df = df[df["source_tag"]   == source]
     if credit == "มีเครดิต (>0 วัน)":
@@ -990,7 +989,6 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
     # ── Auto-Tier: คำนวณ tier จาก score + Knockout Rule ──────────────────────
     if "_bench_total" in df.columns:
         df = df.drop(columns=["_bench_total"])
-    # ใช้ zip บน numpy arrays แทน df.apply เพื่อป้องกัน pandas คืน DataFrame
     _scores   = df["score"].to_numpy()
     _quality  = df["quality_score"].fillna(0).astype(int).to_numpy()
     _locked   = df["is_locked"].fillna(False).astype(bool).to_numpy()
@@ -999,6 +997,11 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
         calc_auto_tier(int(s), int(q), bool(lk), str(t))
         for s, q, lk, t in zip(_scores, _quality, _locked, _tiers)
     ]
+
+    # ── Tier filter หลัง auto-tier เพื่อให้ตรงกับ tier จริง ──────────────────
+    if tier != "ทุก Tier":
+        df = df[df["tier"] == tier]
+
     return df.reset_index(drop=True)
 
 
