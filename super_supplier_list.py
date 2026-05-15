@@ -194,10 +194,12 @@ def _row_to_sup(row: dict) -> dict:
         "availability":  row.get("availability")   or "พร้อม",
         "reopen_date":   row.get("reopen_date")    or "",
         "sn_created":    row.get("sn_created")     or "",
-        "win_pct":       _to_int_safe(row.get("win_pct")),
-        "sla_score":     _to_int_safe(row.get("sla_score")),
-        "price_score":   _to_int_safe(row.get("price_score")),
-        "credit_days":   _to_int_safe(row.get("credit_term")),
+        "win_pct":        _to_int_safe(row.get("win_pct")),
+        "sla_score":      _to_int_safe(row.get("sla_score")),
+        "price_score":    _to_int_safe(row.get("price_score")),
+        "service_score":  _to_int_safe(row.get("service_score")),
+        "quality_score":  _to_int_safe(row.get("quality_score")),
+        "credit_days":    _to_int_safe(row.get("credit_term")),
         "credit_term_label": row.get("credit_term_label") or "สด",
         "business_type": row.get("business_type")  or "",
         "standard_focus": row.get("standard_focus") or "",
@@ -225,7 +227,8 @@ def db_get_all_suppliers() -> list:
                        tier, category, is_locked, source_tag,
                        line_id, email, coverage_area, availability,
                        reopen_date, sn_created, win_pct, sla_score,
-                       price_score, note, blacklist_reason, win_loss_log,
+                       price_score, service_score, quality_score,
+                       note, blacklist_reason, win_loss_log,
                        dispatch_zone, service_area, logistics_assets,
                        business_type, standard_focus, credit_term_label,
                        wh_zone, wh_coordinates
@@ -277,11 +280,12 @@ def db_save_supplier(sup: dict, action: str, user: str):
                          credit_term, tier, category, source_tag,
                          line_id, email, coverage_area, availability,
                          sn_created, win_pct, sla_score, price_score,
+                         service_score, quality_score,
                          note, win_loss_log, created_by, created_at,
                          dispatch_zone, service_area, logistics_assets,
                          business_type, standard_focus, credit_term_label,
                          wh_zone, wh_coordinates)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,%s,%s)
                     RETURNING id
                 """, (
                     sup["name"], sup["supplier_id"], sup.get("contact",""),
@@ -290,6 +294,7 @@ def db_save_supplier(sup: dict, action: str, user: str):
                     sup.get("line_id",""), sup.get("email",""),
                     sup.get("coverage_area",""), "พร้อม",
                     sup.get("sn_created",""), 0, 0, 0,
+                    sup.get("service_score", 0), sup.get("quality_score", 0),
                     sup.get("note",""), "[]", user,
                     sup.get("dispatch_zone",""), sup.get("service_area","National"),
                     sup.get("logistics_assets",""),
@@ -307,7 +312,8 @@ def db_save_supplier(sup: dict, action: str, user: str):
                         is_locked      = %s, source_tag    = %s, line_id      = %s,
                         email          = %s, coverage_area = %s, availability = %s,
                         reopen_date    = %s, win_pct       = %s, sla_score    = %s,
-                        price_score    = %s, note          = %s, win_loss_log = %s,
+                        price_score    = %s, service_score = %s, quality_score = %s,
+                        note           = %s, win_loss_log  = %s,
                         blacklist_reason = %s,
                         dispatch_zone    = %s, service_area  = %s, logistics_assets = %s,
                         business_type    = %s, standard_focus = %s, credit_term_label = %s,
@@ -321,6 +327,7 @@ def db_save_supplier(sup: dict, action: str, user: str):
                     sup.get("coverage_area",""), sup.get("availability","พร้อม"),
                     sup.get("reopen_date",""), sup.get("win_pct", 0),
                     sup.get("sla_score", 0), sup.get("price_score", 0),
+                    sup.get("service_score", 0), sup.get("quality_score", 0),
                     sup.get("note",""), wl_json,
                     sup.get("blacklist_reason",""),
                     sup.get("dispatch_zone",""), sup.get("service_area","National"),
@@ -574,8 +581,8 @@ def _build_live_snapshot(cat: str) -> list:
             continue
         win_pct     = scores["win_pct"]
         price_score = scores["price_score"]
-        # weighted score: Price 60% + Win 20% (SLA ยังไม่มี → กระจาย 80/20)
-        score = round(price_score * 0.60 + win_pct * 0.40)
+        # ราคา 20% + สต็อก(Win%) 20% — service/sla/quality ยังไม่มีใน benchmark → เฉลี่ย 2 ตัวที่มี
+        score = round((price_score + win_pct) / 2)
         rows.append({"name": sup_name, "score": score,
                      "win_pct": win_pct, "tier": tier})
 
@@ -616,7 +623,8 @@ def db_save_quarterly_snapshot():
         import pandas as pd
         all_sups = db_get_all_suppliers()
         df_all = pd.DataFrame(all_sups) if all_sups else pd.DataFrame(
-            columns=["name","category","tier","win_pct","sla_score","price_score"])
+            columns=["name","category","tier","win_pct","sla_score","price_score",
+                     "service_score","quality_score"])
         if df_all.empty:
             return 0
 
@@ -642,7 +650,7 @@ def db_save_quarterly_snapshot():
                 continue
             win_pct     = scores["win_pct"]
             price_score = scores["price_score"]
-            score = round(price_score * 0.60 + win_pct * 0.40)
+            score = round((price_score + win_pct) / 2)
             rows_all.append({"name": sup_name, "category": category,
                              "score": score, "tier": tier})
 
@@ -684,14 +692,55 @@ def db_save_quarterly_snapshot():
 
 
 # =============================================================================
-#  WEIGHTED SCORE  Price 60% + Win 20% + SLA 20%
+#  WEIGHTED SCORE  ราคา 20% + สต็อก(Win%) 20% + บริการ 20% + SLA 20% + คุณภาพ 20%
 # =============================================================================
 def calc_score(sup) -> int:
     if isinstance(sup, dict):
-        p, w, s = sup.get("price_score", 0), sup.get("win_pct", 0), sup.get("sla_score", 0)
+        p  = sup.get("price_score",   0)
+        w  = sup.get("win_pct",       0)
+        sv = sup.get("service_score", 0)
+        s  = sup.get("sla_score",     0)
+        q  = sup.get("quality_score", 0)
     else:
-        p, w, s = sup["price_score"], sup["win_pct"], sup["sla_score"]
-    return round(p * 0.60 + w * 0.20 + s * 0.20)
+        p  = sup["price_score"]
+        w  = sup["win_pct"]
+        sv = sup.get("service_score", 0)
+        s  = sup["sla_score"]
+        q  = sup.get("quality_score", 0)
+    return round((p + w + sv + s + q) / 5)
+
+
+def _calc_sla_score_from_pos(supplier_name: str) -> int:
+    """
+    คำนวณ SLA score จาก purchase_orders:
+      SLA % = (PO ส่งตรงเวลา / PO ที่มีวันนัด) × 100
+    คืน 0 ถ้าไม่มีข้อมูล (expected_delivery_date ยังไม่ได้กรอก)
+    """
+    conn, use_pool = _get_conn()
+    try:
+        import psycopg2.extras
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*)  AS total,
+                    SUM(CASE WHEN actual_received_date IS NOT NULL
+                              AND actual_received_date <= expected_delivery_date
+                             THEN 1 ELSE 0 END) AS on_time
+                FROM purchase_orders
+                WHERE supplier_name = %s
+                  AND expected_delivery_date IS NOT NULL
+            """, (supplier_name,))
+            row = cur.fetchone()
+            if not row or not row["total"]:
+                return 0
+            total   = int(row["total"] or 0)
+            on_time = int(row["on_time"] or 0)
+            return round(on_time / total * 100) if total > 0 else 0
+    except Exception as e:
+        print(f"[SSL] _calc_sla_score_from_pos error: {e}")
+        return 0
+    finally:
+        _release_conn(conn, use_pool)
 
 # =============================================================================
 #  QUERY
@@ -706,7 +755,7 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
         "id","supplier_id","name","category","tier","is_locked","source_tag",
         "contact","phone","line_id","email","coverage_area","availability",
         "reopen_date","sn_created","win_pct","sla_score","price_score",
-        "credit_days","note","win_loss_log"
+        "service_score","quality_score","credit_days","note","win_loss_log"
     ])
     if df.empty:
         df["score"] = []
@@ -723,6 +772,12 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
         df["win_pct"]     = df["_bwp"].fillna(df["win_pct"]).astype(int)
         df["price_score"] = df["_bps"].fillna(df["price_score"]).astype(int)
         df = df.drop(columns=["_bwp", "_bps"])
+
+    # ── Merge SLA จาก purchase_orders (ถ้ามีข้อมูล expected_delivery_date) ──
+    def _live_sla(row):
+        live = _calc_sla_score_from_pos(row["name"])
+        return live if live > 0 else row.get("sla_score", 0)
+    df["sla_score"] = df.apply(_live_sla, axis=1)
 
     # ── Filters ──────────────────────────────────────────────────────────────
     if cat    != "ทุกหมวด":    df = df[df["category"]    == cat]
@@ -1131,25 +1186,61 @@ class SupplierDetailPopup(CTkToplevel):
                     variable=self._lock_var, font=F(size=12)).pack(side="left")
 
         # ── Weighted Score ─────────────────────────────────────────────────────
-        sec_label(4, "Weighted Score  (Price 60% + Win 20% + SLA 20%)")
+        sec_label(4, "Weighted Score  (แต่ละเกณฑ์ 20%  รวม 5 ด้าน)")
         sc_wrap = CTkFrame(body, fg_color=CLR["gray_lt"], corner_radius=8)
         sc_wrap.grid(row=5, column=0, sticky="ew", padx=20, pady=4)
-        sc_wrap.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        sc_wrap.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
-        total = calc_score(supplier)
-        for col, (lbl, val, color) in enumerate([
-            ("ราคา\n(60%)",  supplier.get("price_score", 0), CLR["blue"]),
-            ("Win %\n(20%)", supplier.get("win_pct",     0), CLR["teal"]),
-            ("SLA\n(20%)",   supplier.get("sla_score",   0), "#7C3AED"),
-            ("คะแนนรวม",     total,                          CLR["navy"]),
-        ]):
+        # แถว auto-calculated (ราคา, Win%, SLA)
+        auto_items = [
+            ("ราคา\n(20%)",       supplier.get("price_score", 0), CLR["blue"]),
+            ("สต็อก/Win\n(20%)",  supplier.get("win_pct",     0), CLR["teal"]),
+            ("SLA\n(20%)",        supplier.get("sla_score",   0), "#7C3AED"),
+        ]
+        for col, (lbl, val, color) in enumerate(auto_items):
             t = CTkFrame(sc_wrap, fg_color=CLR["white"], corner_radius=8,
                          border_width=1, border_color=CLR["border"])
-            t.grid(row=0, column=col, padx=6, pady=8, sticky="ew")
-            CTkLabel(t, text=str(val), font=F(size=22, weight="bold"),
-                     text_color=color).pack(pady=(8, 0))
-            CTkLabel(t, text=lbl, font=F(size=11), text_color=CLR["gray"],
-                     justify="center").pack(pady=(0, 8))
+            t.grid(row=0, column=col, padx=5, pady=(8, 2), sticky="ew")
+            CTkLabel(t, text=str(val), font=F(size=20, weight="bold"),
+                     text_color=color).pack(pady=(6, 0))
+            CTkLabel(t, text=lbl, font=F(size=10), text_color=CLR["gray"],
+                     justify="center").pack(pady=(0, 4))
+            CTkLabel(t, text="(อัตโนมัติ)", font=F(size=9),
+                     text_color=CLR["gray"]).pack(pady=(0, 6))
+
+        # คะแนนรวม (colspan 2 ด้านขวา ใช้ 2 cols เดียวกัน)
+        total = calc_score(supplier)
+        tr = CTkFrame(sc_wrap, fg_color=CLR["navy"], corner_radius=8)
+        tr.grid(row=0, column=3, columnspan=2, padx=5, pady=(8, 2), sticky="ew")
+        CTkLabel(tr, text=str(total), font=F(size=28, weight="bold"),
+                 text_color=CLR["white"]).pack(pady=(8, 0))
+        CTkLabel(tr, text="คะแนนรวม\n(เต็ม 100)", font=F(size=10),
+                 text_color="#93C5FD", justify="center").pack(pady=(0, 8))
+
+        # แถว manual input — บริการ + คุณภาพ
+        manual_row = CTkFrame(sc_wrap, fg_color="transparent")
+        manual_row.grid(row=1, column=0, columnspan=5, sticky="ew", padx=6, pady=(0, 8))
+        manual_row.grid_columnconfigure((1, 4), weight=1)
+
+        CTkLabel(manual_row, text="บริการ (20%):", font=F(size=12),
+                 text_color=CLR["gray"]).grid(row=0, column=0, padx=(4, 6), pady=4)
+        self._service_score_var = tk.StringVar(
+            value=str(supplier.get("service_score", 0)))
+        CTkEntry(manual_row, textvariable=self._service_score_var,
+                 width=70, font=F(size=13), justify="center").grid(
+            row=0, column=1, sticky="w", pady=4)
+        CTkLabel(manual_row, text="/ 100", font=F(size=11),
+                 text_color=CLR["gray"]).grid(row=0, column=2, padx=(4, 20), pady=4)
+
+        CTkLabel(manual_row, text="คุณภาพ (20%):", font=F(size=12),
+                 text_color=CLR["gray"]).grid(row=0, column=3, padx=(4, 6), pady=4)
+        self._quality_score_var = tk.StringVar(
+            value=str(supplier.get("quality_score", 0)))
+        CTkEntry(manual_row, textvariable=self._quality_score_var,
+                 width=70, font=F(size=13), justify="center").grid(
+            row=0, column=4, sticky="w", pady=4)
+        CTkLabel(manual_row, text="/ 100", font=F(size=11),
+                 text_color=CLR["gray"]).grid(row=0, column=5, padx=(4, 4), pady=4)
 
         # ── Win-Loss Log ───────────────────────────────────────────────────────
         sec_label(6, "Win-Loss Log")
@@ -1370,46 +1461,26 @@ class SupplierDetailPopup(CTkToplevel):
         self.destroy()
 
     def _save(self):
-        name  = self._inputs["name"].get().strip()
-        phone = self._inputs["phone"].get().strip()
-        manual_id = self._inputs["supplier_id"].get().strip() # ดึงค่ารหัสที่กรอก
+        for key, widget in self._fields.items():
+            self.sup[key] = widget.get().strip()
 
-        if not name:
-            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุชื่อบริษัท", parent=self)
-            return
-        if not phone:
-            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุเบอร์โทร", parent=self)
-            return
+        def _clamp_score(var_name):
+            try:
+                v = int(getattr(self, var_name).get())
+                return max(0, min(100, v))
+            except Exception:
+                return 0
 
-        # 🟢 เช็คว่า User พิมพ์รหัสมาเองหรือไม่
-        if manual_id:
-            if db_check_sw_duplicate(manual_id):
-                messagebox.showerror("รหัสซ้ำ", f"รหัส '{manual_id}' มีอยู่ในระบบแล้ว", parent=self)
-                return
-            final_code = manual_id
-            tier = "Tier 2"  # มีรหัสทางการแล้ว ให้เป็น Tier 2
-        else:
-            final_code = db_next_sn_code(self.current_user)
-            tier = "SN"      # ไม่มีรหัส ให้เป็นระบบชั่วคราว SN
-
-        new_sup = {
-            "id": 0,
-            "supplier_id":   final_code,  # ใช้รหัสที่ตัดสินใจแล้ว
-            "name":          name,
-            "category":      self._cat_var.get(),
-            "tier":          tier,        # ใช้ Tier ที่ตัดสินใจแล้ว
-            "is_locked": False,
-            "source_tag":    "Manual",
-            "contact":       self._inputs["contact"].get().strip(),
-            "phone":         phone,
-            "line_id":       self._inputs["line_id"].get().strip(),
-            "email":         self._inputs["email"].get().strip(),
-            "coverage_area": self._inputs["coverage_area"].get().strip(),
-            "availability":  "พร้อม",
-            "sn_created":    datetime.now().strftime("%Y-%m-%d"),
-            "win_pct": 0, "sla_score": 0, "price_score": 0, "credit_days": 0,
-            "note": "", "win_loss_log": [],
-            # ── Zoning ──────────────────────────────────────────────────────
+        self.sup.update({
+            "availability": self._avail_var.get(),
+            "reopen_date":  self._reopen_entry.get().strip(),
+            "tier":         self._tier_var.get(),
+            "is_locked":    self._lock_var.get(),
+            "note":         self._note_e.get().strip(),
+            # ── Manual scores ────────────────────────────────────────────
+            "service_score": _clamp_score("_service_score_var"),
+            "quality_score": _clamp_score("_quality_score_var"),
+            # ── Zoning ──────────────────────────────────────────────────
             "dispatch_zone":    self._zone_var.get() if hasattr(self, "_zone_var") else "",
             "service_area":     self._service_var.get() if hasattr(self, "_service_var") else "National",
             "logistics_assets": ",".join(
@@ -1420,15 +1491,24 @@ class SupplierDetailPopup(CTkToplevel):
             "credit_term_label": self._credit_lbl_var.get() if hasattr(self, "_credit_lbl_var") else "สด",
             "wh_zone":           self._wh_zone_e.get().strip() if hasattr(self, "_wh_zone_e") else "",
             "wh_coordinates":    self._wh_coord_e.get().strip() if hasattr(self, "_wh_coord_e") else "",
-        }
-        ok = db_save_supplier(new_sup, action="add", user=self.current_user)
+        })
+        result = self._wl_result.get()
+        reason = self._wl_reason.get() if result == "Loss" else ""
+        if hasattr(self, "_wl_touched") and self._wl_touched:
+            self.sup.setdefault("win_loss_log", []).append({
+                "date":   datetime.now().strftime("%Y-%m"),
+                "result": result,
+                "reason": reason,
+            })
+        ok = db_save_supplier(self.sup, action="edit", user=self.current_user)
         if ok:
-            messagebox.showinfo("สร้างสำเร็จ",
-                                f"เพิ่ม Supplier เรียบร้อยแล้ว\nรหัส: {final_code}", parent=self)
+            messagebox.showinfo("บันทึกสำเร็จ",
+                                f"อัปเดตข้อมูล '{self.sup['name']}' เรียบร้อยแล้ว",
+                                parent=self)
         else:
             messagebox.showerror("ผิดพลาด", "บันทึกลงฐานข้อมูลไม่สำเร็จ", parent=self)
-        if self.on_success:
-            self.on_success()
+        if self.on_save:
+            self.on_save(self.sup)
         self.destroy()
 
 # =============================================================================
@@ -1694,8 +1774,9 @@ class AddSupplierPopup(CTkToplevel):
             "coverage_area": self._inputs["coverage_area"].get().strip(),
             "availability":  "พร้อม",
             "sn_created":    datetime.now().strftime("%Y-%m-%d"),
-            "win_pct": 0, "sla_score": 0, "price_score": 0, "credit_days": 0,
-            "note": "", "win_loss_log": [],
+            "win_pct": 0, "sla_score": 0, "price_score": 0,
+            "service_score": 0, "quality_score": 0,
+            "credit_days": 0, "note": "", "win_loss_log": [],
             # ── Zoning ──────────────────────────────────────────────────────
             "dispatch_zone":    self._zone_var.get() if hasattr(self, "_zone_var") else "",
             "service_area":     self._service_var.get() if hasattr(self, "_service_var") else "National",
@@ -1872,7 +1953,7 @@ class Top5View(CTkToplevel):
         CTkLabel(hdr, text="Top 5 Super Supplier ต่อหมวดสินค้า",
                  font=F(size=15, weight="bold"),
                  text_color=CLR["white"]).grid(row=0, column=0, padx=16, pady=10, sticky="w")
-        CTkLabel(hdr, text="Score = Price 60% + Win 20% + SLA 20%",
+        CTkLabel(hdr, text="Score = ราคา 20% + สต็อก 20% + บริการ 20% + SLA 20% + คุณภาพ 20%",
                  font=F(size=11), text_color="#93C5FD").grid(
             row=1, column=0, padx=16, pady=(0, 10), sticky="w")
 
@@ -2394,7 +2475,8 @@ class ExportPopup(CTkToplevel):
         cols = ["supplier_id", "name", "category", "tier", "source_tag",
                 "availability", "contact", "phone", "line_id", "email",
                 "coverage_area", "score", "win_pct", "sla_score",
-                "price_score", "credit_days", "note"]
+                "price_score", "service_score", "quality_score",
+                "credit_days", "note"]
         export_cols = [c for c in cols if c in self.df.columns]
         return self.df[export_cols].copy()
 
@@ -2648,8 +2730,8 @@ class BulkImportPopup(CTkToplevel):
     REQUIRED_COLS = {"name", "category", "phone"}
     OPTIONAL_COLS = {
         "contact", "line_id", "email", "coverage_area",
-        "win_pct", "sla_score", "price_score", "credit_days",
-        "tier", "source_tag", "note", "availability",
+        "win_pct", "sla_score", "price_score", "service_score", "quality_score",
+        "credit_days", "tier", "source_tag", "note", "availability",
     }
 
     def __init__(self, master, on_success=None, current_user="USER_DEMO"):
@@ -2678,7 +2760,8 @@ class BulkImportPopup(CTkToplevel):
         CTkLabel(inst,
                  text="คอลัมน์บังคับ: name, category, phone\n"
                       "คอลัมน์เสริม: contact, line_id, email, coverage_area, tier, source_tag,\n"
-                      "              win_pct, sla_score, price_score, credit_days, note",
+                      "              win_pct, sla_score, price_score, service_score, quality_score,\n"
+                      "              credit_days, note",
                  font=F(size=11), text_color=CLR["blue"],
                  justify="left").pack(padx=12, pady=8, anchor="w")
 
@@ -2733,10 +2816,11 @@ class BulkImportPopup(CTkToplevel):
         import csv
         header = ["name", "category", "phone", "contact", "line_id", "email",
                   "coverage_area", "tier", "source_tag", "win_pct",
-                  "sla_score", "price_score", "credit_days", "note"]
+                  "sla_score", "price_score", "service_score", "quality_score",
+                  "credit_days", "note"]
         sample = ["ตัวอย่าง บริษัท จำกัด", "เหล็กเส้น", "081-000-0000",
                   "คุณตัวอย่าง", "@example", "ex@company.com",
-                  "กรุงเทพ", "Tier 2", "Manual", "50", "80", "75", "30", ""]
+                  "กรุงเทพ", "Tier 2", "Manual", "50", "80", "75", "0", "0", "30", ""]
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
             w.writerow(header)
@@ -2859,13 +2943,15 @@ class BulkImportPopup(CTkToplevel):
                 "email":        _safe(row, "email"),
                 "coverage_area":_safe(row, "coverage_area"),
                 "availability": _safe(row, "availability", "พร้อม"),
-                "win_pct":      _num("win_pct"),
-                "sla_score":    _num("sla_score"),
-                "price_score":  _num("price_score"),
-                "credit_days":  _num("credit_days"),
-                "note":         _safe(row, "note"),
-                "win_loss_log": [],
-                "sn_created":   datetime.now().strftime("%Y-%m-%d"),
+                "win_pct":       _num("win_pct"),
+                "sla_score":     _num("sla_score"),
+                "price_score":   _num("price_score"),
+                "service_score": _num("service_score"),
+                "quality_score": _num("quality_score"),
+                "credit_days":   _num("credit_days"),
+                "note":          _safe(row, "note"),
+                "win_loss_log":  [],
+                "sn_created":    datetime.now().strftime("%Y-%m-%d"),
             }
             ok = db_save_supplier(new_sup, action="add", user=self.current_user)
             if ok:
@@ -3700,17 +3786,21 @@ class SuperSupplierTab(CTkFrame):
             if not sup:
                 self._tooltip.withdraw()
                 return
-            p = sup.get("price_score", 0)
-            w = sup.get("win_pct",     0)
-            s = sup.get("sla_score",   0)
+            p  = sup.get("price_score",   0)
+            w  = sup.get("win_pct",       0)
+            sv = sup.get("service_score", 0)
+            s  = sup.get("sla_score",     0)
+            q  = sup.get("quality_score", 0)
             total = calc_score(sup)
             text = (f"Score Breakdown\n"
-                    f"────────────────\n"
-                    f"ราคา  (×60%)  {p:>3}  →  {round(p*0.60):>3}\n"
-                    f"Win % (×20%)  {w:>3}  →  {round(w*0.20):>3}\n"
-                    f"SLA   (×20%)  {s:>3}  →  {round(s*0.20):>3}\n"
-                    f"────────────────\n"
-                    f"รวม            {total:>3}")
+                    f"─────────────────\n"
+                    f"ราคา    (×20%)  {p:>3}  →  {round(p*0.20):>3}\n"
+                    f"สต็อก   (×20%)  {w:>3}  →  {round(w*0.20):>3}\n"
+                    f"บริการ  (×20%)  {sv:>3}  →  {round(sv*0.20):>3}\n"
+                    f"SLA     (×20%)  {s:>3}  →  {round(s*0.20):>3}\n"
+                    f"คุณภาพ  (×20%)  {q:>3}  →  {round(q*0.20):>3}\n"
+                    f"─────────────────\n"
+                    f"รวม              {total:>3}")
             self._tooltip_lbl.configure(text=text)
             self._tooltip.wm_geometry(f"+{event.x_root+12}+{event.y_root-10}")
             self._tooltip.deiconify()
