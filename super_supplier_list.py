@@ -3630,12 +3630,12 @@ class SuperSupplierTab(CTkFrame):
                 avail_display,
                 row["contact"],
                 row.get("phone", "") or "",
-                row.get("wh_zone", "") or "",
-                coords_display,
                 row["score"],
                 f"{row['win_pct']}%",
                 cr,
                 row["note"],
+                row.get("wh_zone", "") or "",
+                coords_display,
             )
             tag = "locked" if row.get("is_locked") else \
                   ("closed" if avail == "ปิดชั่วคราว" else tier)
@@ -3691,8 +3691,8 @@ class SuperSupplierTab(CTkFrame):
             coords_display = "📍 ดูแผนที่" if coords_raw.startswith("http") else coords_raw
             values = (row["supplier_id"], lock + row["name"] + (f"  {src}" if src else ""),
                       row["category"], tier, avail_display, row["contact"],
-                      row.get("phone", ""), row.get("wh_zone", ""), coords_display,
-                      row["score"], f"{row['win_pct']}%", cr, row["note"])
+                      row.get("phone", ""), row["score"], f"{row['win_pct']}%",
+                      cr, row["note"], row.get("wh_zone", ""), coords_display)
             tag = "locked" if row.get("is_locked") else \
                   ("closed" if avail == "ปิดชั่วคราว" else tier)
             self._tree.insert("", "end", iid=str(int(row["id"])),
