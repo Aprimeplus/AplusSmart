@@ -3460,6 +3460,7 @@ class SuperSupplierTab(CTkFrame):
         self._tooltip_lbl.pack()
         self._tooltip_col  = None   # คอลัมน์ที่ hover อยู่
         self._tooltip_iid  = None   # row iid ที่ hover อยู่
+        self._df           = pd.DataFrame()  # cache ของ df ที่แสดงในตาราง
 
         ctx = tk.Menu(self, tearoff=0)
         ctx.add_command(label="ดู / แก้ไข Profile",  command=self._open_detail)
@@ -3606,6 +3607,7 @@ class SuperSupplierTab(CTkFrame):
             self._cat_var.get(), self._tier_var.get(),
             self._avail_var.get(), self._search_e.get().strip(),
             self._source_var.get(), self._credit_var.get())
+        self._df = df  # cache for tooltip lookup
 
         avail_map = {"พร้อม": "✓ พร้อม", "สต็อกต่ำ": "⚠ ต่ำ", "ปิดชั่วคราว": "✗ ปิด"}
         src_badge = {"Legacy": "[L]", "Manual": "[M]", "System": "[S]"}
@@ -3673,6 +3675,7 @@ class SuperSupplierTab(CTkFrame):
                               self._source_var.get(), self._credit_var.get())
         if col in df.columns:
             df = df.sort_values(col, ascending=asc).reset_index(drop=True)
+        self._df = df  # cache for tooltip lookup
         avail_map = {"พร้อม": "✓ พร้อม", "สต็อกต่ำ": "⚠ ต่ำ", "ปิดชั่วคราว": "✗ ปิด"}
         src_badge = {"Legacy": "[L]", "Manual": "[M]", "System": "[S]"}
         for item in self._tree.get_children():
@@ -3759,12 +3762,13 @@ class SuperSupplierTab(CTkFrame):
         col_id = self._tree.identify_column(event.x)
         iid    = self._tree.identify_row(event.y)
 
-        # เช็คว่า hover คอลัมน์ score (column #8 = index 7 = score)
-        cols = ["supplier_id","name","category","tier","availability",
-                "contact","coverage_area","score","win_pct","credit_days","note"]
+        # เช็คว่า hover คอลัมน์ score — ใช้ column list เดียวกับที่ตารางสร้าง
+        _tree_cols = ["supplier_id", "name", "category", "tier", "availability",
+                      "contact", "phone", "score", "win_pct", "credit_days",
+                      "note", "wh_zone", "wh_coordinates"]
         try:
-            col_idx = int(col_id.replace("#","")) - 1
-            col_name = cols[col_idx] if col_idx < len(cols) else ""
+            col_idx  = int(col_id.replace("#", "")) - 1
+            col_name = _tree_cols[col_idx] if col_idx < len(_tree_cols) else ""
         except Exception:
             col_name = ""
 
@@ -3781,17 +3785,22 @@ class SuperSupplierTab(CTkFrame):
         self._tooltip_iid = iid
         try:
             row_id = int(iid)
-            _all = db_get_all_suppliers()
-            sup = next((s for s in _all if s["id"] == row_id), None)
-            if not sup:
+            # ใช้ df ที่ merge กับ benchmark แล้ว (เหมือนที่ตารางแสดง)
+            df = self._df
+            if df.empty or "id" not in df.columns:
                 self._tooltip.withdraw()
                 return
-            p  = sup.get("price_score",   0)
-            w  = sup.get("win_pct",       0)
-            sv = sup.get("service_score", 0)
-            s  = sup.get("sla_score",     0)
-            q  = sup.get("quality_score", 0)
-            total = calc_score(sup)
+            rows = df[df["id"] == row_id]
+            if rows.empty:
+                self._tooltip.withdraw()
+                return
+            sup = rows.iloc[0]
+            p  = int(sup.get("price_score",   0) or 0)
+            w  = int(sup.get("win_pct",       0) or 0)
+            sv = int(sup.get("service_score", 0) or 0)
+            s  = int(sup.get("sla_score",     0) or 0)
+            q  = int(sup.get("quality_score", 0) or 0)
+            total = int(sup.get("score", calc_score(sup.to_dict())))
             text = (f"Score Breakdown\n"
                     f"─────────────────\n"
                     f"ราคา    (×20%)  {p:>3}  →  {round(p*0.20):>3}\n"
