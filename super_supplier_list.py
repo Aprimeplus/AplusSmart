@@ -47,6 +47,7 @@ CLR = {
 TIER_STYLE = {
     "Tier 1":    {"bg": CLR["green_lt"],  "fg": CLR["green"],  "dot": "#10B981"},
     "Tier 2":    {"bg": CLR["blue_lt"],   "fg": CLR["blue"],   "dot": "#3B82F6"},
+    "Tier 3":    {"bg": "#FFF7ED",        "fg": "#C2410C",     "dot": "#F97316"},
     "SN":        {"bg": CLR["amber_lt"],  "fg": CLR["amber"],  "dot": "#F59E0B"},
     "Blacklist": {"bg": CLR["red_lt"],    "fg": CLR["red"],    "dot": "#EF4444"},
 }
@@ -75,7 +76,14 @@ SOURCE_TAG_STYLE = {
 DEMOTE_THRESHOLD  = 30   # Win% ต่ำกว่านี้ → แสดง Demote suggestion
 PROMOTE_THRESHOLD = 60   # Tier 2 ที่ Score สูงกว่านี้ → แสดง Promote alert
 
-MOCK_TIERS       = ["ทุก Tier", "Tier 1", "Tier 2", "SN", "Blacklist"]
+# Auto-Tier thresholds (doc: Super Supplier List Requirement 15.5.2569)
+AUTO_TIER_T1        = 85   # score >= 85 AND quality >= KNOCKOUT_QUALITY → Tier 1
+AUTO_TIER_T2        = 70   # score 70-84 → Tier 2
+KNOCKOUT_QUALITY    = 15   # quality_score ต้องไม่ต่ำกว่านี้จึงจะขึ้น Tier 1 ได้
+WIN_GRACE_PERIOD_MO = 3    # เดือน grace period สำหรับ Supplier ใหม่
+WIN_GRACE_DEFAULT   = 50   # win_pct default (= 10/20) ระหว่าง grace period
+
+MOCK_TIERS       = ["ทุก Tier", "Tier 1", "Tier 2", "Tier 3", "SN", "Blacklist"]
 MOCK_AVAIL       = ["ทุกสถานะ", "พร้อม", "สต็อกต่ำ", "ปิดชั่วคราว"]
 MOCK_SOURCE_TAGS = ["ทุก Source", "Legacy", "Manual", "System"]
 MOCK_CREDIT_OPT  = ["ทุกเครดิต", "มีเครดิต (>0 วัน)", "เงินสด"]
@@ -577,11 +585,11 @@ def _build_live_snapshot(cat: str) -> list:
         category = cat_map.get(sup_name) or scores.get("category", "")
         if cat and category != cat:
             continue
-        if tier not in ("Tier 1", "Tier 2"):
+        if tier not in ("Tier 1", "Tier 2", "Tier 3"):
             continue
         win_pct     = scores["win_pct"]
         price_score = scores["price_score"]
-        # ราคา 20% + สต็อก(Win%) 20% — service/sla/quality ยังไม่มีใน benchmark → เฉลี่ย 2 ตัวที่มี
+        # ราคา 20% + สต็อก(Win%) 20% — service/sla/quality ยังไม่มีใน snapshot → เฉลี่ย 2 ตัวที่มี
         score = round((price_score + win_pct) / 2)
         rows.append({"name": sup_name, "score": score,
                      "win_pct": win_pct, "tier": tier})
@@ -710,6 +718,28 @@ def calc_score(sup) -> int:
     return round((p + w + sv + s + q) / 5)
 
 
+def calc_auto_tier(score: int, quality_score: int,
+                   is_locked: bool, current_tier: str) -> str:
+    """
+    คำนวณ Tier อัตโนมัติตาม score + Knockout Rule
+    - Blacklist / SN → ไม่เปลี่ยน (ต้องกด manual)
+    - is_locked      → ล็อค Tier 1 ถาวร
+    - score >= 85 AND quality >= 15 → Tier 1
+    - score >= 70                   → Tier 2
+    - score <  70                   → Tier 3
+    """
+    if current_tier in ("Blacklist", "SN"):
+        return current_tier
+    if is_locked:
+        return "Tier 1"
+    if score >= AUTO_TIER_T1 and quality_score >= KNOCKOUT_QUALITY:
+        return "Tier 1"
+    elif score >= AUTO_TIER_T2:
+        return "Tier 2"
+    else:
+        return "Tier 3"
+
+
 def _calc_all_sla_scores() -> dict:
     """
     คำนวณ SLA score ทุก Supplier พร้อมกันใน 1 query (GROUP BY)
@@ -768,13 +798,35 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
     bench = _calc_supplier_scores_from_benchmark(cat=None)
     if bench:
         bench_df = pd.DataFrame([
-            {"name": k, "_bwp": v["win_pct"], "_bps": v["price_score"]}
+            {"name": k, "_bwp": v["win_pct"], "_bps": v["price_score"],
+             "_btotal": v.get("total", 99)}
             for k, v in bench.items()
         ])
         df = df.merge(bench_df, on="name", how="left")
         df["win_pct"]     = df["_bwp"].fillna(df["win_pct"]).astype(int)
         df["price_score"] = df["_bps"].fillna(df["price_score"]).astype(int)
-        df = df.drop(columns=["_bwp", "_bps"])
+        df["_bench_total"] = df["_btotal"].fillna(99).astype(int)
+        df = df.drop(columns=["_bwp", "_bps", "_btotal"])
+    else:
+        df["_bench_total"] = 99
+
+    # ── Grace Period: Supplier ใหม่ (< 3 เดือน หรือ quote < 5 ครั้ง) ─────────
+    from datetime import date as _date
+    today = _date.today()
+    def _apply_grace(row):
+        if row.get("tier") not in ("Tier 1", "Tier 2", "Tier 3"):
+            return int(row.get("win_pct", 0))
+        created_str = str(row.get("sn_created") or "")[:10]
+        if created_str:
+            try:
+                created = datetime.strptime(created_str, "%Y-%m-%d").date()
+                months_old = (today.year - created.year) * 12 + (today.month - created.month)
+                if months_old < WIN_GRACE_PERIOD_MO and int(row.get("_bench_total", 99)) < 5:
+                    return WIN_GRACE_DEFAULT
+            except ValueError:
+                pass
+        return int(row.get("win_pct", 0))
+    df["win_pct"] = df.apply(_apply_grace, axis=1)
 
     # ── Merge SLA จาก purchase_orders (1 batch query แทน N queries) ──────────
     sla_map = _calc_all_sla_scores()
@@ -802,12 +854,31 @@ def get_suppliers_df(cat="ทุกหมวด", tier="ทุก Tier", avail="
             df["coverage_area"].str.lower().str.contains(kw, na=False)
         ]
     df = df.copy()
-    # vectorized score — ไม่ใช้ apply() เพื่อป้องกัน DataFrame expansion
+    # ── Score: 5 เกณฑ์ × 20% ─────────────────────────────────────────────────
+    for col in ("service_score", "quality_score"):
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
     df["score"] = (
-        df["price_score"].astype(float) * 0.60 +
-        df["win_pct"].astype(float)     * 0.20 +
-        df["sla_score"].astype(float)   * 0.20
-    ).round().astype(int)
+        df["price_score"].astype(float)   +
+        df["win_pct"].astype(float)        +
+        df["service_score"].astype(float)  +
+        df["sla_score"].astype(float)      +
+        df["quality_score"].astype(float)
+    ).div(5).round().astype(int)
+
+    # ── Auto-Tier: คำนวณ tier จาก score + Knockout Rule ──────────────────────
+    if "_bench_total" in df.columns:
+        df = df.drop(columns=["_bench_total"])
+    df["tier"] = df.apply(
+        lambda r: calc_auto_tier(
+            int(r["score"]),
+            int(r.get("quality_score", 0)),
+            bool(r.get("is_locked", False)),
+            str(r.get("tier", "Tier 2"))
+        ),
+        axis=1
+    )
     return df.reset_index(drop=True)
 
 
@@ -1181,7 +1252,7 @@ class SupplierDetailPopup(CTkToplevel):
             row=2, column=0, sticky="w", pady=5, padx=(0, 10))
         self._tier_var = tk.StringVar(value=supplier.get("tier", "SN"))
         CTkOptionMenu(sf, variable=self._tier_var,
-                      values=["Tier 1", "Tier 2", "SN", "Blacklist"],
+                      values=["Tier 1", "Tier 2", "Tier 3", "SN", "Blacklist"],
                       font=F(size=13)).grid(row=2, column=1, sticky="w", pady=5)
 
         lock_row = CTkFrame(sf, fg_color="transparent")
@@ -3436,6 +3507,7 @@ class SuperSupplierTab(CTkFrame):
 
         self._tree.tag_configure("Tier 1",    background="#F0FDF4")
         self._tree.tag_configure("Tier 2",    background="#EFF6FF")
+        self._tree.tag_configure("Tier 3",    background="#FFF7ED")
         self._tree.tag_configure("SN",        background="#FFFBEB")
         self._tree.tag_configure("Blacklist", background="#FFF1F2")
         self._tree.tag_configure("locked",    background="#E0F2FE")
@@ -3472,6 +3544,7 @@ class SuperSupplierTab(CTkFrame):
         ctx.add_separator()
         ctx.add_command(label="Promote → Tier 1",    command=lambda: self._quick_tier("Tier 1"))
         ctx.add_command(label="Demote → Tier 2",     command=lambda: self._quick_tier("Tier 2"))
+        ctx.add_command(label="Demote → Tier 3",     command=lambda: self._quick_tier("Tier 3"))
         ctx.add_command(label="Convert SN → SW",     command=self._quick_convert)
         ctx.add_separator()
         ctx.add_command(label="Flag Blacklist",       command=lambda: self._quick_tier("Blacklist"))
