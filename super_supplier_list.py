@@ -1451,6 +1451,24 @@ class SupplierDetailPopup(CTkToplevel):
         self._qe_frame = qe_wrap
         self._supplier_for_qe = supplier
 
+        def _reload_quality_score():
+            """อ่าน quality_score จาก DB จริง แล้วอัปเดต label"""
+            conn, use_pool = _get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT quality_score FROM suppliers WHERE supplier_name = %s",
+                                (self._supplier_for_qe["name"],))
+                    row = cur.fetchone()
+                    q = int(row[0] or 0) if row else 0
+                    self._quality_score_lbl.configure(
+                        text=str(q),
+                        text_color=CLR["green"] if q >= 75 else (
+                            CLR["amber"] if q >= 50 else CLR["red"]))
+            except Exception as e:
+                print(f"[SSL] _reload_quality_score error: {e}")
+            finally:
+                _release_conn(conn, use_pool)
+
         def _refresh_qe():
             for w in self._qe_frame.winfo_children():
                 w.destroy()
@@ -1511,12 +1529,7 @@ class SupplierDetailPopup(CTkToplevel):
                 eid = db_add_quality_event(
                     self._supplier_for_qe["name"], reason, self.current_user)
                 if eid > 0:
-                    # อัปเดต score label
-                    updated_q = max(0, int(self._quality_score_lbl.cget("text")) + QUALITY_CLAIM_DELTA)
-                    self._quality_score_lbl.configure(
-                        text=str(updated_q),
-                        text_color=CLR["green"] if updated_q >= 75 else (
-                            CLR["amber"] if updated_q >= 50 else CLR["red"]))
+                    _reload_quality_score()
                     _refresh_qe()
                 pop.destroy()
             CTkButton(pop, text="ยืนยัน หัก -50 คะแนน",
@@ -1546,15 +1559,7 @@ class SupplierDetailPopup(CTkToplevel):
                         event_id, rt,
                         self._supplier_for_qe["name"], self.current_user)
                     if ok:
-                        delta = {"great": QUALITY_RECOVER_GREAT,
-                                 "normal": QUALITY_RECOVER_NORMAL,
-                                 "bad": QUALITY_RECOVER_BAD}[rt]
-                        cur_q = int(self._quality_score_lbl.cget("text"))
-                        updated_q = max(0, min(100, cur_q + delta))
-                        self._quality_score_lbl.configure(
-                            text=str(updated_q),
-                            text_color=CLR["green"] if updated_q >= 75 else (
-                                CLR["amber"] if updated_q >= 50 else CLR["red"]))
+                        _reload_quality_score()
                         _refresh_qe()
                     pop.destroy()
                 CTkButton(pop, text=f"{label}  ({delta_txt})",
