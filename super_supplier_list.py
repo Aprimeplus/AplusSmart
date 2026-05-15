@@ -1441,11 +1441,11 @@ class SupplierDetailPopup(CTkToplevel):
         CTkLabel(manual_row, text="/ 100  (อัตโนมัติ)", font=F(size=11),
                  text_color=CLR["gray"]).grid(row=0, column=5, padx=(4, 4), pady=4)
 
-        # ── Quality Events ────────────────────────────────────────────────────
-        sec_label(5, "คุณภาพสินค้า — Event History")
+        # ── Quality Events (row 51-52: ระหว่าง Weighted Score row5 กับ Win-Loss row6) ──
+        sec_label(51, "คุณภาพสินค้า — Event History")
         qe_wrap = CTkFrame(body, fg_color=CLR["white"], corner_radius=8,
                            border_width=1, border_color=CLR["border"])
-        qe_wrap.grid(row=6, column=0, sticky="ew", padx=20, pady=(0, 6))
+        qe_wrap.grid(row=52, column=0, sticky="ew", padx=20, pady=(0, 6))
         qe_wrap.grid_columnconfigure(0, weight=1)
 
         self._qe_frame = qe_wrap
