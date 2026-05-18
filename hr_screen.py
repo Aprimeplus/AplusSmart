@@ -5455,17 +5455,90 @@ class HRScreen(CTkFrame):
         table_container = CTkFrame(parent_tab, fg_color="transparent")
         table_container.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
         
-        # Header เล็กๆ เหนือตาราง
-        header_row = CTkFrame(table_container, fg_color="transparent", height=30)
+        # Header + Toggle
+        header_row = CTkFrame(table_container, fg_color="transparent", height=36)
         header_row.pack(fill="x", pady=(0, 5))
-        CTkLabel(header_row, text="📜 ประวัติรายการที่ถูกยกเลิก (Cancelled History)", font=self.header_font_table, text_color="#EF4444").pack(side="left")
+        CTkLabel(header_row, text="📜 ประวัติรายการยกเลิก", font=self.header_font_table, text_color="#EF4444").pack(side="left")
 
-        # Frame สำหรับวาง Treeview (ใช้ CTkFrame ธรรมดา + pack fill both เพื่อแก้ปัญหา Layout เพี้ยน)
+        self._cancel_view_mode = "normal"
+        toggle_frame = CTkFrame(header_row, fg_color="transparent")
+        toggle_frame.pack(side="right")
+        self._toggle_normal_btn = CTkButton(
+            toggle_frame, text="ยกเลิก SO", width=110, height=30,
+            fg_color="#EF4444", hover_color="#DC2626", text_color="white",
+            font=CTkFont(size=12, weight="bold"),
+            command=lambda: self._switch_cancel_view("normal"))
+        self._toggle_normal_btn.pack(side="left", padx=(0, 4))
+        self._toggle_transport_btn = CTkButton(
+            toggle_frame, text="🚚 SO ค่าขนส่ง", width=120, height=30,
+            fg_color="transparent", border_width=1, border_color="#D97706",
+            text_color="#D97706", font=CTkFont(size=12),
+            command=lambda: self._switch_cancel_view("transport"))
+        self._toggle_transport_btn.pack(side="left")
+
+        # Frame สำหรับวาง Treeview
         self.cancelled_history_frame = CTkFrame(table_container, fg_color="transparent")
         self.cancelled_history_frame.pack(fill="both", expand=True)
 
         # โหลดข้อมูลเริ่มต้น
         self.after(100, self._load_cancelled_so_history)
+
+    def _switch_cancel_view(self, mode):
+        self._cancel_view_mode = mode
+        if mode == "normal":
+            self._toggle_normal_btn.configure(fg_color="#EF4444", text_color="white")
+            self._toggle_transport_btn.configure(fg_color="transparent", text_color="#D97706")
+            self._load_cancelled_so_history()
+        else:
+            self._toggle_transport_btn.configure(fg_color="#D97706", text_color="white")
+            self._toggle_normal_btn.configure(fg_color="transparent", text_color="#EF4444")
+            self._load_transport_so_history()
+
+    def _load_transport_so_history(self):
+        """โหลดประวัติ SO ค่าขนส่งที่ SM อนุมัติยกเลิกแล้ว"""
+        for widget in self.cancelled_history_frame.winfo_children():
+            widget.destroy()
+        try:
+            query = """
+                SELECT so_number, sale_key, customer_name,
+                       requested_by, reviewed_by, requested_at
+                FROM transport_cancel_requests
+                WHERE status = 'approved'
+                ORDER BY requested_at DESC
+                LIMIT 100
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+            if df.empty:
+                CTkLabel(self.cancelled_history_frame, text="ยังไม่มีประวัติ SO ค่าขนส่ง",
+                         font=self.entry_font, text_color="gray").pack(pady=40)
+                return
+            df.rename(columns={
+                'so_number': 'เลขที่ SO',
+                'sale_key': 'รหัสพนักงาน',
+                'customer_name': 'ชื่อลูกค้า',
+                'requested_by': 'ขอโดย HR',
+                'reviewed_by': 'อนุมัติโดย SM',
+                'requested_at': 'วันที่ขอ',
+            }, inplace=True)
+            self._create_styled_dataframe_table(self.cancelled_history_frame, df, title="")
+            tree = None
+            for widget in self.cancelled_history_frame.winfo_children():
+                for child in widget.winfo_children():
+                    if isinstance(child, ttk.Treeview):
+                        tree = child
+                        break
+                if tree: break
+            if tree:
+                tree.column('เลขที่ SO', width=120, stretch=False, anchor="center")
+                tree.column('รหัสพนักงาน', width=100, stretch=False, anchor="center")
+                tree.column('วันที่ขอ', width=150, stretch=False, anchor="center")
+                tree.column('ชื่อลูกค้า', width=200, stretch=True)
+                tree.column('ขอโดย HR', width=120, stretch=False, anchor="center")
+                tree.column('อนุมัติโดย SM', width=120, stretch=False, anchor="center")
+        except Exception as e:
+            CTkLabel(self.cancelled_history_frame, text=f"โหลดข้อมูลล้มเหลว: {e}",
+                     text_color="red").pack(pady=20)
+            traceback.print_exc()
 
     # -------------------------------------------------------------------------
     #  ฟังก์ชันค้นหา (ปรับปรุงให้แสดงผลใน Inline Frame)
@@ -5495,8 +5568,11 @@ class HRScreen(CTkFrame):
             CTkLabel(self.inline_result_frame, text=info_text, font=self.small_font).pack(side="left", padx=(0, 15))
 
             # ปุ่ม Action (แสดงเฉพาะเมื่อยกเลิกได้)
-            if status not in ['Paid', 'HR Verified', 'Cancelled']:
-                CTkButton(self.inline_result_frame, text="⚠️ ยกเลิกรายการนี้", 
+            if status == 'Pending Transport Cancel':
+                CTkLabel(self.inline_result_frame, text="🚚 รอ SM อนุมัติยกเลิกค่ารถ...",
+                         text_color="#D97706").pack(side="left")
+            elif status not in ['Paid', 'HR Verified', 'Cancelled']:
+                CTkButton(self.inline_result_frame, text="⚠️ ยกเลิกรายการนี้",
                           fg_color="#DC2626", hover_color="#B91C1C", height=32,
                           command=lambda: self._confirm_cancel_so(so_number)).pack(side="left")
             else:
@@ -5512,13 +5588,81 @@ class HRScreen(CTkFrame):
 
     def _process_cancellation_callback(self, so_number, reason):
         """Callback หลังจากกดตกลงใน Dialog"""
-        # เรียกใช้ Logic เดิมที่มีอยู่แล้ว (Reuse Code)
-        self._cancel_so_logic(so_number, reason)
-        
-        # ล้างช่องค้นหาและรีเฟรชตาราง
+        if reason == "ค่ารถไม่อยู่ในเงื่อนไขคอมมิชชั่น":
+            self._request_transport_cancel(so_number)
+        else:
+            self._cancel_so_logic(so_number, reason)
+
         self.cancel_search_entry.delete(0, "end")
         for widget in self.inline_result_frame.winfo_children(): widget.destroy()
         self._load_cancelled_so_history()
+
+    def _request_transport_cancel(self, so_number):
+        """ส่งคำขอยกเลิก SO ค่ารถ → รอ SM อนุมัติ (ไม่ยกเลิกทันที)"""
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, sale_key, customer_name, status FROM commissions WHERE so_number = %s",
+                    (so_number,)
+                )
+                result = cursor.fetchone()
+                if not result:
+                    messagebox.showerror("Error", "ไม่พบ SO นี้ในระบบ")
+                    return
+                so_id, sale_key, customer_name, original_status = result
+
+                # สร้าง table ถ้ายังไม่มี
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS transport_cancel_requests (
+                        id SERIAL PRIMARY KEY,
+                        so_number VARCHAR(50) NOT NULL,
+                        so_id INTEGER,
+                        sale_key VARCHAR(50),
+                        customer_name VARCHAR(200),
+                        original_status VARCHAR(50),
+                        requested_by VARCHAR(100),
+                        requested_at TIMESTAMP DEFAULT NOW(),
+                        status VARCHAR(20) DEFAULT 'pending',
+                        reviewed_by VARCHAR(100),
+                        reviewed_at TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
+                    INSERT INTO transport_cancel_requests
+                        (so_number, so_id, sale_key, customer_name, original_status, requested_by)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (so_number, so_id, sale_key, customer_name, original_status, self.user_name))
+
+                # พัก SO ไว้ในสถานะรอ — ยังไม่ยกเลิก
+                cursor.execute("""
+                    UPDATE commissions SET status = 'Pending Transport Cancel'
+                    WHERE so_number = %s
+                """, (so_number,))
+
+                # แจ้ง SM ทุกคนให้อนุมัติ
+                cursor.execute(
+                    "SELECT sale_key FROM sales_users WHERE role = 'Sales Manager' AND status = 'Active'"
+                )
+                manager_keys = [r[0] for r in cursor.fetchall()]
+                msg = (f"[TRANSPORT_CANCEL] SO: {so_number} ขอยกเลิกเหตุผล: ค่ารถไม่อยู่ในเงื่อนไขคอมมิชชั่น\n"
+                       f"เจ้าของ SO: {sale_key} | ลูกค้า: {customer_name}\n"
+                       f"ขอโดย HR: {self.user_name} — กรุณาตรวจสอบในหน้ารายการรออนุมัติ")
+                for mgr_key in manager_keys:
+                    cursor.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id, timestamp)
+                        VALUES (%s, %s, FALSE, %s, NOW())
+                    """, (mgr_key, msg, so_id))
+
+            conn.commit()
+            messagebox.showinfo("ส่งคำขอสำเร็จ",
+                                f"SO: {so_number} ส่งคำขอยกเลิกค่ารถให้ SM อนุมัติแล้ว\nรอ Sale Manager ตรวจสอบ")
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Database Error", f"เกิดข้อผิดพลาด: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
 
     def _load_cancelled_so_history(self):
         """โหลดตารางประวัติ พร้อมบังคับขยายคอลัมน์ให้เต็มจอ"""

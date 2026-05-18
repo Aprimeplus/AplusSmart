@@ -1163,6 +1163,165 @@ class SalesManagerScreen(CTkFrame):
         except Exception as e:
             print(f"Load SO Edit Requests Error: {e}")
 
+        # ── ส่วนที่ 3: คำขอยกเลิก SO ค่ารถ (Transport Cancel Requests) ─────
+        try:
+            transport_query = """
+                SELECT t.id, t.so_number, t.so_id, t.sale_key, t.customer_name,
+                       t.original_status, t.requested_by, t.requested_at
+                FROM transport_cancel_requests t
+                WHERE t.status = 'pending'
+            """
+            transport_params = []
+            if search_txt:
+                term = search_txt.replace("SO", "")
+                transport_query += " AND t.so_number ILIKE %s"
+                transport_params.append(f"%{term}%")
+            transport_query += " ORDER BY t.requested_at ASC"
+
+            df_transport = pd.read_sql_query(transport_query, self.pg_engine,
+                                             params=tuple(transport_params))
+
+            if not df_transport.empty:
+                sep_t = CTkFrame(self.approval_results_frame,
+                                 fg_color="#FEF2F2", corner_radius=6,
+                                 border_width=1, border_color="#FECACA")
+                sep_t.pack(fill="x", padx=8, pady=(14, 4))
+                CTkLabel(sep_t,
+                         text="🚚  คำขอยกเลิก SO ค่ารถ  (Transport Cancel Requests)",
+                         font=CTkFont(size=13, weight="bold"),
+                         text_color="#B91C1C").pack(anchor="w", padx=14, pady=6)
+
+                for _, row in df_transport.iterrows():
+                    self._create_transport_cancel_card(self.approval_results_frame, row)
+
+        except Exception as e:
+            print(f"Load Transport Cancel Requests Error: {e}")
+
+    def _create_transport_cancel_card(self, parent, row):
+        req_id = row['id']
+        so_number = row['so_number']
+        so_id = row['so_id']
+        customer_name = row.get('customer_name', '-')
+        sale_key = row.get('sale_key', '-')
+        requested_by = row.get('requested_by', '-')
+        original_status = row.get('original_status', '')
+
+        card = CTkFrame(parent, fg_color="#FEE2E2",
+                        border_width=1, border_color="#FECACA", corner_radius=10, height=70)
+        card.pack(fill="x", padx=8, pady=4)
+        card.pack_propagate(False)
+
+        info = CTkFrame(card, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, padx=15, pady=8)
+
+        CTkLabel(info,
+                 text=f"🚚 SO: {so_number}  |  👤 {customer_name}",
+                 font=CTkFont(size=13, weight="bold"),
+                 anchor="w").pack(anchor="w")
+        CTkLabel(info,
+                 text=f"เซลล์: {sale_key}  |  ขอโดย HR: {requested_by}  |  เหตุผล: ค่ารถไม่อยู่ในเงื่อนไขคอมมิชชั่น",
+                 font=CTkFont(size=12), text_color="#6B7280",
+                 anchor="w").pack(anchor="w", pady=(2, 0))
+
+        btn_frame = CTkFrame(card, fg_color="transparent")
+        btn_frame.pack(side="right", padx=12, pady=10)
+
+        CTkButton(btn_frame, text="✅ อนุมัติ", width=85, height=32,
+                  fg_color="#16A34A", hover_color="#15803D",
+                  font=CTkFont(size=12, weight="bold"),
+                  command=lambda: self._approve_transport_cancel(req_id, so_number, so_id)).pack(side="left", padx=3)
+        CTkButton(btn_frame, text="❌ ปฏิเสธ", width=85, height=32,
+                  fg_color="#DC2626", hover_color="#B91C1C",
+                  font=CTkFont(size=12, weight="bold"),
+                  command=lambda: self._reject_transport_cancel(req_id, so_number, so_id, original_status, sale_key)).pack(side="left", padx=3)
+
+    def _approve_transport_cancel(self, req_id, so_number, so_id):
+        if not messagebox.askyesno("ยืนยันการอนุมัติ",
+                                   f"อนุมัติยกเลิก SO: {so_number}\n(ค่ารถไม่อยู่ในเงื่อนไขคอมมิชชั่น)\nSO จะถูกยกเลิกทันที", parent=self):
+            return
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                # อัปเดต transport_cancel_requests
+                cursor.execute("""
+                    UPDATE transport_cancel_requests
+                    SET status = 'approved', reviewed_by = %s, reviewed_at = NOW()
+                    WHERE id = %s
+                """, (self.user_key, req_id))
+
+                # ยกเลิก SO จริง
+                cursor.execute("""
+                    UPDATE commissions
+                    SET status = 'Cancelled', is_active = 0,
+                        rejection_reason = %s
+                    WHERE so_number = %s
+                """, (f"ยกเลิกโดย SM (ค่ารถ): อนุมัติคำขอจาก HR", so_number))
+
+                # ยกเลิก PO ที่เกี่ยวข้อง
+                cursor.execute("""
+                    UPDATE purchase_orders
+                    SET status = 'Cancelled', approval_status = 'Cancelled'
+                    WHERE so_number = %s
+                """, (so_number,))
+
+                # แจ้ง SO owner + HR
+                cursor.execute("SELECT sale_key FROM commissions WHERE so_number = %s", (so_number,))
+                res = cursor.fetchone()
+                if res:
+                    cursor.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id, timestamp)
+                        VALUES (%s, %s, FALSE, %s, NOW())
+                    """, (res[0],
+                          f"SO: {so_number} ถูกยกเลิกแล้ว (ค่ารถไม่อยู่ในเงื่อนไขคอมมิชชั่น)\nอนุมัติโดย SM",
+                          so_id))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"อนุมัติยกเลิก SO: {so_number} เรียบร้อย")
+            self._load_approval_data()
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Error", f"Approve Failed: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
+    def _reject_transport_cancel(self, req_id, so_number, so_id, original_status, sale_key):
+        if not messagebox.askyesno("ยืนยันการปฏิเสธ",
+                                   f"ปฏิเสธคำขอยกเลิก SO: {so_number}\nSO จะกลับไปสถานะเดิม", parent=self):
+            return
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE transport_cancel_requests
+                    SET status = 'rejected', reviewed_by = %s, reviewed_at = NOW()
+                    WHERE id = %s
+                """, (self.user_key, req_id))
+
+                # คืนสถานะเดิม
+                restore_status = original_status if original_status else 'Pending Sale Manager Approval'
+                cursor.execute("""
+                    UPDATE commissions SET status = %s WHERE so_number = %s
+                """, (restore_status, so_number))
+
+                # แจ้ง SO owner
+                cursor.execute("""
+                    INSERT INTO notifications (user_key_to_notify, message, is_read, related_po_id, timestamp)
+                    VALUES (%s, %s, FALSE, %s, NOW())
+                """, (sale_key,
+                      f"SM ปฏิเสธคำขอยกเลิก SO: {so_number} (ค่ารถ)\nSO กลับสู่สถานะ: {restore_status}",
+                      so_id))
+
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", f"ปฏิเสธคำขอยกเลิก SO: {so_number}\nSO กลับสถานะเดิมแล้ว")
+            self._load_approval_data()
+        except Exception as e:
+            if conn: conn.rollback()
+            messagebox.showerror("Error", f"Reject Failed: {e}")
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
     # =========================================================================
     # TAB: SO EDIT APPROVAL — อนุมัติ/ปฏิเสธ คำขอเปลี่ยนรอบเดือนค่าคอมจาก Sale
     # =========================================================================

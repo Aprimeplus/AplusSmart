@@ -6,7 +6,7 @@ class CancellationReasonDialog(ctk.CTkToplevel):
     def __init__(self, master, on_confirm_callback):
         super().__init__(master)
         self.title("ระบุสาเหตุการยกเลิก SO")
-        self.geometry("400x450")
+        self.geometry("420x500")
         self.on_confirm_callback = on_confirm_callback
         
         # สาเหตุมาตรฐาน
@@ -14,6 +14,7 @@ class CancellationReasonDialog(ctk.CTkToplevel):
             "สินค้าผิดสเปค",
             "Stock ไม่เพียงพอ",
             "การจัดส่งล่าช้าเกินกำหนด",
+            "ค่ารถไม่อยู่ในเงื่อนไขคอมมิชชั่น",
             "อื่นๆ (ระบุ)"
         ]
         
