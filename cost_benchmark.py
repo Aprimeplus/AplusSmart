@@ -837,6 +837,10 @@ class CostBenchmarkScreen(CTkFrame):
         CTkButton(btn_frame, text="➕ เพิ่มบรรทัด",
                   width=90, height=30, font=CTkFont(size=12),
                   command=self._add_new_row).pack(side="left", padx=2)
+        CTkButton(btn_frame, text="📋 Short Note",
+                  width=100, height=30, font=CTkFont(size=12),
+                  fg_color="#059669", hover_color="#047857",
+                  command=self._show_short_note_popup).pack(side="left", padx=(8, 2))
 
 
         self.columns = [
@@ -5324,6 +5328,286 @@ class CostBenchmarkScreen(CTkFrame):
             self._fix_render_job = self.after(150, self._apply_header_filters)
 
     # ================================================================== #
+    def _show_short_note_popup(self):
+        """Short Note popup — เลือก SO + filter เฉพาะ row ที่ Select = ✓"""
+        from datetime import datetime
+        from collections import OrderedDict
+        import tkinter as tk
+        from customtkinter import (CTkToplevel, CTkLabel, CTkFont, CTkButton,
+                                   CTkTextbox, CTkEntry, CTkFrame,
+                                   CTkSegmentedButton)
+
+        # ── 1. รวบรวมข้อมูลทั้งหมดจากตาราง ────────────────────────────────
+        total_rows = self.sheet.get_total_rows()
+        all_rows = []
+        so_order = []
+        so_seen  = set()
+
+        for r in range(total_rows):
+            product = str(self._sheet_get(r, "รายการสินค้า") or "").strip()
+            if not product:
+                continue
+            so = str(self._sheet_get(r, "Sale Order No.") or "").strip()
+            if so and so not in so_seen:
+                so_seen.add(so)
+                so_order.append(so)
+            all_rows.append({
+                "so":           so,
+                "product":      product,
+                "note1":        str(self._sheet_get(r, "หมายเหตุ (ความยาว, OD)") or "").strip(),
+                "note2":        str(self._sheet_get(r, "หมายเหตุ") or "").strip(),
+                "qty":          str(self._sheet_get(r, "จำนวน") or "").strip(),
+                "unit_price":   str(self._sheet_get(r, "ราคาขาย / เส้น") or "").strip(),
+                "row_total":    str(self._sheet_get(r, "ราคาขาย รวม") or "").strip(),
+                "weight_unit":  str(self._sheet_get(r, "น้ำหนัก/เส้น") or "").strip(),
+                "weight_total": str(self._sheet_get(r, "น้ำหนักรวม (Kg.)") or "").strip(),
+                "dest":         str(self._sheet_get(r, "ปลายทาง") or "").strip(),
+                "order_no":     str(self._sheet_get(r, "Order No.") or "").strip(),
+                "qt":           str(self._sheet_get(r, "QT") or "").strip(),
+                "priority":     str(self._sheet_get(r, "PRIORITY") or "").strip(),
+                "win_rate":     str(self._sheet_get(r, "WIN RATE %") or "").strip(),
+                "select":       str(self._sheet_get(r, "Select") or "").strip(),
+            })
+
+        if not all_rows:
+            from tkinter import messagebox
+            messagebox.showinfo("Short Note", "ไม่มีรายการสินค้าในตาราง", parent=self)
+            return
+
+        # ── 2. formatters ──────────────────────────────────────────────────
+        def _fmt_weight(s):
+            try:
+                v = float(str(s).replace(",", ""))
+                return f"นน.{v:g}+-"
+            except Exception:
+                return f"นน.{s}+-" if s else ""
+
+        def _fmt_price(s):
+            try:
+                v = float(str(s).replace(",", ""))
+                if v == int(v):
+                    return f"@{int(v):,}+"
+                return f"@{v:,.2f}+"
+            except Exception:
+                return f"@{s}+" if s else ""
+
+        # ── 3. สร้าง note text ─────────────────────────────────────────────
+        def _build_note(chosen_so: str, validity_days: str, yod_status: str) -> str:
+            items = [r for r in all_rows
+                     if r["so"] == chosen_so and r["select"]]
+            if not items:
+                return f"⚠️  ไม่มีรายการที่ติ๊ก Select ใน {chosen_so}"
+
+            today = datetime.now().strftime("%d/%m/%Y")
+            days  = validity_days.strip() or "1"
+
+            # group by (ปลายทาง, หมายเหตุ) = จุดรับ + สถานะ
+            groups = OrderedDict()
+            for it in items:
+                groups.setdefault((it["dest"], it["note2"]), []).append(it)
+
+            grand_bill   = 0.0
+            grand_weight = 0.0
+            total_items  = 0
+
+            lines = [
+                f"แจ้งราคาขาย  SO: {chosen_so}",
+                f"วันที่: {today}",
+                "─" * 16,
+            ]
+
+            for (dest, status), grp_items in groups.items():
+                for it in grp_items:
+                    spec     = it["note1"]
+                    prod_line = f"{it['product']} {spec}".strip() if spec else it["product"]
+                    wt_str    = _fmt_weight(it["weight_unit"])
+                    price_str = _fmt_price(it["unit_price"])
+                    parts = [prod_line]
+                    if it["qty"]:
+                        parts.append(f"{it['qty']} เส้น")
+                    if wt_str:
+                        parts.append(wt_str)
+                    if price_str:
+                        parts.append(price_str)
+                    lines.append("  ".join(parts))
+                    total_items += 1
+                    try:
+                        grand_bill += float(it["row_total"].replace(",", ""))
+                    except Exception:
+                        pass
+                    try:
+                        grand_weight += float(it["weight_total"].replace(",", ""))
+                    except Exception:
+                        pass
+                # separator between items and group footer
+                lines.append("─" * 15)
+                lines.append("สถานะ :")
+                lines.append(f"ยืนราคา {days} วัน")
+                lines.append(f"จุดรับ : {dest}" if dest else "จุดรับ : -")
+                # หมายเหตุ — unique note1 values in this group
+                note1_vals = list(dict.fromkeys(
+                    it["note1"] for it in grp_items if it["note1"]
+                ))
+                note1_str = ", ".join(note1_vals) if note1_vals else ""
+                lines.append(f"หมายเหตุ : {note1_str}")
+                lines.append("")
+
+            first     = items[0]
+            order_no  = first.get("order_no", "") or "-"
+            qt        = first.get("qt", "")
+            priority  = first.get("priority", "") or "-"
+            win_rate  = (first.get("win_rate", "") or "-").rstrip("%").strip()
+            order_pur = f"{order_no} {qt}".strip() if qt else order_no
+            lines += [
+                "─" * 15,
+                f"สถานะยอด      : {yod_status}",
+                f"Order Pur     : {order_pur}",
+                f"Temp          : {priority}",
+                f"WIN           : {win_rate}%",
+                f"Order Sale    : {chosen_so}",
+            ]
+            return "\n".join(lines)
+
+        # ── 4. สร้าง Popup ─────────────────────────────────────────────────
+        pop = CTkToplevel(self)
+        pop.title("📋 Short Note")
+        pop.resizable(True, True)
+        pop.grab_set()
+        pop.update_idletasks()
+        w, h = 700, 740
+        root_x = self.winfo_rootx()
+        root_y = self.winfo_rooty()
+        root_w = self.winfo_width()
+        root_h = self.winfo_height()
+        cx = root_x + (root_w - w) // 2
+        cy = root_y + (root_h - h) // 2
+        pop.geometry(f"{w}x{h}+{cx}+{cy}")
+        pop.grid_columnconfigure(0, weight=1)
+        pop.grid_rowconfigure(3, weight=1)   # txtbox
+        pop.grid_rowconfigure(4, minsize=60) # buttons
+
+        # row 0 — Header
+        CTkLabel(pop, text="📋 Short Note",
+                 font=CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=20, pady=(16, 4), sticky="w")
+
+        # row 1 — SO Selector
+        sel_frame = CTkFrame(pop, fg_color="#F1F5F9", corner_radius=8,
+                             border_width=1, border_color="#CBD5E1")
+        sel_frame.grid(row=1, column=0, padx=20, pady=(0, 6), sticky="ew")
+        sel_frame.grid_columnconfigure(1, weight=1)
+
+        CTkLabel(sel_frame, text="Sale Order:",
+                 font=CTkFont(size=12), text_color="#374151").grid(
+            row=0, column=0, padx=(12, 6), pady=8)
+
+        search_var = tk.StringVar()
+        search_entry = CTkEntry(sel_frame, textvariable=search_var,
+                                placeholder_text="พิมพ์เพื่อค้นหา SO...",
+                                height=32, font=CTkFont(size=13))
+        search_entry.grid(row=0, column=1, padx=(0, 8), pady=8, sticky="ew")
+
+        list_frame = tk.Frame(sel_frame, bg="#F1F5F9")
+        list_frame.grid(row=1, column=0, columnspan=2, padx=8, pady=(0, 8), sticky="ew")
+
+        sb = tk.Scrollbar(list_frame, orient="vertical")
+        listbox = tk.Listbox(list_frame, font=("Tahoma", 11), height=4,
+                             selectbackground="#3B82F6", selectforeground="white",
+                             relief="flat", borderwidth=1, highlightthickness=0,
+                             yscrollcommand=sb.set, exportselection=False)
+        sb.config(command=listbox.yview)
+        sb.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="x", expand=True)
+
+        # row 2 — Settings (ยืนราคา + สถานะยอด)
+        cfg_frame = CTkFrame(pop, fg_color="#F8FAFC", corner_radius=8,
+                             border_width=1, border_color="#E2E8F0")
+        cfg_frame.grid(row=2, column=0, padx=20, pady=(0, 6), sticky="ew")
+
+        CTkLabel(cfg_frame, text="ยืนราคา:", font=CTkFont(size=12),
+                 text_color="#374151").pack(side="left", padx=(12, 4), pady=8)
+        validity_var = tk.StringVar(value="1")
+        CTkEntry(cfg_frame, textvariable=validity_var, width=48,
+                 height=28, font=CTkFont(size=12), justify="center").pack(
+            side="left", pady=8)
+        CTkLabel(cfg_frame, text="วัน", font=CTkFont(size=12),
+                 text_color="#374151").pack(side="left", padx=(4, 24), pady=8)
+
+        CTkLabel(cfg_frame, text="สถานะยอด:", font=CTkFont(size=12),
+                 text_color="#374151").pack(side="left", padx=(0, 6), pady=8)
+        yod_var = tk.StringVar(value="C")
+        CTkSegmentedButton(cfg_frame, values=["C", "เบิกจ่าย"],
+                           variable=yod_var, font=CTkFont(size=12),
+                           width=160).pack(side="left", pady=8)
+
+        # row 3 — Note display
+        txt = CTkTextbox(pop, font=CTkFont(family="Courier New", size=15),
+                         wrap="none", corner_radius=8)
+        txt.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="nsew")
+        txt.insert("0.0", "← เลือก Sale Order ด้านบนเพื่อสร้าง Short Note")
+        txt.configure(state="disabled")
+
+        _current_note = {"text": ""}
+        _ref = {}
+
+        def _refresh_note(*_):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            chosen = listbox.get(sel[0])
+            note = _build_note(chosen, validity_var.get(), yod_var.get())
+            _current_note["text"] = note
+            txt.configure(state="normal")
+            txt.delete("0.0", "end")
+            txt.insert("0.0", note)
+            txt.configure(state="disabled")
+            if _ref.get("copy_btn"):
+                _ref["copy_btn"].configure(state="normal", fg_color="#059669")
+
+        listbox.bind("<<ListboxSelect>>", _refresh_note)
+        validity_var.trace_add("write", _refresh_note)
+        yod_var.trace_add("write", _refresh_note)
+
+        def _filter_so(*_):
+            term = search_var.get().strip().lower()
+            listbox.delete(0, "end")
+            for so in so_order:
+                if term in so.lower():
+                    listbox.insert("end", so)
+            if listbox.size() > 0:
+                listbox.selection_set(0)
+                _refresh_note()
+
+        search_var.trace_add("write", _filter_so)
+        _filter_so()
+
+        # row 4 — Bottom buttons
+        btn_row = CTkFrame(pop, fg_color="transparent")
+        btn_row.grid(row=4, column=0, padx=20, pady=(0, 16), sticky="ew")
+        btn_row.grid_columnconfigure(0, weight=1)
+
+        def _copy():
+            note = _current_note["text"]
+            if not note:
+                return
+            pop.clipboard_clear()
+            pop.clipboard_append(note)
+            copy_btn.configure(text="✅ คัดลอกแล้ว!", fg_color="#047857")
+            pop.after(2000, lambda: copy_btn.configure(
+                text="📋 Copy to Clipboard", fg_color="#059669"))
+
+        copy_btn = CTkButton(btn_row, text="📋 Copy to Clipboard",
+                             fg_color="#059669", hover_color="#047857",
+                             font=CTkFont(size=13, weight="bold"),
+                             height=36, state="disabled", command=_copy)
+        copy_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        _ref["copy_btn"] = copy_btn
+        CTkButton(btn_row, text="ปิด", fg_color="#6B7280", hover_color="#4B5563",
+                  height=36, width=80, command=pop.destroy).grid(
+            row=0, column=1, sticky="e")
+
+        search_entry.focus_set()
+
     def _add_new_row(self):
         if not HAS_TKSHEET:
             return

@@ -327,7 +327,7 @@ def db_save_supplier(sup: dict, action: str, user: str):
                         is_locked      = %s, source_tag    = %s, line_id      = %s,
                         email          = %s, coverage_area = %s, availability = %s,
                         reopen_date    = %s, win_pct       = %s, sla_score    = %s,
-                        price_score    = %s, service_score = %s, quality_score = %s,
+                        price_score    = %s, service_score = %s,
                         note           = %s, win_loss_log  = %s,
                         blacklist_reason = %s,
                         dispatch_zone    = %s, service_area  = %s, logistics_assets = %s,
@@ -342,7 +342,7 @@ def db_save_supplier(sup: dict, action: str, user: str):
                     sup.get("coverage_area",""), sup.get("availability","พร้อม"),
                     sup.get("reopen_date",""), sup.get("win_pct", 0),
                     sup.get("sla_score", 0), sup.get("price_score", 0),
-                    sup.get("service_score", 0), sup.get("quality_score", 0),
+                    sup.get("service_score", 0),
                     sup.get("note",""), wl_json,
                     sup.get("blacklist_reason",""),
                     sup.get("dispatch_zone",""), sup.get("service_area","National"),
@@ -806,10 +806,11 @@ def _ensure_quality_events_table(cur):
 
 def db_add_quality_event(supplier_name: str, reason: str, user: str) -> int:
     """เพิ่ม claim event: หัก quality_score และบันทึก history, คืน event_id"""
-    conn, use_pool = _get_conn()
+    import psycopg2 as _pg2
+    conn = _pg2.connect(**_DB_CFG)
+    conn.autocommit = False
     try:
         with conn.cursor() as cur:
-            _ensure_quality_events_table(cur)
             cur.execute("""
                 INSERT INTO supplier_quality_events
                     (supplier_name, event_type, delta, reason, resolved, created_by)
@@ -822,6 +823,7 @@ def db_add_quality_event(supplier_name: str, reason: str, user: str) -> int:
                 SET quality_score = GREATEST(0, LEAST(100, quality_score + %s))
                 WHERE supplier_name = %s
             """, (QUALITY_CLAIM_DELTA, supplier_name))
+            print(f"[SSL] quality UPDATE rowcount={cur.rowcount} supplier={supplier_name!r}")
             conn.commit()
             return event_id
     except Exception as e:
@@ -829,7 +831,7 @@ def db_add_quality_event(supplier_name: str, reason: str, user: str) -> int:
         print(f"[SSL] db_add_quality_event error: {e}")
         return -1
     finally:
-        _release_conn(conn, use_pool)
+        conn.close()
 
 
 def db_resolve_quality_event(event_id: int, recovery_label: str,
@@ -841,10 +843,11 @@ def db_resolve_quality_event(event_id: int, recovery_label: str,
         "bad":    QUALITY_RECOVER_BAD,
     }
     delta = delta_map.get(recovery_label, 0)
-    conn, use_pool = _get_conn()
+    import psycopg2 as _pg2
+    conn = _pg2.connect(**_DB_CFG)
+    conn.autocommit = False
     try:
         with conn.cursor() as cur:
-            _ensure_quality_events_table(cur)
             cur.execute("""
                 UPDATE supplier_quality_events
                 SET resolved = TRUE
@@ -861,6 +864,7 @@ def db_resolve_quality_event(event_id: int, recovery_label: str,
                 SET quality_score = GREATEST(0, LEAST(100, quality_score + %s))
                 WHERE supplier_name = %s
             """, (delta, supplier_name))
+            print(f"[SSL] resolve UPDATE rowcount={cur.rowcount} supplier={supplier_name!r} delta={delta}")
             conn.commit()
             return True
     except Exception as e:
@@ -868,7 +872,7 @@ def db_resolve_quality_event(event_id: int, recovery_label: str,
         print(f"[SSL] db_resolve_quality_event error: {e}")
         return False
     finally:
-        _release_conn(conn, use_pool)
+        conn.close()
 
 
 def db_get_quality_events(supplier_name: str) -> list:
@@ -877,7 +881,6 @@ def db_get_quality_events(supplier_name: str) -> list:
     try:
         import psycopg2.extras
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            _ensure_quality_events_table(cur)
             cur.execute("""
                 SELECT id, event_type, delta, reason, recovery_label,
                        resolved, created_by,
@@ -1431,7 +1434,8 @@ class SupplierDetailPopup(CTkToplevel):
         CTkLabel(manual_row, text="/ 100", font=F(size=11),
                  text_color=CLR["gray"]).grid(row=0, column=2, padx=(4, 20), pady=4)
 
-        q_score = int(supplier.get("quality_score") or QUALITY_START)
+        _q_raw  = supplier.get("quality_score")
+        q_score = int(_q_raw) if _q_raw is not None else QUALITY_START
         CTkLabel(manual_row, text="คุณภาพ (20%):", font=F(size=12),
                  text_color=CLR["gray"]).grid(row=0, column=3, padx=(4, 6), pady=4)
         self._quality_score_lbl = CTkLabel(
@@ -1453,7 +1457,8 @@ class SupplierDetailPopup(CTkToplevel):
 
         def _reload_quality_score():
             """อ่าน quality_score จาก DB จริง แล้วอัปเดต label"""
-            conn, use_pool = _get_conn()
+            import psycopg2 as _pg2
+            conn = _pg2.connect(**_DB_CFG)
             try:
                 with conn.cursor() as cur:
                     cur.execute("SELECT quality_score FROM suppliers WHERE supplier_name = %s",
@@ -1467,7 +1472,7 @@ class SupplierDetailPopup(CTkToplevel):
             except Exception as e:
                 print(f"[SSL] _reload_quality_score error: {e}")
             finally:
-                _release_conn(conn, use_pool)
+                conn.close()
 
         def _refresh_qe():
             for w in self._qe_frame.winfo_children():
@@ -1531,6 +1536,8 @@ class SupplierDetailPopup(CTkToplevel):
                 if eid > 0:
                     _reload_quality_score()
                     _refresh_qe()
+                    if self.on_save:
+                        self.on_save(self.sup)
                 pop.destroy()
             CTkButton(pop, text="ยืนยัน หัก -50 คะแนน",
                       fg_color=CLR["red"], hover_color="#991b1b",
@@ -1561,6 +1568,8 @@ class SupplierDetailPopup(CTkToplevel):
                     if ok:
                         _reload_quality_score()
                         _refresh_qe()
+                        if self.on_save:
+                            self.on_save(self.sup)
                     pop.destroy()
                 CTkButton(pop, text=f"{label}  ({delta_txt})",
                           fg_color=color, hover_color="#374151",
@@ -1569,6 +1578,7 @@ class SupplierDetailPopup(CTkToplevel):
                     row=ri, column=0, padx=20, pady=4, sticky="ew")
 
         _refresh_qe()
+        _reload_quality_score()   # sync label กับ DB จริงทันทีที่เปิด popup
 
         # ── Win-Loss Log ───────────────────────────────────────────────────────
         sec_label(8, "Win-Loss Log")
