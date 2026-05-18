@@ -4788,6 +4788,25 @@ class CostBenchmarkScreen(CTkFrame):
             main_visible = [col for col in range(col_offset, len(self.columns)) if col not in hidden_set]
             frozen_visible = [col for col in range(col_offset) if col not in hidden_set]
 
+            # helper: แปลง display row → data row (รองรับกรณี filter ซ่อนแถว)
+            def to_data_row_main(disp_r):
+                try:
+                    dr = self.sheet.MT.displayed_rows
+                    if dr is not None and not isinstance(dr, str):
+                        return dr[disp_r]
+                except (IndexError, AttributeError, TypeError):
+                    pass
+                return disp_r
+
+            def to_data_row_frozen(disp_r):
+                try:
+                    dr = self.sheet_frozen.MT.displayed_rows
+                    if dr is not None and not isinstance(dr, str):
+                        return dr[disp_r]
+                except (IndexError, AttributeError, TypeError):
+                    pass
+                return disp_r
+
             # ── ดึงจาก main sheet ──────────────────────────────────────
             try:
                 selected = self.sheet.get_selected_cells()
@@ -4795,12 +4814,11 @@ class CostBenchmarkScreen(CTkFrame):
                     total_selected += len(selected)
                     for r, c in selected:
                         try:
-                            # แปลง c (display index) ให้เป็น data index ของ main sheet
+                            data_r = to_data_row_main(r)
                             if c < len(main_visible):
                                 real_col = main_visible[c]
                                 data_col = real_col - col_offset
-                                val = self.sheet.get_cell_data(r, data_col)
-                                
+                                val = self.sheet.get_cell_data(data_r, data_col)
                                 if val and str(val).strip():
                                     num = float(str(val).replace(',', '').replace('%', '').strip())
                                     values.append(num)
@@ -4817,12 +4835,11 @@ class CostBenchmarkScreen(CTkFrame):
                         total_selected += len(frozen_selected)
                         for r, c in frozen_selected:
                             try:
-                                # แปลง c (display index) ให้เป็น data index ของ frozen sheet
+                                data_r = to_data_row_frozen(r)
                                 if c < len(frozen_visible):
                                     real_col = frozen_visible[c]
-                                    data_col = real_col # ฝั่ง frozen data_col จะเท่ากับ real_col เสมอ
-                                    val = self.sheet_frozen.get_cell_data(r, data_col)
-                                    
+                                    data_col = real_col
+                                    val = self.sheet_frozen.get_cell_data(data_r, data_col)
                                     if val and str(val).strip():
                                         num = float(str(val).replace(',', '').replace('%', '').strip())
                                         values.append(num)
@@ -4915,67 +4932,75 @@ class CostBenchmarkScreen(CTkFrame):
     def _on_end_edit_combined(self, event=None, is_frozen=False):
         try:
             row, col = None, None
+            datarn = None  # data row index (filter-safe)
+
             # ดึงตำแหน่ง row, col จาก event
             if isinstance(event, (tuple, list)) and len(event) >= 2:
-                row, col = event[0], event[1]
+                row, col = int(event[0]), int(event[1])
+                datarn = row  # tuple format: data index
             elif isinstance(event, dict):
                 row = event.get('row')
                 col = event.get('column')
+                if row is not None:
+                    row = int(row)
+                if col is not None:
+                    col = int(col)
+                # event['data'] keys are (datarn, datacn) — actual data indices, filter-safe
+                data_dict = event.get('data', {})
+                if data_dict:
+                    keys = list(data_dict.keys())
+                    if keys and isinstance(keys[0], (tuple, list)):
+                        datarn = int(keys[0][0])
+                if datarn is None:
+                    datarn = row
 
-            if row is not None and col is not None:
-                row, col = int(row), int(col)
-                
-                # --- ส่วนที่ 1: ระบบคำนวณคณิตศาสตร์ในช่องแบบ Inline (เช่น =2+2) ---
-                target_sheet = self.sheet_frozen if is_frozen else self.sheet
-                try:
-                    # ดึงค่าปัจจุบันในช่องมาเช็ค
-                    cell_val = str(target_sheet.get_cell_data(row, col) or "").strip()
-                    if cell_val.startswith("=") and len(cell_val) > 1:
-                        # ตัดเครื่องหมาย = ด้านหน้าออก และลบลูกน้ำ (ถ้ามี)
-                        math_expr = cell_val[1:].replace(',', '')
-                        
-                        # ป้องกันความปลอดภัย: อนุญาตเฉพาะตัวเลข ทศนิยม และเครื่องหมาย + - * / ( )
-                        import re
-                        if re.match(r'^[\d\.\+\-\*\/\(\)\s]+$', math_expr):
-                            # ใช้ eval() คำนวณผลลัพธ์จากข้อความ
-                            result = eval(math_expr, {"__builtins__": None}, {})
-                            
-                            # จัดรูปแบบผลลัพธ์ให้สวยงาม
-                            if isinstance(result, (int, float)):
-                                if result == int(result):
-                                    formatted_result = f"{int(result)}" # ถ้าลงตัวเป็นจำนวนเต็ม (เช่น 4)
-                                else:
-                                    formatted_result = f"{result:.2f}" # ถ้ามีทศนิยม (เช่น 4.50)
-                                    
-                                # เขียนผลลัพธ์ทับลงไปในช่องเดิมทันที
-                                target_sheet.set_cell_data(row, col, formatted_result, redraw=False)
-                except Exception as e:
-                    print(f"Inline math error: {e}")
-                # -------------------------------------------------------------
+            if row is None or col is None or datarn is None:
+                return
 
-                # 1. บังคับคำนวณสูตรและผลลัพธ์อื่นๆ ในบรรทัดนั้นต่อ
-                self._auto_calculate_sheet(row)
+            # --- ส่วนที่ 1: คำนวณคณิตศาสตร์ Inline (เช่น =2+2) ---
+            target_sheet = self.sheet_frozen if is_frozen else self.sheet
+            try:
+                # อ่านค่าที่เพิ่งพิมพ์จาก event['value'] (ไม่ต้องอ่านจาก sheet ซึ่งอาจใช้ display index)
+                cell_val = str(event.get('value', '') if isinstance(event, dict) else
+                               (target_sheet.get_cell_data(datarn, col) or "")).strip()
+                if cell_val.startswith("=") and len(cell_val) > 1:
+                    math_expr = cell_val[1:].replace(',', '')
+                    import re
+                    if re.match(r'^[\d\.\+\-\*\/\(\)\s]+$', math_expr):
+                        result = eval(math_expr, {"__builtins__": None}, {})
+                        if isinstance(result, (int, float)):
+                            if result == int(result):
+                                formatted_result = f"{int(result)}"
+                            else:
+                                formatted_result = f"{result:.2f}"
+                            # ใช้ datarn (data index) เพื่อเขียนลง sheet ได้ถูก row เสมอ
+                            target_sheet.set_cell_data(datarn, col, formatted_result, redraw=False)
+            except Exception as e:
+                print(f"Inline math error: {e}")
 
-                # 2. รีเฟรชตารางเพื่อให้ค่าที่คำนวณแสดงผลบนหน้าจอ
-                self.sheet.redraw()
-                if is_frozen and self.sheet_frozen:
-                    self.sheet_frozen.redraw()
+            # 1. คำนวณสูตรในบรรทัดนั้น — ใช้ datarn เสมอ (filter-safe, data index)
+            self._auto_calculate_sheet(datarn)
 
-                # 3. สั่ง Auto Save
-                if self.auto_save_job_id is not None:
-                    self.after_cancel(self.auto_save_job_id)
-                self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
-                
-                if hasattr(self, 'save_status_label'):
-                    self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+            # 2. รีเฟรชตาราง — ไม่แตะ display_rows เพื่อรักษา filter state ไว้
+            self.sheet.redraw()
+            if is_frozen and self.sheet_frozen:
+                self.sheet_frozen.redraw()
 
-                # 4. เลื่อนเคอร์เซอร์ไปทางขวาเมื่อพิมพ์เสร็จ
-                # (ข้ามถ้า arrow navigation กำลังทำงาน — _commit_and_move จัดการเองแล้ว)
-                if not getattr(self, '_arrow_nav_in_progress', False):
-                    self.after(10, lambda: self._move_right(row, col, is_frozen))
-                
+            # 3. สั่ง Auto Save
+            if self.auto_save_job_id is not None:
+                self.after_cancel(self.auto_save_job_id)
+            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+
+            if hasattr(self, 'save_status_label'):
+                self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
+
+            # 4. เลื่อนเคอร์เซอร์ไปทางขวา (ใช้ display row/col สำหรับ navigation)
+            if not getattr(self, '_arrow_nav_in_progress', False):
+                self.after(10, lambda: self._move_right(row, col, is_frozen))
+
         except Exception as e:
             print(f"_on_end_edit_combined error: {e}")
+
     def _move_right(self, row, col, is_frozen=False):
         try:
             if is_frozen and self.sheet_frozen:
@@ -5394,7 +5419,7 @@ class CostBenchmarkScreen(CTkFrame):
         # ── 3. สร้าง note text ─────────────────────────────────────────────
         def _build_note(chosen_so: str, validity_days: str, yod_status: str) -> str:
             items = [r for r in all_rows
-                     if r["so"] == chosen_so and r["select"]]
+                     if r["so"] == chosen_so and r["select"] == "✔"]
             if not items:
                 return f"⚠️  ไม่มีรายการที่ติ๊ก Select ใน {chosen_so}"
 

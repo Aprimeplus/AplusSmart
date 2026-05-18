@@ -760,7 +760,7 @@ class DashboardCostScreen(CTkFrame):
                 # =========================================================
                 # 📌 กฎการเปลี่ยนชื่อและซ่อน (ใช้กฎเดียวกับหน้า Cost Benchmark)
                 # =========================================================
-                hide_list = {"s", "charita-ct"} 
+                hide_list = {"s", "charita-ct", "mp", "p"}
                 rename_map = {
                     "jiraporn": "JN-IN-JIRAPORN",
                     "sale center": "CT-Sale Center",
@@ -798,6 +798,11 @@ class DashboardCostScreen(CTkFrame):
             except Exception as e:
                 print(f"sales map error: {e}")
                 df["ชื่อ Sale"] = df.get("รหัส Sale", "")
+
+            # กรอง created_by ที่ไม่ต้องการออก (mp, p)
+            _hidden_pu = {"mp", "p"}
+            if "created_by" in df.columns:
+                df = df[~df["created_by"].astype(str).str.strip().str.lower().isin(_hidden_pu)]
 
             if df.empty:
                 self.raw_df = pd.DataFrame()
