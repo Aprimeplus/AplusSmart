@@ -687,14 +687,123 @@ class SalesManagerScreen(CTkFrame):
         table_container = CTkFrame(parent_tab, fg_color="transparent")
         table_container.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
         
-        header_row = CTkFrame(table_container, fg_color="transparent", height=30)
+        header_row = CTkFrame(table_container, fg_color="transparent", height=36)
         header_row.pack(fill="x", pady=(0, 5))
-        CTkLabel(header_row, text="📜 ประวัติรายการที่ถูกยกเลิก (Cancelled History)", font=self.header_font_table, text_color="#EF4444").pack(side="left")
+        CTkLabel(header_row, text="📜 ประวัติรายการยกเลิก", font=self.header_font_table, text_color="#EF4444").pack(side="left")
+
+        self._sm_cancel_view_mode = "normal"
+        toggle_frame = CTkFrame(header_row, fg_color="transparent")
+        toggle_frame.pack(side="right")
+        self._sm_toggle_normal_btn = CTkButton(
+            toggle_frame, text="ยกเลิก SO", width=110, height=30,
+            fg_color="#EF4444", hover_color="#DC2626", text_color="white",
+            font=CTkFont(size=12, weight="bold"),
+            command=lambda: self._switch_sm_cancel_view("normal"))
+        self._sm_toggle_normal_btn.pack(side="left", padx=(0, 4))
+        self._sm_toggle_transport_btn = CTkButton(
+            toggle_frame, text="🚚 SO ค่าขนส่ง", width=120, height=30,
+            fg_color="transparent", border_width=1, border_color="#D97706",
+            text_color="#D97706", font=CTkFont(size=12),
+            command=lambda: self._switch_sm_cancel_view("transport"))
+        self._sm_toggle_transport_btn.pack(side="left")
 
         self.cancelled_history_frame = CTkFrame(table_container, fg_color="transparent")
         self.cancelled_history_frame.pack(fill="both", expand=True)
 
         self.after(100, self._load_cancelled_so_history)
+
+    def _switch_sm_cancel_view(self, mode):
+        self._sm_cancel_view_mode = mode
+        if mode == "normal":
+            self._sm_toggle_normal_btn.configure(fg_color="#EF4444", text_color="white")
+            self._sm_toggle_transport_btn.configure(fg_color="transparent", text_color="#D97706")
+            self._load_cancelled_so_history()
+        else:
+            self._sm_toggle_transport_btn.configure(fg_color="#D97706", text_color="white")
+            self._sm_toggle_normal_btn.configure(fg_color="transparent", text_color="#EF4444")
+            self._load_sm_transport_so_history()
+
+    def _load_sm_transport_so_history(self):
+        """โหลดประวัติ SO ค่าขนส่งที่ SM อนุมัติยกเลิกแล้ว"""
+        for widget in self.cancelled_history_frame.winfo_children():
+            widget.destroy()
+
+        # สร้าง table ถ้ายังไม่มี
+        conn_chk = self.app_container.get_connection()
+        try:
+            with conn_chk.cursor() as _cur:
+                _cur.execute("""
+                    CREATE TABLE IF NOT EXISTS transport_cancel_requests (
+                        id SERIAL PRIMARY KEY,
+                        so_number VARCHAR(50) NOT NULL,
+                        so_id INTEGER,
+                        sale_key VARCHAR(50),
+                        customer_name VARCHAR(200),
+                        original_status VARCHAR(50),
+                        requested_by VARCHAR(100),
+                        requested_at TIMESTAMP DEFAULT NOW(),
+                        status VARCHAR(20) DEFAULT 'pending',
+                        reviewed_by VARCHAR(100),
+                        reviewed_at TIMESTAMP
+                    )
+                """)
+            conn_chk.commit()
+        finally:
+            self.app_container.release_connection(conn_chk)
+
+        try:
+            query = """
+                SELECT requested_at, so_number, sale_key, customer_name,
+                       requested_by, reviewed_by
+                FROM transport_cancel_requests
+                WHERE status = 'approved'
+                ORDER BY requested_at DESC LIMIT 100
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+
+            columns = ("วันที่", "SO Number", "รหัสพนักงาน", "ชื่อลูกค้า", "ขอโดย HR", "อนุมัติโดย SM")
+            tree = ttk.Treeview(self.cancelled_history_frame, columns=columns, show="headings", height=15)
+
+            style = ttk.Style()
+            style.theme_use("clam")
+            style.configure("Treeview.Heading", font=('Tahoma', 12, 'bold'), background="#FEF2F2")
+            style.configure("Treeview", font=('Tahoma', 11), rowheight=30)
+
+            for col in columns:
+                tree.heading(col, text=col)
+            tree.column("วันที่", width=150, anchor="center")
+            tree.column("SO Number", width=150, anchor="center")
+            tree.column("รหัสพนักงาน", width=120, anchor="center")
+            tree.column("ชื่อลูกค้า", width=280, anchor="w")
+            tree.column("ขอโดย HR", width=140, anchor="center")
+            tree.column("อนุมัติโดย SM", width=140, anchor="center")
+
+            vsb = ttk.Scrollbar(self.cancelled_history_frame, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=vsb.set)
+            tree.pack(side="left", fill="both", expand=True)
+            vsb.pack(side="right", fill="y")
+
+            if df.empty:
+                tree.insert("", "end", values=("-", "ยังไม่มีประวัติ SO ค่าขนส่ง", "-", "-", "-", "-"))
+                return
+
+            for _, row in df.iterrows():
+                ts = row['requested_at']
+                ts_str = str(ts)[:16] if pd.notna(ts) else "-"
+                tree.insert("", "end", values=(
+                    ts_str,
+                    row['so_number'] or "-",
+                    row['sale_key'] or "-",
+                    row['customer_name'] or "-",
+                    row['requested_by'] or "-",
+                    row['reviewed_by'] or "-",
+                ))
+
+        except Exception as e:
+            import traceback
+            CTkLabel(self.cancelled_history_frame, text=f"โหลดข้อมูลล้มเหลว: {e}",
+                     text_color="red").pack(pady=20)
+            traceback.print_exc()
 
     def _start_notification_system(self):
         """ลูปตรวจสอบ Noti ทุกๆ 1 นาที"""
