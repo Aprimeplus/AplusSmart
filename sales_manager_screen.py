@@ -1165,6 +1165,29 @@ class SalesManagerScreen(CTkFrame):
 
         # ── ส่วนที่ 3: คำขอยกเลิก SO ค่ารถ (Transport Cancel Requests) ─────
         try:
+            # สร้าง table ถ้ายังไม่มี
+            conn_chk = self.app_container.get_connection()
+            try:
+                with conn_chk.cursor() as _cur:
+                    _cur.execute("""
+                        CREATE TABLE IF NOT EXISTS transport_cancel_requests (
+                            id SERIAL PRIMARY KEY,
+                            so_number VARCHAR(50) NOT NULL,
+                            so_id INTEGER,
+                            sale_key VARCHAR(50),
+                            customer_name VARCHAR(200),
+                            original_status VARCHAR(50),
+                            requested_by VARCHAR(100),
+                            requested_at TIMESTAMP DEFAULT NOW(),
+                            status VARCHAR(20) DEFAULT 'pending',
+                            reviewed_by VARCHAR(100),
+                            reviewed_at TIMESTAMP
+                        )
+                    """)
+                conn_chk.commit()
+            finally:
+                self.app_container.release_connection(conn_chk)
+
             transport_query = """
                 SELECT t.id, t.so_number, t.so_id, t.sale_key, t.customer_name,
                        t.original_status, t.requested_by, t.requested_at

@@ -5494,10 +5494,37 @@ class HRScreen(CTkFrame):
             self._toggle_normal_btn.configure(fg_color="transparent", text_color="#EF4444")
             self._load_transport_so_history()
 
+    def _ensure_transport_cancel_table(self):
+        """สร้าง transport_cancel_requests ถ้ายังไม่มี"""
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS transport_cancel_requests (
+                        id SERIAL PRIMARY KEY,
+                        so_number VARCHAR(50) NOT NULL,
+                        so_id INTEGER,
+                        sale_key VARCHAR(50),
+                        customer_name VARCHAR(200),
+                        original_status VARCHAR(50),
+                        requested_by VARCHAR(100),
+                        requested_at TIMESTAMP DEFAULT NOW(),
+                        status VARCHAR(20) DEFAULT 'pending',
+                        reviewed_by VARCHAR(100),
+                        reviewed_at TIMESTAMP
+                    )
+                """)
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            if conn: self.app_container.release_connection(conn)
+
     def _load_transport_so_history(self):
         """โหลดประวัติ SO ค่าขนส่งที่ SM อนุมัติยกเลิกแล้ว"""
         for widget in self.cancelled_history_frame.winfo_children():
             widget.destroy()
+        self._ensure_transport_cancel_table()
         try:
             query = """
                 SELECT so_number, sale_key, customer_name,
@@ -5599,6 +5626,7 @@ class HRScreen(CTkFrame):
 
     def _request_transport_cancel(self, so_number):
         """ส่งคำขอยกเลิก SO ค่ารถ → รอ SM อนุมัติ (ไม่ยกเลิกทันที)"""
+        self._ensure_transport_cancel_table()
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
@@ -5611,23 +5639,6 @@ class HRScreen(CTkFrame):
                     messagebox.showerror("Error", "ไม่พบ SO นี้ในระบบ")
                     return
                 so_id, sale_key, customer_name, original_status = result
-
-                # สร้าง table ถ้ายังไม่มี
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS transport_cancel_requests (
-                        id SERIAL PRIMARY KEY,
-                        so_number VARCHAR(50) NOT NULL,
-                        so_id INTEGER,
-                        sale_key VARCHAR(50),
-                        customer_name VARCHAR(200),
-                        original_status VARCHAR(50),
-                        requested_by VARCHAR(100),
-                        requested_at TIMESTAMP DEFAULT NOW(),
-                        status VARCHAR(20) DEFAULT 'pending',
-                        reviewed_by VARCHAR(100),
-                        reviewed_at TIMESTAMP
-                    )
-                """)
 
                 cursor.execute("""
                     INSERT INTO transport_cancel_requests
