@@ -384,11 +384,11 @@ class SalesTasksWindow(CTkToplevel):
             widget.destroy()
 
         try:
-            # ✅ Query เฉพาะรายการที่ difference_amount > 0 (โอนขาด)
+            # ROUND ใน query ป้องกัน floating point -0.0001 หลุดผ่าน < 0
             query = """
-                SELECT * FROM commissions 
-                WHERE sale_key = %s 
-                AND difference_amount < 0
+                SELECT * FROM commissions
+                WHERE sale_key = %s
+                AND ROUND(difference_amount::numeric, 2) < 0
                 AND is_active = 1
                 AND status != 'Paid'
                 ORDER BY timestamp DESC
@@ -401,9 +401,12 @@ class SalesTasksWindow(CTkToplevel):
 
             for _, row_data in df.iterrows():
                 total_payment = row_data.get('total_payment_amount', 0.0) or 0.0
-                difference = row_data.get('difference_amount', 0.0) or 0.0
+                difference = round(row_data.get('difference_amount', 0.0) or 0.0, 2)
 
-                # ✅ แสดงเฉพาะยอดโอนขาด
+                # Python-side filter: ถ้า round แล้ว >= 0 ถือว่าชำระครบ ข้ามไป
+                if difference >= 0:
+                    continue
+
                 card_color = "#FFFBEB"  # สีเหลือง
                 balance_text = f"ยอดโอนขาด: {difference:,.2f} บาท"
                 text_color = "#B45309"
