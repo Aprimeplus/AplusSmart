@@ -252,15 +252,35 @@ class AutoCompleteEntry(ctk.CTkEntry):
             self._hide_popup()
             return
 
-        # คำนวณความกว้าง: บวกเพิ่มอีก 350 pixels เผื่อชื่อสินค้ามันยาว
-        width = self.winfo_width() + 350
+        # คำนวณความกว้างตามข้อความจริงที่ยาวที่สุดในผลลัพธ์
+        try:
+            import tkinter.font as tkfont
+            font_object = self.cget("font")
+            f = tkfont.Font(family=font_object.cget("family"),
+                            size=font_object.cget("size"))
+            max_text_w = max((f.measure(str(m)) for m in self.matches), default=300)
+            width = max_text_w + 40  # +40 scrollbar & padding
+        except Exception:
+            width = self.winfo_width() + 400
+
+        # ไม่น้อยกว่า entry เดิม
+        width = max(width, self.winfo_width())
+
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height() + 2
-        
-        listbox_height = min(len(self.matches), 7)
-        row_height = 25
+
+        # ป้องกัน popup ล้นขวาจอ — ตรวจเฉพาะ primary monitor
+        # ถ้า x อยู่นอก primary range แสดงว่าอยู่บน secondary monitor ให้ไม่แตะ x
+        screen_w = self.winfo_screenwidth()
+        if 0 <= x < screen_w:
+            width = min(width, screen_w - 40)
+            if x + width > screen_w - 10:
+                x = screen_w - width - 10
+
+        listbox_height = min(len(self.matches), 8)
+        row_height = 26
         height = listbox_height * row_height
-        
+
         self.popup.geometry(f"{width}x{height}+{x}+{y}")
         self.popup.deiconify()
         self.popup.lift()
