@@ -93,18 +93,16 @@ class DailyDashboard(CTkFrame):
         # --- 2. พื้นที่ Dashboard (แบ่งซ้าย-ขวา) ---
         self.display_container = CTkFrame(self, fg_color="white")
         self.display_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        
-        # ฝั่งซ้าย: กราฟแท่งรายวัน (ขยายเต็มที่)
-        self.left_graph_area = CTkFrame(self.display_container, fg_color="white")
-        self.left_graph_area.pack(side="left", fill="both", expand=True)
-        
-        self.main_chart_canvas_area = CTkFrame(self.left_graph_area, fg_color="white")
-        self.main_chart_canvas_area.place(relx=0, rely=0, relwidth=1, relheight=1)
 
+        # ✅ pack ฝั่งขวาก่อนเสมอ เพื่อให้ tkinter จองพื้นที่ไว้ก่อน
         # ฝั่งขวา: แถบสรุปเป้าหมาย (Side Panel)
         self.right_summary_panel = CTkFrame(self.display_container, fg_color="#F8FAFC", width=260)
         self.right_summary_panel.pack(side="right", fill="y", padx=(5, 0))
-        self.right_summary_panel.pack_propagate(False) 
+        self.right_summary_panel.pack_propagate(False)
+
+        # ฝั่งซ้าย: กราฟแท่งรายวัน (ขยายเต็มที่ หลังจาก right_summary_panel จองพื้นที่แล้ว)
+        self.left_graph_area = CTkFrame(self.display_container, fg_color="white")
+        self.left_graph_area.pack(side="left", fill="both", expand=True)
         
         # ส่วนแสดงผล Monthly
         CTkLabel(self.right_summary_panel, text="ยอดขายสะสมรายเดือน", font=("Arial", 14, "bold")).pack(pady=(30, 0))
@@ -122,7 +120,21 @@ class DailyDashboard(CTkFrame):
         self.canvas = None
         self.monthly_canvas = None
         self.yearly_canvas = None
+        self._map_after_id = None
         self.after(500, self._update_chart)
+
+        # ✅ วาดกราฟใหม่ทุกครั้งที่ Tab นี้ถูกเปิดขึ้นมา (ได้ขนาดจริง + ข้อมูลล่าสุด)
+        self.bind("<Map>", self._on_map)
+
+    def _on_map(self, event=None):
+        """เรียกวาดกราฟใหม่เมื่อ tab ถูกแสดง — debounce 200ms"""
+        if self._map_after_id:
+            self.after_cancel(self._map_after_id)
+        self._map_after_id = self.after(200, self._do_map_update)
+
+    def _do_map_update(self):
+        self._map_after_id = None
+        self._update_chart()
 
     def _open_settings(self):
         year = int(self.dash_year_var.get())
@@ -240,7 +252,12 @@ class DailyDashboard(CTkFrame):
             self.canvas.get_tk_widget().destroy()
 
         plt.rcParams['font.family'] = ['Tahoma', 'Segoe UI Emoji']
-        fig, ax = plt.subplots(figsize=(15, 8), dpi=100)
+
+        # ✅ คำนวณขนาดกราฟจากพื้นที่จริงที่มีอยู่ ไม่ใช้ค่าตายตัว
+        self.update_idletasks()
+        w_px = max(self.left_graph_area.winfo_width(), 800)
+        h_px = max(self.left_graph_area.winfo_height(), 400)
+        fig, ax = plt.subplots(figsize=(w_px / 100, h_px / 100), dpi=100)
 
         days = df['day']
         prev_sales = df['previous_sales']
@@ -467,7 +484,7 @@ class DailyDashboard(CTkFrame):
         
         plt.subplots_adjust(top=0.88, bottom=0.12, left=0.08, right=0.95)
 
-        self.canvas = FigureCanvasTkAgg(fig, master=self.main_chart_canvas_area)
+        self.canvas = FigureCanvasTkAgg(fig, master=self.left_graph_area)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
@@ -479,7 +496,7 @@ class DailyDashboard(CTkFrame):
         if old_canvas: 
             old_canvas.get_tk_widget().destroy()
 
-        fig, ax = plt.subplots(figsize=(2.8, 2.8), dpi=85)
+        fig, ax = plt.subplots(figsize=(2.5, 2.5), dpi=85)
         fig.patch.set_alpha(0)
         
         pct = (actual / target * 100) if target > 0 else 0

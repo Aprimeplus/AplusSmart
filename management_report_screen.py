@@ -57,12 +57,26 @@ class SaleRevenueWidget(CTkFrame):
         self.custom_target_end = None
         self.sales_target_period_var = tk.StringVar(value="เดือนนี้")
         self._chart_canvas = None
+        self._map_after_id = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
         self._build_toolbar()
         self._build_chart_area()
+
+        # ✅ วาดกราฟใหม่ทุกครั้งที่ Tab นี้ถูกเปิดขึ้นมา (ได้ขนาดจริง)
+        self.bind("<Map>", self._on_map)
+
+    def _on_map(self, event=None):
+        """เรียกวาดกราฟใหม่เมื่อ tab ถูกแสดง — debounce 200ms"""
+        if self._map_after_id:
+            self.after_cancel(self._map_after_id)
+        self._map_after_id = self.after(200, self._do_map_update)
+
+    def _do_map_update(self):
+        self._map_after_id = None
+        self._refresh()
 
     def _build_toolbar(self):
         bar = CTkFrame(self, fg_color="transparent")
@@ -311,7 +325,10 @@ class SaleRevenueWidget(CTkFrame):
         BG, GRID_C = '#F8FAFC', '#E2E8F0'
 
         chart_width = max(10, n * 1.6)
-        fig = Figure(figsize=(chart_width, 7.2), dpi=100, facecolor=BG)
+        # ✅ คำนวณความสูงกราฟจากพื้นที่จริงที่มีอยู่ ไม่ใช้ค่าตายตัว
+        self.update_idletasks()
+        h_px = max(self.chart_frame.winfo_height() - 20, 420)
+        fig = Figure(figsize=(chart_width, h_px / 100), dpi=100, facecolor=BG)
         ax = fig.add_subplot(111)
         ax.set_facecolor(BG)
 
