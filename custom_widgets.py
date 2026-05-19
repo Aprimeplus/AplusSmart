@@ -263,8 +263,9 @@ class AutoCompleteEntry(ctk.CTkEntry):
         except Exception:
             width = self.winfo_width() + 400
 
-        # ไม่น้อยกว่า entry เดิม
+        # ไม่น้อยกว่า entry เดิม และไม่เกิน 480px
         width = max(width, self.winfo_width())
+        width = min(width, 480)
 
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height() + 2
