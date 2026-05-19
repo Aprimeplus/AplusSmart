@@ -322,6 +322,7 @@ def db_save_supplier(sup: dict, action: str, user: str):
             else:
                 cur.execute("""
                     UPDATE suppliers SET
+                        supplier_code  = %s,
                         supplier_name  = %s, contact_name  = %s, phone_number = %s,
                         credit_term    = %s, category      = %s, tier         = %s,
                         is_locked      = %s, source_tag    = %s, line_id      = %s,
@@ -335,6 +336,7 @@ def db_save_supplier(sup: dict, action: str, user: str):
                         wh_zone          = %s, wh_coordinates  = %s
                     WHERE id = %s
                 """, (
+                    sup.get("supplier_id", ""),
                     sup["name"], sup.get("contact",""), sup.get("phone",""),
                     sup.get("credit_days", 0), sup.get("category",""), sup.get("tier","Tier 2"),
                     sup.get("is_locked", False), sup.get("source_tag","Manual"),
@@ -1311,12 +1313,13 @@ class SupplierDetailPopup(CTkToplevel):
         cf = make_grid(1)
         self._fields = {}
         for ri, (key, lbl, ph) in enumerate([
-            ("contact",       "ผู้ติดต่อ",     ""),
-            ("phone",         "เบอร์ติดต่อ",   "0XX-XXX-XXXX"),
-            ("line_id",       "Line ID",        "@"),
-            ("email",         "Email",          "example@domain.com"),
-            ("coverage_area", "พื้นที่จัดส่ง", "เช่น กรุงเทพ, ชลบุรี"),
-            ("wh_zone",       "โซนที่ตั้ง",     "เช่น กรุงเทพตะวันออก, ชลบุรี"),
+            ("supplier_id",   "รหัสซัพ",        ""),
+            ("contact",       "ผู้ติดต่อ",       ""),
+            ("phone",         "เบอร์ติดต่อ",     "0XX-XXX-XXXX"),
+            ("line_id",       "Line ID",          "@"),
+            ("email",         "Email",            "example@domain.com"),
+            ("coverage_area", "พื้นที่จัดส่ง",   "เช่น กรุงเทพ, ชลบุรี"),
+            ("wh_zone",       "โซนที่ตั้ง",       "เช่น กรุงเทพตะวันออก, ชลบุรี"),
         ]):
             CTkLabel(cf, text=lbl + ":", text_color=CLR["gray"],
                      font=F(size=12), width=110, anchor="w").grid(
@@ -1328,7 +1331,7 @@ class SupplierDetailPopup(CTkToplevel):
             self._fields[key] = e
 
         # ── พิกัด Warehouse (row ต่อจาก wh_zone) ────────────────────────────
-        coord_row = 6  # ต่อจาก wh_zone ที่ row=5
+        coord_row = 7  # ต่อจาก wh_zone ที่ row=6 (เพิ่ม supplier_id เข้ามาแล้ว)
         CTkLabel(cf, text="พิกัด Warehouse:", text_color=CLR["gray"],
                  font=F(size=12), width=110, anchor="w").grid(
             row=coord_row, column=0, sticky="w", pady=5, padx=(0, 10))
@@ -1815,6 +1818,28 @@ class SupplierDetailPopup(CTkToplevel):
         self.destroy()
 
     def _save(self):
+        # ตรวจสอบรหัสซัพก่อน save
+        new_code = self._fields.get("supplier_id")
+        new_code = new_code.get().strip() if new_code else ""
+        old_code = self.sup.get("supplier_id", "")
+        if not new_code:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "รหัสซัพไม่สามารถว่างได้", parent=self)
+            return
+        if new_code != old_code:
+            # เช็คซ้ำกับรหัสอื่น
+            conn_chk, use_pool_chk = _get_conn()
+            try:
+                with conn_chk.cursor() as _cur:
+                    _cur.execute(
+                        "SELECT 1 FROM suppliers WHERE supplier_code = %s AND id != %s",
+                        (new_code, self.sup.get("id", 0))
+                    )
+                    if _cur.fetchone():
+                        messagebox.showerror("รหัสซ้ำ", f"รหัส '{new_code}' มีอยู่แล้วในระบบ", parent=self)
+                        return
+            finally:
+                _release_conn(conn_chk, use_pool_chk)
+
         for key, widget in self._fields.items():
             self.sup[key] = widget.get().strip()
 
