@@ -391,21 +391,38 @@ def db_check_sw_duplicate(sw_code: str, exclude_id: int = 0) -> bool:
 
 
 def db_next_sn_code(user: str) -> str:
-    """สร้างรหัส SN ถัดไป: SN[YY]-[NNNN]-[USER]"""
+    """สร้างรหัส SN ถัดไป: SN[YY]-[NNNN]-[USER]
+    ใช้ MAX ของเลข sequence แทน COUNT เพื่อป้องกัน duplicate เมื่อมีการลบ record"""
     conn, use_pool = _get_conn()
     try:
         yy = datetime.now().strftime("%y")
         with conn.cursor() as cur:
+            # หาเลข sequence สูงสุดของปีนี้
             cur.execute(
-                "SELECT COUNT(*) FROM suppliers WHERE supplier_code LIKE %s",
+                """SELECT COALESCE(
+                       MAX(CAST(SPLIT_PART(supplier_code, '-', 2) AS INTEGER)), 0
+                   )
+                   FROM suppliers
+                   WHERE supplier_code LIKE %s
+                     AND supplier_code ~ '^SN[0-9]{2}-[0-9]{4}-'""",
                 (f"SN{yy}-%",)
             )
-            n = (cur.fetchone()[0] or 0) + 1
+            max_n = cur.fetchone()[0] or 0
+            # หา sequence ถัดไปที่ไม่ซ้ำ
+            n = max_n + 1
+            for _ in range(100):  # loop สูงสุด 100 ครั้งกันไม่รู้จบ
+                candidate = f"SN{yy}-{n:04d}-{user}"
+                cur.execute(
+                    "SELECT 1 FROM suppliers WHERE supplier_code = %s", (candidate,)
+                )
+                if not cur.fetchone():
+                    break
+                n += 1
         return f"SN{yy}-{n:04d}-{user}"
     except Exception as e:
         print(f"[SSL] db_next_sn_code error: {e}")
         import random
-        return f"SN{datetime.now().strftime('%y')}-{random.randint(1,9999):04d}-{user}"
+        return f"SN{datetime.now().strftime('%y')}-{random.randint(1000, 9999):04d}-{user}"
     finally:
         _release_conn(conn, use_pool)
 
