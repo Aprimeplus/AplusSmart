@@ -3617,9 +3617,9 @@ class CostBenchmarkScreen(CTkFrame):
             ]
             popup_cols = {
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
-                "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
+                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
-                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
+                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อ ✔"],
             }
 
             # รายการสินค้า / ชื่อ Supplier / รหัส Sale → เปิด popup โดยตรง
@@ -3994,9 +3994,9 @@ class CostBenchmarkScreen(CTkFrame):
             ]
             popup_cols = {
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
-                "PRIORITY":       ["HOT", "WARM", "COLD", "ไม่แจ้ง"],
+                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
-                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ"],
+                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อ ✔"],
             }
 
             # รายการสินค้า / ชื่อ Supplier / รหัส Sale → เปิด popup โดยตรง
