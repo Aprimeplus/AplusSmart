@@ -1313,8 +1313,9 @@ class SupplierDetailPopup(CTkToplevel):
         cf = make_grid(1)
         self._fields = {}
         for ri, (key, lbl, ph) in enumerate([
-            ("supplier_id",   "รหัสซัพ",        ""),
-            ("contact",       "ผู้ติดต่อ",       ""),
+            ("name",          "ชื่อบริษัท",      ""),
+            ("supplier_id",   "รหัสซัพ",          ""),
+            ("contact",       "ผู้ติดต่อ",         ""),
             ("phone",         "เบอร์ติดต่อ",     "0XX-XXX-XXXX"),
             ("line_id",       "Line ID",          "@"),
             ("email",         "Email",            "example@domain.com"),
@@ -1331,7 +1332,7 @@ class SupplierDetailPopup(CTkToplevel):
             self._fields[key] = e
 
         # ── พิกัด Warehouse (row ต่อจาก wh_zone) ────────────────────────────
-        coord_row = 7  # ต่อจาก wh_zone ที่ row=6 (เพิ่ม supplier_id เข้ามาแล้ว)
+        coord_row = 8  # ต่อจาก wh_zone ที่ row=7 (name + supplier_id + 6 fields)
         CTkLabel(cf, text="พิกัด Warehouse:", text_color=CLR["gray"],
                  font=F(size=12), width=110, anchor="w").grid(
             row=coord_row, column=0, sticky="w", pady=5, padx=(0, 10))
@@ -1774,21 +1775,7 @@ class SupplierDetailPopup(CTkToplevel):
         if supplier.get("note"):
             self._note_e.insert(0, supplier["note"])
 
-        # ── Convert (SN only) ─────────────────────────────────────────────────
-        if supplier.get("tier") == "SN":
-            sec_label(17, "SN → SW Conversion")
-            conv_f = CTkFrame(body, fg_color=CLR["amber_lt"], corner_radius=8,
-                              border_width=1, border_color="#F59E0B")
-            conv_f.grid(row=18, column=0, sticky="ew", padx=20, pady=4)
-            CTkLabel(conv_f,
-                     text="Supplier นี้ยังเป็นรหัสชั่วคราว (SN)\n"
-                          "เมื่อบัญชีอนุมัติรหัส Express แล้ว กด Convert เพื่อผูกรหัส",
-                     font=F(size=12), text_color=CLR["amber"],
-                     justify="left").pack(padx=14, pady=(10, 6), anchor="w")
-            CTkButton(conv_f, text="Convert to SW Official ID →",
-                      fg_color=CLR["amber"], hover_color="#92400E",
-                      text_color=CLR["white"], font=F(size=12, weight="bold"),
-                      command=self._open_convert).pack(padx=14, pady=(0, 10), anchor="w")
+        # SN → SW Conversion section removed
 
         # Bottom bar
         bf = CTkFrame(self, fg_color=CLR["gray_lt"], corner_radius=0)
@@ -1818,6 +1805,13 @@ class SupplierDetailPopup(CTkToplevel):
         self.destroy()
 
     def _save(self):
+        # ตรวจสอบชื่อบริษัทก่อน save
+        new_name = self._fields.get("name")
+        new_name = new_name.get().strip() if new_name else ""
+        if not new_name:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุชื่อบริษัท", parent=self)
+            return
+
         # ตรวจสอบรหัสซัพก่อน save
         new_code = self._fields.get("supplier_id")
         new_code = new_code.get().strip() if new_code else ""
