@@ -2113,7 +2113,10 @@ class AddSupplierPopup(CTkToplevel):
         if not phone:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุเบอร์โทร", parent=self)
             return
-        sn_code = db_next_sn_code(self.current_user)
+        # ใช้รหัสที่ user กรอกเอง ถ้าเว้นว่างถึงจะ auto-generate
+        manual_code = self._inputs.get("supplier_id")
+        manual_code = manual_code.get().strip() if manual_code else ""
+        sn_code = manual_code if manual_code else db_next_sn_code(self.current_user)
         new_sup = {
             "id": 0,  # จะได้จาก DB หลัง INSERT
             "supplier_id": sn_code,
