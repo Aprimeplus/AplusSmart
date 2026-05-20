@@ -1133,14 +1133,18 @@ class DashboardCostScreen(CTkFrame):
         num_cols   = self.num_cols
 
         # 🟢 pre-compute avg ต้นทุนรวม(รวมย้าย) per SKU สำหรับ Price competitiveness
+        # กรองเฉพาะ row ที่มีค่า > 0 เพื่อไม่ให้ row ว่าง/0 บิดเบือน avg
         sku_avg_map = {}
         if "รายการสินค้า" in df.columns and "ต้นทุนรวม (รวมย้าย)" in df.columns:
             cost_by_sku = (
                 df[df["รายการสินค้า"].astype(str).str.strip() != ""]
                 .groupby("รายการสินค้า")["ต้นทุนรวม (รวมย้าย)"]
-                .apply(lambda x: pd.to_numeric(x, errors='coerce').dropna().mean())
+                .apply(lambda x: pd.to_numeric(x, errors='coerce')
+                                   .replace(0, float('nan'))
+                                   .dropna()
+                                   .mean())
             )
-            sku_avg_map = cost_by_sku.to_dict()
+            sku_avg_map = cost_by_sku.dropna().to_dict()
 
         table_data = []
         for _, row in df.iterrows():
@@ -1175,7 +1179,10 @@ class DashboardCostScreen(CTkFrame):
                         sku  = str(row.get("รายการสินค้า", "")).strip()
                         avg  = sku_avg_map.get(sku)
                         cost = pd.to_numeric(row.get("ต้นทุนรวม (รวมย้าย)", None), errors='coerce')
-                        if avg and avg != 0 and cost is not None and not pd.isna(cost):
+                        if (avg and avg != 0
+                                and cost is not None
+                                and not pd.isna(cost)
+                                and cost > 0):        # ← กรอง row ที่ cost = 0 ออก
                             pct = (cost - avg) / avg * 100
                             row_data.append(f"{pct:.2f}%")
                         else:
