@@ -5870,31 +5870,20 @@ class CostBenchmarkScreen(CTkFrame):
         
         color_code = color_tuple[1]
         
-        # ดึงข้อมูลคอลัมน์ที่ถูกซ่อน เพื่อแปลง Index ให้ถูกต้อง
-        col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-        hidden_set = set(getattr(self, 'hidden_cols_list', []))
-        
-        # ระบายสีฝั่งตารางหลัก
+        # tksheet v7: get_selected_cells() คืน DATA index โดยตรง
+        # ไม่ต้องแปลงผ่าน visible_main เพราะ highlight_cells ก็รับ data index เช่นกัน
         try:
-            visible_main = [col for col in range(col_offset, len(self.columns)) if col not in hidden_set]
             cells = self.sheet.get_selected_cells()
             for r, c in cells:
-                if c < len(visible_main):
-                    real_col = visible_main[c]
-                    data_col = real_col - col_offset  # แปลงเป็น Data Index ของตารางหลัก
-                    self.sheet.highlight_cells(row=r, column=data_col, bg=color_code)
-        except Exception as e: 
+                self.sheet.highlight_cells(row=r, column=c, bg=color_code)
+        except Exception as e:
             print(f"Highlight main error: {e}")
-        
-        # ระบายสีฝั่งตารางที่ตรึงไว้
+
         if self.sheet_frozen:
             try:
-                visible_frozen = [col for col in range(self.frozen_col_count) if col not in hidden_set]
                 f_cells = self.sheet_frozen.get_selected_cells()
                 for r, c in f_cells:
-                    if c < len(visible_frozen):
-                        data_col = visible_frozen[c] # ฝั่งตรึง Data Index คือ real_col ตรงๆ
-                        self.sheet_frozen.highlight_cells(row=r, column=data_col, bg=color_code)
+                    self.sheet_frozen.highlight_cells(row=r, column=c, bg=color_code)
             except Exception as e:
                 print(f"Highlight frozen error: {e}")
             
@@ -5908,28 +5897,18 @@ class CostBenchmarkScreen(CTkFrame):
         """ล้างสีไฮไลท์ช่องที่ถูกเลือก"""
         if not HAS_TKSHEET: return
         
-        col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
-        hidden_set = set(getattr(self, 'hidden_cols_list', []))
-        
         try:
-            visible_main = [col for col in range(col_offset, len(self.columns)) if col not in hidden_set]
             cells = self.sheet.get_selected_cells()
             for r, c in cells:
-                if c < len(visible_main):
-                    real_col = visible_main[c]
-                    data_col = real_col - col_offset
-                    self.sheet.dehighlight_cells(row=r, column=data_col)
-        except Exception as e: 
+                self.sheet.dehighlight_cells(row=r, column=c)
+        except Exception as e:
             print(f"Clear highlight main error: {e}")
-        
+
         if self.sheet_frozen:
             try:
-                visible_frozen = [col for col in range(self.frozen_col_count) if col not in hidden_set]
                 f_cells = self.sheet_frozen.get_selected_cells()
                 for r, c in f_cells:
-                    if c < len(visible_frozen):
-                        data_col = visible_frozen[c]
-                        self.sheet_frozen.dehighlight_cells(row=r, column=data_col)
+                    self.sheet_frozen.dehighlight_cells(row=r, column=c)
             except Exception as e:
                 print(f"Clear highlight frozen error: {e}")
             
