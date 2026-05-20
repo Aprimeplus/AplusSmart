@@ -1146,6 +1146,15 @@ class DashboardCostScreen(CTkFrame):
             )
             sku_avg_map = cost_by_sku.dropna().to_dict()
 
+        # ── DEBUG ──────────────────────────────────────────────────────────
+        print("\n" + "="*60)
+        print("[SKU AVG MAP] avg ต้นทุนรวม(รวมย้าย) ต่อ SKU")
+        print("="*60)
+        for sku, avg in sku_avg_map.items():
+            print(f"  {sku[:50]:<50}  avg = {avg:,.2f}")
+        print(f"  (รวม {len(sku_avg_map)} SKU)")
+        print("="*60 + "\n")
+
         table_data = []
         for _, row in df.iterrows():
             row_data = []
@@ -1168,8 +1177,12 @@ class DashboardCostScreen(CTkFrame):
                     try:
                         sku = str(row.get("รายการสินค้า", "")).strip()
                         avg = sku_avg_map.get(sku)
-                        row_data.append(f"฿{avg:,.2f}" if avg is not None else "")
-                    except Exception:
+                        result = f"฿{avg:,.2f}" if avg is not None else ""
+                        print(f"[avg]  SKU={sku[:40]:<40}  avg={avg:,.2f}" if avg is not None
+                              else f"[avg]  SKU={sku[:40]:<40}  avg=N/A")
+                        row_data.append(result)
+                    except Exception as e:
+                        print(f"[avg]  ERROR: {e}")
                         row_data.append("")
                     continue
 
@@ -1184,10 +1197,13 @@ class DashboardCostScreen(CTkFrame):
                                 and not pd.isna(cost)
                                 and cost > 0):        # ← กรอง row ที่ cost = 0 ออก
                             pct = (cost - avg) / avg * 100
+                            print(f"[comp] SKU={sku[:40]:<40}  cost={cost:,.2f}  avg={avg:,.2f}  pct={pct:.2f}%")
                             row_data.append(f"{pct:.2f}%")
                         else:
+                            print(f"[comp] SKU={sku[:40]:<40}  cost={cost}  avg={avg}  → skip")
                             row_data.append("")
-                    except Exception:
+                    except Exception as e:
+                        print(f"[comp] ERROR: {e}")
                         row_data.append("")
                     continue
 
