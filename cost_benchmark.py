@@ -5419,7 +5419,7 @@ class CostBenchmarkScreen(CTkFrame):
         # ── 3. สร้าง note text ─────────────────────────────────────────────
         def _build_note(chosen_so: str, validity_days: str, yod_status: str) -> str:
             items = [r for r in all_rows
-                     if r["so"] == chosen_so and r["select"] == "✔"]
+                     if r["so"] == chosen_so and r["select"] in ("✔", "เทียบเพื่อชุบ ✔")]
             if not items:
                 return f"⚠️  ไม่มีรายการที่ติ๊ก Select ใน {chosen_so}"
 
