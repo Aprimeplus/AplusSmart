@@ -645,6 +645,8 @@ class DashboardCostScreen(CTkFrame):
             "Total\nWin Sales", # 🟢 เพิ่มคอลัมน์นี้ตรงกลาง
             "Average of\nMarkup\nGuide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)",
+            "avg per\nsale order",          # 🟢 เพิ่มใหม่
+            "Price\nCompetitive\nness",     # 🟢 เพิ่มใหม่
             "Sum of\nต้นทุน/เส้น",
             "ต้นทุน/\nกก.",    
             "ชื่อ Supplier",
@@ -675,6 +677,8 @@ class DashboardCostScreen(CTkFrame):
             "Total\nWin Sales":                 "ราคาขาย รวม",
             "Average of\nMarkup\nGuide (%)":     "Markup Guide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":    "ต้นทุนรวม (รวมย้าย)",
+            "avg per\nsale order":              None,   # 🟢 calculated
+            "Price\nCompetitive\nness":         None,   # 🟢 calculated
             "Sum of\nต้นทุน/เส้น":              "ต้นทุน/เส้น",
             "ต้นทุน/\nกก.":                     "ต้นทุน/กก. (รวมย้าย)",
             "ชื่อ Supplier":                     "ชื่อ Supplier",
@@ -699,6 +703,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nส่วนลด 1\n(บาท)",           # 🟢 เพิ่มใหม่
             "Average of\nส่วนลด 2\n(บาท)",           # 🟢 เพิ่มใหม่
             "ส่วนลดรวม\n1+2",                         # 🟢 เพิ่มใหม่
+            "avg per\nsale order",                    # 🟢 เพิ่มใหม่
         }
         self.pct_cols = {
             "WIN RATE\n%",
@@ -706,6 +711,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)",
             "ส่วนลดรวม\n1+2 (%)",                    # 🟢 เพิ่มใหม่
+            "Price\nCompetitive\nness",              # 🟢 เพิ่มใหม่
         }
         self.num_cols = {
             "จำนวน",
@@ -772,6 +778,8 @@ class DashboardCostScreen(CTkFrame):
             "Total\nWin Sales":                110,
             "Average of\nMarkup\nGuide (%)":    100,
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":   120,
+            "avg per\nsale order":             115,    # 🟢 เพิ่มใหม่
+            "Price\nCompetitive\nness":        100,    # 🟢 เพิ่มใหม่
             "Sum of\nต้นทุน/เส้น":              90,
             "ต้นทุน/\nกก.":                     85, 
             "ชื่อ Supplier":                    160,
@@ -1124,6 +1132,16 @@ class DashboardCostScreen(CTkFrame):
         pct_cols   = self.pct_cols
         num_cols   = self.num_cols
 
+        # 🟢 pre-compute avg ต้นทุนรวม(รวมย้าย) per SKU สำหรับ Price competitiveness
+        sku_avg_map = {}
+        if "รายการสินค้า" in df.columns and "ต้นทุนรวม (รวมย้าย)" in df.columns:
+            cost_by_sku = (
+                df[df["รายการสินค้า"].astype(str).str.strip() != ""]
+                .groupby("รายการสินค้า")["ต้นทุนรวม (รวมย้าย)"]
+                .apply(lambda x: pd.to_numeric(x, errors='coerce').dropna().mean())
+            )
+            sku_avg_map = cost_by_sku.to_dict()
+
         table_data = []
         for _, row in df.iterrows():
             row_data = []
@@ -1137,6 +1155,31 @@ class DashboardCostScreen(CTkFrame):
                         qty = pd.to_numeric(row.get("จำนวน", 0), errors='coerce') or 0
                         val = (d1 + d2) * qty
                         row_data.append(f"฿{val:,.2f}" if val != 0 else "")
+                    except Exception:
+                        row_data.append("")
+                    continue
+
+                # 🟢 avg per sale order = avg ต้นทุนรวม(รวมย้าย) ของ SKU เดียวกัน
+                if dcol == "avg per\nsale order":
+                    try:
+                        sku = str(row.get("รายการสินค้า", "")).strip()
+                        avg = sku_avg_map.get(sku)
+                        row_data.append(f"฿{avg:,.2f}" if avg is not None else "")
+                    except Exception:
+                        row_data.append("")
+                    continue
+
+                # 🟢 Price competitiveness = (cost - avg) / avg × 100
+                if dcol == "Price\nCompetitive\nness":
+                    try:
+                        sku  = str(row.get("รายการสินค้า", "")).strip()
+                        avg  = sku_avg_map.get(sku)
+                        cost = pd.to_numeric(row.get("ต้นทุนรวม (รวมย้าย)", None), errors='coerce')
+                        if avg and avg != 0 and cost is not None and not pd.isna(cost):
+                            pct = (cost - avg) / avg * 100
+                            row_data.append(f"{pct:.2f}%")
+                        else:
+                            row_data.append("")
                     except Exception:
                         row_data.append("")
                     continue
