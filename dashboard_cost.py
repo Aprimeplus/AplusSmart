@@ -311,12 +311,12 @@ class DashboardCostScreen(CTkFrame):
                 d1  = pd.to_numeric(export_df.get("ส่วนลด 1 (บาท)", 0), errors='coerce').fillna(0)
                 d2  = pd.to_numeric(export_df.get("ส่วนลด 2 (บาท)", 0), errors='coerce').fillna(0)
                 qty = pd.to_numeric(export_df.get("จำนวน", 0), errors='coerce').fillna(0)
-                export_df["ส่วนลดรวม 1+2"] = (d1 + d2) * qty
+                disc_sum = (d1 + d2) * qty
+                export_df["ส่วนลดรวม 1+2"] = disc_sum.replace(0, float('nan'))
 
                 tunkruam = pd.to_numeric(export_df.get("ทุนรวม", 0), errors='coerce').fillna(0)
-                export_df["ส่วนลดรวม 1+2 (%)"] = (
-                    export_df["ส่วนลดรวม 1+2"] / tunkruam.replace(0, float('nan')) * 100
-                ).round(2).fillna(0)
+                pct = (disc_sum / tunkruam.replace(0, float('nan')) * 100).round(2)
+                export_df["ส่วนลดรวม 1+2 (%)"] = pct.replace(0, float('nan'))
 
                 # จัดลำดับคอลัมน์ — แทรกหลัง "ส่วนลด 2 (บาท)"
                 cols = list(export_df.columns)
