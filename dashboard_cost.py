@@ -317,6 +317,22 @@ class DashboardCostScreen(CTkFrame):
                 export_df["ส่วนลดรวม 1+2 (%)"] = (
                     export_df["ส่วนลดรวม 1+2"] / tunkruam.replace(0, float('nan')) * 100
                 ).round(2).fillna(0)
+
+                # จัดลำดับคอลัมน์ — แทรกหลัง "ส่วนลด 2 (บาท)"
+                cols = list(export_df.columns)
+                calc_cols = ["ส่วนลดรวม 1+2", "ส่วนลดรวม 1+2 (%)"]
+                # ลบออกจากท้าย (ที่ถูก append ไป) ก่อน
+                for cc in calc_cols:
+                    if cc in cols:
+                        cols.remove(cc)
+                # หาตำแหน่งแทรก
+                anchor = "ส่วนลด 2 (บาท)"
+                if anchor in cols:
+                    insert_at = cols.index(anchor) + 1
+                else:
+                    insert_at = len(cols)  # fallback: ต่อท้าย
+                cols = cols[:insert_at] + calc_cols + cols[insert_at:]
+                export_df = export_df[cols]
             except Exception as e:
                 print(f"[Export] คำนวณ ส่วนลดรวม error: {e}")
 
