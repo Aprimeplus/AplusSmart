@@ -6220,53 +6220,89 @@ class CostBenchmarkScreen(CTkFrame):
     # COLUMN HIDE / SHOW / COLOR
     # ================================================================== #
     def _get_real_col_indices(self):
+        """
+        แปลง visual col index ที่ได้จาก get_selected_*() → real col index ใน self.columns
+        tksheet v7 คืน visual index เสมอ ดังนั้นต้องแปลงผ่าน display_columns list
+        """
         real_cols = set()
         col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+        hidden_set = set(getattr(self, 'hidden_cols_list', []))
+        total = len(self.columns)
 
-        # 1. เช็คจาก Sheet หลักฝั่งขวา
+        # สร้าง mapping: visual_idx → real_idx (เหมือนที่ส่งให้ display_columns)
+        # main_visible[visual] = data_idx_in_main_sheet  →  real = data + col_offset
+        main_visible = [c - col_offset for c in range(col_offset, total) if c not in hidden_set]
+        # frozen_visible[visual] = real_idx  (frozen ไม่มี offset)
+        frozen_visible = [c for c in range(col_offset) if c not in hidden_set]
+
+        def vis_to_real_main(v):
+            v = int(v)
+            return (main_visible[v] + col_offset) if v < len(main_visible) else None
+
+        def vis_to_real_frozen(v):
+            v = int(v)
+            return frozen_visible[v] if v < len(frozen_visible) else None
+
+        # 1. Sheet หลักฝั่งขวา
         try:
             sel_cols = self.sheet.get_selected_columns()
             if sel_cols:
-                for c in sel_cols: real_cols.add(int(c) + col_offset)
-                
+                for c in sel_cols:
+                    r = vis_to_real_main(c)
+                    if r is not None: real_cols.add(r)
+
             sel_cells = self.sheet.get_selected_cells()
             if sel_cells:
-                for r, c in sel_cells: real_cols.add(int(c) + col_offset)
-                
+                for _, c in sel_cells:
+                    r = vis_to_real_main(c)
+                    if r is not None: real_cols.add(r)
+
             curr = self.sheet.get_currently_selected()
             if curr:
-                # รองรับ tksheet ทุกเวอร์ชั่น
                 if isinstance(curr[0], int):
-                    real_cols.add(int(curr[1]) + col_offset)
+                    r = vis_to_real_main(curr[1])
+                    if r is not None: real_cols.add(r)
                 elif isinstance(curr[0], str) and len(curr) >= 2:
-                    if curr[0] == "column": real_cols.add(int(curr[1]) + col_offset)
-                    elif curr[0] == "cell" and len(curr) >= 3: real_cols.add(int(curr[2]) + col_offset)
-        except Exception as e: 
+                    if curr[0] == "column":
+                        r = vis_to_real_main(curr[1])
+                        if r is not None: real_cols.add(r)
+                    elif curr[0] == "cell" and len(curr) >= 3:
+                        r = vis_to_real_main(curr[2])
+                        if r is not None: real_cols.add(r)
+        except Exception as e:
             print(f"Error right cols: {e}")
 
-        # 2. เช็คจาก Sheet ที่ตรึงไว้ฝั่งซ้าย (ถ้ามี)
+        # 2. Sheet ที่ตรึงไว้ฝั่งซ้าย
         if self.sheet_frozen:
             try:
                 sel_cols = self.sheet_frozen.get_selected_columns()
                 if sel_cols:
-                    for c in sel_cols: real_cols.add(int(c))
-                    
+                    for c in sel_cols:
+                        r = vis_to_real_frozen(c)
+                        if r is not None: real_cols.add(r)
+
                 sel_cells = self.sheet_frozen.get_selected_cells()
                 if sel_cells:
-                    for r, c in sel_cells: real_cols.add(int(c))
-                    
+                    for _, c in sel_cells:
+                        r = vis_to_real_frozen(c)
+                        if r is not None: real_cols.add(r)
+
                 curr = self.sheet_frozen.get_currently_selected()
                 if curr:
                     if isinstance(curr[0], int):
-                        real_cols.add(int(curr[1]))
+                        r = vis_to_real_frozen(curr[1])
+                        if r is not None: real_cols.add(r)
                     elif isinstance(curr[0], str) and len(curr) >= 2:
-                        if curr[0] == "column": real_cols.add(int(curr[1]))
-                        elif curr[0] == "cell" and len(curr) >= 3: real_cols.add(int(curr[2]))
-            except Exception as e: 
+                        if curr[0] == "column":
+                            r = vis_to_real_frozen(curr[1])
+                            if r is not None: real_cols.add(r)
+                        elif curr[0] == "cell" and len(curr) >= 3:
+                            r = vis_to_real_frozen(curr[2])
+                            if r is not None: real_cols.add(r)
+            except Exception as e:
                 print(f"Error frozen cols: {e}")
 
-        # กรองเอาเฉพาะ index ที่ถูกต้องจริงๆ
-        valid_cols = [int(c) for c in list(real_cols) if 0 <= int(c) < len(self.columns)]
+        valid_cols = [int(c) for c in real_cols if 0 <= int(c) < total]
         return valid_cols
 
     def _open_column_visibility_panel(self):
