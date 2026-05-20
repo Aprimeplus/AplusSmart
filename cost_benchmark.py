@@ -5464,18 +5464,23 @@ class CostBenchmarkScreen(CTkFrame):
                         grand_weight += float(it["weight_total"].replace(",", ""))
                     except Exception:
                         pass
-                # separator between items and group footer
-                lines.append("─" * 15)
-                lines.append("สถานะ :")
-                lines.append(f"ยืนราคา {days} วัน")
-                lines.append(f"จุดรับ : {dest}" if dest else "จุดรับ : -")
-                # หมายเหตุ — unique note1 values in this group
-                note1_vals = list(dict.fromkeys(
-                    it["note1"] for it in grp_items if it["note1"]
-                ))
-                note1_str = ", ".join(note1_vals) if note1_vals else ""
-                lines.append(f"หมายเหตุ : {note1_str}")
-                lines.append("")
+
+            # ── footer เดียวหลังรายการสินค้าทั้งหมด ──────────────────────
+            # รวม unique จุดรับ และ หมายเหตุ จากทุก item
+            dest_vals = list(dict.fromkeys(
+                it["dest"] for it in items if it["dest"]
+            ))
+            dest_str = ", ".join(dest_vals) if dest_vals else "-"
+            note1_vals = list(dict.fromkeys(
+                it["note1"] for it in items if it["note1"]
+            ))
+            note1_str = ", ".join(note1_vals) if note1_vals else ""
+            lines.append("─" * 15)
+            lines.append("สถานะ :")
+            lines.append(f"ยืนราคา {days} วัน")
+            lines.append(f"จุดรับ : {dest_str}")
+            lines.append(f"หมายเหตุ : {note1_str}")
+            lines.append("")
 
             first     = items[0]
             order_no  = first.get("order_no", "") or "-"
