@@ -620,6 +620,10 @@ class DashboardCostScreen(CTkFrame):
             "ชื่อ Supplier",
             "Average of\nส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)",
+            "Average of\nส่วนลด 1\n(บาท)",          # 🟢 เพิ่มใหม่
+            "Average of\nส่วนลด 2\n(บาท)",          # 🟢 เพิ่มใหม่
+            "ส่วนลดรวม\n1+2",                        # 🟢 calculated
+            "ส่วนลดรวม\n1+2 (%)",                   # 🟢 calculated
             "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)",
         ]
 
@@ -646,6 +650,10 @@ class DashboardCostScreen(CTkFrame):
             "ชื่อ Supplier":                     "ชื่อ Supplier",
             "Average of\nส่วนลด 2 (%)":         "ส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)":         "ส่วนลด 1 (%)",
+            "Average of\nส่วนลด 1\n(บาท)":      "ส่วนลด 1 (บาท)",       # 🟢 เพิ่มใหม่
+            "Average of\nส่วนลด 2\n(บาท)":      "ส่วนลด 2 (บาท)",       # 🟢 เพิ่มใหม่
+            "ส่วนลดรวม\n1+2":                   None,                    # 🟢 calculated
+            "ส่วนลดรวม\n1+2 (%)":              None,                    # 🟢 calculated
             "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)":  "ต้นทุนรวม (ไม่รวมย้าย)",
         }
 
@@ -656,14 +664,18 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nราคาขาย /\nเส้น",
             "ราคาขาย /\nกก.",
             "Sum of\nต้นทุน/เส้น",
-            "ต้นทุน/\nกก.",    
+            "ต้นทุน/\nกก.",
             "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)",
+            "Average of\nส่วนลด 1\n(บาท)",           # 🟢 เพิ่มใหม่
+            "Average of\nส่วนลด 2\n(บาท)",           # 🟢 เพิ่มใหม่
+            "ส่วนลดรวม\n1+2",                         # 🟢 เพิ่มใหม่
         }
         self.pct_cols = {
             "WIN RATE\n%",
             "Average of\nMarkup\nGuide (%)",
             "Average of\nส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)",
+            "ส่วนลดรวม\n1+2 (%)",                    # 🟢 เพิ่มใหม่
         }
         self.num_cols = {
             "จำนวน",
@@ -735,6 +747,10 @@ class DashboardCostScreen(CTkFrame):
             "ชื่อ Supplier":                    160,
             "Average of\nส่วนลด 2 (%)":        105,
             "Average of\nส่วนลด 1 (%)":        105,
+            "Average of\nส่วนลด 1\n(บาท)":     105,    # 🟢 เพิ่มใหม่
+            "Average of\nส่วนลด 2\n(บาท)":     105,    # 🟢 เพิ่มใหม่
+            "ส่วนลดรวม\n1+2":                   110,    # 🟢 เพิ่มใหม่
+            "ส่วนลดรวม\n1+2 (%)":              100,    # 🟢 เพิ่มใหม่
             "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)": 140,
         }
         for i, col in enumerate(self.display_columns):
@@ -826,7 +842,8 @@ class DashboardCostScreen(CTkFrame):
                     "น้ำหนัก/เส้น", "ราคาขาย / เส้น", "ราคาขาย / กก.",
                     "WIN RATE %", "Markup Guide (%)",
                     "ต้นทุน/เส้น", "ส่วนลด 1 (%)", "ส่วนลด 2 (%)",
-                    "ต้นทุน/กก. (รวมย้าย)",  
+                    "ส่วนลด 1 (บาท)", "ส่วนลด 2 (บาท)",   # 🟢 เพิ่มใหม่
+                    "ต้นทุน/กก. (รวมย้าย)",
                 ]
                 for col in numeric_cols:
                     if col in df.columns:
@@ -1081,6 +1098,33 @@ class DashboardCostScreen(CTkFrame):
         for _, row in df.iterrows():
             row_data = []
             for dcol in self.display_columns:
+
+                # 🟢 ส่วนลดรวม 1+2 = (ส่วนลด 1 บาท + ส่วนลด 2 บาท) × จำนวน
+                if dcol == "ส่วนลดรวม\n1+2":
+                    try:
+                        d1  = pd.to_numeric(row.get("ส่วนลด 1 (บาท)", 0), errors='coerce') or 0
+                        d2  = pd.to_numeric(row.get("ส่วนลด 2 (บาท)", 0), errors='coerce') or 0
+                        qty = pd.to_numeric(row.get("จำนวน", 0), errors='coerce') or 0
+                        val = (d1 + d2) * qty
+                        row_data.append(f"฿{val:,.2f}" if val != 0 else "")
+                    except Exception:
+                        row_data.append("")
+                    continue
+
+                # 🟢 ส่วนลดรวม 1+2 (%) = ส่วนลดรวม / ทุนรวม × 100 (2 ทศนิยม)
+                if dcol == "ส่วนลดรวม\n1+2 (%)":
+                    try:
+                        d1       = pd.to_numeric(row.get("ส่วนลด 1 (บาท)", 0), errors='coerce') or 0
+                        d2       = pd.to_numeric(row.get("ส่วนลด 2 (บาท)", 0), errors='coerce') or 0
+                        qty      = pd.to_numeric(row.get("จำนวน", 0), errors='coerce') or 0
+                        tunkruam = pd.to_numeric(row.get("ทุนรวม", 0), errors='coerce') or 0
+                        disc_sum = (d1 + d2) * qty
+                        pct = (disc_sum / tunkruam * 100) if tunkruam != 0 else 0
+                        row_data.append(f"{pct:.2f}%" if pct != 0 else "")
+                    except Exception:
+                        row_data.append("")
+                    continue
+
                 src = col_source.get(dcol)
 
                 if src is None or src not in row.index:
@@ -1141,6 +1185,8 @@ class DashboardCostScreen(CTkFrame):
                 "Average of\nMarkup\nGuide (%)":   "Markup Guide (%)",
                 "Average of\nส่วนลด 2 (%)":        "ส่วนลด 2 (%)",
                 "Average of\nส่วนลด 1 (%)":        "ส่วนลด 1 (%)",
+                "Average of\nส่วนลด 1\n(บาท)":     "ส่วนลด 1 (บาท)",   # 🟢 เพิ่มใหม่
+                "Average of\nส่วนลด 2\n(บาท)":     "ส่วนลด 2 (บาท)",   # 🟢 เพิ่มใหม่
                 "Average of\nราคาขาย /\nเส้น":     "ราคาขาย / เส้น",
                 "ราคาขาย /\nกก.":                  "ราคาขาย / กก.",
             }
@@ -1190,6 +1236,35 @@ class DashboardCostScreen(CTkFrame):
                             total_row[idx] = f"{float(m):.2f}%"
                 except Exception:
                     pass
+
+            # 🟢 ส่วนลดรวม 1+2 รวม = sum of (ส่วนลด1+ส่วนลด2) × จำนวน
+            try:
+                idx_disc = cidx("ส่วนลดรวม\n1+2")
+                if idx_disc >= 0 and "ส่วนลด 1 (บาท)" in df.columns and "จำนวน" in df.columns:
+                    d1  = pd.to_numeric(df.get("ส่วนลด 1 (บาท)", 0), errors='coerce').fillna(0)
+                    d2  = pd.to_numeric(df.get("ส่วนลด 2 (บาท)", 0), errors='coerce').fillna(0)
+                    qty = pd.to_numeric(df.get("จำนวน", 0), errors='coerce').fillna(0)
+                    total_disc = ((d1 + d2) * qty).sum()
+                    if total_disc != 0:
+                        total_row[idx_disc] = f"฿{total_disc:,.2f}"
+            except Exception:
+                pass
+
+            # 🟢 ส่วนลดรวม 1+2 (%) รวม = total_disc / sum(ทุนรวม) × 100
+            try:
+                idx_pct = cidx("ส่วนลดรวม\n1+2 (%)")
+                if idx_pct >= 0 and "ทุนรวม" in df.columns:
+                    d1  = pd.to_numeric(df.get("ส่วนลด 1 (บาท)", 0), errors='coerce').fillna(0)
+                    d2  = pd.to_numeric(df.get("ส่วนลด 2 (บาท)", 0), errors='coerce').fillna(0)
+                    qty = pd.to_numeric(df.get("จำนวน", 0), errors='coerce').fillna(0)
+                    tunkruam = pd.to_numeric(df["ทุนรวม"], errors='coerce').fillna(0)
+                    total_disc = ((d1 + d2) * qty).sum()
+                    total_tun  = tunkruam.sum()
+                    if total_tun != 0:
+                        pct = total_disc / total_tun * 100
+                        total_row[idx_pct] = f"{pct:.2f}%"
+            except Exception:
+                pass
 
             table_data.append(total_row)
 
