@@ -735,6 +735,8 @@ class CostBenchmarkScreen(CTkFrame):
             95,   # ต้นทุน/กก. (รวมย้าย)
             95,   # ต้นทุน/เส้น (รวมย้าย)
             95,   # ต้นทุนรวม (รวมย้าย)
+            110,  # avg per sale order     🟢 เพิ่มใหม่
+            110,  # Price competitiveness  🟢 เพิ่มใหม่
             70,   # Markup Guide (%)
             65,   # Markup/กก.
             65,   # Markup/เส้น
@@ -766,6 +768,7 @@ class CostBenchmarkScreen(CTkFrame):
         self.supplier_code_map = {}
         self.product_category_map = {}
         self.hidden_cols_list = []
+        self._sku_metrics_job = None
         self.custom_header_colors = {}
         self.sheet_frozen = None
         self._last_yview = -1.0
@@ -851,7 +854,9 @@ class CostBenchmarkScreen(CTkFrame):
             "น้ำหนัก/เส้น", "น้ำหนักรวม (Kg.)", "ทุน/กก.", "ทุนรวม", "ส่วนลด 1 (บาท)",
             "ส่วนลด 1 (%)", "ทุน/เส้น หลังส่วนลด 1", "ส่วนลด 2 (บาท)", "ส่วนลด 2 (%)", "ทุน/เส้น หลังส่วนลด 2",
             "ต้นทุน/กก. (ไม่รวมย้าย)", "ต้นทุน/เส้น (ไม่รวมย้าย)", "ต้นทุนรวม (ไม่รวมย้าย)", "ค่าย้าย (ซื้อ)", "ค่าย้าย/เส้น",
-            "ต้นทุน/กก. (รวมย้าย)", "ต้นทุน/เส้น (รวมย้าย)", "ต้นทุนรวม (รวมย้าย)", "Markup Guide (%)", "Markup/กก.",
+            "ต้นทุน/กก. (รวมย้าย)", "ต้นทุน/เส้น (รวมย้าย)", "ต้นทุนรวม (รวมย้าย)",
+            "avg per sale order", "Price competitiveness",  # 🟢 เพิ่มใหม่
+            "Markup Guide (%)", "Markup/กก.",
             "Markup/เส้น", "ทุน+Markup/กก.", "ทุน+Markup/เส้น", "ต้นทุนรวม+Markup", "ค่าส่ง (ขาย)",
             "ค่าส่ง / เส้น", "น้ำหนัก/เส้น 2", "ราคาขาย / กก.", "ราคาขาย / เส้น", "Vat. / เส้น",
             "ราคาขาย/เส้น + Vat.", "ราคาขาย รวม", "Vat. รวม", "ราคาขาย รวม + Vat.", "ชื่อ Supplier2",
@@ -1669,7 +1674,9 @@ class CostBenchmarkScreen(CTkFrame):
             "Product SKU.", "น้ำหนักรวม (Kg.)", "ทุน/กก.", "ทุนรวม",
             "ส่วนลด 1 (%)", "ทุน/เส้น หลังส่วนลด 1", "ส่วนลด 2 (%)", "ทุน/เส้น หลังส่วนลด 2",
             "ต้นทุน/กก. (ไม่รวมย้าย)", "ต้นทุน/เส้น (ไม่รวมย้าย)", "ต้นทุนรวม (ไม่รวมย้าย)", "ค่าย้าย/เส้น",
-            "ต้นทุน/กก. (รวมย้าย)", "ต้นทุน/เส้น (รวมย้าย)", "ต้นทุนรวม (รวมย้าย)", "Markup/กก.",
+            "ต้นทุน/กก. (รวมย้าย)", "ต้นทุน/เส้น (รวมย้าย)", "ต้นทุนรวม (รวมย้าย)",
+            "avg per sale order", "Price competitiveness",  # 🟢 เพิ่มใหม่
+            "Markup/กก.",
             "Markup/เส้น", "ทุน+Markup/กก.", "ทุน+Markup/เส้น", "ต้นทุนรวม+Markup",
             "ค่าส่ง / เส้น", "น้ำหนัก/เส้น 2", "ราคาขาย / กก.", "ราคาขาย / เส้น", "Vat. / เส้น",
             "ราคาขาย/เส้น + Vat.", "ราคาขาย รวม", "Vat. รวม", "ราคาขาย รวม + Vat.",
@@ -5352,6 +5359,78 @@ class CostBenchmarkScreen(CTkFrame):
                 self.after_cancel(self._fix_render_job)
             self._fix_render_job = self.after(150, self._apply_header_filters)
 
+        # 🟢 debounce _recalc_sku_metrics — รอให้ทุก row คำนวณเสร็จก่อน
+        if self._sku_metrics_job:
+            self.after_cancel(self._sku_metrics_job)
+        self._sku_metrics_job = self.after(600, self._recalc_sku_metrics)
+
+    # ================================================================== #
+    # SKU METRICS (avg per sale order + Price competitiveness)
+    # ================================================================== #
+    def _ensure_kpi_cols_exist(self, conn):
+        """ALTER TABLE cost_benchmarks ADD COLUMN IF NOT EXISTS สำหรับคอลัมน์ใหม่"""
+        new_cols = ["avg per sale order", "Price competitiveness"]
+        try:
+            with conn.cursor() as cur:
+                for col in new_cols:
+                    try:
+                        cur.execute(f'ALTER TABLE cost_benchmarks ADD COLUMN IF NOT EXISTS "{col}" TEXT')
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+        except Exception as e:
+            print(f"_ensure_kpi_cols_exist error: {e}")
+
+    def _recalc_sku_metrics(self):
+        """คำนวณ avg per sale order และ Price competitiveness สำหรับทุก row
+        - group by รายการสินค้า (SKU)
+        - avg  = mean(ต้นทุนรวม(รวมย้าย)) ของ SKU เดียวกันทุก row ในตาราง
+        - comp = (cost_row - avg) / avg × 100  (ติดลบ = ถูกกว่าค่าเฉลี่ย)
+        """
+        try:
+            total_rows = self.sheet.get_total_rows()
+            if self.sheet_frozen:
+                total_rows = max(total_rows, self.sheet_frozen.get_total_rows())
+
+            # ── 1. อ่านค่าทุก row ────────────────────────────────────────
+            row_data = []
+            sku_costs = {}   # {sku: [cost, ...]}
+
+            for r in range(total_rows):
+                sku = str(self._sheet_get(r, "รายการสินค้า") or "").strip()
+                raw = str(self._sheet_get(r, "ต้นทุนรวม (รวมย้าย)") or "").strip()
+                raw = raw.replace(",", "").replace("฿", "").strip()
+                try:
+                    cost = float(raw) if raw else None
+                except ValueError:
+                    cost = None
+                row_data.append((sku, cost))
+                if sku and cost is not None and cost > 0:
+                    sku_costs.setdefault(sku, []).append(cost)
+
+            # ── 2. avg ต่อ SKU ────────────────────────────────────────────
+            sku_avg = {sku: sum(v) / len(v) for sku, v in sku_costs.items()}
+
+            # ── 3. เขียนกลับ ──────────────────────────────────────────────
+            for r, (sku, cost) in enumerate(row_data):
+                if sku and sku in sku_avg and cost is not None and cost > 0:
+                    avg  = sku_avg[sku]
+                    pct  = (cost - avg) / avg * 100 if avg != 0 else 0
+                    self._sheet_set(r, "avg per sale order",    f"{avg:,.2f}")
+                    self._sheet_set(r, "Price competitiveness", f"{pct:.2f}%")
+                else:
+                    self._sheet_set(r, "avg per sale order",    "")
+                    self._sheet_set(r, "Price competitiveness", "")
+
+            try: self.sheet.redraw()
+            except Exception: pass
+            if self.sheet_frozen:
+                try: self.sheet_frozen.redraw()
+                except Exception: pass
+
+        except Exception as e:
+            print(f"_recalc_sku_metrics error: {e}")
+
     # ================================================================== #
     def _show_short_note_popup(self):
         """Short Note popup — เลือก SO + filter เฉพาะ row ที่ Select = ✓"""
@@ -5924,6 +6003,7 @@ class CostBenchmarkScreen(CTkFrame):
         year_val = self.year_var.get()
         conn = self.app_container.get_connection()
         try:
+            self._ensure_kpi_cols_exist(conn)   # 🟢 migrate ถ้า col ยังไม่มีใน DB
             columns_sql = ", ".join([f'"{col.replace("%", "%%")}"' for col in self.columns])
             query = f'SELECT {columns_sql} FROM cost_benchmarks WHERE benchmark_month = %s AND benchmark_year = %s AND created_by = %s ORDER BY id ASC'
             df = pd.read_sql_query(query, conn, params=(month_val, year_val, self.current_user))
@@ -5974,6 +6054,7 @@ class CostBenchmarkScreen(CTkFrame):
             self._history_idx = -1
             self._push_undo()
 
+            self.after(200, self._recalc_sku_metrics)  # 🟢 คำนวณ avg/competitiveness
             self.after(50, lambda: self.sheet.MT.focus_set())
 
         except Exception as e:
