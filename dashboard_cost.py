@@ -306,6 +306,20 @@ class DashboardCostScreen(CTkFrame):
             hide_cols = {"benchmark_year", "benchmark_month"}
             export_df = df[[c for c in df.columns if c not in hide_cols]].copy()
 
+            # 🟢 เพิ่มคอลัมน์คำนวณ ส่วนลดรวม 1+2 และ % ก่อน export
+            try:
+                d1  = pd.to_numeric(export_df.get("ส่วนลด 1 (บาท)", 0), errors='coerce').fillna(0)
+                d2  = pd.to_numeric(export_df.get("ส่วนลด 2 (บาท)", 0), errors='coerce').fillna(0)
+                qty = pd.to_numeric(export_df.get("จำนวน", 0), errors='coerce').fillna(0)
+                export_df["ส่วนลดรวม 1+2"] = (d1 + d2) * qty
+
+                tunkruam = pd.to_numeric(export_df.get("ทุนรวม", 0), errors='coerce').fillna(0)
+                export_df["ส่วนลดรวม 1+2 (%)"] = (
+                    export_df["ส่วนลดรวม 1+2"] / tunkruam.replace(0, float('nan')) * 100
+                ).round(2).fillna(0)
+            except Exception as e:
+                print(f"[Export] คำนวณ ส่วนลดรวม error: {e}")
+
             # ── สร้าง Workbook ────────────────────────────────────────
             wb = openpyxl.Workbook()
             ws = wb.active
