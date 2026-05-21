@@ -572,7 +572,7 @@ class ProductManagementWindow(CTkToplevel):
         self.entry_font = purchasing_screen_instance.entry_font
 
         self.title("จัดการข้อมูลสินค้าหลัก (Product Management)")
-        self.geometry("1100x700") 
+        self.geometry("1100x700")
         self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -582,6 +582,19 @@ class ProductManagementWindow(CTkToplevel):
 
         self.transient(master)
         self.grab_set()
+        self.after(10, self._center_on_parent)
+
+    def _center_on_parent(self):
+        try:
+            parent = self.master.winfo_toplevel()
+            self.update_idletasks()
+            w, h = 1100, 700
+            x = parent.winfo_rootx() + (parent.winfo_width()  - w) // 2
+            y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+            self.geometry(f"{w}x{h}+{x}+{y}")
+            self.lift()
+        except Exception:
+            pass
 
     def on_close(self):
         self.purchasing_screen.product_management_window = None
@@ -1054,20 +1067,33 @@ class ProductEditDialog(CTkToplevel):
         self.editing_mode = product_data is not None
         
         self.title("แก้ไขข้อมูลสินค้า" if self.editing_mode else "เพิ่มสินค้าใหม่")
-        self.geometry("500x320") 
+        self.geometry("500x320")
         self.grid_columnconfigure(1, weight=1)
 
         self.category_list = ["วัสดุอื่นๆ"]
-        
+
         self._create_widgets()
-        self._load_categories_from_db() 
-        
+        self._load_categories_from_db()
+
         if self.editing_mode:
             self._populate_form()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.transient(master)
         self.grab_set()
+        self.after(10, self._center_on_parent)
+
+    def _center_on_parent(self):
+        try:
+            parent = self.master.winfo_toplevel()
+            self.update_idletasks()
+            w, h = 500, 320
+            x = parent.winfo_rootx() + (parent.winfo_width()  - w) // 2
+            y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+            self.geometry(f"{w}x{h}+{x}+{y}")
+            self.lift()
+        except Exception:
+            pass
 
     def on_close(self):
         self.destroy()
@@ -1209,10 +1235,13 @@ class ProductEditDialog(CTkToplevel):
                         VALUES (%s, %s, %s, %s, %s)
                     """, (code, name, category, warehouse, datetime.now()))
                     messagebox.showinfo("สำเร็จ", f"เพิ่มสินค้าใหม่ '{name}' เรียบร้อยแล้ว", parent=self)
-            
+
             conn.commit()
             self.pm_window.load_products()
-            self.on_close()
+            # 🟢 Express mode: ไม่ปิด popup ให้ user เพิ่มสินค้าต่อได้เลย
+            # ปิดด้วย X มุมบนเท่านั้น (on_close ถูกเรียกเฉพาะตอน edit)
+            if self.editing_mode:
+                self.on_close()
             
         except psycopg2.Error as db_error:
             if conn: conn.rollback()
