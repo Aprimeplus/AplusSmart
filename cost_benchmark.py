@@ -441,19 +441,21 @@ class AutoFilterManager:
             pass
 
 class InlineSearchPopup(tk.Toplevel):
-    def __init__(self, master, data_list, on_select_callback):
+    def __init__(self, master, data_list, on_select_callback, on_add_new_callback=None):
         super().__init__(master)
         self.overrideredirect(True)
         self.attributes('-topmost', True)
         self.configure(bg="#9CA3AF", padx=1, pady=1)
 
         self.data_list = data_list
-        
+
         # 🚀 อัปเกรดความเร็ว 1: Precompute ข้อมูลไว้ล่วงหน้าเพื่อไม่ต้องแปลง Type ทุกครั้งที่พิมพ์
         self._data_lower = [str(x).lower() for x in data_list]
-        self._data_str = [str(x) for x in data_list] 
-        
+        self._data_str = [str(x) for x in data_list]
+
         self.on_select_callback = on_select_callback
+        self._on_add_new_callback = on_add_new_callback
+        self._add_new_item = None  # label ของ "เพิ่มสินค้าใหม่" ที่แสดงใน listbox
         self._destroyed = False
         self._search_job = None
 
@@ -598,10 +600,23 @@ class InlineSearchPopup(tk.Toplevel):
                 pass
             
         combined = list(dict.fromkeys(normal_matches + fuzzy_matches))
-        
+
         # 🚀 อัปเกรดความเร็ว 5: จำกัดผลลัพธ์สุดท้ายที่จะส่งไปแสดงบนหน้าจอไม่เกิน 150 รายการ
         if combined:
             self.listbox.insert(tk.END, *combined[:150])
+
+        # เพิ่มตัวเลือก "เพิ่มสินค้าใหม่" ท้ายรายการเมื่อค้นหาแล้วไม่พบสินค้าพอดี
+        if self._on_add_new_callback and term:
+            add_label = f'➕ เพิ่มสินค้าใหม่: "{term}"'
+            self._add_new_item = add_label
+            self.listbox.insert(tk.END, add_label)
+            try:
+                idx = self.listbox.size() - 1
+                self.listbox.itemconfig(idx, foreground="#059669", background="#F0FDF4")
+            except Exception:
+                pass
+        else:
+            self._add_new_item = None
 
     def _on_type(self, *args):
         # Debounce 120ms ลดลงนิดหน่อยเพื่อให้รู้สึกตอบสนองเร็วขึ้น 
@@ -673,6 +688,12 @@ class InlineSearchPopup(tk.Toplevel):
             self.safe_destroy()
 
     def _commit(self, value):
+        if self._add_new_item and value == self._add_new_item:
+            term = self.search_var.get().strip()
+            self.safe_destroy()
+            if self._on_add_new_callback:
+                self._on_add_new_callback(term)
+            return
         self.on_select_callback(value)
         self.safe_destroy()
 
@@ -681,6 +702,78 @@ class InlineSearchPopup(tk.Toplevel):
             self._destroyed = True
             try: self.destroy()
             except Exception: pass
+
+
+class QuickAddProductDialog(CTkToplevel):
+    """Dialog เพิ่มสินค้าใหม่แบบรวดเร็วจาก cost_benchmark — ไม่ต้องเปิด ProductManagement"""
+    def __init__(self, master, app_container, initial_name="", on_added_callback=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.on_added_callback = on_added_callback
+        self._initial_name = initial_name
+        self.title("เพิ่มสินค้าใหม่")
+        self.geometry("460x250")
+        self.resizable(False, False)
+        self.grid_columnconfigure(1, weight=1)
+        self._create_widgets()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.transient(master.winfo_toplevel())
+        self.grab_set()
+        self.after(50, lambda: (self.lift(), self.code_entry.focus_set()))
+
+    def _create_widgets(self):
+        row = 0
+        CTkLabel(self, text="รหัสสินค้า *:").grid(row=row, column=0, padx=12, pady=8, sticky="w")
+        self.code_entry = CTkEntry(self, placeholder_text="เช่น SW-001")
+        self.code_entry.grid(row=row, column=1, padx=12, pady=8, sticky="ew")
+        row += 1
+
+        CTkLabel(self, text="ชื่อสินค้า *:").grid(row=row, column=0, padx=12, pady=8, sticky="w")
+        self.name_entry = CTkEntry(self)
+        self.name_entry.grid(row=row, column=1, padx=12, pady=8, sticky="ew")
+        if self._initial_name:
+            self.name_entry.insert(0, self._initial_name)
+        row += 1
+
+        CTkLabel(self, text="หมวดหมู่:").grid(row=row, column=0, padx=12, pady=8, sticky="w")
+        self.cat_entry = CTkEntry(self, placeholder_text="เช่น วัสดุอื่นๆ")
+        self.cat_entry.grid(row=row, column=1, padx=12, pady=8, sticky="ew")
+        row += 1
+
+        CTkButton(self, text="เพิ่มสินค้า", command=self._save,
+                  fg_color="#059669", hover_color="#047857").grid(
+            row=row, column=0, columnspan=2, pady=16, padx=12, sticky="ew")
+
+    def _save(self):
+        code = self.code_entry.get().strip()
+        name = self.name_entry.get().strip()
+        category = self.cat_entry.get().strip() or "วัสดุอื่นๆ"
+        if not code or not name:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณากรอกรหัสและชื่อสินค้า", parent=self)
+            return
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id FROM products WHERE product_code = %s", (code,))
+                if cursor.fetchone():
+                    messagebox.showerror("ข้อมูลซ้ำ", f"รหัสสินค้า '{code}' มีอยู่ในระบบแล้ว", parent=self)
+                    return
+                cursor.execute("""
+                    INSERT INTO products (product_code, product_name, category, last_updated)
+                    VALUES (%s, %s, %s, %s)
+                """, (code, name, category, datetime.now()))
+            conn.commit()
+            if self.on_added_callback:
+                self.on_added_callback(name, code, category)
+            self.destroy()
+        except Exception as e:
+            if conn:
+                try: conn.rollback()
+                except Exception: pass
+            messagebox.showerror("Error", str(e), parent=self)
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
 
 
 class CostBenchmarkScreen(CTkFrame):
@@ -2926,7 +3019,8 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception as ex:
                         print(f"on_select error: {ex}")
 
-                popup = InlineSearchPopup(self, _data_list, on_select)
+                _add_cb = self._make_add_product_cb(on_select) if _data_list is self.product_list else None
+                popup = InlineSearchPopup(self, _data_list, on_select, on_add_new_callback=_add_cb)
                 popup.place_near_cell(sheet_widget=self.sheet, row=_row, col=_col,
                                       row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
                                       data_col=_data_col)
@@ -3030,7 +3124,8 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception as ex:
                         print(f"on_select frozen error: {ex}")
 
-                popup = InlineSearchPopup(self, _data_list, on_select)
+                _add_cb = self._make_add_product_cb(on_select) if _data_list is self.product_list else None
+                popup = InlineSearchPopup(self, _data_list, on_select, on_add_new_callback=_add_cb)
                 popup.place_near_cell(sheet_widget=self.sheet_frozen, row=_row, col=_col,
                                       row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
                                       data_col=_data_col)
@@ -3665,7 +3760,8 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception as ex:
                         print(f"on_select frozen error: {ex}")
 
-                popup = InlineSearchPopup(self, _data_list, on_select)
+                _add_cb = self._make_add_product_cb(on_select) if _data_list is self.product_list else None
+                popup = InlineSearchPopup(self, _data_list, on_select, on_add_new_callback=_add_cb)
                 popup.place_near_cell(sheet_widget=self.sheet_frozen, row=_row, col=_col,
                                       row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
                                       data_col=_data_col)
@@ -3731,6 +3827,19 @@ class CostBenchmarkScreen(CTkFrame):
 
         except Exception as e:
             print(f"_on_mt_click_frozen error: {e}")
+
+    def _make_add_product_cb(self, on_select):
+        """คืน callback สำหรับ InlineSearchPopup ที่เปิด QuickAddProductDialog เมื่อไม่พบสินค้า"""
+        def _on_add_new(term):
+            def _on_added(name, code, category):
+                if name not in self.product_list:
+                    self.product_list.append(name)
+                self.product_sku_map[name] = code
+                self.product_category_map[name] = category
+                on_select(name)
+            QuickAddProductDialog(self, self.app_container,
+                                  initial_name=term, on_added_callback=_on_added)
+        return _on_add_new
 
     def _refresh_dropdown_data(self):
         """โหลด dropdown data ใหม่จาก DB"""
@@ -3836,7 +3945,8 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception as ex:
                         print(f"on_select error: {ex}")
 
-                popup = InlineSearchPopup(self, _data_list, on_select)
+                _add_cb = self._make_add_product_cb(on_select) if _data_list is self.product_list else None
+                popup = InlineSearchPopup(self, _data_list, on_select, on_add_new_callback=_add_cb)
                 popup.place_near_cell(sheet_widget=self.sheet, row=_row, col=_col,
                                       row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
                                       data_col=_data_col)
@@ -3939,7 +4049,8 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception as ex:
                         print(f"on_select error: {ex}")
 
-                popup = InlineSearchPopup(self, _data_list, on_select)
+                _add_cb = self._make_add_product_cb(on_select) if _data_list is self.product_list else None
+                popup = InlineSearchPopup(self, _data_list, on_select, on_add_new_callback=_add_cb)
                 popup.place_near_cell(sheet_widget=self.sheet_frozen, row=_row, col=_col,
                                       row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
                                       data_col=_data_col)
@@ -4043,7 +4154,8 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception as ex:
                         print(f"on_select error: {ex}")
 
-                popup = InlineSearchPopup(self, _data_list, on_select)
+                _add_cb = self._make_add_product_cb(on_select) if _data_list is self.product_list else None
+                popup = InlineSearchPopup(self, _data_list, on_select, on_add_new_callback=_add_cb)
                 popup.place_near_cell(sheet_widget=self.sheet, row=_row, col=_col,
                                       row_h=self.zoom_level + 19, header_h=self.zoom_level + 24,
                                       data_col=_data_col)
