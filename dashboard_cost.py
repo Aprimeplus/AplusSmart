@@ -306,35 +306,70 @@ class DashboardCostScreen(CTkFrame):
             hide_cols = {"benchmark_year", "benchmark_month"}
             export_df = df[[c for c in df.columns if c not in hide_cols]].copy()
 
-            # 🟢 เพิ่มคอลัมน์คำนวณ ส่วนลดรวม 1+2 และ % ก่อน export
+            # ── helper: แทรกคอลัมน์หลัง anchor ──────────────────────────
+            def _insert_after(df, anchor_col, new_cols):
+                cols = list(df.columns)
+                for cc in new_cols:          # ลบออกจากตำแหน่งเดิม (ถ้ามี)
+                    if cc in cols:
+                        cols.remove(cc)
+                idx = cols.index(anchor_col) + 1 if anchor_col in cols else len(cols)
+                cols = cols[:idx] + new_cols + cols[idx:]
+                return df[cols]
+
+            # 🟢 คอลัมน์ 1: ส่วนลดรวม 1+2 และ % — แทรกหลัง "ส่วนลด 2 (บาท)"
             try:
                 d1  = pd.to_numeric(export_df.get("ส่วนลด 1 (บาท)", 0), errors='coerce').fillna(0)
                 d2  = pd.to_numeric(export_df.get("ส่วนลด 2 (บาท)", 0), errors='coerce').fillna(0)
                 qty = pd.to_numeric(export_df.get("จำนวน", 0), errors='coerce').fillna(0)
                 disc_sum = (d1 + d2) * qty
-                export_df["ส่วนลดรวม 1+2"] = disc_sum.replace(0, float('nan'))
-
+                export_df["ส่วนลดรวม 1+2"]     = disc_sum.replace(0, float('nan'))
                 tunkruam = pd.to_numeric(export_df.get("ทุนรวม", 0), errors='coerce').fillna(0)
-                pct = (disc_sum / tunkruam.replace(0, float('nan')) * 100).round(2)
-                export_df["ส่วนลดรวม 1+2 (%)"] = pct.replace(0, float('nan'))
-
-                # จัดลำดับคอลัมน์ — แทรกหลัง "ส่วนลด 2 (บาท)"
-                cols = list(export_df.columns)
-                calc_cols = ["ส่วนลดรวม 1+2", "ส่วนลดรวม 1+2 (%)"]
-                # ลบออกจากท้าย (ที่ถูก append ไป) ก่อน
-                for cc in calc_cols:
-                    if cc in cols:
-                        cols.remove(cc)
-                # หาตำแหน่งแทรก
-                anchor = "ส่วนลด 2 (บาท)"
-                if anchor in cols:
-                    insert_at = cols.index(anchor) + 1
-                else:
-                    insert_at = len(cols)  # fallback: ต่อท้าย
-                cols = cols[:insert_at] + calc_cols + cols[insert_at:]
-                export_df = export_df[cols]
+                pct_disc = (disc_sum / tunkruam.replace(0, float('nan')) * 100).round(2)
+                export_df["ส่วนลดรวม 1+2 (%)"] = pct_disc.replace(0, float('nan'))
+                export_df = _insert_after(export_df, "ส่วนลด 2 (บาท)",
+                                          ["ส่วนลดรวม 1+2", "ส่วนลดรวม 1+2 (%)"])
             except Exception as e:
                 print(f"[Export] คำนวณ ส่วนลดรวม error: {e}")
+
+            # 🟢 คอลัมน์ 2: avg per sale order และ Price competitiveness
+            # — แทรกหลัง "ต้นทุนรวม (รวมย้าย)"
+            # avg/min คำนวณระดับ row (ไม่รวม SO ก่อน เพื่อไม่ให้หลาย row ใน SO เดียวกันบิดเบือน)
+            try:
+                if ("รายการสินค้า" in export_df.columns
+                        and "ต้นทุนรวม (รวมย้าย)" in export_df.columns):
+                    _ev = export_df[export_df["รายการสินค้า"].astype(str).str.strip() != ""].copy()
+                    _ev["ต้นทุนรวม (รวมย้าย)"] = pd.to_numeric(
+                        _ev["ต้นทุนรวม (รวมย้าย)"], errors='coerce')
+                    _ev = _ev[_ev["ต้นทุนรวม (รวมย้าย)"] > 0]
+                    _stats   = _ev.groupby("รายการสินค้า")["ต้นทุนรวม (รวมย้าย)"]
+                    _exp_avg = _stats.mean().rename("avg per sale order")
+                    _exp_min = _stats.min().rename("_min_cost")
+
+                    # แสดงเฉพาะ row แรกของแต่ละ SKU (ไม่ซ้ำ)
+                    avg_col  = []
+                    comp_col = []
+                    _seen    = set()
+                    for _, erow in export_df.iterrows():
+                        sku = str(erow.get("รายการสินค้า", "")).strip()
+                        if sku and sku not in _seen and sku in _exp_avg:
+                            _seen.add(sku)
+                            avg_v = _exp_avg[sku]
+                            min_v = _exp_min[sku]
+                            avg_col.append(round(avg_v, 2))
+                            comp_col.append(
+                                round((min_v - avg_v) / avg_v * 100, 2)
+                                if avg_v else float('nan')
+                            )
+                        else:
+                            avg_col.append(float('nan'))
+                            comp_col.append(float('nan'))
+
+                    export_df["avg per sale order"]    = avg_col
+                    export_df["Price competitiveness"] = comp_col
+                    export_df = _insert_after(export_df, "ต้นทุนรวม (รวมย้าย)",
+                                              ["avg per sale order", "Price competitiveness"])
+            except Exception as e:
+                print(f"[Export] คำนวณ avg/competitiveness error: {e}")
 
             # ── สร้าง Workbook ────────────────────────────────────────
             wb = openpyxl.Workbook()
@@ -362,6 +397,14 @@ class DashboardCostScreen(CTkFrame):
                 cell.border    = border
             ws.row_dimensions[1].height = 28
 
+            # ── กำหนด number format ต่อ column ───────────────────────────
+            _num_fmt = {}   # col_idx (1-based) → format string
+            for _ci, _cn in enumerate(headers, start=1):
+                if _cn == "avg per sale order":
+                    _num_fmt[_ci] = '#,##0.00'
+                elif _cn == "Price competitiveness":
+                    _num_fmt[_ci] = '#,##0.00"%"'   # แสดงเป็น -5.62%
+
             # ── Data rows ─────────────────────────────────────────────
             for row_idx, (_, row_data) in enumerate(export_df.iterrows(), start=2):
                 bg = ROW_ALT if row_idx % 2 == 0 else ROW_NORM
@@ -374,6 +417,8 @@ class DashboardCostScreen(CTkFrame):
                     cell.fill      = fill
                     cell.border    = border
                     cell.alignment = Alignment(vertical="center")
+                    if col_idx in _num_fmt and value != "":
+                        cell.number_format = _num_fmt[col_idx]
 
             # ── Auto-fit column width ─────────────────────────────────
             for col_idx, col_name in enumerate(headers, start=1):
@@ -1132,30 +1177,26 @@ class DashboardCostScreen(CTkFrame):
         pct_cols   = self.pct_cols
         num_cols   = self.num_cols
 
-        # 🟢 pre-compute avg ต้นทุนรวม(รวมย้าย) per SKU สำหรับ Price competitiveness
-        # กรองเฉพาะ row ที่มีค่า > 0 เพื่อไม่ให้ row ว่าง/0 บิดเบือน avg
+        # 🟢 pre-compute avg และ min ต้นทุนรวม(รวมย้าย) per SKU (row-level)
+        # avg = ค่าเฉลี่ยของทุก row ที่มี cost > 0 สำหรับ SKU นั้น
+        # min = ราคาถูกที่สุด (per row) ใช้คำนวณ Price competitiveness
         sku_avg_map = {}
-        if "รายการสินค้า" in df.columns and "ต้นทุนรวม (รวมย้าย)" in df.columns:
-            cost_by_sku = (
-                df[df["รายการสินค้า"].astype(str).str.strip() != ""]
-                .groupby("รายการสินค้า")["ต้นทุนรวม (รวมย้าย)"]
-                .apply(lambda x: pd.to_numeric(x, errors='coerce')
-                                   .replace(0, float('nan'))
-                                   .dropna()
-                                   .mean())
+        sku_min_map = {}
+        if ("รายการสินค้า" in df.columns
+                and "ต้นทุนรวม (รวมย้าย)" in df.columns):
+            df_valid = df[df["รายการสินค้า"].astype(str).str.strip() != ""].copy()
+            df_valid["ต้นทุนรวม (รวมย้าย)"] = pd.to_numeric(
+                df_valid["ต้นทุนรวม (รวมย้าย)"], errors='coerce'
             )
-            sku_avg_map = cost_by_sku.dropna().to_dict()
-
-        # ── DEBUG ──────────────────────────────────────────────────────────
-        print("\n" + "="*60)
-        print("[SKU AVG MAP] avg ต้นทุนรวม(รวมย้าย) ต่อ SKU")
-        print("="*60)
-        for sku, avg in sku_avg_map.items():
-            print(f"  {sku[:50]:<50}  avg = {avg:,.2f}")
-        print(f"  (รวม {len(sku_avg_map)} SKU)")
-        print("="*60 + "\n")
+            # กรอง cost > 0 เท่านั้น (ไม่ให้ row ว่าง/0 บิดเบือน avg)
+            df_valid = df_valid[df_valid["ต้นทุนรวม (รวมย้าย)"] > 0]
+            sku_stats   = df_valid.groupby("รายการสินค้า")["ต้นทุนรวม (รวมย้าย)"]
+            sku_avg_map = sku_stats.mean().to_dict()
+            sku_min_map = sku_stats.min().to_dict()
 
         table_data = []
+        _shown_avg_sku  = set()   # ติดตาม SKU ที่แสดง avg ไปแล้ว (แสดงแค่ครั้งแรก)
+        _shown_comp_sku = set()   # ติดตาม SKU ที่แสดง competitiveness ไปแล้ว
         for _, row in df.iterrows():
             row_data = []
             for dcol in self.display_columns:
@@ -1177,33 +1218,34 @@ class DashboardCostScreen(CTkFrame):
                     try:
                         sku = str(row.get("รายการสินค้า", "")).strip()
                         avg = sku_avg_map.get(sku)
-                        result = f"฿{avg:,.2f}" if avg is not None else ""
-                        print(f"[avg]  SKU={sku[:40]:<40}  avg={avg:,.2f}" if avg is not None
-                              else f"[avg]  SKU={sku[:40]:<40}  avg=N/A")
-                        row_data.append(result)
-                    except Exception as e:
-                        print(f"[avg]  ERROR: {e}")
+                        # แสดงแค่ครั้งแรกของ SKU นั้น → ไม่ซ้ำในทุก row
+                        if avg is not None and sku not in _shown_avg_sku:
+                            _shown_avg_sku.add(sku)
+                            row_data.append(f"฿{avg:,.2f}")
+                        else:
+                            row_data.append("")
+                    except Exception:
                         row_data.append("")
                     continue
 
-                # 🟢 Price competitiveness = (cost - avg) / avg × 100
+                # 🟢 Price competitiveness = (min_cost - avg) / avg × 100
+                # ใช้ราคาที่ถูกที่สุดของ SKU นั้น (SO-level min) เทียบกับ avg
+                # แสดงครั้งเดียวต่อ SKU (first row ของกลุ่ม)
                 if dcol == "Price\nCompetitive\nness":
                     try:
-                        sku  = str(row.get("รายการสินค้า", "")).strip()
-                        avg  = sku_avg_map.get(sku)
-                        cost = pd.to_numeric(row.get("ต้นทุนรวม (รวมย้าย)", None), errors='coerce')
-                        if (avg and avg != 0
-                                and cost is not None
-                                and not pd.isna(cost)
-                                and cost > 0):        # ← กรอง row ที่ cost = 0 ออก
-                            pct = (cost - avg) / avg * 100
-                            print(f"[comp] SKU={sku[:40]:<40}  cost={cost:,.2f}  avg={avg:,.2f}  pct={pct:.2f}%")
-                            row_data.append(f"{pct:.2f}%")
-                        else:
-                            print(f"[comp] SKU={sku[:40]:<40}  cost={cost}  avg={avg}  → skip")
+                        sku = str(row.get("รายการสินค้า", "")).strip()
+                        if sku in _shown_comp_sku:
                             row_data.append("")
-                    except Exception as e:
-                        print(f"[comp] ERROR: {e}")
+                        else:
+                            avg = sku_avg_map.get(sku)
+                            mn  = sku_min_map.get(sku)
+                            if avg and avg != 0 and mn is not None:
+                                pct = (mn - avg) / avg * 100
+                                _shown_comp_sku.add(sku)
+                                row_data.append(f"{pct:.2f}%")
+                            else:
+                                row_data.append("")
+                    except Exception:
                         row_data.append("")
                     continue
 

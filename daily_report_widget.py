@@ -17,12 +17,12 @@ STATUS_THAI_MAP = {
     'Rejected by SM': 'ผจก.ขาย ตีกลับ',
     
     # --- ฝั่งจัดซื้อ (PU) ---
-    'Pending PU': 'รอฝ่ายจัดซื้อรับงาน',
-    'PO In Progress': 'จัดซื้อกำลังดำเนินการ',
-    'Pending Approval': 'รออนุมัติ PO',
-    'Approved': 'อนุมัติแล้ว',
-    'Rejected': 'ถูกตีกลับให้แก้ไข',
-    'PO Sent': 'สั่งซื้อ/เปิด PO เรียบร้อย',
+    'Pending PU':       'รอจัดซื้อรับงาน',
+    'PO In Progress':   'อยู่ระหว่างจัดซื้อ',
+    'Pending Approval': 'อยู่ระหว่างจัดซื้อ',
+    'Approved':         'อยู่ระหว่างจัดซื้อ',
+    'Rejected':         'ถูกตีกลับให้แก้ไข',
+    'PO Sent':          'เปิด PO สำเร็จ',
     
     # --- ฝั่งบุคคล/การเงิน (HR/Finance) ---
     'Forwarded_To_HR': 'ส่งต่อให้ HR',

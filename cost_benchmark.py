@@ -1021,6 +1021,10 @@ class CostBenchmarkScreen(CTkFrame):
                         highlights_to_save[f"frozen:{r},{c}"] = col_str
         except Exception: pass
 
+        # 🔹 sync cache ในหน่วยความจำให้ตรงกับที่จะบันทึก
+        # ป้องกัน _apply_saved_highlights() ใช้ค่าเก่าตอน reload
+        self.cell_highlights_cache = highlights_to_save
+
         settings = {
             "hidden_cols": self.hidden_cols_list,
             "header_colors": self.custom_header_colors,
@@ -5398,6 +5402,9 @@ class CostBenchmarkScreen(CTkFrame):
             from tkinter import messagebox
             messagebox.showinfo("Short Note", "ไม่มีรายการสินค้าในตาราง", parent=self)
             return
+
+        # เรียง SO ล่าสุดขึ้นบนสุด (row ที่เพิ่มทีหลังอยู่ด้านล่างตาราง → reverse)
+        so_order = list(reversed(so_order))
 
         # ── 2. formatters ──────────────────────────────────────────────────
         def _fmt_weight(s):
