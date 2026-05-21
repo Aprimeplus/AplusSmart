@@ -331,7 +331,7 @@ class DashboardCostScreen(CTkFrame):
             except Exception as e:
                 print(f"[Export] คำนวณ ส่วนลดรวม error: {e}")
 
-            # 🟢 คอลัมน์ 2: avg per sale order และ Price competitiveness
+            # 🟢 คอลัมน์ 2: cost/per order และ Price competitiveness
             # — แทรกหลัง "ต้นทุนรวม (รวมย้าย)"
             # avg/min คำนวณระดับ row (ไม่รวม SO ก่อน เพื่อไม่ให้หลาย row ใน SO เดียวกันบิดเบือน)
             try:
@@ -342,7 +342,7 @@ class DashboardCostScreen(CTkFrame):
                         _ev["ต้นทุนรวม (รวมย้าย)"], errors='coerce')
                     _ev = _ev[_ev["ต้นทุนรวม (รวมย้าย)"] > 0]
                     _stats   = _ev.groupby("รายการสินค้า")["ต้นทุนรวม (รวมย้าย)"]
-                    _exp_avg = _stats.mean().rename("avg per sale order")
+                    _exp_avg = _stats.mean().rename("cost/per order")
                     _exp_min = _stats.min().rename("_min_cost")
 
                     # แสดงเฉพาะ row แรกของแต่ละ SKU (ไม่ซ้ำ)
@@ -364,10 +364,10 @@ class DashboardCostScreen(CTkFrame):
                             avg_col.append(float('nan'))
                             comp_col.append(float('nan'))
 
-                    export_df["avg per sale order"]    = avg_col
+                    export_df["cost/per order"]    = avg_col
                     export_df["Price competitiveness"] = comp_col
                     export_df = _insert_after(export_df, "ต้นทุนรวม (รวมย้าย)",
-                                              ["avg per sale order", "Price competitiveness"])
+                                              ["cost/per order", "Price competitiveness"])
             except Exception as e:
                 print(f"[Export] คำนวณ avg/competitiveness error: {e}")
 
@@ -400,7 +400,7 @@ class DashboardCostScreen(CTkFrame):
             # ── กำหนด number format ต่อ column ───────────────────────────
             _num_fmt = {}   # col_idx (1-based) → format string
             for _ci, _cn in enumerate(headers, start=1):
-                if _cn == "avg per sale order":
+                if _cn == "cost/per order":
                     _num_fmt[_ci] = '#,##0.00'
                 elif _cn == "Price competitiveness":
                     _num_fmt[_ci] = '#,##0.00"%"'   # แสดงเป็น -5.62%
@@ -690,7 +690,7 @@ class DashboardCostScreen(CTkFrame):
             "Total\nWin Sales", # 🟢 เพิ่มคอลัมน์นี้ตรงกลาง
             "Average of\nMarkup\nGuide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)",
-            "avg per\nsale order",          # 🟢 เพิ่มใหม่
+            "cost/per\norder",          # 🟢 เพิ่มใหม่
             "Price\nCompetitive\nness",     # 🟢 เพิ่มใหม่
             "Sum of\nต้นทุน/เส้น",
             "ต้นทุน/\nกก.",    
@@ -722,7 +722,7 @@ class DashboardCostScreen(CTkFrame):
             "Total\nWin Sales":                 "ราคาขาย รวม",
             "Average of\nMarkup\nGuide (%)":     "Markup Guide (%)",
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":    "ต้นทุนรวม (รวมย้าย)",
-            "avg per\nsale order":              None,   # 🟢 calculated
+            "cost/per\norder":              None,   # 🟢 calculated
             "Price\nCompetitive\nness":         None,   # 🟢 calculated
             "Sum of\nต้นทุน/เส้น":              "ต้นทุน/เส้น",
             "ต้นทุน/\nกก.":                     "ต้นทุน/กก. (รวมย้าย)",
@@ -748,7 +748,7 @@ class DashboardCostScreen(CTkFrame):
             "Average of\nส่วนลด 1\n(บาท)",           # 🟢 เพิ่มใหม่
             "Average of\nส่วนลด 2\n(บาท)",           # 🟢 เพิ่มใหม่
             "ส่วนลดรวม\n1+2",                         # 🟢 เพิ่มใหม่
-            "avg per\nsale order",                    # 🟢 เพิ่มใหม่
+            "cost/per\norder",                    # 🟢 เพิ่มใหม่
         }
         self.pct_cols = {
             "WIN RATE\n%",
@@ -823,7 +823,7 @@ class DashboardCostScreen(CTkFrame):
             "Total\nWin Sales":                110,
             "Average of\nMarkup\nGuide (%)":    100,
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":   120,
-            "avg per\nsale order":             115,    # 🟢 เพิ่มใหม่
+            "cost/per\norder":             115,    # 🟢 เพิ่มใหม่
             "Price\nCompetitive\nness":        100,    # 🟢 เพิ่มใหม่
             "Sum of\nต้นทุน/เส้น":              90,
             "ต้นทุน/\nกก.":                     85, 
@@ -1213,8 +1213,8 @@ class DashboardCostScreen(CTkFrame):
                         row_data.append("")
                     continue
 
-                # 🟢 avg per sale order = avg ต้นทุนรวม(รวมย้าย) ของ SKU เดียวกัน
-                if dcol == "avg per\nsale order":
+                # 🟢 cost/per order = avg ต้นทุนรวม(รวมย้าย) ของ SKU เดียวกัน
+                if dcol == "cost/per\norder":
                     try:
                         sku = str(row.get("รายการสินค้า", "")).strip()
                         avg = sku_avg_map.get(sku)
