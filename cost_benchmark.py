@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox
-from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkButton, CTkOptionMenu, CTkEntry, CTkCheckBox, CTkScrollableFrame, CTkToplevel
+from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkButton, CTkOptionMenu, CTkEntry, CTkCheckBox, CTkScrollableFrame, CTkToplevel, CTkComboBox
 import pandas as pd
 import psycopg2.extras
 from datetime import datetime
@@ -706,20 +706,40 @@ class InlineSearchPopup(tk.Toplevel):
 
 class QuickAddProductDialog(CTkToplevel):
     """Dialog เพิ่มสินค้าใหม่แบบรวดเร็วจาก cost_benchmark — ไม่ต้องเปิด ProductManagement"""
+    _W, _H = 460, 260
+
     def __init__(self, master, app_container, initial_name="", on_added_callback=None):
         super().__init__(master)
         self.app_container = app_container
         self.on_added_callback = on_added_callback
         self._initial_name = initial_name
         self.title("เพิ่มสินค้าใหม่")
-        self.geometry("460x250")
+        self.geometry(f"{self._W}x{self._H}")
         self.resizable(False, False)
         self.grid_columnconfigure(1, weight=1)
         self._create_widgets()
+        self._load_categories()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.transient(master.winfo_toplevel())
         self.grab_set()
-        self.after(50, lambda: (self.lift(), self.code_entry.focus_set()))
+        # ── วาง popup ให้ตรงกลาง parent window เสมอ (ป้องกันไปเด้งจออื่น) ──
+        self.after(10, self._center_on_parent)
+        self.after(60, lambda: self.code_entry.focus_set())
+
+    def _center_on_parent(self):
+        try:
+            parent = self.master.winfo_toplevel()
+            self.update_idletasks()
+            pw = parent.winfo_width()
+            ph = parent.winfo_height()
+            px = parent.winfo_rootx()
+            py = parent.winfo_rooty()
+            x = px + (pw - self._W) // 2
+            y = py + (ph - self._H) // 2
+            self.geometry(f"{self._W}x{self._H}+{x}+{y}")
+            self.lift()
+        except Exception:
+            pass
 
     def _create_widgets(self):
         row = 0
@@ -736,18 +756,35 @@ class QuickAddProductDialog(CTkToplevel):
         row += 1
 
         CTkLabel(self, text="หมวดหมู่:").grid(row=row, column=0, padx=12, pady=8, sticky="w")
-        self.cat_entry = CTkEntry(self, placeholder_text="เช่น วัสดุอื่นๆ")
-        self.cat_entry.grid(row=row, column=1, padx=12, pady=8, sticky="ew")
+        self.cat_var = tk.StringVar(value="วัสดุอื่นๆ")
+        self.cat_menu = CTkComboBox(self, variable=self.cat_var, values=["วัสดุอื่นๆ"])
+        self.cat_menu.grid(row=row, column=1, padx=12, pady=8, sticky="ew")
         row += 1
 
         CTkButton(self, text="เพิ่มสินค้า", command=self._save,
                   fg_color="#059669", hover_color="#047857").grid(
             row=row, column=0, columnspan=2, pady=16, padx=12, sticky="ew")
 
+    def _load_categories(self):
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT category_name FROM product_categories ORDER BY category_name")
+                rows = cursor.fetchall()
+                if rows:
+                    cats = [r[0] for r in rows]
+                    self.cat_menu.configure(values=cats)
+                    self.cat_var.set(cats[0])
+        except Exception:
+            pass
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
     def _save(self):
         code = self.code_entry.get().strip()
         name = self.name_entry.get().strip()
-        category = self.cat_entry.get().strip() or "วัสดุอื่นๆ"
+        category = self.cat_var.get().strip() or "วัสดุอื่นๆ"
         if not code or not name:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณากรอกรหัสและชื่อสินค้า", parent=self)
             return
