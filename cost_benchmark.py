@@ -6022,62 +6022,74 @@ class CostBenchmarkScreen(CTkFrame):
             self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
     # ================================================================== #
 
+    def _disp_to_data_col_maps(self):
+        """คืน (main_map, frozen_map) — แปลง display index → data index ของแต่ละ sheet
+        จำเป็นเพราะ get_selected_cells() คืน display index แต่ highlight_cells() ใช้ data index
+        พอซ่อน column ทั้งสองค่าจึงไม่เท่ากัน"""
+        col_offset = self.frozen_col_count if self.sheet_frozen else 0
+        hidden_set = set(getattr(self, 'hidden_cols_list', []))
+        # main sheet data index = global_col - col_offset
+        main_map = [c - col_offset for c in range(col_offset, len(self.columns)) if c not in hidden_set]
+        # frozen sheet data index = global_col (frozen ไม่มี offset)
+        frozen_map = [c for c in range(col_offset) if c not in hidden_set]
+        return main_map, frozen_map
+
     def _highlight_selected_cells(self):
         """ระบายสีไฮไลท์ช่องที่ถูกเลือก"""
         if not HAS_TKSHEET: return
-        
-        # เปิดหน้าต่างให้เลือกสี
+
         color_tuple = colorchooser.askcolor(title="เลือกสีสำหรับไฮไลท์ช่อง", parent=self)
         if not color_tuple or not color_tuple[1]: return
-        
         color_code = color_tuple[1]
-        
-        # tksheet v7: get_selected_cells() คืน DATA index โดยตรง
-        # ไม่ต้องแปลงผ่าน visible_main เพราะ highlight_cells ก็รับ data index เช่นกัน
+
+        main_map, frozen_map = self._disp_to_data_col_maps()
+
         try:
             cells = self.sheet.get_selected_cells()
-            for r, c in cells:
-                self.sheet.highlight_cells(row=r, column=c, bg=color_code)
+            for r, disp_c in cells:
+                if disp_c < len(main_map):
+                    self.sheet.highlight_cells(row=r, column=main_map[disp_c], bg=color_code)
         except Exception as e:
             print(f"Highlight main error: {e}")
 
         if self.sheet_frozen:
             try:
                 f_cells = self.sheet_frozen.get_selected_cells()
-                for r, c in f_cells:
-                    self.sheet_frozen.highlight_cells(row=r, column=c, bg=color_code)
+                for r, disp_c in f_cells:
+                    if disp_c < len(frozen_map):
+                        self.sheet_frozen.highlight_cells(row=r, column=frozen_map[disp_c], bg=color_code)
             except Exception as e:
                 print(f"Highlight frozen error: {e}")
-            
+
         self.sheet.redraw()
         if self.sheet_frozen: self.sheet_frozen.redraw()
-        
-        # 🔹 บันทึกสีลงฐานข้อมูลทันที
         self._save_user_settings()
 
     def _clear_highlight_selected_cells(self):
         """ล้างสีไฮไลท์ช่องที่ถูกเลือก"""
         if not HAS_TKSHEET: return
-        
+
+        main_map, frozen_map = self._disp_to_data_col_maps()
+
         try:
             cells = self.sheet.get_selected_cells()
-            for r, c in cells:
-                self.sheet.dehighlight_cells(row=r, column=c)
+            for r, disp_c in cells:
+                if disp_c < len(main_map):
+                    self.sheet.dehighlight_cells(row=r, column=main_map[disp_c])
         except Exception as e:
             print(f"Clear highlight main error: {e}")
 
         if self.sheet_frozen:
             try:
                 f_cells = self.sheet_frozen.get_selected_cells()
-                for r, c in f_cells:
-                    self.sheet_frozen.dehighlight_cells(row=r, column=c)
+                for r, disp_c in f_cells:
+                    if disp_c < len(frozen_map):
+                        self.sheet_frozen.dehighlight_cells(row=r, column=frozen_map[disp_c])
             except Exception as e:
                 print(f"Clear highlight frozen error: {e}")
-            
+
         self.sheet.redraw()
         if self.sheet_frozen: self.sheet_frozen.redraw()
-        
-        # 🔹 บันทึกการล้างสีลงฐานข้อมูลทันที
         self._save_user_settings()
 
     def _load_from_db(self, *args):
