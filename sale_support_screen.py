@@ -1,7 +1,7 @@
 # sales_proxy_screen.py (ฉบับแก้ไข Layout: รับประกันการแสดงปุ่ม)
 
 import tkinter as tk
-from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkOptionMenu, CTkButton
+from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkOptionMenu, CTkButton, CTkToplevel, CTkEntry, CTkScrollableFrame
 from tkinter import messagebox
 import pandas as pd
 target_roles = ['Sales Support', 'Admin', 'Manager', 'Director']
