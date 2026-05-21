@@ -236,12 +236,18 @@ class DailyReportWidget(CTkFrame):
                     u.sale_name as sale_name,
                     pu.sale_name as pu_name_comm,
                     (
-                        SELECT u2.sale_name 
-                        FROM purchase_orders po 
-                        JOIN sales_users u2 ON po.user_key = u2.sale_key 
-                        WHERE po.so_number = c.so_number 
+                        SELECT u2.sale_name
+                        FROM purchase_orders po
+                        JOIN sales_users u2 ON po.user_key = u2.sale_key
+                        WHERE po.so_number = c.so_number
                         LIMIT 1
-                    ) as pu_name_po
+                    ) as pu_name_po,
+                    (
+                        SELECT po.user_key
+                        FROM purchase_orders po
+                        WHERE po.so_number = c.so_number
+                        LIMIT 1
+                    ) as pu_key_po
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
                 LEFT JOIN sales_users pu ON c.user_key = pu.sale_key
@@ -310,10 +316,15 @@ class DailyReportWidget(CTkFrame):
             print(f"[DEBUG] พบข้อมูลทั้งหมด: {len(df)} แถว") 
 
             if not df.empty:
-                # --- Logic รวมชื่อ PU ---
+                # --- Logic รวมชื่อ PU (เก็บไว้ใช้ถ้าจำเป็น) ---
                 df['final_pu_name'] = df['pu_name_comm'].fillna(df['pu_name_po'])
                 df['final_pu_name'] = df['final_pu_name'].fillna(df['user_key'].apply(lambda x: f"ID:{x}" if pd.notna(x) else "-"))
                 df['final_pu_name'] = df['final_pu_name'].fillna("-")
+
+                # --- Logic รวม ID ของ PU (แสดงใน column แทนชื่อเต็ม) ---
+                df['final_pu_key'] = df['user_key'].where(df['user_key'].notna() & (df['user_key'] != ""), None)
+                df['final_pu_key'] = df['final_pu_key'].fillna(df.get('pu_key_po'))
+                df['final_pu_key'] = df['final_pu_key'].fillna("-")
                 
                 # --- 🟢 Logic สร้างข้อความ "รอบคอม" ---
                 def format_comm_period(row):
@@ -393,8 +404,8 @@ class DailyReportWidget(CTkFrame):
                     d_date_str,
                     row['pickup_location'] or "-",
                     f"{service_fee:,.2f}",
-                    row.get('sale_name') or row.get('sale_key'),
-                    row['final_pu_name'], 
+                    row.get('sale_key') or "-",
+                    row.get('final_pu_key') or "-",
                     status_th # 🟢 3. เปลี่ยนจาก row['status'] เป็น status_th
                 )
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
