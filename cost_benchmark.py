@@ -706,7 +706,7 @@ class InlineSearchPopup(tk.Toplevel):
 
 class QuickAddProductDialog(CTkToplevel):
     """Dialog เพิ่มสินค้าใหม่แบบรวดเร็วจาก cost_benchmark — ไม่ต้องเปิด ProductManagement"""
-    _W, _H = 460, 260
+    _W, _H = 460, 295
 
     def __init__(self, master, app_container, initial_name="", on_added_callback=None):
         super().__init__(master)
@@ -761,6 +761,11 @@ class QuickAddProductDialog(CTkToplevel):
         self.cat_menu.grid(row=row, column=1, padx=12, pady=8, sticky="ew")
         row += 1
 
+        CTkLabel(self, text="คลัง:").grid(row=row, column=0, padx=12, pady=8, sticky="w")
+        self.warehouse_entry = CTkEntry(self)
+        self.warehouse_entry.grid(row=row, column=1, padx=12, pady=8, sticky="ew")
+        row += 1
+
         CTkButton(self, text="เพิ่มสินค้า", command=self._save,
                   fg_color="#059669", hover_color="#047857").grid(
             row=row, column=0, columnspan=2, pady=16, padx=12, sticky="ew")
@@ -785,6 +790,7 @@ class QuickAddProductDialog(CTkToplevel):
         code = self.code_entry.get().strip()
         name = self.name_entry.get().strip()
         category = self.cat_var.get().strip() or "วัสดุอื่นๆ"
+        warehouse = self.warehouse_entry.get().strip()
         if not code or not name:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณากรอกรหัสและชื่อสินค้า", parent=self)
             return
@@ -796,9 +802,9 @@ class QuickAddProductDialog(CTkToplevel):
                     messagebox.showerror("ข้อมูลซ้ำ", f"รหัสสินค้า '{code}' มีอยู่ในระบบแล้ว", parent=self)
                     return
                 cursor.execute("""
-                    INSERT INTO products (product_code, product_name, category, last_updated)
-                    VALUES (%s, %s, %s, %s)
-                """, (code, name, category, datetime.now()))
+                    INSERT INTO products (product_code, product_name, category, warehouse, last_updated)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (code, name, category, warehouse, datetime.now()))
             conn.commit()
             if self.on_added_callback:
                 self.on_added_callback(name, code, category)
