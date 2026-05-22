@@ -150,23 +150,19 @@ class DailyReportWidget(CTkFrame):
         self.tree_scroll_y.config(command=self.tree.yview)
         self.tree_scroll_x.config(command=self.tree.xview)
 
-        # ปรับ row height รองรับ 2 บรรทัดต่อ row
-        style = ttk.Style()
-        style.configure("Treeview", rowheight=38)
-
         headings = {
-            "so_po":          ("SO Number\nPO Number", 115, "w"),
-            "customer_name":  ("ชื่อลูกค้า",           160, "w"),
-            "comm_period":    ("รอบคอมฯ",               80, "center"),
-            "sales_booking":  ("ยอดขาย",                80, "e"),
-            "total_paid":     ("ชำระแล้ว",               80, "e"),
-            "credit_balance": ("ยอดค้าง",                80, "e"),
-            "payment_status": ("ตรวจสอบยอด",            100, "center"),
-            "delivery_date":  ("วันที่ส่ง",               80, "center"),
-            "location":       ("สถานที่ส่ง",              140, "w"),
-            "services":       ("ค่าบริการ",               70, "e"),
-            "sale_pu":        ("Sale / PU",               90, "w"),
-            "status":         ("สถานะ",                   90, "center"),
+            "so_po":          ("SO / PO",      200, "w"),
+            "customer_name":  ("ชื่อลูกค้า",   160, "w"),
+            "comm_period":    ("รอบคอมฯ",       80, "center"),
+            "sales_booking":  ("ยอดขาย",        80, "e"),
+            "total_paid":     ("ชำระแล้ว",       80, "e"),
+            "credit_balance": ("ยอดค้าง",        80, "e"),
+            "payment_status": ("ตรวจสอบยอด",   100, "center"),
+            "delivery_date":  ("วันที่ส่ง",       80, "center"),
+            "location":       ("สถานที่ส่ง",      140, "w"),
+            "services":       ("ค่าบริการ",       70, "e"),
+            "sale_pu":        ("Sale / PU",       90, "w"),
+            "status":         ("สถานะ",           90, "center"),
         }
         
         for col, (text, width, anchor) in headings.items():
@@ -393,13 +389,16 @@ class DailyReportWidget(CTkFrame):
                 status_en = row['status']
                 status_th = STATUS_THAI_MAP.get(status_en, status_en)
 
-                # รวม SO+PO และ Sale+PU ไว้ใน cell เดียว (multiline ด้วย \n)
-                po_str   = row['po_number_list'] or "-"
+                # รวม SO+PO และ Sale+PU ไว้ใน cell เดียว คั่นด้วย " | "
+                po_str   = row['po_number_list'] or ""
                 sale_str = row.get('sale_key') or "-"
-                pu_str   = row.get('final_pu_key') or "-"
+                pu_str   = row.get('final_pu_key') or ""
+
+                so_po_str   = f"{row['so_number']}  |  {po_str}" if po_str and po_str != "-" else row['so_number']
+                sale_pu_str = f"{sale_str}  /  {pu_str}" if pu_str and pu_str != "-" else sale_str
 
                 vals = (
-                    f"{row['so_number']}\n{po_str}",       # SO / PO
+                    so_po_str,
                     row['customer_name'],
                     row['comm_period_display'],
                     f"{booking:,.2f}",
@@ -409,7 +408,7 @@ class DailyReportWidget(CTkFrame):
                     d_date_str,
                     row['pickup_location'] or "-",
                     f"{service_fee:,.2f}",
-                    f"{sale_str}\n{pu_str}",               # Sale / PU
+                    sale_pu_str,
                     status_th,
                 )
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
