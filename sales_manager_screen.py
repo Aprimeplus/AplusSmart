@@ -1813,26 +1813,46 @@ class SalesManagerScreen(CTkFrame):
         try:
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
+                # ── ตรวจว่ามี PO ที่อนุมัติแล้วอยู่หรือเปล่า ──────────────────────
+                # ถ้ามี → SO เคยผ่าน PU ไปแล้ว ข้าม loop Pending PU ไปเป็น PO Sent เลย
+                cursor.execute("""
+                    SELECT COUNT(*) FROM purchase_orders
+                    WHERE so_number = %s AND status = 'Approved'
+                """, (so_number,))
+                approved_po_count = cursor.fetchone()[0]
+
+                if approved_po_count > 0:
+                    # SO มี PO อนุมัติแล้ว → ข้าม Pending PU ไปเป็น PO Sent ทันที
+                    new_status = 'PO Sent'
+                    notify_pu = False
+                else:
+                    # SO ใหม่หรือยังไม่มี PO อนุมัติ → ส่งกลับให้ PU รับงานตามปกติ
+                    new_status = 'Pending PU'
+                    notify_pu = True
+
                 cursor.execute("""
                     UPDATE commissions
-                    SET status = 'Pending PU',
+                    SET status = %s,
                         approver_sale_manager_key = %s,
                         approval_date_sale_manager = CURRENT_TIMESTAMP,
                         claim_timestamp = NULL
                     WHERE id = %s
-                """, (self.user_key, so_id))
+                """, (new_status, self.user_key, so_id))
 
-                cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Staff' AND status = 'Active'")
-                pu_keys = [row[0] for row in cursor.fetchall()]
-
-                for pu_key in pu_keys:
-                    cursor.execute("""
-                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
-                        VALUES (%s, %s, FALSE, %s)
-                    """, (pu_key, f"มี SO ใหม่ ({so_number}) ผ่านการอนุมัติแล้ว รอคุณ Claim งาน", so_id))
+                if notify_pu:
+                    cursor.execute("SELECT sale_key FROM sales_users WHERE role = 'Purchasing Staff' AND status = 'Active'")
+                    pu_keys = [row[0] for row in cursor.fetchall()]
+                    for pu_key in pu_keys:
+                        cursor.execute("""
+                            INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
+                            VALUES (%s, %s, FALSE, %s)
+                        """, (pu_key, f"มี SO ใหม่ ({so_number}) ผ่านการอนุมัติแล้ว รอคุณ Claim งาน", so_id))
 
             conn.commit()
-            messagebox.showinfo("สำเร็จ", f"อนุมัติ SO: {so_number} เรียบร้อยแล้ว")
+            if new_status == 'PO Sent':
+                messagebox.showinfo("สำเร็จ", f"อนุมัติ SO: {so_number} เรียบร้อยแล้ว\n(มี PO อนุมัติแล้ว — ข้ามไปสถานะ 'เปิด PO สำเร็จ' ทันที)")
+            else:
+                messagebox.showinfo("สำเร็จ", f"อนุมัติ SO: {so_number} เรียบร้อยแล้ว")
             self._refresh_all_tabs()
 
         except Exception as e:
