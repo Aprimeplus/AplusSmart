@@ -138,33 +138,35 @@ class DailyReportWidget(CTkFrame):
         self.tree_scroll_x = ttk.Scrollbar(self.table_frame, orient="horizontal")
         self.tree_scroll_x.pack(side="bottom", fill="x")
         
-        # 🟢 เพิ่ม "comm_period" (รอบคอม) เข้าไปในคอลัมน์
+        # รวม so_number+po_number และ prepared_by+pu_prepared_by ไว้ใน column เดียว
         self.columns = [
-            "so_number", "po_number", "customer_name", "comm_period", "sales_booking", 
-            "total_paid", "credit_balance", "payment_status", "delivery_date", "location", 
-            "services", "prepared_by", "pu_prepared_by", "status"
+            "so_po", "customer_name", "comm_period", "sales_booking",
+            "total_paid", "credit_balance", "payment_status", "delivery_date", "location",
+            "services", "sale_pu", "status"
         ]
-        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings", 
+        self.tree = ttk.Treeview(self.table_frame, columns=self.columns, show="headings",
                                  yscrollcommand=self.tree_scroll_y.set, xscrollcommand=self.tree_scroll_x.set)
-        
+
         self.tree_scroll_y.config(command=self.tree.yview)
         self.tree_scroll_x.config(command=self.tree.xview)
-        
+
+        # ปรับ row height รองรับ 2 บรรทัดต่อ row
+        style = ttk.Style()
+        style.configure("Treeview", rowheight=38)
+
         headings = {
-            "so_number": ("SO Number", 90, "center"),
-            "po_number": ("PO Number", 90, "center"),
-            "customer_name": ("ชื่อลูกค้า", 160, "w"),
-            "comm_period": ("รอบคอมฯ", 80, "center"), # 🟢 คอลัมน์ใหม่
-            "sales_booking": ("ยอดขาย", 80, "e"),
-            "total_paid": ("ชำระแล้ว", 80, "e"),
-            "credit_balance": ("ยอดค้าง", 80, "e"),
-            "payment_status": ("ตรวจสอบยอด", 100, "center"),
-            "delivery_date": ("วันที่ส่ง", 80, "center"),
-            "location": ("สถานที่ส่ง", 140, "w"),
-            "services": ("ค่าบริการ", 70, "e"),
-            "prepared_by": ("Sale", 80, "center"),
-            "pu_prepared_by": ("PU", 80, "center"),
-            "status": ("สถานะ", 80, "center")
+            "so_po":          ("SO Number\nPO Number", 115, "w"),
+            "customer_name":  ("ชื่อลูกค้า",           160, "w"),
+            "comm_period":    ("รอบคอมฯ",               80, "center"),
+            "sales_booking":  ("ยอดขาย",                80, "e"),
+            "total_paid":     ("ชำระแล้ว",               80, "e"),
+            "credit_balance": ("ยอดค้าง",                80, "e"),
+            "payment_status": ("ตรวจสอบยอด",            100, "center"),
+            "delivery_date":  ("วันที่ส่ง",               80, "center"),
+            "location":       ("สถานที่ส่ง",              140, "w"),
+            "services":       ("ค่าบริการ",               70, "e"),
+            "sale_pu":        ("Sale / PU",               90, "w"),
+            "status":         ("สถานะ",                   90, "center"),
         }
         
         for col, (text, width, anchor) in headings.items():
@@ -391,22 +393,24 @@ class DailyReportWidget(CTkFrame):
                 status_en = row['status']
                 status_th = STATUS_THAI_MAP.get(status_en, status_en)
 
-                # ลำดับข้อมูลต้องตรงกับ self.columns
+                # รวม SO+PO และ Sale+PU ไว้ใน cell เดียว (multiline ด้วย \n)
+                po_str   = row['po_number_list'] or "-"
+                sale_str = row.get('sale_key') or "-"
+                pu_str   = row.get('final_pu_key') or "-"
+
                 vals = (
-                    row['so_number'],
-                    row['po_number_list'] or "-",
+                    f"{row['so_number']}\n{po_str}",       # SO / PO
                     row['customer_name'],
-                    row['comm_period_display'], # 🟢 คอลัมน์รอบคอม
+                    row['comm_period_display'],
                     f"{booking:,.2f}",
                     f"{paid:,.2f}",
-                    f"{credit_display:,.2f}", 
+                    f"{credit_display:,.2f}",
                     status_text,
                     d_date_str,
                     row['pickup_location'] or "-",
                     f"{service_fee:,.2f}",
-                    row.get('sale_key') or "-",
-                    row.get('final_pu_key') or "-",
-                    status_th # 🟢 3. เปลี่ยนจาก row['status'] เป็น status_th
+                    f"{sale_str}\n{pu_str}",               # Sale / PU
+                    status_th,
                 )
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
                 self.tree.insert("", "end", values=vals, tags=(tag, status_tag))
