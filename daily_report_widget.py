@@ -171,10 +171,16 @@ class DailyReportWidget(CTkFrame):
         
         self.tree.tag_configure('oddrow', background="white")
         self.tree.tag_configure('evenrow', background="#F8FAFC")
-        self.tree.tag_configure('status_missing', foreground="#DC2626") 
-        self.tree.tag_configure('status_over', foreground="#2563EB")    
-        self.tree.tag_configure('status_ok', foreground="#059669")      
-        
+        self.tree.tag_configure('status_missing', foreground="#DC2626")
+        self.tree.tag_configure('status_over', foreground="#2563EB")
+        self.tree.tag_configure('status_ok', foreground="#059669")
+
+        # ── Tooltip สำหรับ PO Number column ──────────────────────────────────
+        self._tooltip_win = None
+        self._po_full_map = {}   # iid → full PO string (เก็บตอน insert row)
+        self.tree.bind("<Motion>", self._on_tree_motion)
+        self.tree.bind("<Leave>",  lambda e: self._hide_tooltip())
+
         self.tree.pack(fill="both", expand=True)
         
         # --- 2.3 Summary Footer ---
@@ -212,6 +218,7 @@ class DailyReportWidget(CTkFrame):
 
     def load_report_data(self):
         for i in self.tree.get_children(): self.tree.delete(i)
+        self._po_full_map = {}   # reset tooltip map
             
         try:
             # 🟢 สร้าง Query แบบ Dynamic ตาม Filter ที่เลือก
@@ -420,7 +427,10 @@ class DailyReportWidget(CTkFrame):
                     status_th,
                 )
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-                self.tree.insert("", "end", values=vals, tags=(tag, status_tag))
+                iid = self.tree.insert("", "end", values=vals, tags=(tag, status_tag))
+                # เก็บ PO list เต็มไว้ให้ tooltip แสดง
+                if len(po_list) > 1:
+                    self._po_full_map[iid] = "\n".join(po_list)
 
             self.update_summary(len(df), sum_booking, sum_paid, sum_missing)
 
@@ -428,6 +438,43 @@ class DailyReportWidget(CTkFrame):
             messagebox.showerror("Error", f"ไม่สามารถดึงข้อมูลได้: {e}")
             import traceback
             traceback.print_exc()
+
+    def _on_tree_motion(self, event):
+        """แสดง tooltip PO list เมื่อ hover บน PO Number column"""
+        try:
+            iid = self.tree.identify_row(event.y)
+            col = self.tree.identify_column(event.x)
+            # column #2 = po_number (1-based)
+            if iid and col == "#2" and iid in self._po_full_map:
+                self._show_tooltip(event, self._po_full_map[iid])
+            else:
+                self._hide_tooltip()
+        except Exception:
+            self._hide_tooltip()
+
+    def _show_tooltip(self, event, text):
+        if self._tooltip_win:
+            try: self._tooltip_win.destroy()
+            except Exception: pass
+        self._tooltip_win = tk.Toplevel(self.tree)
+        self._tooltip_win.overrideredirect(True)
+        self._tooltip_win.attributes("-topmost", True)
+        self._tooltip_win.configure(bg="#1E293B")
+        tk.Label(
+            self._tooltip_win, text=text,
+            bg="#1E293B", fg="white",
+            font=("Tahoma", 10),
+            justify="left", padx=10, pady=6,
+        ).pack()
+        x = event.x_root + 12
+        y = event.y_root + 12
+        self._tooltip_win.geometry(f"+{x}+{y}")
+
+    def _hide_tooltip(self):
+        if self._tooltip_win:
+            try: self._tooltip_win.destroy()
+            except Exception: pass
+            self._tooltip_win = None
 
     def update_summary(self, count, booking, paid, missing):
         self.lbl_total_so.configure(text=f"จำนวน SO: {count} ใบ")
