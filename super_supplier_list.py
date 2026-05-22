@@ -2170,11 +2170,11 @@ class AddSupplierPopup(CTkToplevel):
             messagebox.showinfo("สร้างรหัสสำเร็จ",
                                 f"รหัส Supplier ใหม่ของคุณคือ\n\n{sn_code}\n\n"
                                 f"บันทึกลงฐานข้อมูลเรียบร้อยแล้ว", parent=self)
+            if self.on_success:
+                self.on_success()
+            self.destroy()
         else:
-            messagebox.showerror("ผิดพลาด", "บันทึกลงฐานข้อมูลไม่สำเร็จ", parent=self)
-        if self.on_success:
-            self.on_success()
-        self.destroy()
+            messagebox.showerror("ผิดพลาด", "บันทึกลงฐานข้อมูลไม่สำเร็จ\nกรุณาลองใหม่อีกครั้ง", parent=self)
 
 # =============================================================================
 #  D3 — BLACKLIST  POPUP  (บังคับระบุเหตุผล)
