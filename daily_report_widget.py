@@ -138,9 +138,8 @@ class DailyReportWidget(CTkFrame):
         self.tree_scroll_x = ttk.Scrollbar(self.table_frame, orient="horizontal")
         self.tree_scroll_x.pack(side="bottom", fill="x")
         
-        # รวม so_number+po_number และ prepared_by+pu_prepared_by ไว้ใน column เดียว
         self.columns = [
-            "so_po", "customer_name", "comm_period", "sales_booking",
+            "so_number", "po_number", "customer_name", "comm_period", "sales_booking",
             "total_paid", "credit_balance", "payment_status", "delivery_date", "location",
             "services", "sale_pu", "status"
         ]
@@ -151,7 +150,8 @@ class DailyReportWidget(CTkFrame):
         self.tree_scroll_x.config(command=self.tree.xview)
 
         headings = {
-            "so_po":          ("SO / PO",      200, "w"),
+            "so_number":      ("SO Number",    110, "w"),
+            "po_number":      ("PO Number",    110, "w"),
             "customer_name":  ("ชื่อลูกค้า",   160, "w"),
             "comm_period":    ("รอบคอมฯ",       80, "center"),
             "sales_booking":  ("ยอดขาย",        80, "e"),
@@ -389,16 +389,24 @@ class DailyReportWidget(CTkFrame):
                 status_en = row['status']
                 status_th = STATUS_THAI_MAP.get(status_en, status_en)
 
-                # รวม SO+PO และ Sale+PU ไว้ใน cell เดียว คั่นด้วย " | "
-                po_str   = row['po_number_list'] or ""
+                # PO: ถ้ามีหลายตัวให้แสดงแค่อันแรก + "+N"
+                po_raw  = row['po_number_list'] or ""
+                po_list = [p.strip() for p in po_raw.split(",") if p.strip()] if po_raw else []
+                if len(po_list) == 0:
+                    po_display = "-"
+                elif len(po_list) == 1:
+                    po_display = po_list[0]
+                else:
+                    po_display = f"{po_list[0]}  +{len(po_list) - 1}"
+
+                # Sale / PU รวมบรรทัดเดียว
                 sale_str = row.get('sale_key') or "-"
                 pu_str   = row.get('final_pu_key') or ""
-
-                so_po_str   = f"{row['so_number']}  |  {po_str}" if po_str and po_str != "-" else row['so_number']
-                sale_pu_str = f"{sale_str}  /  {pu_str}" if pu_str and pu_str != "-" else sale_str
+                sale_pu_str = f"{sale_str} / {pu_str}" if pu_str and pu_str != "-" else sale_str
 
                 vals = (
-                    so_po_str,
+                    row['so_number'],
+                    po_display,
                     row['customer_name'],
                     row['comm_period_display'],
                     f"{booking:,.2f}",
