@@ -3549,6 +3549,9 @@ class SLADashboard(CTkFrame):
         CTkButton(fbar, text="🔄 รีเฟรช", width=90, height=30,
                   font=CTkFont(size=12),
                   command=self._refresh_all).pack(side="right", padx=12, pady=8)
+        CTkButton(fbar, text="📅 วันหยุด", width=90, height=30,
+                  font=CTkFont(size=12), fg_color="#7C3AED", hover_color="#6D28D9",
+                  command=self._show_holidays).pack(side="right", padx=(0, 4), pady=8)
 
         # ── row 2: Treeview ───────────────────────────────────────────────────
         frame = CTkFrame(self, fg_color="white", corner_radius=10,
@@ -3672,3 +3675,83 @@ class SLADashboard(CTkFrame):
                                  tags=(tag,))
         except Exception as e:
             print(f"SLADashboard load error: {e}")
+
+    def _show_holidays(self):
+        """Popup แสดงวันหยุดจาก company_holidays"""
+        import tkinter as tk
+        from customtkinter import CTkToplevel, CTkLabel, CTkFont, CTkButton, CTkFrame
+        from tkinter import ttk
+
+        pop = CTkToplevel(self)
+        pop.title("📅 วันหยุดบริษัท")
+        pop.resizable(False, True)
+        pop.grab_set()
+        pop.update_idletasks()
+        w, h = 420, 500
+        px = self.winfo_rootx() + (self.winfo_width()  - w) // 2
+        py = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        pop.geometry(f"{w}x{h}+{px}+{py}")
+        pop.grid_columnconfigure(0, weight=1)
+        pop.grid_rowconfigure(1, weight=1)
+
+        # Header
+        hdr = CTkFrame(pop, fg_color="#7C3AED", corner_radius=0)
+        hdr.grid(row=0, column=0, sticky="ew")
+        CTkLabel(hdr, text="📅  วันหยุดบริษัท (company_holidays)",
+                 font=CTkFont(size=13, weight="bold"),
+                 text_color="white").pack(padx=16, pady=10, anchor="w")
+
+        # Treeview
+        frame = CTkFrame(pop, fg_color="white", corner_radius=0)
+        frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(frame, columns=("date", "desc"), show="headings")
+        tree.heading("date", text="วันที่")
+        tree.heading("desc", text="รายละเอียด")
+        tree.column("date", width=120, anchor="center")
+        tree.column("desc", width=260, anchor="w")
+
+        style = ttk.Style()
+        style.configure("Treeview",         font=("Tahoma", 11), rowheight=26)
+        style.configure("Treeview.Heading", font=("Tahoma", 11, "bold"))
+        tree.tag_configure("odd",  background="#F8FAFC")
+        tree.tag_configure("even", background="white")
+
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        # โหลดข้อมูล
+        conn = None
+        count = 0
+        try:
+            conn = self.app.get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT holiday_date, description
+                FROM company_holidays
+                ORDER BY holiday_date
+            """)
+            rows = cur.fetchall()
+            for i, (hdate, desc) in enumerate(rows):
+                tag = "odd" if i % 2 == 0 else "even"
+                date_str = hdate.strftime("%d/%m/%Y") if hasattr(hdate, "strftime") else str(hdate)
+                tree.insert("", "end", values=(date_str, desc or "-"), tags=(tag,))
+            count = len(rows)
+        except Exception as e:
+            tree.insert("", "end", values=("❌ Error", str(e)))
+        finally:
+            if conn:
+                self.app.release_connection(conn)
+
+        # Footer
+        foot = CTkFrame(pop, fg_color="#F1F5F9", corner_radius=0)
+        foot.grid(row=2, column=0, sticky="ew")
+        CTkLabel(foot, text=f"รวม {count} วันหยุด",
+                 font=CTkFont(size=11), text_color="#64748B").pack(side="left", padx=12, pady=8)
+        CTkButton(foot, text="ปิด", width=80, height=30,
+                  fg_color="#6B7280", hover_color="#4B5563",
+                  command=pop.destroy).pack(side="right", padx=12, pady=8)
