@@ -5528,8 +5528,9 @@ class CostBenchmarkScreen(CTkFrame):
     # ================================================================== #
     # ── SLA helpers ────────────────────────────────────────────────────────────
     @staticmethod
-    def _calc_business_minutes(start, end) -> int:
-        """คำนวณนาทีเฉพาะเวลาทำงาน จ-ส 8:30-12:00 และ 13:00-17:30"""
+    def _calc_business_minutes(start, end, holiday_set: set = None) -> int:
+        """คำนวณนาทีเฉพาะเวลาทำงาน จ-ส 8:30-17:30 หักพัก 12:00-13:00
+        และหักวันหยุดนักขัตฤกษ์จาก holiday_set (set ของ datetime.date)"""
         from datetime import datetime, time, timedelta
         if not start or not end or end <= start:
             return 0
@@ -5538,16 +5539,15 @@ class CostBenchmarkScreen(CTkFrame):
         LUNCH_START = time(12, 0)
         LUNCH_END   = time(13, 0)
         WORK_END    = time(17, 30)
-        # 0=จันทร์ … 5=เสาร์  6=อาทิตย์
-        WORK_DAYS = {0, 1, 2, 3, 4, 5}
+        # 0=จันทร์ … 5=เสาร์  6=อาทิตย์ (หยุด)
+        WORK_DAYS   = {0, 1, 2, 3, 4, 5}
+        holidays    = holiday_set or set()
 
         def minutes_in_day(t_start: time, t_end: time) -> int:
-            """นาทีทำงานในช่วงเวลาของวันเดียวกัน (clamp ให้อยู่ในเวลางาน)"""
             s = max(t_start, WORK_START)
             e = min(t_end,   WORK_END)
             if s >= e:
                 return 0
-            # ตัดช่วงพัก
             if s < LUNCH_END and e > LUNCH_START:
                 overlap_start = max(s, LUNCH_START)
                 overlap_end   = min(e, LUNCH_END)
@@ -5567,16 +5567,18 @@ class CostBenchmarkScreen(CTkFrame):
         current = start
 
         while current.date() <= end.date():
-            if current.weekday() in WORK_DAYS:
-                day_start = current.time() if current.date() == start.date() else WORK_START
-                day_end   = end.time()      if current.date() == end.date()   else WORK_END
+            d = current.date()
+            # ข้ามอาทิตย์ และวันหยุดนักขัตฤกษ์
+            if current.weekday() in WORK_DAYS and d not in holidays:
+                day_start = current.time() if d == start.date() else WORK_START
+                day_end   = end.time()      if d == end.date()   else WORK_END
                 total_min += minutes_in_day(day_start, day_end)
-            current = datetime.combine(current.date() + timedelta(days=1),
-                                       WORK_START)
+            current = datetime.combine(d + timedelta(days=1), WORK_START)
         return total_min
 
     def _sla_record_start(self, so_number: str):
         """บันทึก started_at เมื่อ PU พิมพ์ SO ลงตาราง (เฉพาะครั้งแรก)"""
+        conn = None
         try:
             conn = self.app_container.get_connection()
             cur = conn.cursor()
@@ -5588,6 +5590,9 @@ class CostBenchmarkScreen(CTkFrame):
             conn.commit()
         except Exception as e:
             print(f"_sla_record_start error: {e}")
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
 
     def _sla_record_copy(self, so_number: str):
         """บันทึก copied_at + duration_min + temp เมื่อกด Copy Short Note (ครั้งแรก)"""
@@ -5607,23 +5612,38 @@ class CostBenchmarkScreen(CTkFrame):
                             best_temp = pri
 
             conn = self.app_container.get_connection()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT started_at FROM sla_benchmark
-                WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-            """, (so_number, self.current_user))
-            row = cur.fetchone()
-            if not row:
-                return
-            started_at = row[0]
-            now = datetime.now()
-            biz_min = self._calc_business_minutes(started_at, now)
-            cur.execute("""
-                UPDATE sla_benchmark
-                SET copied_at = %s, duration_min = %s, temp = %s
-                WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-            """, (now, biz_min, best_temp, so_number, self.current_user))
-            conn.commit()
+            try:
+                cur = conn.cursor()
+                # ── โหลดวันหยุดนักขัตฤกษ์จาก company_holidays ──────────────
+                holiday_set = set()
+                try:
+                    cur.execute(
+                        "SELECT holiday_date FROM company_holidays "
+                        "WHERE EXTRACT(YEAR FROM holiday_date) IN %s",
+                        (tuple({datetime.now().year, datetime.now().year - 1}),)
+                    )
+                    holiday_set = {r[0] for r in cur.fetchall()}
+                except Exception as he:
+                    print(f"SLA holiday load warning: {he}")
+
+                cur.execute("""
+                    SELECT started_at FROM sla_benchmark
+                    WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                """, (so_number, self.current_user))
+                row = cur.fetchone()
+                if not row:
+                    return
+                started_at = row[0]
+                now = datetime.now()
+                biz_min = self._calc_business_minutes(started_at, now, holiday_set)
+                cur.execute("""
+                    UPDATE sla_benchmark
+                    SET copied_at = %s, duration_min = %s, temp = %s
+                    WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                """, (now, biz_min, best_temp, so_number, self.current_user))
+                conn.commit()
+            finally:
+                self.app_container.release_connection(conn)
         except Exception as e:
             print(f"_sla_record_copy error: {e}")
 
