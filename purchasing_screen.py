@@ -3573,7 +3573,7 @@ class SLADashboard(CTkFrame):
         style.configure("Treeview",         font=("Tahoma", 11), rowheight=26)
         style.configure("Treeview.Heading", font=("Tahoma", 11, "bold"))
         self.tree.tag_configure("done",    background="#DCFCE7")
-        self.tree.tag_configure("pending", background="#FEF9C3")
+        self.tree.tag_configure("pending", background="#E2E8F0")
         self.tree.tag_configure("hot",     background="#FEE2E2")
         self.tree.tag_configure("warm",    background="#FEF9C3")
         self.tree.tag_configure("cold",    background="#DBEAFE")
