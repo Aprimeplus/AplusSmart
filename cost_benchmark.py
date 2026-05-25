@@ -5527,6 +5527,54 @@ class CostBenchmarkScreen(CTkFrame):
 
     # ================================================================== #
     # ── SLA helpers ────────────────────────────────────────────────────────────
+    @staticmethod
+    def _calc_business_minutes(start, end) -> int:
+        """คำนวณนาทีเฉพาะเวลาทำงาน จ-ส 8:30-12:00 และ 13:00-17:30"""
+        from datetime import datetime, time, timedelta
+        if not start or not end or end <= start:
+            return 0
+
+        WORK_START  = time(8,  30)
+        LUNCH_START = time(12, 0)
+        LUNCH_END   = time(13, 0)
+        WORK_END    = time(17, 30)
+        # 0=จันทร์ … 5=เสาร์  6=อาทิตย์
+        WORK_DAYS = {0, 1, 2, 3, 4, 5}
+
+        def minutes_in_day(t_start: time, t_end: time) -> int:
+            """นาทีทำงานในช่วงเวลาของวันเดียวกัน (clamp ให้อยู่ในเวลางาน)"""
+            s = max(t_start, WORK_START)
+            e = min(t_end,   WORK_END)
+            if s >= e:
+                return 0
+            # ตัดช่วงพัก
+            if s < LUNCH_END and e > LUNCH_START:
+                overlap_start = max(s, LUNCH_START)
+                overlap_end   = min(e, LUNCH_END)
+                lunch_cut = (
+                    datetime.combine(datetime.today(), overlap_end) -
+                    datetime.combine(datetime.today(), overlap_start)
+                ).seconds // 60
+            else:
+                lunch_cut = 0
+            total = (
+                datetime.combine(datetime.today(), e) -
+                datetime.combine(datetime.today(), s)
+            ).seconds // 60
+            return max(0, total - lunch_cut)
+
+        total_min = 0
+        current = start
+
+        while current.date() <= end.date():
+            if current.weekday() in WORK_DAYS:
+                day_start = current.time() if current.date() == start.date() else WORK_START
+                day_end   = end.time()      if current.date() == end.date()   else WORK_END
+                total_min += minutes_in_day(day_start, day_end)
+            current = datetime.combine(current.date() + timedelta(days=1),
+                                       WORK_START)
+        return total_min
+
     def _sla_record_start(self, so_number: str):
         """บันทึก started_at เมื่อ PU พิมพ์ SO ลงตาราง (เฉพาะครั้งแรก)"""
         try:
@@ -5537,22 +5585,32 @@ class CostBenchmarkScreen(CTkFrame):
                 VALUES (%s, %s)
                 ON CONFLICT DO NOTHING
             """, (so_number, self.current_user))
-            # ถ้ายังไม่มี record เลยสำหรับ so+user นี้ → INSERT
-            # ใช้ unique constraint แทน ON CONFLICT → เพิ่ม unique ด้วย
             conn.commit()
         except Exception as e:
             print(f"_sla_record_start error: {e}")
 
     def _sla_record_copy(self, so_number: str):
-        """บันทึก copied_at เมื่อกด Copy Short Note (เฉพาะครั้งแรก)"""
+        """บันทึก copied_at + duration_min (business hours) เมื่อกด Copy Short Note (ครั้งแรก)"""
+        from datetime import datetime
         try:
             conn = self.app_container.get_connection()
             cur = conn.cursor()
+            # ดึง started_at มาคำนวณ
             cur.execute("""
-                UPDATE sla_benchmark
-                SET copied_at = NOW()
+                SELECT started_at FROM sla_benchmark
                 WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
             """, (so_number, self.current_user))
+            row = cur.fetchone()
+            if not row:
+                return  # ไม่มี record หรือ copy ไปแล้ว
+            started_at = row[0]
+            now = datetime.now()
+            biz_min = self._calc_business_minutes(started_at, now)
+            cur.execute("""
+                UPDATE sla_benchmark
+                SET copied_at = %s, duration_min = %s
+                WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+            """, (now, biz_min, so_number, self.current_user))
             conn.commit()
         except Exception as e:
             print(f"_sla_record_copy error: {e}")
