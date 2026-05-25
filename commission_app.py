@@ -2459,9 +2459,15 @@ class CommissionApp(CTkFrame):
                 return False
 
             day = int(day_str)
+            # map ชื่อย่อ (delivery date selector)
             thai_month_map = {"ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4,
                               "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8,
                               "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
+            # map ชื่อเต็ม (commission_month_var ใช้ชื่อเต็ม)
+            thai_full_month_map = {"มกราคม": 1, "กุมภาพันธ์": 2, "มีนาคม": 3,
+                                   "เมษายน": 4, "พฤษภาคม": 5, "มิถุนายน": 6,
+                                   "กรกฎาคม": 7, "สิงหาคม": 8, "กันยายน": 9,
+                                   "ตุลาคม": 10, "พฤศจิกายน": 11, "ธันวาคม": 12}
             month_num = thai_month_map.get(month_str, 0)
             cutoff = 21 if month_num in (2, 12) else 25
 
@@ -2470,7 +2476,9 @@ class CommissionApp(CTkFrame):
 
             # เดือนที่ commission ต้องเป็น = เดือนถัดจากวันจัดส่ง
             required_comm_month = month_num + 1 if month_num < 12 else 1
-            comm_month_num = thai_month_map.get(self.commission_month_var.get(), 0)
+            comm_val = self.commission_month_var.get()
+            # รองรับทั้งชื่อเต็มและชื่อย่อ
+            comm_month_num = thai_full_month_map.get(comm_val) or thai_month_map.get(comm_val, 0)
 
             # block ถ้า commission month ยังไม่ตรงกับเดือนที่ควรจะเป็น
             return comm_month_num != required_comm_month
