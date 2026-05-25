@@ -1356,6 +1356,13 @@ class PurchasingScreen(CTkFrame):
         ssl_tab.grid_rowconfigure(0, weight=1)
         SuperSupplierTab(master=ssl_tab, app_container=self.app_container).grid(row=0, column=0, sticky="nsew")
 
+        self.tab_view.add("SLA")
+        sla_tab = self.tab_view.tab("SLA")
+        sla_tab.grid_columnconfigure(0, weight=1)
+        sla_tab.grid_rowconfigure(0, weight=1)
+        self.sla_view = SLADashboard(sla_tab, self.app_container)
+        self.sla_view.grid(row=0, column=0, sticky="nsew")
+
         self._load_supplier_data()
         self._load_product_master_data()
 
@@ -3487,3 +3494,101 @@ class PurchasingScreen(CTkFrame):
         except (ValueError, TypeError) as e:
             print(f"Error calculating payment from percentage: {e}")
             self._update_summary()
+
+# =============================================================================
+#  SLA DASHBOARD — แท็บ SLA สำหรับ Manager Purchase
+# =============================================================================
+from customtkinter import CTkScrollableFrame
+
+class SLADashboard(CTkFrame):
+    """แสดง SLA ของจัดซื้อ — เวลาตั้งแต่พิมพ์ SO จนถึงกด Copy Short Note"""
+
+    COLS = [
+        ("SO Number",    "so_number",    120),
+        ("PU",           "user_key",      80),
+        ("เริ่ม",        "started_at",   150),
+        ("Copy Short Note","copied_at",  150),
+        ("ใช้เวลา",     "duration_min",   90),
+        ("สถานะ",       "_status",        90),
+    ]
+
+    def __init__(self, master, app_container):
+        super().__init__(master, fg_color="transparent")
+        self.app = app_container
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # ── Header bar ────────────────────────────────────────────────────────
+        bar = CTkFrame(self, fg_color="transparent")
+        bar.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
+        bar.grid_columnconfigure(0, weight=1)
+
+        CTkLabel(bar, text="⏱  SLA จัดซื้อ — ระยะเวลาเสนอราคา",
+                 font=CTkFont(size=15, weight="bold")).grid(row=0, column=0, sticky="w")
+        CTkButton(bar, text="🔄 รีเฟรช", width=90, height=30,
+                  font=CTkFont(size=12),
+                  command=self._load).grid(row=0, column=1, padx=(8, 0))
+
+        # ── Treeview ──────────────────────────────────────────────────────────
+        frame = CTkFrame(self, fg_color="white", corner_radius=10,
+                         border_width=1, border_color="#E2E8F0")
+        frame.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+
+        col_ids = [c[0] for c in self.COLS]
+        self.tree = ttk.Treeview(frame, columns=col_ids, show="headings",
+                                 selectmode="browse")
+        for label, _, w in self.COLS:
+            self.tree.heading(label, text=label)
+            self.tree.column(label, width=w, minwidth=w, anchor="center")
+
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        # ── Style ─────────────────────────────────────────────────────────────
+        style = ttk.Style()
+        style.configure("Treeview", font=("Tahoma", 11), rowheight=26)
+        style.configure("Treeview.Heading", font=("Tahoma", 11, "bold"))
+        self.tree.tag_configure("done",    background="#DCFCE7")
+        self.tree.tag_configure("pending", background="#FEF9C3")
+        self.tree.tag_configure("none",    background="#F1F5F9")
+
+        self._load()
+
+    def _load(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        try:
+            conn = self.app.get_connection()
+            df = pd.read_sql_query("""
+                SELECT so_number, user_key, started_at, copied_at, duration_min
+                FROM sla_benchmark
+                ORDER BY started_at DESC
+                LIMIT 200
+            """, conn)
+            conn.close()
+            for _, r in df.iterrows():
+                started = r["started_at"].strftime("%d/%m/%Y %H:%M") if pd.notna(r["started_at"]) else "-"
+                copied  = r["copied_at"].strftime("%d/%m/%Y %H:%M")  if pd.notna(r["copied_at"])  else "-"
+                dur_raw = r["duration_min"]
+                if pd.isna(dur_raw):
+                    dur_str = "ยังไม่เสร็จ"
+                    tag = "pending"
+                else:
+                    d = int(dur_raw)
+                    if d < 60:
+                        dur_str = f"{d} นาที"
+                    else:
+                        h, m = divmod(d, 60)
+                        dur_str = f"{h}h {m}m"
+                    tag = "done"
+                status = "เสร็จ" if tag == "done" else "รอ Copy"
+                self.tree.insert("", "end",
+                                 values=(r["so_number"], r["user_key"],
+                                         started, copied, dur_str, status),
+                                 tags=(tag,))
+        except Exception as e:
+            print(f"SLADashboard load error: {e}")

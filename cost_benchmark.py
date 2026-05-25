@@ -5140,6 +5140,20 @@ class CostBenchmarkScreen(CTkFrame):
             # 1. คำนวณสูตรในบรรทัดนั้น — ใช้ datarn เสมอ (filter-safe, data index)
             self._auto_calculate_sheet(datarn)
 
+            # 1b. SLA — ถ้าแก้ไขคอลัมน์ "Sale Order No." ให้บันทึก started_at
+            try:
+                col_offset = self.frozen_col_count if self.sheet_frozen else 0
+                real_col = col + col_offset if not is_frozen else col
+                col_name = self.columns[real_col] if real_col < len(self.columns) else ""
+                if col_name == "Sale Order No.":
+                    so_val = str(event.get('value', '') if isinstance(event, dict) else
+                                 (self.sheet_frozen if is_frozen else self.sheet
+                                  ).get_cell_data(datarn, col) or "").strip()
+                    if so_val:
+                        self._sla_record_start(so_val)
+            except Exception as _sla_e:
+                print(f"SLA start error: {_sla_e}")
+
             # 2. รีเฟรชตาราง — ไม่แตะ display_rows เพื่อรักษา filter state ไว้
             self.sheet.redraw()
             if is_frozen and self.sheet_frozen:
@@ -5512,6 +5526,37 @@ class CostBenchmarkScreen(CTkFrame):
             self._fix_render_job = self.after(150, self._apply_header_filters)
 
     # ================================================================== #
+    # ── SLA helpers ────────────────────────────────────────────────────────────
+    def _sla_record_start(self, so_number: str):
+        """บันทึก started_at เมื่อ PU พิมพ์ SO ลงตาราง (เฉพาะครั้งแรก)"""
+        try:
+            conn = self.app_container.get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO sla_benchmark (so_number, user_key)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING
+            """, (so_number, self.current_user))
+            # ถ้ายังไม่มี record เลยสำหรับ so+user นี้ → INSERT
+            # ใช้ unique constraint แทน ON CONFLICT → เพิ่ม unique ด้วย
+            conn.commit()
+        except Exception as e:
+            print(f"_sla_record_start error: {e}")
+
+    def _sla_record_copy(self, so_number: str):
+        """บันทึก copied_at เมื่อกด Copy Short Note (เฉพาะครั้งแรก)"""
+        try:
+            conn = self.app_container.get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE sla_benchmark
+                SET copied_at = NOW()
+                WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+            """, (so_number, self.current_user))
+            conn.commit()
+        except Exception as e:
+            print(f"_sla_record_copy error: {e}")
+
     def _show_short_note_popup(self):
         """Short Note popup — เลือก SO + filter เฉพาะ row ที่ Select = ✓"""
         from datetime import datetime
@@ -5611,7 +5656,7 @@ class CostBenchmarkScreen(CTkFrame):
                     price_str = _fmt_price(it["unit_price"])
                     parts = [prod_line]
                     if it["qty"]:
-                        parts.append(f"{it['qty']} เส้น")
+                        parts.append(it["qty"])
                     if wt_str:
                         parts.append(wt_str)
                     if price_str:
@@ -5787,6 +5832,10 @@ class CostBenchmarkScreen(CTkFrame):
             copy_btn.configure(text="✅ คัดลอกแล้ว!", fg_color="#047857")
             pop.after(2000, lambda: copy_btn.configure(
                 text="📋 Copy to Clipboard", fg_color="#059669"))
+            # SLA — บันทึก copied_at ครั้งแรก
+            sel = listbox.curselection()
+            if sel:
+                self._sla_record_copy(listbox.get(sel[0]))
 
         copy_btn = CTkButton(btn_row, text="📋 Copy to Clipboard",
                              fg_color="#059669", hover_color="#047857",
