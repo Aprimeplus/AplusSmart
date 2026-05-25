@@ -5590,27 +5590,39 @@ class CostBenchmarkScreen(CTkFrame):
             print(f"_sla_record_start error: {e}")
 
     def _sla_record_copy(self, so_number: str):
-        """บันทึก copied_at + duration_min (business hours) เมื่อกด Copy Short Note (ครั้งแรก)"""
+        """บันทึก copied_at + duration_min + temp เมื่อกด Copy Short Note (ครั้งแรก)"""
         from datetime import datetime
         try:
+            # ── หา Temp จาก row ที่ติ๊ก ✔ ของ SO นี้ ──────────────────────
+            TEMP_RANK = {"HOT": 3, "WARM": 2, "COLD": 1}
+            best_temp = None
+            total_rows = self.sheet.get_total_rows()
+            for r in range(total_rows):
+                so_val  = str(self._sheet_get(r, "Sale Order No.") or "").strip()
+                sel_val = str(self._sheet_get(r, "Select") or "").strip()
+                if so_val == so_number and sel_val in ("✔", "เทียบเพื่อชุบ ✔"):
+                    pri = str(self._sheet_get(r, "PRIORITY") or "").strip().upper()
+                    if pri in TEMP_RANK:
+                        if best_temp is None or TEMP_RANK[pri] > TEMP_RANK[best_temp]:
+                            best_temp = pri
+
             conn = self.app_container.get_connection()
             cur = conn.cursor()
-            # ดึง started_at มาคำนวณ
             cur.execute("""
                 SELECT started_at FROM sla_benchmark
                 WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
             """, (so_number, self.current_user))
             row = cur.fetchone()
             if not row:
-                return  # ไม่มี record หรือ copy ไปแล้ว
+                return
             started_at = row[0]
             now = datetime.now()
             biz_min = self._calc_business_minutes(started_at, now)
             cur.execute("""
                 UPDATE sla_benchmark
-                SET copied_at = %s, duration_min = %s
+                SET copied_at = %s, duration_min = %s, temp = %s
                 WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-            """, (now, biz_min, so_number, self.current_user))
+            """, (now, biz_min, best_temp, so_number, self.current_user))
             conn.commit()
         except Exception as e:
             print(f"_sla_record_copy error: {e}")

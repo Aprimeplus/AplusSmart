@@ -3491,48 +3491,76 @@ class PurchasingScreen(CTkFrame):
 # =============================================================================
 #  SLA DASHBOARD — แท็บ SLA สำหรับ Manager Purchase
 # =============================================================================
-from customtkinter import CTkScrollableFrame
-
 class SLADashboard(CTkFrame):
     """แสดง SLA ของจัดซื้อ — เวลาตั้งแต่พิมพ์ SO จนถึงกด Copy Short Note"""
 
     COLS = [
-        ("SO Number",    "so_number",    120),
-        ("PU",           "user_key",      80),
-        ("เริ่ม",        "started_at",   150),
-        ("Copy Short Note","copied_at",  150),
-        ("ใช้เวลา",     "duration_min",   90),
-        ("สถานะ",       "_status",        90),
+        ("SO Number",       120),
+        ("PU",               80),
+        ("Temp",             70),
+        ("เริ่ม",           145),
+        ("Copy Short Note", 145),
+        ("ใช้เวลา",          90),
+        ("สถานะ",            80),
     ]
+    TEMP_COLOR = {"HOT": "#FEE2E2", "WARM": "#FEF9C3", "COLD": "#DBEAFE"}
 
     def __init__(self, master, app_container):
         super().__init__(master, fg_color="transparent")
         self.app = app_container
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
-        # ── Header bar ────────────────────────────────────────────────────────
-        bar = CTkFrame(self, fg_color="transparent")
-        bar.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
-        bar.grid_columnconfigure(0, weight=1)
+        # ── row 0: Title ──────────────────────────────────────────────────────
+        CTkLabel(self, text="⏱  SLA จัดซื้อ — ระยะเวลาเสนอราคา",
+                 font=CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=16, pady=(12, 4))
 
-        CTkLabel(bar, text="⏱  SLA จัดซื้อ — ระยะเวลาเสนอราคา",
-                 font=CTkFont(size=15, weight="bold")).grid(row=0, column=0, sticky="w")
-        CTkButton(bar, text="🔄 รีเฟรช", width=90, height=30,
+        # ── row 1: Filter bar ─────────────────────────────────────────────────
+        fbar = CTkFrame(self, fg_color="#F1F5F9", corner_radius=8,
+                        border_width=1, border_color="#E2E8F0")
+        fbar.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
+
+        CTkLabel(fbar, text="เดือน:", font=CTkFont(size=12)).pack(
+            side="left", padx=(12, 4), pady=8)
+        self._month_var = tk.StringVar(value="ทั้งหมด")
+        self._month_cb = CTkComboBox(fbar, variable=self._month_var, width=130,
+                                     values=["ทั้งหมด"], font=CTkFont(size=12),
+                                     command=lambda _: self._load())
+        self._month_cb.pack(side="left", pady=8, padx=(0, 16))
+
+        CTkLabel(fbar, text="PU:", font=CTkFont(size=12)).pack(
+            side="left", padx=(0, 4), pady=8)
+        self._user_var = tk.StringVar(value="ทั้งหมด")
+        self._user_cb = CTkComboBox(fbar, variable=self._user_var, width=130,
+                                    values=["ทั้งหมด"], font=CTkFont(size=12),
+                                    command=lambda _: self._load())
+        self._user_cb.pack(side="left", pady=8, padx=(0, 16))
+
+        CTkLabel(fbar, text="Temp:", font=CTkFont(size=12)).pack(
+            side="left", padx=(0, 4), pady=8)
+        self._temp_var = tk.StringVar(value="ทั้งหมด")
+        self._temp_cb = CTkComboBox(fbar, variable=self._temp_var, width=110,
+                                    values=["ทั้งหมด", "HOT", "WARM", "COLD"],
+                                    font=CTkFont(size=12),
+                                    command=lambda _: self._load())
+        self._temp_cb.pack(side="left", pady=8, padx=(0, 16))
+
+        CTkButton(fbar, text="🔄 รีเฟรช", width=90, height=30,
                   font=CTkFont(size=12),
-                  command=self._load).grid(row=0, column=1, padx=(8, 0))
+                  command=self._refresh_all).pack(side="right", padx=12, pady=8)
 
-        # ── Treeview ──────────────────────────────────────────────────────────
+        # ── row 2: Treeview ───────────────────────────────────────────────────
         frame = CTkFrame(self, fg_color="white", corner_radius=10,
                          border_width=1, border_color="#E2E8F0")
-        frame.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 12))
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(0, weight=1)
 
         col_ids = [c[0] for c in self.COLS]
         self.tree = ttk.Treeview(frame, columns=col_ids, show="headings",
                                  selectmode="browse")
-        for label, _, w in self.COLS:
+        for label, w in self.COLS:
             self.tree.heading(label, text=label)
             self.tree.column(label, width=w, minwidth=w, anchor="center")
 
@@ -3541,46 +3569,93 @@ class SLADashboard(CTkFrame):
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
 
-        # ── Style ─────────────────────────────────────────────────────────────
         style = ttk.Style()
-        style.configure("Treeview", font=("Tahoma", 11), rowheight=26)
+        style.configure("Treeview",         font=("Tahoma", 11), rowheight=26)
         style.configure("Treeview.Heading", font=("Tahoma", 11, "bold"))
         self.tree.tag_configure("done",    background="#DCFCE7")
         self.tree.tag_configure("pending", background="#FEF9C3")
-        self.tree.tag_configure("none",    background="#F1F5F9")
+        self.tree.tag_configure("hot",     background="#FEE2E2")
+        self.tree.tag_configure("warm",    background="#FEF9C3")
+        self.tree.tag_configure("cold",    background="#DBEAFE")
 
+        self._refresh_all()
+
+    def _refresh_all(self):
+        """โหลด filter options ใหม่ แล้วโหลดข้อมูล"""
+        try:
+            conn = self.app.get_connection()
+            df_all = pd.read_sql_query(
+                "SELECT user_key, started_at FROM sla_benchmark ORDER BY started_at DESC",
+                conn)
+            conn.close()
+
+            # เดือน
+            months = ["ทั้งหมด"]
+            if not df_all.empty and "started_at" in df_all.columns:
+                df_all["started_at"] = pd.to_datetime(df_all["started_at"])
+                unique_months = (df_all["started_at"]
+                                 .dt.to_period("M")
+                                 .drop_duplicates()
+                                 .sort_values(ascending=False))
+                months += [str(m) for m in unique_months]
+
+            # user
+            users = ["ทั้งหมด"] + sorted(df_all["user_key"].dropna().unique().tolist())
+
+            self._month_cb.configure(values=months)
+            self._user_cb.configure(values=users)
+        except Exception as e:
+            print(f"SLA refresh_all error: {e}")
         self._load()
 
     def _load(self):
         for row in self.tree.get_children():
             self.tree.delete(row)
         try:
-            conn = self.app.get_connection()
-            df = pd.read_sql_query("""
-                SELECT so_number, user_key, started_at, copied_at, duration_min
+            month_sel = self._month_var.get()
+            user_sel  = self._user_var.get()
+            temp_sel  = self._temp_var.get()
+
+            query = """
+                SELECT so_number, user_key, temp, started_at, copied_at, duration_min
                 FROM sla_benchmark
-                ORDER BY started_at DESC
-                LIMIT 200
-            """, conn)
+                WHERE 1=1
+            """
+            params = []
+            if month_sel != "ทั้งหมด":
+                query += " AND TO_CHAR(started_at, 'YYYY-MM') = %s"
+                params.append(month_sel)
+            if user_sel != "ทั้งหมด":
+                query += " AND user_key = %s"
+                params.append(user_sel)
+            if temp_sel != "ทั้งหมด":
+                query += " AND temp = %s"
+                params.append(temp_sel)
+            query += " ORDER BY started_at DESC LIMIT 300"
+
+            conn = self.app.get_connection()
+            df = pd.read_sql_query(query, conn, params=params if params else None)
             conn.close()
+
             for _, r in df.iterrows():
-                started = r["started_at"].strftime("%d/%m/%Y %H:%M") if pd.notna(r["started_at"]) else "-"
-                copied  = r["copied_at"].strftime("%d/%m/%Y %H:%M")  if pd.notna(r["copied_at"])  else "-"
+                started = (pd.to_datetime(r["started_at"]).strftime("%d/%m/%Y %H:%M")
+                           if pd.notna(r["started_at"]) else "-")
+                copied  = (pd.to_datetime(r["copied_at"]).strftime("%d/%m/%Y %H:%M")
+                           if pd.notna(r["copied_at"]) else "-")
+                temp    = str(r["temp"]) if pd.notna(r["temp"]) else "-"
                 dur_raw = r["duration_min"]
+
                 if pd.isna(dur_raw):
-                    dur_str = "ยังไม่เสร็จ"
+                    dur_str = "รอ Copy"
                     tag = "pending"
                 else:
                     d = int(dur_raw)
-                    if d < 60:
-                        dur_str = f"{d} นาที"
-                    else:
-                        h, m = divmod(d, 60)
-                        dur_str = f"{h}h {m}m"
-                    tag = "done"
-                status = "เสร็จ" if tag == "done" else "รอ Copy"
+                    dur_str = f"{d} นาที" if d < 60 else f"{d//60}h {d%60}m"
+                    tag = temp.lower() if temp in ("HOT", "WARM", "COLD") else "done"
+
+                status = "เสร็จ" if pd.notna(dur_raw) else "รอ Copy"
                 self.tree.insert("", "end",
-                                 values=(r["so_number"], r["user_key"],
+                                 values=(r["so_number"], r["user_key"], temp,
                                          started, copied, dur_str, status),
                                  tags=(tag,))
         except Exception as e:
