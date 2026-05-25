@@ -3582,13 +3582,12 @@ class SLADashboard(CTkFrame):
 
     def _refresh_all(self):
         """โหลด filter options ใหม่ แล้วโหลดข้อมูล"""
+        conn = None
         try:
             conn = self.app.get_connection()
             df_all = pd.read_sql_query(
                 "SELECT user_key, started_at FROM sla_benchmark ORDER BY started_at DESC",
                 conn)
-            conn.close()
-
             # เดือน
             months = ["ทั้งหมด"]
             if not df_all.empty and "started_at" in df_all.columns:
@@ -3598,14 +3597,15 @@ class SLADashboard(CTkFrame):
                                  .drop_duplicates()
                                  .sort_values(ascending=False))
                 months += [str(m) for m in unique_months]
-
             # user
             users = ["ทั้งหมด"] + sorted(df_all["user_key"].dropna().unique().tolist())
-
             self._month_cb.configure(values=months)
             self._user_cb.configure(values=users)
         except Exception as e:
             print(f"SLA refresh_all error: {e}")
+        finally:
+            if conn:
+                self.app.release_connection(conn)
         self._load()
 
     def _load(self):
@@ -3634,8 +3634,11 @@ class SLADashboard(CTkFrame):
             query += " ORDER BY started_at DESC LIMIT 300"
 
             conn = self.app.get_connection()
-            df = pd.read_sql_query(query, conn, params=params if params else None)
-            conn.close()
+            try:
+                df = pd.read_sql_query(query, conn, params=params if params else None)
+            finally:
+                self.app.release_connection(conn)
+                conn = None
 
             for _, r in df.iterrows():
                 started_dt = pd.to_datetime(r["started_at"]) if pd.notna(r["started_at"]) else None
