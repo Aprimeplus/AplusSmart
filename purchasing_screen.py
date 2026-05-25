@@ -3638,22 +3638,31 @@ class SLADashboard(CTkFrame):
             conn.close()
 
             for _, r in df.iterrows():
-                started = (pd.to_datetime(r["started_at"]).strftime("%d/%m/%Y %H:%M")
-                           if pd.notna(r["started_at"]) else "-")
-                copied  = (pd.to_datetime(r["copied_at"]).strftime("%d/%m/%Y %H:%M")
-                           if pd.notna(r["copied_at"]) else "-")
+                started_dt = pd.to_datetime(r["started_at"]) if pd.notna(r["started_at"]) else None
+                copied_dt  = pd.to_datetime(r["copied_at"])  if pd.notna(r["copied_at"])  else None
+                started = started_dt.strftime("%d/%m/%Y %H:%M") if started_dt else "-"
+                copied  = copied_dt.strftime("%d/%m/%Y %H:%M")  if copied_dt  else "-"
                 temp    = str(r["temp"]) if pd.notna(r["temp"]) else "-"
                 dur_raw = r["duration_min"]
 
-                if pd.isna(dur_raw):
-                    dur_str = "รอ Copy"
-                    tag = "pending"
-                else:
+                if pd.notna(dur_raw):
+                    # มี duration_min → ใช้ค่านี้เลย (business hours)
                     d = int(dur_raw)
                     dur_str = f"{d} นาที" if d < 60 else f"{d//60}h {d%60}m"
-                    tag = temp.lower() if temp in ("HOT", "WARM", "COLD") else "done"
+                    tag    = temp.lower() if temp in ("HOT", "WARM", "COLD") else "done"
+                    status = "เสร็จ"
+                elif copied_dt and started_dt:
+                    # copied_at มีแต่ duration_min ไม่มี (record เก่า) → คำนวณ raw diff
+                    diff = int((copied_dt - started_dt).total_seconds() // 60)
+                    dur_str = f"~{diff} นาที" if diff < 60 else f"~{diff//60}h {diff%60}m"
+                    tag    = temp.lower() if temp in ("HOT", "WARM", "COLD") else "done"
+                    status = "เสร็จ"
+                else:
+                    # ยังไม่ได้ Copy
+                    dur_str = "รอ Copy"
+                    tag     = "pending"
+                    status  = "รอ Copy"
 
-                status = "เสร็จ" if pd.notna(dur_raw) else "รอ Copy"
                 self.tree.insert("", "end",
                                  values=(r["so_number"], r["user_key"], temp,
                                          started, copied, dur_str, status),
