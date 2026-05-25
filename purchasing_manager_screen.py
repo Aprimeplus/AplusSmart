@@ -350,6 +350,11 @@ class PurchasingManagerScreen(CTkFrame):
         self.rejection_dashboard_tab.grid_columnconfigure(0, weight=1)
         self.rejection_dashboard_tab.grid_rowconfigure(1, weight=1)
 
+        # --- SLA Tab ---
+        self.sla_tab = self.tab_view.add("⏱ SLA")
+        self.sla_tab.grid_columnconfigure(0, weight=1)
+        self.sla_tab.grid_rowconfigure(0, weight=1)
+
         self.manager_view_tab.grid_columnconfigure(0, weight=1)
         self.manager_view_tab.grid_rowconfigure(0, minsize=280)  # chart row ต้องสูงพอ
         self.manager_view_tab.grid_rowconfigure(1, weight=1)
@@ -383,6 +388,11 @@ class PurchasingManagerScreen(CTkFrame):
         # +++ END +++
 
         self._create_rejection_dashboard_tab(self.rejection_dashboard_tab)
+
+        # Mount SLA Dashboard
+        from purchasing_screen import SLADashboard
+        SLADashboard(self.sla_tab, self.app_container).grid(row=0, column=0, sticky="nsew")
+
         self._load_data()
         self._start_polling()
         self.bind("<Destroy>", self._on_destroy)

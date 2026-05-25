@@ -1356,13 +1356,6 @@ class PurchasingScreen(CTkFrame):
         ssl_tab.grid_rowconfigure(0, weight=1)
         SuperSupplierTab(master=ssl_tab, app_container=self.app_container).grid(row=0, column=0, sticky="nsew")
 
-        self.tab_view.add("SLA")
-        sla_tab = self.tab_view.tab("SLA")
-        sla_tab.grid_columnconfigure(0, weight=1)
-        sla_tab.grid_rowconfigure(0, weight=1)
-        self.sla_view = SLADashboard(sla_tab, self.app_container)
-        self.sla_view.grid(row=0, column=0, sticky="nsew")
-
         self._load_supplier_data()
         self._load_product_master_data()
 
