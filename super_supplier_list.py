@@ -2241,7 +2241,6 @@ class BlacklistReasonPopup(CTkToplevel):
             self.on_confirm(full)
         self.destroy()
 
-
 # =============================================================================
 #  C6 — AUDIT TRAIL LOG  POPUP
 # =============================================================================

@@ -314,9 +314,9 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     
     recalc_total_cost = 0.0
     for i, item in enumerate(items_data, 1):
-        try: total_price = float(item.get('total_price', 0) or 0)
+        try: total_price = round(float(item.get('total_price', 0) or 0), 2)
         except: total_price = 0.0
-        recalc_total_cost += total_price
+        recalc_total_cost = round(recalc_total_cost + total_price, 2)
         
         item_rows.append([
             make_para(str(i), 'Small_Center_TH'), 
@@ -376,55 +376,55 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
 
     # [คำนวณใหม่]
     # VAT
-    bill_discount = float(header_data.get('bill_discount', 0) or 0)
-    net_product_cost = recalc_total_cost - bill_discount
-    
+    bill_discount = round(float(header_data.get('bill_discount', 0) or 0), 2)
+    net_product_cost = round(recalc_total_cost - bill_discount, 2)
+
     # 2. คำนวณ VAT และ WHT ของค่าสินค้า (คิดจากยอดที่หักส่วนลดแล้ว)
     is_vat_checked = header_data.get('vat_7_percent_checked')
     is_vat_checked = str(is_vat_checked).lower() in ['true', '1', 't', 'y', 'yes'] if isinstance(is_vat_checked, str) else (is_vat_checked == 1)
-    recalc_product_vat = net_product_cost * 0.07 if is_vat_checked else 0.0
-    
+    recalc_product_vat = round(net_product_cost * 0.07, 2) if is_vat_checked else 0.0
+
     is_wht3_checked = header_data.get('wht_3_percent_checked')
     is_wht3_checked = str(is_wht3_checked).lower() in ['true', '1', 't', 'y', 'yes'] if isinstance(is_wht3_checked, str) else (is_wht3_checked == 1)
-    product_wht_amt = net_product_cost * 0.03 if is_wht3_checked else 0.0
+    product_wht_amt = round(net_product_cost * 0.03, 2) if is_wht3_checked else 0.0
 
     # 3. คำนวณค่าส่ง (แสดงค่าจัดส่งเสมอ ไม่ว่าจะเป็นซัพพลายเออร์หรือบริษัทขนส่งภายนอก)
     stock_shipper = str(header_data.get('shipping_to_stock_shipper', ''))
-    shipping_stock_cost = float(header_data.get('shipping_to_stock_cost', 0) or 0)
-    shipping_stock_vat = shipping_stock_cost * 0.07 if header_data.get('shipping_to_stock_vat_type') == 'VAT' else 0.0
+    shipping_stock_cost = round(float(header_data.get('shipping_to_stock_cost', 0) or 0), 2)
+    shipping_stock_vat = round(shipping_stock_cost * 0.07, 2) if header_data.get('shipping_to_stock_vat_type') == 'VAT' else 0.0
     st_wht_type = str(header_data.get('shipping_to_stock_wht_type', ''))
-    stock_wht_amt = shipping_stock_cost * (0.01 if '1' in st_wht_type else (0.03 if '3' in st_wht_type else 0))
+    stock_wht_amt = round(shipping_stock_cost * (0.01 if '1' in st_wht_type else (0.03 if '3' in st_wht_type else 0)), 2)
 
     site_shipper = str(header_data.get('shipping_to_site_shipper', ''))
-    shipping_site_cost = float(header_data.get('shipping_to_site_cost', 0) or 0)
-    shipping_site_vat = shipping_site_cost * 0.07 if header_data.get('shipping_to_site_vat_type') == 'VAT' else 0.0
+    shipping_site_cost = round(float(header_data.get('shipping_to_site_cost', 0) or 0), 2)
+    shipping_site_vat = round(shipping_site_cost * 0.07, 2) if header_data.get('shipping_to_site_vat_type') == 'VAT' else 0.0
     si_wht_type = str(header_data.get('shipping_to_site_wht_type', ''))
-    site_wht_amt = shipping_site_cost * (0.01 if '1' in si_wht_type else (0.03 if '3' in si_wht_type else 0))
+    site_wht_amt = round(shipping_site_cost * (0.01 if '1' in si_wht_type else (0.03 if '3' in si_wht_type else 0)), 2)
 
-    total_shipping_cost = shipping_stock_cost + shipping_site_cost
+    total_shipping_cost = round(shipping_stock_cost + shipping_site_cost, 2)
 
     # 4. คำนวณค่าบริการตัด/เจาะ
-    cutting_cost = float(header_data.get('cutting_cost', 0) or 0)
-    cutting_vat = cutting_cost * 0.07 if header_data.get('cutting_vat_type') == 'VAT' else 0.0
+    cutting_cost = round(float(header_data.get('cutting_cost', 0) or 0), 2)
+    cutting_vat = round(cutting_cost * 0.07, 2) if header_data.get('cutting_vat_type') == 'VAT' else 0.0
     cutting_remark = header_data.get('cutting_remark', '')
     cut_wht_type_raw = str(header_data.get('cutting_wht_type', 'No'))
     cutting_wht_type = "ไม่มีหัก" if cut_wht_type_raw == "No" else cut_wht_type_raw
-    cutting_wht_amount = cutting_cost * (0.01 if '1' in cut_wht_type_raw else (0.03 if '3' in cut_wht_type_raw else 0))
+    cutting_wht_amount = round(cutting_cost * (0.01 if '1' in cut_wht_type_raw else (0.03 if '3' in cut_wht_type_raw else 0)), 2)
 
     # 5. สรุปยอดรวม (Grand Total) และ ภาษีหัก ณ ที่จ่าย (WHT)
-    recalc_total_vat = recalc_product_vat + shipping_stock_vat + shipping_site_vat + cutting_vat
+    recalc_total_vat = round(recalc_product_vat + shipping_stock_vat + shipping_site_vat + cutting_vat, 2)
 
     # ยอดรวมทั้งหมด (รวมค่ารถ) — ใช้คำนวณยอดค้างชำระและ WHT
-    recalc_grand_total_with_shipping = net_product_cost + total_shipping_cost + cutting_cost + recalc_total_vat
+    recalc_grand_total_with_shipping = round(net_product_cost + total_shipping_cost + cutting_cost + recalc_total_vat, 2)
 
     # "รวมทั้งสิ้น" ฝั่งขวาของ PO — ไม่รวมค่ารถ และไม่รวม Vat ของค่ารถ
-    recalc_total_vat_no_shipping = recalc_product_vat + cutting_vat
-    recalc_grand_total = net_product_cost + cutting_cost + recalc_total_vat_no_shipping
+    recalc_total_vat_no_shipping = round(recalc_product_vat + cutting_vat, 2)
+    recalc_grand_total = round(net_product_cost + cutting_cost + recalc_total_vat_no_shipping, 2)
 
-    total_all_wht = product_wht_amt + stock_wht_amt + site_wht_amt + cutting_wht_amount
+    total_all_wht = round(product_wht_amt + stock_wht_amt + site_wht_amt + cutting_wht_amount, 2)
 
     # 6. ยอดค้างชำระ (คิดจาก recalc_grand_total ที่ไม่รวมค่ารถ — ค่ารถแยกต่างหาก ไม่เกี่ยวกับค่าสินค้า)
-    balance_due = recalc_grand_total - (deposit_amount + full_payment_amount + total_all_wht)
+    balance_due = round(recalc_grand_total - (deposit_amount + full_payment_amount + total_all_wht), 2)
 
     # 🟢 [เพิ่ม Logic อัจฉริยะ] ถ้ายอดค้างเป็น 0 (จ่ายครบ) และมีเงินค้างอยู่ในช่องมัดจำ ให้ย้ายไป "ชำระเต็ม" อัตโนมัติ
     if balance_due <= 0.05 and deposit_amount > 0 and full_payment_amount == 0:
@@ -455,14 +455,14 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
 
     # Shipping (4 rows)
     stock_wht_type = header_data.get('shipping_to_stock_wht_type', 'ไม่มีหัก')
-    stock_wht_1 = shipping_stock_cost * 0.01 if stock_wht_type == '1%' else 0
+    stock_wht_1 = round(shipping_stock_cost * 0.01, 2) if stock_wht_type == '1%' else 0
     site_wht_type = header_data.get('shipping_to_site_wht_type', 'ไม่มีหัก')
-    site_wht_1 = shipping_site_cost * 0.01 if site_wht_type == '1%' else 0
-    total_wht_1 = stock_wht_1 + site_wht_1
+    site_wht_1 = round(shipping_site_cost * 0.01, 2) if site_wht_type == '1%' else 0
+    total_wht_1 = round(stock_wht_1 + site_wht_1, 2)
 
-    stock_wht_3 = shipping_stock_cost * 0.03 if stock_wht_type == '3%' else 0
-    site_wht_3 = shipping_site_cost * 0.03 if site_wht_type == '3%' else 0
-    total_wht_3 = stock_wht_3 + site_wht_3
+    stock_wht_3 = round(shipping_stock_cost * 0.03, 2) if stock_wht_type == '3%' else 0
+    site_wht_3 = round(shipping_site_cost * 0.03, 2) if site_wht_type == '3%' else 0
+    total_wht_3 = round(stock_wht_3 + site_wht_3, 2)
 
     shipper_display = header_data.get('shipping_to_stock_shipper', '') or header_data.get('shipping_to_site_shipper', '')
     truck_info = header_data.get('truck_name', '')

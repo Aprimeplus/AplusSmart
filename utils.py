@@ -41,6 +41,51 @@ def format_date_safe(date_val, format_string='%d/%m/%Y'):
     except Exception:
         return str(date_val)
 
+# =========================================================================
+# THAI DATE HELPERS — ใช้ทั่วระบบเพื่อแสดงปี พ.ศ.
+# =========================================================================
+
+def thai_year(dt) -> int:
+    """รับ datetime/date แล้วคืนปี พ.ศ."""
+    return dt.year + 543
+
+def format_thai_date(dt, show_time: bool = False) -> str:
+    """
+    แปลง datetime → string รูปแบบไทย DD/MM/YYYY(พ.ศ.)
+    เช่น 2026-06-06 → '06/06/2569'
+    ถ้า show_time=True → '06/06/2569 10:37'
+    """
+    if dt is None:
+        return "-"
+    try:
+        dt = pd.to_datetime(dt)
+        if pd.isna(dt):
+            return "-"
+        base = dt.strftime("%d/%m/") + str(dt.year + 543)
+        if show_time:
+            base += dt.strftime(" %H:%M")
+        return base
+    except Exception:
+        return "-"
+
+def format_thai_date_safe(date_val, show_time: bool = False) -> str:
+    """เหมือน format_thai_date แต่รับ string/None/NaT ได้ด้วย"""
+    if date_val is None or str(date_val).strip() in ('', 'None', 'NaT'):
+        return "-"
+    return format_thai_date(date_val, show_time=show_time)
+
+def thai_year_from_str(year_str: str) -> int:
+    """รับปี ค.ศ. เป็น string แล้วคืนปี พ.ศ. (เช่น '2026' → 2569)"""
+    return int(year_str) + 543
+
+def be_to_ce(be_year: int) -> int:
+    """แปลงปี พ.ศ. → ค.ศ. (เช่น 2569 → 2026)"""
+    return be_year - 543
+
+def ce_to_be(ce_year: int) -> int:
+    """แปลงปี ค.ศ. → พ.ศ. (เช่น 2026 → 2569)"""
+    return ce_year + 543
+
 def set_entry_text(entry_widget, text):
     """ใส่ข้อความใน CTkEntry อย่างปลอดภัย รองรับกรณีที่ Widget เป็น Readonly"""
     if not entry_widget or not hasattr(entry_widget, 'winfo_exists') or not entry_widget.winfo_exists():

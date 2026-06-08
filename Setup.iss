@@ -2,7 +2,7 @@
 
 ; --- START: กำหนดค่าคงที่ทั้งหมดไว้ที่นี่เพื่อง่ายต่อการแก้ไข ---
 #define MyAppName "A+Smart"
-#define MyAppVersion " 73"
+#define MyAppVersion " 79."
 #define MyAppPublisher "APrime Plus Co., Ltd."
 #define MyAppURL "https://www.aprimeplus.com/"
 #define MyAppExeName "A+ Smart Solution.exe"
@@ -14,7 +14,7 @@
 
 
 [Setup]
-; NOTE: The value of AppId uniquely identifies this application.
+; NOTE: The value of AppId uniquely identifies this applicatiosn.
 ; [แก้ไข] เพิ่มวงเล็บปีกกาที่ขาดไป
 AppId={{1363BC07-7ED2-4BED-971A-B45285BE15ED}}
 AppName={#MyAppName}

@@ -183,7 +183,7 @@ class SalesDataViewerWindow(CTkToplevel):
 class HRVerificationWindow(CTkToplevel):
 
     def __init__(self, master, app_container, system_data, excel_data, po_data, refresh_callback=None,
-                 target_commission_month=None, target_commission_year=None):
+                 target_commission_month=None, target_commission_year=None, user_role=None):
         super().__init__(master)
         self.master = master
         self.app_container = app_container
@@ -194,9 +194,10 @@ class HRVerificationWindow(CTkToplevel):
         self.refresh_callback = refresh_callback
         self.target_commission_month = target_commission_month
         self.target_commission_year = target_commission_year
+        self.user_role = user_role   # 'Director' = ปรับ multiplier ได้, อื่นๆ = ใช้ default
         self.so_number = self.system_data.get('so_number', 'N/A')
         self.record_id = self.system_data.get('id')
-        self.cost_multiplier_var = tk.StringVar(value="1.03") # สร้างตัวแปรพร้อมค่าเริ่มต้น
+        self.cost_multiplier_var = tk.StringVar(value="1.03")
 
         # --- ตัวแปรสำหรับเก็บค่าที่ User Override และค่าที่คำนวณแล้ว ---
         self.cost_overrides = {} # เก็บค่า cost ที่ HR อาจแก้ไขเอง
@@ -227,10 +228,11 @@ class HRVerificationWindow(CTkToplevel):
         self._create_new_ui_layout()
 
         initial_multiplier = self.system_data.get('cost_multiplier')
-        if initial_multiplier and f"{initial_multiplier:.2f}" in ["1.01", "1.02", "1.03", "1.04", "1.05"]:
-            self.cost_multiplier_var.set(f"{initial_multiplier:.2f}")
+        _valid_range = [f"{v/100:.2f}" for v in range(101, 111)]   # 1.01-1.10
+        if initial_multiplier and f"{float(initial_multiplier):.2f}" in _valid_range:
+            self.cost_multiplier_var.set(f"{float(initial_multiplier):.2f}")
         else:
-            self.cost_multiplier_var.set("1.03") # ถ้าไม่มีข้อมูล ให้ใช้ค่าเริ่มต้น
+            self.cost_multiplier_var.set("1.03")
 
         # --- โหลดและคำนวณข้อมูล ---
         self.after(50, self._update_all_calculations_and_ui)
@@ -395,15 +397,8 @@ class HRVerificationWindow(CTkToplevel):
             self.final_sales_source_label = source_label
         else: # cost
             self.final_cost_label = value_label
-            self.final_cost_source_label = source_label 
-
-            # --- เพิ่มโค้ดส่วนนี้เข้าไป ---
-            CTkLabel(parent, text="ตัวคูณต้นทุน (Cost Multiplier):", font=CTkFont(size=12)).grid(row=3, column=0, padx=(15, 5), pady=(10, 0), sticky="w")
-            multiplier_options = ["1.01", "1.02", "1.03", "1.04", "1.05"]
-
-            # self.cost_multiplier_var ถูกสร้างใน __init__ แล้ว
-            self.cost_multiplier_menu = CTkOptionMenu(parent, variable=self.cost_multiplier_var, values=multiplier_options)
-            self.cost_multiplier_menu.grid(row=4, column=0, padx=15, pady=(0, 10), sticky="w")
+            self.final_cost_source_label = source_label
+            # multiplier ย้ายไปปรับใน Tab 2 "คำนวณ & จ่าย" แล้ว ไม่แสดงที่นี่
 
     # (วางฟังก์ชันนี้ต่อจาก _create_summary_card)
     
@@ -470,15 +465,8 @@ class HRVerificationWindow(CTkToplevel):
             self.final_sales_source_label = source_label
         else: # cost
             self.final_cost_label = value_label
-            self.final_cost_source_label = source_label 
-
-            # --- START: เพิ่มโค้ดส่วนนี้เข้าไป ---
-            CTkLabel(parent, text="ตัวคูณต้นทุน (Cost Multiplier):", font=CTkFont(size=12)).grid(row=3, column=0, padx=(15, 5), pady=(10, 0), sticky="w")
-            multiplier_options = ["1.01", "1.02", "1.03", "1.04", "1.05"]
-
-            # self.cost_multiplier_var ถูกสร้างใน __init__ แล้ว
-            self.cost_multiplier_menu = CTkOptionMenu(parent, variable=self.cost_multiplier_var, values=multiplier_options)
-            self.cost_multiplier_menu.grid(row=4, column=0, padx=15, pady=(0, 10), sticky="w")
+            self.final_cost_source_label = source_label
+            # multiplier ย้ายไปปรับใน Tab 2 "คำนวณ & จ่าย" แล้ว ไม่แสดงที่นี่
 
     def _reload_data(self):
         """(เวอร์ชันแก้ไข) ดึงข้อมูล SO และ PO ที่ Active ล่าสุดจากฐานข้อมูล"""
@@ -725,8 +713,8 @@ class HRVerificationWindow(CTkToplevel):
         multiplier = float(self.cost_multiplier_var.get())
 
         # คำนวณยอดที่รวมตัวคูณแล้ว "เพื่อใช้แสดงผลบนหน้าจอเท่านั้น"
-        # EXP-0006/ค่าบริการ: บวกตรง ไม่ผ่าน multiplier (เพราะ business_logic ดึงออกก่อนคูณ แล้วบวกกลับ)
-        display_cost_system = (raw_cost_system * multiplier) + po_service_cost_raw
+        # raw_cost_system = ทุนรวมทุกรายการ (สินค้า + EXP-xxxx) ยังไม่คูณ multiplier
+        display_cost_system = raw_cost_system * multiplier
 
         # 2. อัปเดตข้อความบน Radio Buttons (โชว์ยอดที่รวม 1.03 ให้ HR สบายใจ)
         self.sales_system_radio.configure(text=f"จากระบบ (System): {total_sale_system:,.2f} บาท")
@@ -1004,34 +992,19 @@ class HRVerificationWindow(CTkToplevel):
 
     def _recalculate_summaries(self):
         """
-        คำนวณต้นทุนและยอดขาย (แก้ไขเพื่อป้องกันการคูณค่าบริหารจัดการเบิ้ล)
+        คำนวณต้นทุนและยอดขาย
+        ใช้ purchase_orders.total_cost (หักส่วนลดท้ายบิลแล้ว) แทนการ sum จาก items
         """
-        po_product_cost_raw = 0.0
-        po_service_cost_raw = 0.0  # ค่าบริการ (EXP-0006 ฯลฯ) — บวกตรงไม่ผ่าน multiplier
         approved_po_df = self.po_data[self.po_data['status'] == 'Approved']
 
-        # รหัสสินค้าที่จัดเป็น "ค่าบริการ" (ไม่คูณ multiplier แต่ต้องรวมในต้นทุน)
-        SERVICE_CODES = {'EXP-0006', 'EXP-0049', 'EXP-0077', 'EXP-0174'}
+        # ใช้ total_cost จาก purchase_orders โดยตรง — หักส่วนลดท้ายบิลแล้ว ถูกต้องกว่าอ่านจาก items
+        po_total_cost_raw = 0.0
+        if not approved_po_df.empty and 'total_cost' in approved_po_df.columns:
+            po_total_cost_raw = float(
+                pd.to_numeric(approved_po_df['total_cost'], errors='coerce').fillna(0).sum()
+            )
 
-        if not approved_po_df.empty:
-            approved_po_ids = tuple(approved_po_df['id'].tolist())
-            try:
-                query = "SELECT product_code, product_name, total_price FROM purchase_order_items WHERE purchase_order_id IN %s"
-                items_df = pd.read_sql(query, self.pg_engine, params=(approved_po_ids,))
-                shipping_keywords = ['ค่ารถ', 'shipping', 'delivery', 'ขนส่ง', 'ค่าขนย้าย', 'relocation', 'ค่าส่ง']
-
-                for _, row in items_df.iterrows():
-                    p_code = str(row.get('product_code') or '').strip().upper()
-                    p_name = str(row['product_name']).lower()
-                    price = float(row['total_price'] or 0)
-                    if p_code in SERVICE_CODES or 'ค่าบริการ' in p_name:
-                        # ค่าบริการ: บวกตรง ไม่ผ่าน multiplier
-                        po_service_cost_raw += price
-                    elif not any(k in p_name for k in shipping_keywords):
-                        po_product_cost_raw += price
-            except: pass
-
-        # 1. เก็บ "ทุนดิบ" ลงในระบบเพื่อรอการ Save (Business Logic จะไปคูณ 1.03 เอง)
+        # 1. เก็บ "ทุนดิบ" (ก่อนคูณ multiplier) — Business Logic / display จะคูณ 1.03 เอง
         total_sale_express = float(self.excel_data.get('sales_uploaded', 0) or 0)
         total_cost_express = float(self.excel_data.get('cost_uploaded', 0) or 0)
         sales_keys = ['sales_service_amount', 'cutting_drilling_fee', 'other_service_fee']
@@ -1040,8 +1013,8 @@ class HRVerificationWindow(CTkToplevel):
         self.calculated_values = {
             'total_sale_system': total_sale_system,
             'total_sale_express': total_sale_express,
-            'total_cost_system': po_product_cost_raw,  # ทุนสินค้าดิบ (ยังไม่คูณ multiplier)
-            'po_service_cost_raw': po_service_cost_raw,  # ค่าบริการ EXP-0006 ฯลฯ (บวกตรง)
+            'total_cost_system': po_total_cost_raw,   # ทุนรวม หักส่วนลดแล้ว ยังไม่คูณ multiplier
+            'po_service_cost_raw': 0.0,               # ไม่แยกแล้ว — รวมใน total_cost แล้ว
             'total_cost_express': total_cost_express
         }
 
@@ -1505,12 +1478,14 @@ class HRVerificationWindow(CTkToplevel):
                         final_margin = %s,
                         hr_sale_source = %s,
                         hr_cost_source = %s,
+                        cost_multiplier = %s,
                         payout_id = NULL
                     WHERE id = %s
                 """
                 params = tuple(extra_period_params) + (
                     final_sale, final_cost, final_gp, final_margin,
-                    self.final_sale_source.get(), self.final_cost_source.get(), so_id
+                    self.final_sale_source.get(), self.final_cost_source.get(),
+                    float(self.cost_multiplier_var.get()), so_id
                 )
                 cursor.execute(update_query, params)
             conn.commit()
@@ -2659,7 +2634,7 @@ class PayoutCalculationViewer(CTkToplevel):
         if df_display['multiplier'].max() > 1.001:
             max_mult = df_display['multiplier'].max()
             percent_add = int((max_mult - 1) * 100)
-            cost_header = f"ต้นทุน (+{percent_add}%)"
+            cost_header = "ต้นทุน (opt fee)"
 
             # คูณตัวเลขต้นทุนให้เห็นชัดๆ (เฉพาะแสดงผล)
             # หมายเหตุ: ใน Business Logic เขาคูณมาแล้วหรือยัง? 
@@ -2772,10 +2747,12 @@ class PayoutCalculationViewer(CTkToplevel):
 
 
 class CalculationDetailViewer(CTkToplevel):
-    def __init__(self, master, debug_df, so_breakdown_df, plan_name, comm_df=None, user_role=None):
+    def __init__(self, master, debug_df, so_breakdown_df, plan_name, comm_df=None,
+                 user_role=None, recalculate_callback=None):
         super().__init__(master)
         self.app_container = master.app_container
         self.user_role = user_role
+        self.recalculate_callback = recalculate_callback   # ← เรียกเพื่อ refresh Tab 2 แบบ real-time
         self.title(f"รายละเอียดการคำนวณ - {plan_name}")
         self.plan_name = plan_name
         self.comm_df = comm_df
@@ -2816,7 +2793,8 @@ class CalculationDetailViewer(CTkToplevel):
             po_cost = pd.read_sql_query(
                 f"""SELECT so_number, COALESCE(SUM(grand_total), 0) AS live_cost
                     FROM purchase_orders
-                    WHERE so_number IN ({placeholders}) AND status != 'Cancelled'
+                    WHERE so_number IN ({placeholders})
+                      AND status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
                     GROUP BY so_number""",
                 self.app_container.pg_engine, params=tuple(so_numbers))
 
@@ -2916,6 +2894,7 @@ class CalculationDetailViewer(CTkToplevel):
         self._clear_frame(tab)
 
         tab.grid_rowconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=0)
         tab.grid_columnconfigure(0, weight=1)
 
         tree_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -2954,12 +2933,33 @@ class CalculationDetailViewer(CTkToplevel):
                 else:
                     df_display[target_col] = 0.0 if target_col not in ['so_number', 'status'] else '-'
 
+        # 1.5 Re-fetch cost_multiplier ล่าสุดจาก DB (Director อาจเปลี่ยนค่าไปแล้ว)
+        #     ทำให้ popup เปิดใหม่แล้วเห็นค่าที่แก้ไขไว้
+        try:
+            so_nums = df_display['so_number'].tolist()
+            if so_nums and hasattr(self, 'app_container'):
+                import psycopg2.extras as _pge
+                _conn = self.app_container.get_connection()
+                with _conn.cursor(cursor_factory=_pge.DictCursor) as _cur:
+                    _cur.execute(
+                        "SELECT so_number, cost_multiplier FROM commissions "
+                        "WHERE so_number = ANY(%s) AND is_active = 1",
+                        (so_nums,)
+                    )
+                    for _r in _cur.fetchall():
+                        _mult = float(_r['cost_multiplier']) if _r['cost_multiplier'] else 1.03
+                        _mult = max(_mult, 1.01)   # ป้องกันค่าต่ำกว่า 1.01
+                        df_display.loc[df_display['so_number'] == _r['so_number'], 'multiplier'] = _mult
+                self.app_container.release_connection(_conn)
+        except Exception:
+            pass   # ถ้า DB ใช้งานไม่ได้ → ใช้ค่า default ที่มีอยู่
+
         # 2. คำนวณต้นทุนรวมตัวคูณ (เพื่อการแสดงผล)
+        df_display['cost_raw'] = df_display['cost'].copy()   # เก็บต้นทุนดิบ (ก่อนคูณ) ไว้ใช้ตอน Director แก้ multiplier
         cost_header = "ต้นทุน (Net)"
         if df_display['multiplier'].max() > 1.001:
             max_mult = df_display['multiplier'].max()
-            percent_add = int((max_mult - 1) * 100)
-            cost_header = f"ต้นทุน (+{percent_add}%)"
+            cost_header = "ต้นทุน (opt fee)"
             df_display['cost'] = df_display['cost'] * df_display['multiplier']
         
         # 3. 🔥 [จุดแก้ไขสำคัญ] 
@@ -2975,10 +2975,21 @@ class CalculationDetailViewer(CTkToplevel):
             lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
         )
 
-        final_columns = ['so_number', 'sales', 'cost', 'profit', 'margin', 'status']
+        # เฉพาะ Director เท่านั้นที่เห็น column "ตัวคูณ"
+        _is_director = getattr(self, 'user_role', None) == 'Director'
+        final_columns = ['so_number', 'sales', 'cost']
+        if _is_director:
+            final_columns.append('multiplier_display')
+        final_columns += ['profit', 'margin', 'status']
+
         header_labels = {
-            'so_number': 'เลขที่ SO', 'sales': 'ยอดขาย', 'cost': cost_header,
-            'profit': 'กำไร', 'margin': 'Margin %', 'status': 'สถานะ'
+            'so_number':          'เลขที่ SO',
+            'sales':              'ยอดขาย',
+            'cost':               cost_header,
+            'multiplier_display': 'ตัวคูณ',
+            'profit':             'กำไร',
+            'margin':             'Margin %',
+            'status':             'สถานะ',
         }
 
         style = ttk.Style(self)
@@ -2992,61 +3003,234 @@ class CalculationDetailViewer(CTkToplevel):
         tree = ttk.Treeview(tree_frame, columns=final_columns, show="headings", style="Breakdown.Treeview")
         tree.grid(row=0, column=0, sticky="nsew")
 
-        tree.tag_configure('Normal', background='#DCFCE7', foreground='#166534')      
-        tree.tag_configure('Below Tier', background='#FEE2E2', foreground='#991B1B')  
-        tree.tag_configure('Paid', background='#E0E7FF', foreground='#3730A3')        
+        tree.tag_configure('Normal', background='#DCFCE7', foreground='#166534')
+        tree.tag_configure('Below Tier', background='#FEE2E2', foreground='#991B1B')
+        tree.tag_configure('Paid', background='#E0E7FF', foreground='#3730A3')
         tree.tag_configure('Default', background='white')
 
+        col_widths = {
+            'so_number': 150, 'sales': 120, 'cost': 130,
+            'multiplier_display': 80, 'profit': 110, 'margin': 100, 'status': 160,
+        }
         for col in final_columns:
-            anchor = 'center' if col in ['so_number', 'status'] else 'e'
-            width = 150 if col == 'so_number' else 120
+            anchor = 'center' if col in ['so_number', 'status', 'multiplier_display'] else 'e'
             tree.heading(col, text=header_labels.get(col, col))
-            tree.column(col, width=width, anchor=anchor)
+            tree.column(col, width=col_widths.get(col, 110), anchor=anchor)
 
         for _, row in df_display.iterrows():
-            values = []
+            mult_val = float(row.get('multiplier', 1.03))
+            mult_str = f"×{mult_val:.2f}" + (" 🖊" if _is_director else "")
+
             status_val = str(row['status'])
             tag = 'Default'
             if any(x in status_val for x in ['Normal', 'ผ่านเกณฑ์', '>=10']): tag = 'Normal'
             elif any(x in status_val for x in ['Below', 'ต่ำกว่า', '<']): tag = 'Below Tier'
             elif 'Paid' in status_val: tag = 'Paid'
 
-            values.append(row['so_number'])
-            values.append(f"{row['sales']:,.2f}")
-            values.append(f"{row['cost']:,.2f}")
-            values.append(f"{row['profit']:,.2f}") # <--- ตอนนี้จะเป็น 11,615.89 แล้ว
-            values.append(f"{row['margin']:,.2f}%")
-            values.append(status_val)
-            
-            tree.insert("", "end", values=tuple(values), tags=(tag,))
+            values = [
+                row['so_number'],
+                f"{row['sales']:,.2f}",
+                f"{row['cost']:,.2f}",
+            ]
+            if _is_director:
+                values.append(mult_str)
+            values += [
+                f"{row['profit']:,.2f}",
+                f"{row['margin']:,.2f}%",
+                status_val,
+            ]
+            # ใช้ so_number เป็น iid เพื่อให้ค้นหาแถวได้ตอน edit
+            tree.insert("", "end", iid=str(row['so_number']), values=values, tags=(tag,))
 
         total_so_count = len(df_display)
-        sum_sales = df_display['sales'].sum()
-        sum_cost = df_display['cost'].sum()
+        sum_sales  = df_display['sales'].sum()
+        sum_cost   = df_display['cost'].sum()
         sum_profit = df_display['profit'].sum()
-        
-        # คำนวณ Average Margin (%) ระวังกรณีผลรวมยอดขายเป็น 0
         avg_margin = (sum_profit / sum_sales * 100) if sum_sales > 0 else 0.0
 
-        # เพิ่ม Tag สำหรับแถว Total ให้เป็นสีเทาตัวหนาเด่นๆ
         tree.tag_configure('Total_Row', background='#CBD5E1', font=("Tahoma", 11, "bold"))
-
-        # แทรกแถวลงไปท้ายสุดของ Treeview
-        tree.insert("", "end", values=(
-            f"รวมทั้งหมด ({total_so_count} รายการ)",  # ช่องเลขที่ SO
-            f"{sum_sales:,.2f}",                    # ช่องยอดขาย
-            f"{sum_cost:,.2f}",                     # ช่องต้นทุน
-            f"{sum_profit:,.2f}",                   # ช่องกำไร
-            f"{avg_margin:,.2f}%",                  # ช่อง Avg Margin
-            ""                                      # ช่องสถานะ
-        ), tags=('Total_Row',))
+        # แถว Total — จำนวน columns ต้องตรงกับ final_columns
+        total_vals = [f"รวมทั้งหมด ({total_so_count} รายการ)", f"{sum_sales:,.2f}", f"{sum_cost:,.2f}"]
+        if _is_director:
+            total_vals.append("")          # ช่องตัวคูณ (ไม่แสดงรวม)
+        total_vals += [f"{sum_profit:,.2f}", f"{avg_margin:,.2f}%", ""]
+        tree.insert("", "end", values=tuple(total_vals), tags=('Total_Row',))
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
-        
+
+        # ── Director: คลิกช่อง "ตัวคูณ" เพื่อแก้ไขทีละ SO ────────────────
+        if _is_director:
+            _mult_col_idx = final_columns.index('multiplier_display')
+
+            def _show_multiplier_editor(event):
+                region = tree.identify_region(event.x, event.y)
+                if region != "cell":
+                    return
+                col_id  = tree.identify_column(event.x)
+                col_idx = int(col_id.replace('#', '')) - 1   # 0-based
+                if col_idx != _mult_col_idx:
+                    return
+                item = tree.identify_row(event.y)
+                if not item or item == "":
+                    return
+                so_num = item   # iid = so_number
+
+                # หา multiplier ปัจจุบันของ SO นี้
+                cur_row = df_display[df_display['so_number'] == so_num]
+                if cur_row.empty:
+                    return
+                cur_mult = float(cur_row['multiplier'].iloc[0])
+
+                # สร้าง popup เล็กๆ ใกล้ที่คลิก
+                pop = tk.Toplevel(self)
+                pop.overrideredirect(True)
+                pop.attributes('-topmost', True)
+                pop.configure(bg="#1E293B")
+                pop.geometry(f"180x90+{event.x_root}+{event.y_root}")
+
+                from customtkinter import CTkLabel as CL, CTkOptionMenu as COM, CTkButton as CB, CTkFont as CF
+                CL(pop, text=f"SO: {so_num}", font=CF(size=11, weight="bold"),
+                   text_color="white", fg_color="#1E293B").pack(pady=(6, 2))
+
+                mult_var = tk.StringVar(value=f"{cur_mult:.2f}")
+                _opts = [f"{v/100:.2f}" for v in range(103, 111)]
+                COM(pop, variable=mult_var, values=_opts, width=100, height=28,
+                    fg_color="#7C3AED", button_color="#6D28D9").pack(pady=2)
+
+                def _apply():
+                    new_mult = float(mult_var.get())
+                    try:
+                        conn = self.app_container.get_connection()
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "UPDATE commissions SET cost_multiplier = %s "
+                                "WHERE so_number = %s AND is_active = 1",
+                                (new_mult, so_num)
+                            )
+                            # บันทึก log การเปลี่ยนตัวคูณ
+                            changed_by = getattr(self.app_container, 'current_user_key', 'unknown')
+                            cur.execute(
+                                """INSERT INTO commission_multiplier_log
+                                   (changed_by, so_number, old_value, new_value)
+                                   VALUES (%s, %s, %s, %s)""",
+                                (changed_by, so_num, cur_mult, new_mult)
+                            )
+                        conn.commit()
+                        self.app_container.release_connection(conn)
+                    except Exception as e:
+                        from tkinter import messagebox
+                        messagebox.showerror("Error", str(e), parent=pop)
+                        return
+
+                    # คำนวณ cost/กำไร/Margin ใหม่
+                    # ใช้ delta approach เพื่อไม่ทิ้ง difference_amount และ components อื่นๆ
+                    # new_profit = old_profit + (old_cost - new_cost)
+                    so_mask   = df_display['so_number'] == so_num
+                    cost_raw  = float(df_display.loc[so_mask, 'cost_raw'].iloc[0])
+                    old_cost  = float(df_display.loc[so_mask, 'cost'].iloc[0])   # cost หลังคูณ (ก่อนเปลี่ยน)
+                    old_profit= float(df_display.loc[so_mask, 'profit'].iloc[0]) # profit รวม diff_amount ฯลฯ
+                    sales_val = float(df_display.loc[so_mask, 'sales'].iloc[0])
+
+                    new_cost   = cost_raw * new_mult
+                    new_profit = old_profit + (old_cost - new_cost)   # ปรับตาม cost ที่เปลี่ยน เท่านั้น
+                    new_margin = (new_profit / sales_val * 100) if sales_val != 0 else 0.0
+
+                    # อัปเดต df_display ใน memory
+                    df_display.loc[so_mask, 'multiplier'] = new_mult
+                    df_display.loc[so_mask, 'cost']       = new_cost
+                    df_display.loc[so_mask, 'profit']     = new_profit
+                    df_display.loc[so_mask, 'margin']     = new_margin
+
+                    # หา index ของแต่ละ column ใน final_columns
+                    _cost_idx   = final_columns.index('cost')
+                    _profit_idx = final_columns.index('profit')
+                    _margin_idx = final_columns.index('margin')
+
+                    # อัปเดต cells ในตาราง
+                    cur_vals = list(tree.item(so_num, 'values'))
+                    cur_vals[_mult_col_idx] = f"×{new_mult:.2f} 🖊"
+                    cur_vals[_cost_idx]     = f"{new_cost:,.2f}"
+                    cur_vals[_profit_idx]   = f"{new_profit:,.2f}"
+                    cur_vals[_margin_idx]   = f"{new_margin:,.2f}%"
+                    tree.item(so_num, values=cur_vals)
+
+                    pop.destroy()
+
+                    # Trigger recalculation ใน Tab 2 อัตโนมัติ (real-time)
+                    if self.recalculate_callback:
+                        self.after(200, self.recalculate_callback)
+
+                CB(pop, text="✓ ยืนยัน", width=80, height=24,
+                   fg_color="#16A34A", hover_color="#15803D",
+                   command=_apply).pack(pady=4)
+
+                pop.bind("<Escape>", lambda e: pop.destroy())
+                pop.focus_set()
+
+            tree.bind("<ButtonRelease-1>", _show_multiplier_editor)
+
+            # ── ปุ่ม "ดู Log ตัวคูณ" เฉพาะ Director ──────────────────────────
+            def _show_multiplier_log():
+                import tkinter as tk2
+                from customtkinter import CTkToplevel, CTkLabel, CTkFont, CTkScrollableFrame
+                import tkinter.ttk as ttk2
+
+                log_win = CTkToplevel(self)
+                log_win.title("📋 ประวัติการเปลี่ยนตัวคูณ")
+                log_win.geometry("640x420")
+                log_win.attributes('-topmost', True)
+                log_win.grab_set()
+
+                CTkLabel(log_win, text="📋  ประวัติการเปลี่ยนตัวคูณ",
+                         font=CTkFont(size=14, weight="bold")).pack(pady=(12, 6))
+
+                cols = ("วันเวลา", "ผู้แก้ไข", "SO", "ค่าเก่า", "ค่าใหม่")
+                frm = CTkScrollableFrame(log_win, fg_color="white")
+                frm.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+                log_tree = ttk2.Treeview(frm, columns=cols, show="headings", height=14)
+                widths = [160, 120, 120, 90, 90]
+                for c, w in zip(cols, widths):
+                    log_tree.heading(c, text=c)
+                    log_tree.column(c, width=w, anchor="center")
+                log_tree.pack(fill="both", expand=True)
+
+                try:
+                    conn2 = self.app_container.get_connection()
+                    with conn2.cursor() as cur2:
+                        cur2.execute("""
+                            SELECT changed_at AT TIME ZONE 'Asia/Bangkok',
+                                   changed_by, so_number, old_value, new_value
+                            FROM commission_multiplier_log
+                            ORDER BY changed_at DESC
+                            LIMIT 200
+                        """)
+                        for row in cur2.fetchall():
+                            # แสดงวันที่เป็น พ.ศ.
+                            if row[0]:
+                                dt = row[0]
+                                dt_str = dt.strftime("%d/%m/") + str(dt.year + 543) + dt.strftime(" %H:%M")
+                            else:
+                                dt_str = "-"
+                            log_tree.insert("", "end", values=(
+                                dt_str, row[1], row[2],
+                                f"×{float(row[3]):.2f}",
+                                f"×{float(row[4]):.2f}"
+                            ))
+                    self.app_container.release_connection(conn2)
+                except Exception as ex:
+                    CTkLabel(log_win, text=f"โหลด log ไม่ได้: {ex}",
+                             text_color="red").pack()
+
+            from customtkinter import CTkButton as CB2, CTkFont as CF2
+            CB2(tab, text="📋 ดู Log ตัวคูณ", width=130, height=28,
+                font=CF2(size=12), fg_color="#7C3AED", hover_color="#6D28D9",
+                command=_show_multiplier_log).grid(row=1, column=0, sticky="w", padx=8, pady=6)
+
         if hasattr(self, '_on_so_row_double_click'):
-            tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e))
+            tree.bind("<Double-1>", lambda e: self._on_so_row_double_click(e), add="+")
 
     def _on_so_row_double_click(self, event):
         tree = event.widget
@@ -3223,11 +3407,17 @@ class CalculationDetailViewer(CTkToplevel):
     def _open_so_editor(self, so_number):
         """เปิด SOPOSelectorDialog สำหรับ Director เลือกแก้ไข SO หรือ PO"""
         try:
+            def _on_save():
+                self.refresh_so_tab()
+                # Trigger recalculation ใน Tab 2 แบบ real-time
+                if self.recalculate_callback:
+                    self.after(300, self.recalculate_callback)
+
             SOPOSelectorDialog(
                 master=self,
                 app_container=self.app_container,
                 so_number=so_number,
-                on_save_callback=self.refresh_so_tab
+                on_save_callback=_on_save,
             )
         except Exception as e:
             from tkinter import messagebox
@@ -4157,16 +4347,18 @@ class SOPOSelectorDialog(CTkToplevel):
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        cols = ("po_number", "supplier", "total_cost", "status")
+        cols = ("po_number", "supplier", "total_cost", "truck_cost", "status")
         self.po_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=8)
         self.po_tree.heading("po_number",  text="เลข PO")
         self.po_tree.heading("supplier",   text="ซัพพลายเออร์")
-        self.po_tree.heading("total_cost", text="มูลค่า PO")
+        self.po_tree.heading("total_cost", text="มูลค่า PO (ก่อน VAT)")
+        self.po_tree.heading("truck_cost", text="ค่ารถ")
         self.po_tree.heading("status",     text="สถานะ")
-        self.po_tree.column("po_number",  width=140, anchor="center")
-        self.po_tree.column("supplier",   width=200, anchor="w")
-        self.po_tree.column("total_cost", width=120, anchor="e")
-        self.po_tree.column("status",     width=110, anchor="center")
+        self.po_tree.column("po_number",  width=130, anchor="center")
+        self.po_tree.column("supplier",   width=180, anchor="w")
+        self.po_tree.column("total_cost", width=140, anchor="e")
+        self.po_tree.column("truck_cost", width=90,  anchor="e")
+        self.po_tree.column("status",     width=100, anchor="center")
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.po_tree.yview)
         self.po_tree.configure(yscrollcommand=vsb.set)
@@ -4212,15 +4404,23 @@ class SOPOSelectorDialog(CTkToplevel):
                     text=f"SO: {self.so_number}  (ไม่พบข้อมูลใน commissions)")
 
             po_df = pd.read_sql_query(
-                "SELECT id, po_number, supplier_name, grand_total, status FROM purchase_orders WHERE so_number = %s ORDER BY id",
+                """SELECT id, po_number, supplier_name, total_cost,
+                          COALESCE(hired_truck_cost, 0) +
+                          COALESCE(shipping_to_stock_cost, 0) +
+                          COALESCE(shipping_to_site_cost, 0) AS truck_cost,
+                          status
+                   FROM purchase_orders WHERE so_number = %s ORDER BY id""",
                 pg, params=(self.so_number,))
 
             for _, row in po_df.iterrows():
-                total = float(row.get("grand_total") or 0)
+                cost       = float(row.get("total_cost")  or 0)
+                truck      = float(row.get("truck_cost")  or 0)
+                truck_str  = f"{truck:,.2f}" if truck > 0 else "-"
                 self.po_tree.insert("", "end", iid=str(int(row["id"])),
                                     values=(row.get("po_number", "-"),
                                             row.get("supplier_name", "-"),
-                                            f"{total:,.2f}",
+                                            f"{cost:,.2f}",
+                                            truck_str,
                                             row.get("status", "-")))
             if po_df.empty:
                 self.po_tree.insert("", "end", iid="none",
@@ -4262,10 +4462,44 @@ class SOPOSelectorDialog(CTkToplevel):
         except Exception:
             pass
 
+    def _refresh_po_list(self):
+        """ล้างตาราง PO แล้วโหลดใหม่จาก DB (real-time)"""
+        try:
+            import pandas as pd
+            # ล้างแถวเก่าทั้งหมดก่อน
+            for item in self.po_tree.get_children():
+                self.po_tree.delete(item)
+
+            po_df = pd.read_sql_query(
+                """SELECT id, po_number, supplier_name, total_cost,
+                          COALESCE(hired_truck_cost, 0) +
+                          COALESCE(shipping_to_stock_cost, 0) +
+                          COALESCE(shipping_to_site_cost, 0) AS truck_cost,
+                          status
+                   FROM purchase_orders WHERE so_number = %s ORDER BY id""",
+                self.app_container.pg_engine, params=(self.so_number,))
+
+            for _, row in po_df.iterrows():
+                cost      = float(row.get("total_cost") or 0)
+                truck     = float(row.get("truck_cost") or 0)
+                truck_str = f"{truck:,.2f}" if truck > 0 else "-"
+                self.po_tree.insert("", "end", iid=str(int(row["id"])),
+                                    values=(row.get("po_number", "-"),
+                                            row.get("supplier_name", "-"),
+                                            f"{cost:,.2f}",
+                                            truck_str,
+                                            row.get("status", "-")))
+            if po_df.empty:
+                self.po_tree.insert("", "end", iid="none",
+                                    values=("—", "ไม่มี PO ที่เชื่อมอยู่", "", "", ""))
+        except Exception as e:
+            import traceback; traceback.print_exc()
+
     def _make_callback(self):
-        """สร้าง callback ที่ refresh ทั้ง header ของ dialog และตารางหลัก"""
+        """สร้าง callback ที่ refresh ทั้ง header + ตาราง PO แบบ real-time"""
         def _cb():
             self._refresh_header()
+            self._refresh_po_list()   # ← reload PO table ทันทีหลัง save
             if self.on_save_callback:
                 self.on_save_callback()
         return _cb

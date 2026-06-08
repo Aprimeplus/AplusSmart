@@ -679,7 +679,8 @@ class AppContainer(CTk):
         EditCommissionWindow(parent=self, app_container=self, data=data, refresh_callback=refresh_callback, user_role=user_role)
 
     def show_hr_verification_window(self, system_data, excel_data, po_data, refresh_callback=None,
-                                    target_commission_month=None, target_commission_year=None):
+                                    target_commission_month=None, target_commission_year=None,
+                                    user_role=None):
         from hr_windows import HRVerificationWindow
         win = HRVerificationWindow(
             master=self,
@@ -690,6 +691,7 @@ class AppContainer(CTk):
             refresh_callback=refresh_callback,
             target_commission_month=target_commission_month,
             target_commission_year=target_commission_year,
+            user_role=user_role,
         )
 
     def show_sales_data_viewer(self, so_number):
@@ -966,5 +968,3 @@ if __name__ == "__main__":
     app = AppContainer()
     app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.mainloop()
-
-    

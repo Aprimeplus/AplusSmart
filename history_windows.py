@@ -658,14 +658,14 @@ class PurchaseDetailWindow(CTkToplevel):
         self.items_frame = self._create_section(parent, "รายการสินค้า")
         
         # --- START: เพิ่ม 'คลัง' เข้าไปใน Headers ---
-        headers = ["รหัสสินค้า", "ชื่อสินค้า", "คลัง", "น้ำหนัก", "จำนวน", "ราคา/หน่วย", "ส่วนลด", "ราคารวม"]
+        headers = ["สถานะ", "รหัสสินค้า", "ชื่อสินค้า", "คลัง", "น้ำหนัก", "จำนวน", "ราคา/หน่วย", "ส่วนลด", "ราคารวม"]
         # --- END ---
 
         header_container = CTkFrame(self.items_frame, fg_color="transparent")
         header_container.grid(row=1, column=0, sticky="ew")
-        
+
         # --- START: ปรับสัดส่วนคอลัมน์ใหม่ ---
-        col_weights = [2, 4, 2, 1, 1, 2, 3, 2] 
+        col_weights = [1, 2, 4, 2, 1, 1, 2, 3, 2]
         # --- END ---
 
         for i, header_text in enumerate(headers):
@@ -686,32 +686,51 @@ class PurchaseDetailWindow(CTkToplevel):
         row_frame.pack(fill="x", pady=2)
         
         # --- START: ปรับสัดส่วนและเพิ่มคอลัมน์ 'คลัง' ---
-        col_weights = [2, 4, 2, 1, 1, 2, 3, 2, 0] 
+        col_weights = [1, 2, 4, 2, 1, 1, 2, 3, 2, 0]
         for i, w in enumerate(col_weights):
             row_frame.grid_columnconfigure(i, weight=w)
 
+        # Python 3.13 strict: insert(0, None) raises TclError → coerce ให้เป็น str เสมอ
+        def _s(val, default=''):
+            """แปลง None/ค่าใดก็ตามให้เป็น str ก่อนใส่ CTkEntry"""
+            return str(val) if val is not None else default
+
+        # --- Stock/Trade status (col 0) --- อยู่หน้าสุด
+        _status_val = item_data.get('status') or 'Stock'
+        status_var = tk.StringVar(value=_status_val)
+        status_menu = CTkOptionMenu(row_frame, variable=status_var, values=["Stock", "Trade"], width=80,
+                                        fg_color="#1D4ED8" if _status_val == "Stock" else "#B45309",
+                                        button_color="#1E40AF" if _status_val == "Stock" else "#92400E")
+        def _on_status_change(val, menu=status_menu):
+            menu.configure(
+                fg_color="#1D4ED8" if val == "Stock" else "#B45309",
+                button_color="#1E40AF" if val == "Stock" else "#92400E"
+            )
+        status_menu.configure(command=_on_status_change)
+        status_menu.grid(row=0, column=0, padx=5, sticky="ew")
+
         # [🔥 แก้ไข] ใช้ AutoCompleteEntry แทน CTkEntry ปกติ
-        # (ต้องมั่นใจว่าเรียก _load_product_master_data แล้วนะ)
         entry_code = AutoCompleteEntry(
-            row_frame, 
-            completion_list=getattr(self, 'product_completion_data', []), # กัน Error ถ้ายังไม่โหลด
+            row_frame,
+            completion_list=getattr(self, 'product_completion_data', []),
             display_key='display',
             placeholder_text="รหัส"
         )
-        entry_code.insert(0, item_data.get('product_code', ''))
-        entry_code.grid(row=0, column=0, padx=5, sticky="ew")
+        _code_val = item_data.get('product_code', '') or ''
+        entry_code.var.set(str(_code_val))
+        entry_code.grid(row=0, column=1, padx=5, sticky="ew")
 
-        entry_name = CTkEntry(row_frame); entry_name.insert(0, item_data.get('product_name', '')); entry_name.grid(row=0, column=1, padx=5, sticky="ew")
-        
+        entry_name = CTkEntry(row_frame); entry_name.insert(0, _s(item_data.get('product_name'))); entry_name.grid(row=0, column=2, padx=5, sticky="ew")
+
         # เพิ่มช่องกรอกสำหรับ 'คลัง'
-        entry_warehouse = CTkEntry(row_frame); entry_warehouse.insert(0, item_data.get('warehouse', '')); entry_warehouse.grid(row=0, column=2, padx=5, sticky="ew")
+        entry_warehouse = CTkEntry(row_frame); entry_warehouse.insert(0, _s(item_data.get('warehouse'))); entry_warehouse.grid(row=0, column=3, padx=5, sticky="ew")
 
-        entry_weight = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals); entry_weight.set(item_data.get('total_weight', 0)); entry_weight.grid(row=0, column=3, padx=5, sticky="ew")
-        entry_qty = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals); entry_qty.set(item_data.get('quantity', 0)); entry_qty.grid(row=0, column=4, padx=5, sticky="ew")
-        entry_price = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals); entry_price.set(item_data.get('unit_price', 0)); entry_price.grid(row=0, column=5, padx=5, sticky="ew")
-        
+        entry_weight = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals); entry_weight.set(item_data.get('total_weight', 0)); entry_weight.grid(row=0, column=4, padx=5, sticky="ew")
+        entry_qty = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals); entry_qty.set(item_data.get('quantity', 0)); entry_qty.grid(row=0, column=5, padx=5, sticky="ew")
+        entry_price = FormattedNumericEntry(row_frame, command=self._recalculate_summary_totals); entry_price.set(item_data.get('unit_price', 0)); entry_price.grid(row=0, column=6, padx=5, sticky="ew")
+
         discount_frame = CTkFrame(row_frame, fg_color="transparent")
-        discount_frame.grid(row=0, column=6, padx=5, sticky="ew")
+        discount_frame.grid(row=0, column=7, padx=5, sticky="ew")
         discount_frame.grid_columnconfigure(0, weight=1)
         
         entry_discount = FormattedNumericEntry(discount_frame, command=self._recalculate_summary_totals)
@@ -722,14 +741,15 @@ class PurchaseDetailWindow(CTkToplevel):
         discount_type_menu = CTkOptionMenu(discount_frame, variable=discount_type_var, values=["บาท", "%"], width=70, command=self._recalculate_summary_totals)
         discount_type_menu.pack(side="left")
         
-        label_total = CTkLabel(row_frame, text="0.00", anchor="e"); label_total.grid(row=0, column=7, padx=5, sticky="ew")
-        delete_button = CTkButton(row_frame, text="ลบ", width=40, fg_color="#DC2626", hover_color="#B91C1C", command=lambda r=row_frame, i=item_data.get('id'): self._remove_item_row(r, i)); delete_button.grid(row=0, column=8, padx=(5,0))
+        label_total = CTkLabel(row_frame, text="0.00", anchor="e"); label_total.grid(row=0, column=8, padx=5, sticky="ew")
+        delete_button = CTkButton(row_frame, text="ลบ", width=40, fg_color="#DC2626", hover_color="#B91C1C", command=lambda r=row_frame, i=item_data.get('id'): self._remove_item_row(r, i)); delete_button.grid(row=0, column=9, padx=(5,0))
 
         # รวม Widgets เพื่อเก็บ Reference
         widgets_dict = {
-            'product_code': entry_code, 'product_name': entry_name, 
-            'warehouse': entry_warehouse, 
-            'total_weight': entry_weight, 'quantity': entry_qty, 
+            'product_code': entry_code, 'product_name': entry_name,
+            'warehouse': entry_warehouse,
+            'status_var': status_var,
+            'total_weight': entry_weight, 'quantity': entry_qty,
             'unit_price': entry_price, 'discount_value': entry_discount,
             'discount_type_var': discount_type_var,
             'total_price_label': label_total
@@ -1800,29 +1820,32 @@ class PurchaseDetailWindow(CTkToplevel):
 
                     item_id = item_row.get('id')
 
-                    if item_id: 
+                    item_status = widgets['status_var'].get() if 'status_var' in widgets else 'Stock'
+
+                    if item_id:
                         cursor.execute("""
-                            UPDATE purchase_order_items 
+                            UPDATE purchase_order_items
                             SET product_code = %s, product_name = %s, warehouse = %s,
-                                total_weight = %s, quantity = %s, unit_price = %s, 
-                                discount_value = %s, discount_type = %s, total_price = %s
+                                total_weight = %s, quantity = %s, unit_price = %s,
+                                discount_value = %s, discount_type = %s, total_price = %s,
+                                status = %s
                             WHERE id = %s
                         """, (
                             widgets['product_code'].get(), widgets['product_name'].get(), widgets['warehouse'].get(),
                             widgets['total_weight'].get_value(), qty, price,
                             discount, discount_type, item_total,
-                            item_id
+                            item_status, item_id
                         ))
                     else:
                         cursor.execute("""
-                            INSERT INTO purchase_order_items 
-                            (purchase_order_id, product_code, product_name, warehouse, total_weight, quantity, unit_price, discount_value, discount_type, total_price)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            INSERT INTO purchase_order_items
+                            (purchase_order_id, product_code, product_name, warehouse, total_weight, quantity, unit_price, discount_value, discount_type, total_price, status)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
                             self.purchase_id,
                             widgets['product_code'].get(), widgets['product_name'].get(), widgets['warehouse'].get(),
                             widgets['total_weight'].get_value(), qty, price,
-                            discount, discount_type, item_total
+                            discount, discount_type, item_total, item_status
                         ))
 
                 # ========================================================================================
@@ -2006,7 +2029,7 @@ class PurchaseHistoryWindow(CTkToplevel):
                 ORDER BY po.timestamp DESC
             """
             self.all_po_df = pd.read_sql_query(query, self.pg_engine)
-            self.all_po_df['timestamp'] = pd.to_datetime(self.all_po_df['timestamp'])
+            self.all_po_df['timestamp'] = pd.to_datetime(self.all_po_df['timestamp'], format='ISO8601', utc=True).dt.tz_convert('Asia/Bangkok').dt.tz_localize(None)
             self._hide_loading()
             self._apply_filters()
         except Exception as e:

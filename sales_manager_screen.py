@@ -78,8 +78,72 @@ class SalesTargetWidget(CTkFrame):
         self._font_bold = CTkFont(size=13, weight="bold")
         self._font_hdr  = CTkFont(size=15, weight="bold")
 
+        self._first_map_done  = False
+        self._frame_ready_job = None
+        self._ready_frame_w   = 0
+        self._ready_frame_h   = 0
+        self._drawing_chart   = False   # True ระหว่าง _update_dashboard — suppress Configure
+        self._last_chart_fw   = 0       # ขนาดล่าสุดที่ process แล้ว — กัน same-size loop
+        self._last_chart_fh   = 0
         self._build_ui()
-        self.after(300, self._update_dashboard)
+        # bind <Map> เพื่อ draw ครั้งแรกเมื่อ tab ถูกเปิด
+        self.bind('<Map>', self._on_first_map)
+
+    def _on_first_map(self, event=None):
+        """ทำงานครั้งเดียวตอน tab ถูกเปิด — bind Configure บน _chart_frame แบบถาวร
+        เพื่อรับทั้ง initial draw และทุกครั้งที่ window ถูก resize/maximize"""
+        if self._first_map_done:
+            return
+        self._first_map_done = True
+        self.unbind('<Map>')
+        # Bind ถาวร — ไม่ unbind หลัง initial draw เพื่อให้รับ resize ได้ตลอด
+        self._chart_frame.bind('<Configure>', self._on_chart_frame_configure)
+
+    def _on_chart_frame_configure(self, event):
+        """เรียกทุกครั้งที่ _chart_frame เปลี่ยนขนาด (initial layout + window resize)
+        debounce 200ms รอให้ layout settle แล้วค่อย redraw"""
+        if event.width < 200 or event.height < 100:
+            return
+        # Layer 1: suppress ระหว่าง _update_dashboard รัน (ป้องกัน update_idletasks loop)
+        if self._drawing_chart:
+            return
+        fw, fh = event.width, event.height
+        # Layer 2: ถ้าขนาดเดิม ไม่ต้อง redraw (ป้องกัน canvas.draw() → Configure → loop)
+        if fw == self._last_chart_fw and fh == self._last_chart_fh:
+            return
+        if self._frame_ready_job:
+            self.after_cancel(self._frame_ready_job)
+        self._frame_ready_job = self.after(200, lambda: self._on_chart_resize(fw, fh))
+
+    def _on_chart_resize(self, fw, fh):
+        """Fired after debounce — initial draw หรือ window-resize redraw"""
+        self._frame_ready_job = None
+        if self.sales_view_mode != 'chart':
+            return  # ไม่ต้อง resize ถ้าอยู่ใน table mode
+        if self.sales_target_chart_canvas is None:
+            # ยังไม่มี chart — วาด initial draw พร้อม fetch data
+            self._ready_frame_w = fw
+            self._ready_frame_h = fh
+            self._update_dashboard()
+        else:
+            # มี chart อยู่แล้ว — resize figure โดยตรง ไม่ต้อง fetch data ใหม่
+            # ใช้ winfo_width() ณ ตอนนี้แทน fw/fh ที่ capture ไว้
+            try:
+                actual_fw = self._chart_frame.winfo_width()
+                actual_fh = self._chart_frame.winfo_height()
+                real_fw = actual_fw if actual_fw > 100 else fw
+                real_fh = actual_fh if actual_fh > 100 else fh
+                # stamp ก่อน draw — Configure ที่ size นี้หลัง canvas.draw() จะถูก ignore
+                self._last_chart_fw = real_fw
+                self._last_chart_fh = real_fh
+                cw = max(real_fw - 22, 100)
+                ch = max(real_fh - 22, 100)
+                fig = self.sales_target_chart_canvas.figure
+                fig.set_size_inches(cw / fig.dpi, ch / fig.dpi)
+                fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=0.12)
+                self.after(10, self.sales_target_chart_canvas.draw)
+            except Exception:
+                traceback.print_exc()
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -202,6 +266,18 @@ class SalesTargetWidget(CTkFrame):
             traceback.print_exc()
 
     def _update_dashboard(self):
+        # ยกเลิก resize callback ที่ค้างอยู่ก่อน — ป้องกัน stale resize override fresh draw
+        if self._frame_ready_job:
+            self.after_cancel(self._frame_ready_job)
+            self._frame_ready_job = None
+        # Capture frame size ก่อน _show_loading() เปลี่ยน layout (ค่าถูกต้องที่สุด ณ จุดนี้)
+        # ใช้สำหรับ _create_chart ที่เรียกทีหลัง — ไม่ต้องพึ่ง winfo_width() หลัง update_idletasks
+        pre_fw = self._chart_frame.winfo_width()
+        pre_fh = self._chart_frame.winfo_height()
+        if pre_fw > 100:
+            self._ready_frame_w = pre_fw
+            self._ready_frame_h = pre_fh
+        self._drawing_chart = True   # suppress _on_chart_frame_configure ระหว่าง draw
         loading = self._show_loading()
         try:
             df = self._get_data()
@@ -214,6 +290,14 @@ class SalesTargetWidget(CTkFrame):
             loading.destroy()
             messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
             traceback.print_exc()
+        finally:
+            self._drawing_chart = False
+            # stamp ขนาด frame ปัจจุบัน — Configure event ที่ size นี้จะถูก ignore
+            fw = self._chart_frame.winfo_width()
+            fh = self._chart_frame.winfo_height()
+            if fw > 100:
+                self._last_chart_fw = fw
+                self._last_chart_fh = fh
 
     # ── Data fetch ────────────────────────────────────────────────────────────
     def _get_data(self):
@@ -249,11 +333,26 @@ class SalesTargetWidget(CTkFrame):
             SELECT su.sale_name, su.sale_key,
                    COALESCE(su.sales_target, 0) * %s AS sales_target,
                    COALESCE(SUM(c.total_sales), 0)   AS total_sales,
-                   0                                  AS total_outstanding
+                   0                                  AS total_outstanding,
+                   COALESCE(
+                       SUM(cm_agg.total_gp) / NULLIF(SUM(cm_agg.total_sales_amt), 0) * 100,
+                       0
+                   ) AS avg_margin,
+                   COALESCE(SUM(cm_agg.sales_normal), 0) AS sales_normal,
+                   COALESCE(SUM(cm_agg.sales_below),  0) AS sales_below
             FROM   sales_users su
             LEFT JOIN commission_payout_logs c
                    ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
                   AND {date_sql}
+            LEFT JOIN (
+                SELECT payout_id,
+                       SUM(final_gp)            AS total_gp,
+                       SUM(final_sales_amount)  AS total_sales_amt,
+                       SUM(CASE WHEN final_margin >= 10 THEN final_sales_amount ELSE 0 END) AS sales_normal,
+                       SUM(CASE WHEN final_margin <  10 THEN final_sales_amount ELSE 0 END) AS sales_below
+                FROM   commissions
+                GROUP  BY payout_id
+            ) cm_agg ON cm_agg.payout_id = c.id
             WHERE  su.status = 'Active'
                    {sale_filter}
             GROUP  BY su.sale_name, su.sale_key, su.sales_target, su.role
@@ -265,10 +364,24 @@ class SalesTargetWidget(CTkFrame):
         df['sales_target']      = df['sales_target'].fillna(0)
         df['total_sales']       = df['total_sales'].fillna(0)
         df['total_outstanding'] = df['total_outstanding'].fillna(0)
+        df['sales_normal']      = df['sales_normal'].fillna(0)
+        df['sales_below']       = df['sales_below'].fillna(0)
         return df
 
     # ── Chart ─────────────────────────────────────────────────────────────────
     def _create_chart(self, parent_frame, data_df):
+        _dpi = 100
+        # ใช้ขนาดที่เก็บจาก Configure event (ถูกต้องที่สุด)
+        # ถ้าไม่มี (เช่น user กดค้นหา) ให้ fallback ไปที่ winfo_width
+        _fw = getattr(self, '_ready_frame_w', 0) or parent_frame.winfo_width()
+        _fh = getattr(self, '_ready_frame_h', 0) or parent_frame.winfo_height()
+        self._ready_frame_w = 0  # clear หลังใช้
+        self._ready_frame_h = 0
+        if _fw <= 10:
+            _fw = self.winfo_width() - 20
+        if _fh <= 10:
+            _fh = self.winfo_height() - 80
+
         if self.sales_target_chart_canvas:
             try: self.sales_target_chart_canvas.get_tk_widget().destroy()
             except Exception: pass
@@ -320,8 +433,11 @@ class SalesTargetWidget(CTkFrame):
         pct_labels = [f"{s/t*100:.0f}%" if t > 0 else "N/A" for s, t in zip(sales, targets)]
 
         BG = '#F8FAFC'; GRID_C = '#E2E8F0'
-        chart_width = max(10, n * 1.6)
-        fig = Figure(figsize=(chart_width, 7.2), dpi=100, facecolor=BG)
+        # สร้าง Figure ด้วยขนาดจริงของ frame (อ่านไว้แล้วตอนต้น)
+        _pad  = 24
+        fig_w = (_fw - _pad) / _dpi if _fw > 100 else max(10.0, n * 1.6)
+        fig_h = (_fh - _pad) / _dpi if _fh > 100 else 7.2
+        fig = Figure(figsize=(fig_w, fig_h), dpi=_dpi, facecolor=BG)
         ax  = fig.add_subplot(111)
         ax.set_facecolor(BG)
 
@@ -450,11 +566,24 @@ class SalesTargetWidget(CTkFrame):
                   ncol=2, frameon=True, framealpha=0.95, edgecolor='#CBD5E1', fontsize=10,
                   prop={'weight': 'bold', 'size': 10}, borderpad=0.7, labelspacing=0.4, columnspacing=1.0)
 
-        fig.tight_layout(rect=[0, 0.05, 1, 1])
+        fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=0.12)
+
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
+        widget = canvas.get_tk_widget()
+        widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Pack ก่อน แล้วถาม actual size หลัง layout settle
+        # วิธีนี้ guarantee ว่า figure = พื้นที่จริงที่ pack จัดให้ เสมอ ไม่ว่าจะ initial หรือ search
+        self.update_idletasks()
+        _cw = widget.winfo_width()
+        _ch = widget.winfo_height()
+        if _cw > 50 and _ch > 50:
+            fig.set_size_inches(_cw / fig.dpi, _ch / fig.dpi)
+            fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=0.12)
+
         canvas.draw()
-        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.sales_target_chart_canvas = canvas
+        # Resize จัดการโดย _on_chart_frame_configure ที่ bind ไว้บน _chart_frame แบบถาวร
 
     # ── Table ─────────────────────────────────────────────────────────────────
     def _create_table(self, parent_frame, data_df):
@@ -465,6 +594,7 @@ class SalesTargetWidget(CTkFrame):
             return
 
         EXCLUDE = self.EXCLUDE_KEYS; MERGE = self.PERSON_MERGE
+        MARGIN_TARGET = 15.0
         df2 = data_df[~data_df['sale_key'].isin(EXCLUDE)].copy()
         df2['_group'] = df2.apply(
             lambda r: MERGE[r['sale_key']][0] if r['sale_key'] in MERGE else r['sale_name'], axis=1)
@@ -472,10 +602,21 @@ class SalesTargetWidget(CTkFrame):
         for name, grp in df2.groupby('_group', sort=False):
             t = float(grp['sales_target'].sum()); s = float(grp['total_sales'].sum())
             pct = (s/t*100) if t > 0 else 0.0
-            rows.append({'name': name, 'target': t, 'sales': s, 'pct': pct, 'diff': s-t})
+            # avg_margin weighted ตาม total_sales
+            if 'avg_margin' in grp.columns and s > 0:
+                wtd_margin = float((grp['avg_margin'] * grp['total_sales']).sum() / s)
+            else:
+                wtd_margin = 0.0
+            rows.append({'name': name, 'target': t, 'sales': s, 'pct': pct, 'diff': s-t,
+                         'margin_target': MARGIN_TARGET, 'actual_margin': wtd_margin,
+                         'sales_normal': float(grp['sales_normal'].sum()) if 'sales_normal' in grp.columns else 0.0,
+                         'sales_below':  float(grp['sales_below'].sum())  if 'sales_below'  in grp.columns else 0.0})
         rows.sort(key=lambda r: r['sales'], reverse=True)
 
-        total_t = sum(r['target'] for r in rows); total_s = sum(r['sales'] for r in rows)
+        total_t      = sum(r['target']       for r in rows)
+        total_s      = sum(r['sales']        for r in rows)
+        total_normal = sum(r['sales_normal'] for r in rows)
+        total_below  = sum(r['sales_below']  for r in rows)
         total_pct = (total_s/total_t*100) if total_t > 0 else 0.0
 
         # Period label
@@ -503,14 +644,18 @@ class SalesTargetWidget(CTkFrame):
         style.map("SMSalesTable.Treeview", background=[('selected', '#EDE9FE')],
                   foreground=[('selected', '#1E293B')])
 
-        cols = ('name','target','sales','pct','diff')
+        cols = ('name','margin_target','actual_margin','target','sales','sales_normal','sales_below','pct','diff')
         tree = ttk.Treeview(outer, columns=cols, show='headings',
                             style="SMSalesTable.Treeview", height=len(rows)+1)
-        tree.heading('name',   text='พนักงาน');       tree.column('name',   width=200, anchor='w')
-        tree.heading('target', text='เป้าหมาย (บาท)'); tree.column('target', width=170, anchor='e')
-        tree.heading('sales',  text='ยอดขายจริง (บาท)'); tree.column('sales', width=170, anchor='e')
-        tree.heading('pct',    text='%');              tree.column('pct',    width=90,  anchor='center')
-        tree.heading('diff',   text='ส่วนต่าง (บาท)'); tree.column('diff',   width=170, anchor='e')
+        tree.heading('name',          text='พนักงาน');           tree.column('name',          width=170, anchor='w')
+        tree.heading('margin_target', text='Margin เป้า');       tree.column('margin_target', width=100, anchor='center')
+        tree.heading('actual_margin', text='Avg Margin จริง');   tree.column('actual_margin', width=120, anchor='center')
+        tree.heading('target',        text='เป้าหมาย (บาท)');   tree.column('target',        width=150, anchor='e')
+        tree.heading('sales',         text='ยอดขายจริง (บาท)'); tree.column('sales',         width=150, anchor='e')
+        tree.heading('sales_normal',  text='ยอดขาย Normal');     tree.column('sales_normal',  width=140, anchor='e')
+        tree.heading('sales_below',   text='ยอดขาย Below T');    tree.column('sales_below',   width=140, anchor='e')
+        tree.heading('pct',           text='%');                  tree.column('pct',           width=75,  anchor='center')
+        tree.heading('diff',          text='ส่วนต่าง (บาท)');   tree.column('diff',          width=140, anchor='e')
 
         tree.tag_configure('odd',      background='#F8FAFC')
         tree.tag_configure('even',     background='white')
@@ -521,17 +666,29 @@ class SalesTargetWidget(CTkFrame):
 
         for idx, r in enumerate(rows):
             diff_str = f"+{r['diff']:,.0f}" if r['diff'] >= 0 else f"{r['diff']:,.0f}"
+            actual_m = r.get('actual_margin', 0.0)
+            actual_m_str = f"{actual_m:.2f}%" if actual_m else '—'
             tree.insert('', 'end', tags=('odd' if idx % 2 else 'even',
                                          'positive' if r['diff'] >= 0 else 'negative'),
                         values=(r['name'],
+                                f"{r['margin_target']:.0f}%",
+                                actual_m_str,
                                 f"{r['target']:,.0f}" if r['target'] > 0 else '—',
                                 f"{r['sales']:,.0f}",
+                                f"{r['sales_normal']:,.0f}" if r['sales_normal'] > 0 else '—',
+                                f"{r['sales_below']:,.0f}"  if r['sales_below']  > 0 else '—',
                                 f"{r['pct']:.1f}%",
                                 diff_str if r['target'] > 0 else '—'))
 
         total_diff = total_s - total_t
+        total_wtd_margin = sum(r['actual_margin'] * r['sales'] for r in rows)
+        team_avg_margin = (total_wtd_margin / total_s) if total_s > 0 else 0.0
+        team_margin_str = f"{team_avg_margin:.2f}%" if team_avg_margin else '—'
         tree.insert('', 'end', tags=('total',),
-                    values=('รวมทีม', f"{total_t:,.0f}", f"{total_s:,.0f}",
+                    values=('รวมทีม', '15%', team_margin_str,
+                            f"{total_t:,.0f}", f"{total_s:,.0f}",
+                            f"{total_normal:,.0f}" if total_normal > 0 else '—',
+                            f"{total_below:,.0f}"  if total_below  > 0 else '—',
                             f"{total_pct:.1f}%",
                             f"+{total_diff:,.0f}" if total_diff >= 0 else f"{total_diff:,.0f}"))
         tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
@@ -2206,10 +2363,11 @@ class SalesManagerScreen(CTkFrame):
         for widget in self.defer_list_frame.winfo_children(): widget.destroy()
 
         try:
-            # 🟢 [แก้ไข] เพิ่มการดึง commission_month และ commission_year มาจาก DB ด้วย
+            # 🟢 [แก้ไข] เพิ่มการดึง commission_month/year (= เดือนเป้าหมาย) และ defer_source_month/year (= เดือนต้นทาง)
             query = """
                 SELECT c.id, c.so_number, c.customer_name, u.sale_name, c.sale_key, c.rejection_reason,
-                       c.commission_month, c.commission_year
+                       c.commission_month, c.commission_year,
+                       c.defer_source_month, c.defer_source_year
                 FROM commissions c
                 LEFT JOIN sales_users u ON c.sale_key = u.sale_key
                 WHERE c.status = 'Defer Requested' AND c.is_active = 1
@@ -2231,25 +2389,22 @@ class SalesManagerScreen(CTkFrame):
                 info_frame = CTkFrame(card, fg_color="transparent")
                 info_frame.pack(side="left", fill="both", expand=True, padx=15, pady=10)
 
-                # 🟢 [เพิ่มใหม่] ลอจิกคำนวณเดือนที่ถูกเลื่อน (จากเดือนไหน -> ไปเดือนไหน)
+                # 🟢 [แก้ไข] ใช้ defer_source_month/year เป็น "จาก" และ commission_month/year เป็น "ไปเป็น"
+                # (HR บันทึก: commission_month = เดือนเป้าหมาย, defer_source_month = เดือนต้นทาง)
                 try:
-                    m_current = int(row['commission_month'])
-                    y_current = int(row['commission_year']) + 543
-                    
-                    from_month_str = thai_months[m_current - 1] if 1 <= m_current <= 12 else str(m_current)
-                    from_year_str = str(y_current)
-                    
-                    # คำนวณเดือนถัดไป
-                    m_next = m_current + 1
-                    y_next = y_current
-                    if m_next > 12:
-                        m_next = 1
-                        y_next += 1
-                        
-                    to_month_str = thai_months[m_next - 1]
-                    to_year_str = str(y_next)
-                    
-                    defer_period_text = f"🔄 ขอเลื่อนจาก: {from_month_str} {from_year_str}  ➔  ไปเป็น: {to_month_str} {to_year_str}"
+                    m_from = int(row['defer_source_month']) if pd.notna(row.get('defer_source_month')) else None
+                    y_from = int(row['defer_source_year']) + 543 if pd.notna(row.get('defer_source_year')) else None
+                    m_to   = int(row['commission_month'])
+                    y_to   = int(row['commission_year']) + 543
+
+                    if m_from and y_from and 1 <= m_from <= 12 and 1 <= m_to <= 12:
+                        from_month_str = thai_months[m_from - 1]
+                        to_month_str   = thai_months[m_to - 1]
+                        defer_period_text = f"🔄 ขอเลื่อนจาก: {from_month_str} {y_from}  ➔  ไปเป็น: {to_month_str} {y_to}"
+                    else:
+                        # fallback: แสดงแค่เดือนเป้าหมาย
+                        to_month_str = thai_months[m_to - 1] if 1 <= m_to <= 12 else str(m_to)
+                        defer_period_text = f"🔄 ขอเลื่อนไปเป็น: {to_month_str} {y_to}"
                 except Exception:
                     defer_period_text = "🔄 ขอเลื่อนไปเดือนถัดไป"
 
@@ -2277,8 +2432,21 @@ class SalesManagerScreen(CTkFrame):
 
     def _action_defer(self, row, approve):
         try:
-            cur_m = int(row.get('commission_month', datetime.now().month))
-            cur_y = int(row.get('commission_year', datetime.now().year))
+            # ใช้ defer_source_month/year เป็น base เพราะ ManagerDeferApprovalDialog จะบวก +1 ให้เองเพื่อคำนวณ default
+            # (commission_month ใน DB ถูก HR เปลี่ยนเป็นเดือนเป้าหมายไปแล้ว ถ้าส่งตรงๆ dialog จะบวก +1 อีกทำให้เพี้ยน)
+            src_m = row.get('defer_source_month')
+            src_y = row.get('defer_source_year')
+            if pd.notna(src_m) and pd.notna(src_y):
+                cur_m = int(src_m)
+                cur_y = int(src_y)
+            else:
+                # fallback: ถอยกลับ 1 เดือนจาก commission_month
+                cur_m = int(row.get('commission_month', datetime.now().month))
+                cur_y = int(row.get('commission_year', datetime.now().year))
+                if cur_m <= 1:
+                    cur_m, cur_y = 12, cur_y - 1
+                else:
+                    cur_m -= 1
         except Exception:
             cur_m, cur_y = datetime.now().month, datetime.now().year
 
@@ -2594,8 +2762,10 @@ class SMExportDialog(CTkToplevel):
             status_map = {
                 'PO In Progress':      'รอคิดค่าคอม',
                 'Pending PU':          'รอคิดค่าคอม',
-                'Pending HR Approval': 'รอ HR ตรวจสอบ',
-                'Defer Requested':     'รอ Manager อนุมัติเลื่อน',
+                'PO Sent':             'รอคิดค่าคอม',
+                'Pending HR Approval': 'รอคิดค่าคอม',
+                'HR Verified':         'รอคิดค่าคอม',
+                'Defer Requested':     'รอคิดค่าคอม',
                 'Deferred':            'รอคิดค่าคอม(เลื่อน)',
                 'Approved':            'จ่ายแล้ว',
             }

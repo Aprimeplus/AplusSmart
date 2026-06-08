@@ -978,6 +978,11 @@ class CostBenchmarkScreen(CTkFrame):
                   fg_color="#059669", hover_color="#047857",
                   command=self._show_short_note_popup).pack(side="left", padx=(8, 2))
 
+        CTkButton(btn_frame, text="⏱ Extend SLA",
+                  width=100, height=30, font=CTkFont(size=12),
+                  fg_color="#F59E0B", hover_color="#D97706",
+                  command=self._show_extend_popup).pack(side="left", padx=(4, 2))
+
 
         self.columns = [
             "วันที่ขอราคา", "Order No.", "Sale Order No.", "รหัส Sale",
@@ -5631,21 +5636,332 @@ class CostBenchmarkScreen(CTkFrame):
                     WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
                 """, (so_number, self.current_user))
                 row = cur.fetchone()
+                now = datetime.now()
                 if not row:
+                    # SO นี้ไม่มีใน sla_benchmark (เช่น SO เก่าก่อนมี SLA Feature)
+                    # → ดึง created_at จริงจาก cost_benchmarks มาใช้เป็น started_at
+                    # (เฉพาะ row ที่ติ๊ก ✔ และมีสินค้า = ทำงานจริง)
+                    cur.execute("""
+                        SELECT MIN(created_at) FROM cost_benchmarks
+                        WHERE "Sale Order No." = %s
+                          AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                          AND "รายการสินค้า" IS NOT NULL
+                          AND TRIM("รายการสินค้า") != ''
+                    """, (so_number,))
+                    cb_row = cur.fetchone()
+                    real_start = cb_row[0] if cb_row and cb_row[0] else now
+                    biz_min_new = self._calc_business_minutes(real_start, now, holiday_set)
+                    try:
+                        cur.execute("""
+                            INSERT INTO sla_benchmark (so_number, user_key, started_at, copied_at, temp)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (so_number, self.current_user, real_start, now, best_temp))
+                    except Exception:
+                        cur.execute("""
+                            INSERT INTO sla_benchmark (so_number, user_key, started_at, copied_at)
+                            VALUES (%s, %s, %s, %s)
+                        """, (so_number, self.current_user, real_start, now))
+                    conn.commit()
                     return
                 started_at = row[0]
-                now = datetime.now()
                 biz_min = self._calc_business_minutes(started_at, now, holiday_set)
-                cur.execute("""
-                    UPDATE sla_benchmark
-                    SET copied_at = %s, duration_min = %s, temp = %s
-                    WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-                """, (now, biz_min, best_temp, so_number, self.current_user))
+                # ลอง UPDATE ทั้ง duration_min ก่อน (กรณีเป็น regular column)
+                # ถ้า error (generated column) → UPDATE เฉพาะ copied_at + temp
+                try:
+                    cur.execute("""
+                        UPDATE sla_benchmark
+                        SET copied_at = %s, duration_min = %s, temp = %s
+                        WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                    """, (now, biz_min, best_temp, so_number, self.current_user))
+                except Exception:
+                    conn.rollback()
+                    cur.execute("""
+                        UPDATE sla_benchmark
+                        SET copied_at = %s, temp = %s
+                        WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                    """, (now, best_temp, so_number, self.current_user))
                 conn.commit()
             finally:
                 self.app_container.release_connection(conn)
         except Exception as e:
             print(f"_sla_record_copy error: {e}")
+
+    def _show_extend_popup(self):
+        """Extend SLA popup — ขยายเวลา SLA (ครั้งที่ 1 = self authorize, ครั้งที่ 2 = ขอ manager)"""
+        import tkinter as tk
+        from tkinter import messagebox
+        from customtkinter import (CTkToplevel, CTkLabel, CTkFont, CTkButton,
+                                   CTkFrame, CTkComboBox, CTkTextbox, CTkRadioButton)
+
+        # ── 1. หา SO ที่ active ในตารางนี้ ──────────────────────────────────
+        so_set = set()
+        total_rows = self.sheet.get_total_rows()
+        for r in range(total_rows):
+            so_val = str(self._sheet_get(r, "Sale Order No.") or "").strip()
+            if so_val:
+                so_set.add(so_val)
+
+        if not so_set:
+            messagebox.showwarning("Extend SLA", "ไม่พบ Sale Order No. ในตาราง", parent=self)
+            return
+
+        # ── 2. ดึงข้อมูล SLA + extend จาก DB ─────────────────────────────
+        conn = None
+        sla_rows = []
+        try:
+            conn = self.app_container.get_connection()
+            cur  = conn.cursor()
+            ph   = ",".join(["%s"] * len(so_set))
+            cur.execute(f"""
+                SELECT s.so_number, s.temp, s.started_at, s.duration_min,
+                       COUNT(e.id) AS extend_count
+                FROM   sla_benchmark s
+                LEFT JOIN sla_extend e ON e.so_number = s.so_number
+                WHERE  s.so_number IN ({ph})
+                  AND  s.user_key  = %s
+                  AND  s.copied_at IS NULL
+                GROUP BY s.so_number, s.temp, s.started_at, s.duration_min
+                ORDER BY s.started_at DESC
+            """, list(so_set) + [self.current_user])
+            sla_rows = cur.fetchall()
+        except Exception as e:
+            messagebox.showerror("Extend SLA", f"โหลดข้อมูล SLA ไม่ได้: {e}", parent=self)
+            return
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+        if not sla_rows:
+            messagebox.showinfo("Extend SLA",
+                                "ไม่พบ SLA ที่กำลังดำเนินการอยู่\n(อาจส่งราคาไปแล้ว หรือยังไม่ได้พิมพ์ SO)",
+                                parent=self)
+            return
+
+        # ── 3. SLA target + extend minutes per temp ───────────────────────
+        TARGET_NORMAL = {"HOT": 30,  "WARM": 60,  "COLD": 120}
+        TARGET_LARGE  = {"HOT": 60,  "WARM": 90,  "COLD": 150}
+        EXTEND1_MIN   = {"HOT": 30,  "WARM": 60,  "COLD": 60}   # 1st extend fixed
+
+        REASONS = [
+            "Supplier แจ้งราคาล่าช้า",
+            "ข้อมูลไม่ครบ / ตีกลับ ครั้งที่ 1",
+            "ข้อมูลไม่ครบ / ตีกลับ ครั้งที่ 2",
+            "Supplier หยุดทำการ",
+            "สินค้าสต็อกไม่ตรง / ไม่มีของ",
+            "ต้องตรวจสอบสเปคพิเศษ / แบบ",
+            "ลูกค้าขอ REV ปริมาณ / สเปค",
+            "สินค้าต้องสั่งผลิต / lead time นาน",
+            "อื่นๆ",
+        ]
+
+        # ── 4. เลือก SO (ถ้ามีหลาย SO) ───────────────────────────────────
+        selected_row = sla_rows[0]
+        if len(sla_rows) > 1:
+            so_options = [r[0] for r in sla_rows]
+        else:
+            so_options = [selected_row[0]]
+
+        # ── 5. สร้าง popup ────────────────────────────────────────────────
+        pop = CTkToplevel(self)
+        pop.title("⏱  Extend SLA")
+        pop.resizable(False, False)
+        pop.grab_set()
+        pop.update_idletasks()
+        w, h = 460, 500
+        px = self.winfo_rootx() + (self.winfo_width()  - w) // 2
+        py = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        pop.geometry(f"{w}x{h}+{px}+{py}")
+        pop.grid_columnconfigure(0, weight=1)
+
+        # Header
+        hdr = CTkFrame(pop, fg_color="#F59E0B", corner_radius=0)
+        hdr.grid(row=0, column=0, sticky="ew")
+        CTkLabel(hdr, text="⏱  ขอขยายเวลา SLA",
+                 font=CTkFont(size=14, weight="bold"),
+                 text_color="white").pack(padx=16, pady=10, anchor="w")
+
+        body = CTkFrame(pop, fg_color="white", corner_radius=0)
+        body.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        body.grid_columnconfigure(1, weight=1)
+        pop.grid_rowconfigure(1, weight=1)
+
+        # SO selector
+        row_idx = [0]
+        def _lbl(text, r, c, **kw):
+            CTkLabel(body, text=text, font=CTkFont(size=12), **kw).grid(
+                row=r, column=c, sticky="w", padx=(16,4), pady=4)
+
+        _lbl("Sale Order No. :", 0, 0)
+        so_var = tk.StringVar(value=so_options[0])
+        so_cb = CTkComboBox(body, variable=so_var, values=so_options,
+                            width=200, font=CTkFont(size=12))
+        so_cb.grid(row=0, column=1, sticky="w", padx=(4,16), pady=4)
+
+        def _filter_so(event=None):
+            typed = so_var.get().strip().lower()
+            filtered = [s for s in so_options if typed in s.lower()] or so_options
+            so_cb.configure(values=filtered)
+
+        so_cb.bind("<KeyRelease>", _filter_so)
+
+        # SLA info label
+        info_var = tk.StringVar()
+        info_lbl = CTkLabel(body, textvariable=info_var,
+                            font=CTkFont(size=11), text_color="#374151",
+                            fg_color="#F8FAFC", corner_radius=6)
+        info_lbl.grid(row=1, column=0, columnspan=2, sticky="ew",
+                      padx=16, pady=(0, 8))
+
+        # Extend round label
+        extend_title_var = tk.StringVar()
+        CTkLabel(body, textvariable=extend_title_var,
+                 font=CTkFont(size=13, weight="bold"),
+                 text_color="#92400E").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 2))
+
+        # Added minutes (2nd extend only)
+        _lbl("ขยายเวลา :", 3, 0)
+        add_min_var  = tk.StringVar(value="30")
+        add_min_frame = CTkFrame(body, fg_color="transparent")
+        add_min_frame.grid(row=3, column=1, sticky="w", padx=(4,16), pady=4)
+        for opt in ["30 นาที", "60 นาที", "90 นาที"]:
+            CTkRadioButton(add_min_frame, text=opt, variable=add_min_var,
+                           value=opt.split()[0],
+                           font=CTkFont(size=12)).pack(side="left", padx=6)
+
+        # Reason
+        _lbl("เหตุผล :", 4, 0)
+        reason_var = tk.StringVar(value=REASONS[0])
+        reason_cb  = CTkComboBox(body, variable=reason_var, values=REASONS,
+                                 width=280, font=CTkFont(size=12), state="readonly")
+        reason_cb.grid(row=4, column=1, sticky="w", padx=(4,16), pady=4)
+
+        # อื่นๆ text
+        _lbl("รายละเอียด :", 5, 0)
+        other_box = CTkTextbox(body, width=280, height=60, font=CTkFont(size=12))
+        other_box.grid(row=5, column=1, sticky="w", padx=(4,16), pady=4)
+
+        # Note label
+        note_var = tk.StringVar()
+        CTkLabel(body, textvariable=note_var,
+                 font=CTkFont(size=11), text_color="#6B7280").grid(
+            row=6, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 8))
+
+        # ── อัปเดต UI ตาม SO ที่เลือก ─────────────────────────────────────
+        def _update_ui(*_):
+            so = so_var.get()
+            row = next((r for r in sla_rows if r[0] == so), None)
+            if not row:
+                return
+            _, temp, started_at, dur_raw, extend_count = row
+            extend_count = int(extend_count or 0)
+            temp = str(temp or "").upper()
+
+            target = TARGET_NORMAL.get(temp, 0)
+            # คำนวณเวลาที่ใช้ไปจริง (real-time) จาก started_at จนถึงตอนนี้
+            if started_at:
+                from datetime import datetime as _dt
+                dur = self._calc_business_minutes(
+                    pd.to_datetime(started_at).to_pydatetime(),
+                    _dt.now()
+                )
+            else:
+                dur = int(dur_raw or 0) if dur_raw else 0
+            ext1m  = EXTEND1_MIN.get(temp, 30)
+
+            started_str = (pd.to_datetime(started_at).strftime("%d/%m/%Y %H:%M")
+                           if started_at else "-")
+            info_var.set(
+                f"  Temp: {temp}   |   เริ่ม: {started_str}"
+                f"   |   ใช้ไปแล้ว: {dur} นาที   |   Target: {target} นาที"
+            )
+
+            if extend_count == 0:
+                extend_title_var.set(f"Extend ครั้งที่ 1  (Self Authorize — ขยายอัตโนมัติ +{ext1m} นาที)")
+                add_min_frame.grid_remove()
+                add_min_lbl = body.grid_slaves(row=3, column=0)
+                [w.grid_remove() for w in add_min_lbl]
+                note_var.set(f"  หลังยืนยัน target ใหม่ = {target + ext1m} นาที (ไม่ต้องรออนุมัติ)")
+                confirm_btn.configure(text="ยืนยัน Extend ครั้งที่ 1",
+                                      fg_color="#F59E0B", hover_color="#D97706")
+            elif extend_count == 1:
+                extend_title_var.set("Extend ครั้งที่ 2  (ต้องรอ Manager อนุมัติ)")
+                add_min_frame.grid()
+                [w.grid() for w in body.grid_slaves(row=3, column=0)]
+                note_var.set("  คำขอจะส่งไปให้ Manager อนุมัติ — SLA ยังนับอยู่ระหว่างรอ")
+                confirm_btn.configure(text="ส่งคำขอ Extend ครั้งที่ 2",
+                                      fg_color="#EF4444", hover_color="#DC2626")
+            else:
+                extend_title_var.set("ครบ 2 ครั้งแล้ว — ไม่สามารถ Extend เพิ่มได้")
+                note_var.set("")
+                confirm_btn.configure(state="disabled", fg_color="#9CA3AF")
+
+        so_var.trace_add("write", _update_ui)
+
+        # ── Footer ────────────────────────────────────────────────────────
+        foot = CTkFrame(pop, fg_color="#F8FAFC", corner_radius=0)
+        foot.grid(row=2, column=0, sticky="ew")
+
+        def _confirm():
+            so           = so_var.get()
+            reason       = reason_var.get()
+            reason_other = other_box.get("1.0", "end").strip()
+            row          = next((r for r in sla_rows if r[0] == so), None)
+            if not row:
+                return
+            _, temp, _, _, extend_count = row
+            extend_count = int(extend_count or 0)
+            temp         = str(temp or "").upper()
+
+            if extend_count >= 2:
+                messagebox.showwarning("Extend SLA", "ครบ 2 ครั้งแล้ว ไม่สามารถ Extend เพิ่มได้",
+                                       parent=pop)
+                return
+            if reason == "อื่นๆ" and not reason_other:
+                messagebox.showwarning("Extend SLA", "กรุณาระบุรายละเอียดใน 'อื่นๆ'", parent=pop)
+                return
+
+            extend_no = extend_count + 1
+            if extend_no == 1:
+                added_min = EXTEND1_MIN.get(temp, 30)
+                status    = "approved"
+                msg       = f"Extend ครั้งที่ 1 สำเร็จ\nขยายเวลา +{added_min} นาที"
+            else:
+                added_min = int(add_min_var.get())
+                status    = "pending"
+                msg       = f"ส่งคำขอ Extend ครั้งที่ 2 ({added_min} นาที) ไปยัง Manager แล้ว"
+
+            conn2 = None
+            try:
+                conn2 = self.app_container.get_connection()
+                cur2  = conn2.cursor()
+                cur2.execute("""
+                    INSERT INTO sla_extend
+                        (so_number, extend_no, reason, reason_other,
+                         added_minutes, requested_by, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (so, extend_no, reason,
+                      reason_other if reason == "อื่นๆ" else None,
+                      added_min, self.current_user, status))
+                conn2.commit()
+                messagebox.showinfo("Extend SLA", msg, parent=pop)
+                pop.destroy()
+            except Exception as e:
+                messagebox.showerror("Extend SLA", f"บันทึกไม่สำเร็จ: {e}", parent=pop)
+            finally:
+                if conn2:
+                    self.app_container.release_connection(conn2)
+
+        confirm_btn = CTkButton(foot, text="ยืนยัน Extend",
+                                width=160, height=34, font=CTkFont(size=12, weight="bold"),
+                                fg_color="#F59E0B", hover_color="#D97706",
+                                command=_confirm)
+        confirm_btn.pack(side="right", padx=12, pady=8)
+        CTkButton(foot, text="ยกเลิก", width=90, height=34,
+                  font=CTkFont(size=12), fg_color="#6B7280", hover_color="#4B5563",
+                  command=pop.destroy).pack(side="right", padx=(0, 4), pady=8)
+
+        _update_ui()  # init UI
 
     def _show_short_note_popup(self):
         """Short Note popup — เลือก SO + filter เฉพาะ row ที่ Select = ✓"""
@@ -5716,7 +6032,7 @@ class CostBenchmarkScreen(CTkFrame):
         # ── 3. สร้าง note text ─────────────────────────────────────────────
         def _build_note(chosen_so: str, validity_days: str, yod_status: str) -> str:
             items = [r for r in all_rows
-                     if r["so"] == chosen_so and r["select"] in ("✔", "เทียบเพื่อชุบ ✔")]
+                     if r["so"] == chosen_so and r["select"] == "✔"]
             if not items:
                 return f"⚠️  ไม่มีรายการที่ติ๊ก Select ใน {chosen_so}"
 
@@ -5872,26 +6188,63 @@ class CostBenchmarkScreen(CTkFrame):
                          wrap="none", corner_radius=8)
         txt.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="nsew")
         txt.insert("0.0", "← เลือก Sale Order ด้านบนเพื่อสร้าง Short Note")
-        txt.configure(state="disabled")
 
         _current_note = {"text": ""}
-        _ref = {}
+        _ref          = {}
+        _user_edited  = {"value": False}   # True = user แก้ textbox แล้ว
 
-        def _refresh_note(*_):
+        def _get_txt_content():
+            """อ่านข้อความจาก textbox จริงๆ (รวมที่ user แก้ไขแล้ว)"""
+            return txt.get("0.0", "end").rstrip("\n")
+
+        def _on_user_edit(event=None):
+            """เมื่อ user พิมพ์ใน textbox ให้ mark ว่าแก้ไขแล้ว"""
+            _user_edited["value"] = True
+
+        txt._textbox.bind("<KeyRelease>", _on_user_edit, add=True)
+
+        def _refresh_note(*_, force=False):
+            """
+            force=True  → regenerate ทั้งหมด (เมื่อเปลี่ยน SO)
+            force=False → ถ้า user แก้ข้อความไปแล้ว ทำ surgical update
+                          เฉพาะบรรทัด ยืนราคา / สถานะยอด เพื่อไม่ให้ข้อความหาย
+            """
             sel = listbox.curselection()
             if not sel:
                 return
             chosen = listbox.get(sel[0])
+
+            if not force and _user_edited["value"]:
+                # ── Surgical update: แก้เฉพาะ 2 บรรทัดที่ขึ้นกับ dropdown ──
+                days     = validity_var.get().strip() or "1"
+                yod      = yod_var.get()
+                current  = txt.get("0.0", "end")
+                new_lines = []
+                for line in current.splitlines():
+                    if line.startswith("ยืนราคา ") and line.endswith(" วัน"):
+                        line = f"ยืนราคา {days} วัน"
+                    elif line.startswith("สถานะยอด"):
+                        line = f"สถานะยอด      : {yod}"
+                    new_lines.append(line)
+                new_text = "\n".join(new_lines)
+                txt.delete("0.0", "end")
+                txt.insert("0.0", new_text)
+                return
+
+            # ── Full regenerate (SO เปลี่ยน หรือโหลดครั้งแรก) ───────────
             note = _build_note(chosen, validity_var.get(), yod_var.get())
             _current_note["text"] = note
-            txt.configure(state="normal")
             txt.delete("0.0", "end")
             txt.insert("0.0", note)
-            txt.configure(state="disabled")
             if _ref.get("copy_btn"):
                 _ref["copy_btn"].configure(state="normal", fg_color="#059669")
 
-        listbox.bind("<<ListboxSelect>>", _refresh_note)
+        def _on_so_select(event=None):
+            """เมื่อเลือก SO ใหม่ → reset flag แล้ว regenerate ทั้งหมด"""
+            _user_edited["value"] = False
+            _refresh_note(force=True)
+
+        listbox.bind("<<ListboxSelect>>", _on_so_select)
         validity_var.trace_add("write", _refresh_note)
         yod_var.trace_add("write", _refresh_note)
 
@@ -5908,13 +6261,56 @@ class CostBenchmarkScreen(CTkFrame):
         search_var.trace_add("write", _filter_so)
         _filter_so()
 
+        # ── Ctrl shortcuts — ใช้ keycode แทน keysym เพื่อให้ทำงานได้ทั้งภาษาไทยและอังกฤษ ──
+        # keycode บน Windows: A=65, C=67, V=86, X=88 (ตำแหน่งปุ่มจริง ไม่เปลี่ยนตาม layout)
+        def _select_all(event=None):
+            try:
+                txt._textbox.tag_add("sel", "1.0", "end")
+            except Exception:
+                pass
+            return "break"
+
+        def _copy_selection(event=None):
+            try:
+                selected = txt._textbox.get(tk.SEL_FIRST, tk.SEL_LAST)
+            except tk.TclError:
+                selected = _get_txt_content()  # ไม่มี selection → copy ทั้งหมด
+            if selected:
+                pop.clipboard_clear()
+                pop.clipboard_append(selected)
+            return "break"
+
+        def _paste(event=None):
+            try:
+                txt._textbox.insert(tk.INSERT, pop.clipboard_get())
+            except Exception:
+                pass
+            return "break"
+
+        def _on_ctrl_key(event):
+            """จับ Ctrl+key ด้วย keycode — ทำงานได้ทั้ง Thai/EN keyboard"""
+            if not (event.state & 0x4):  # ไม่ได้กด Ctrl
+                return
+            kc = event.keycode
+            if kc == 65:    # A — select all
+                return _select_all(event)
+            elif kc == 67:  # C — copy
+                return _copy_selection(event)
+            elif kc == 86:  # V — paste (ให้ default ทำงาน แต่ถ้าไม่ทำงานก็ fallback)
+                return _paste(event)
+            elif kc == 80:  # P — print
+                _print()
+                return "break"
+
+        txt._textbox.bind("<Key>", _on_ctrl_key, add=True)
+
         # row 4 — Bottom buttons
         btn_row = CTkFrame(pop, fg_color="transparent")
         btn_row.grid(row=4, column=0, padx=20, pady=(0, 16), sticky="ew")
         btn_row.grid_columnconfigure(0, weight=1)
 
         def _copy():
-            note = _current_note["text"]
+            note = _get_txt_content()
             if not note:
                 return
             pop.clipboard_clear()
@@ -5927,15 +6323,56 @@ class CostBenchmarkScreen(CTkFrame):
             if sel:
                 self._sla_record_copy(listbox.get(sel[0]))
 
+        def _print():
+            import tempfile, subprocess
+            note = _get_txt_content()
+            if not note:
+                return
+            try:
+                with tempfile.NamedTemporaryFile(
+                        mode='w', suffix='.txt', delete=False,
+                        encoding='utf-8-sig') as f:
+                    f.write(note)
+                    tmp_path = f.name
+                # พิมตรงไป default printer — ใช้ Popen ไม่บล็อก UI
+                subprocess.Popen(
+                    ['powershell', '-NonInteractive', '-Command',
+                     f'Get-Content -Path "{tmp_path}" | Out-Printer'],
+                    creationflags=0x08000000
+                )
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("พิมพ์ไม่ได้", str(e), parent=pop)
+
         copy_btn = CTkButton(btn_row, text="📋 Copy to Clipboard",
                              fg_color="#059669", hover_color="#047857",
                              font=CTkFont(size=13, weight="bold"),
                              height=36, state="disabled", command=_copy)
         copy_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         _ref["copy_btn"] = copy_btn
+
         CTkButton(btn_row, text="ปิด", fg_color="#6B7280", hover_color="#4B5563",
                   height=36, width=80, command=pop.destroy).grid(
             row=0, column=1, sticky="e")
+
+        # ── Right-click context menu บน textbox ───────────────────────────────
+        ctx_menu = tk.Menu(pop, tearoff=0)
+        ctx_menu.add_command(label="📋  คัดลอกที่เลือก",  command=lambda: _copy_selection())
+        ctx_menu.add_command(label="📋  คัดลอกทั้งหมด",  command=_copy)
+        ctx_menu.add_separator()
+        ctx_menu.add_command(label="🖨   พิมพ์  (Ctrl+P)", command=_print)
+
+        def _show_ctx(event):
+            try:
+                ctx_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                ctx_menu.grab_release()
+
+        txt._textbox.bind("<Button-3>", _show_ctx)
+
+        # Ctrl+P ก็พิมพ์ได้เช่นกัน
+        pop.bind("<Control-p>", lambda e: _print())
+        pop.bind("<Control-P>", lambda e: _print())
 
         search_entry.focus_set()
 
@@ -6352,6 +6789,19 @@ class CostBenchmarkScreen(CTkFrame):
             pass
 
     def _save_to_db(self, show_msg=True):
+        # ── Re-run formula for every row so formula columns (ต้นทุนรวม etc.)
+        # are always populated even if the user never edited that cell ─────────
+        try:
+            _n = max(
+                len(self.sheet.get_sheet_data()),
+                len(self.sheet_frozen.get_sheet_data()) if self.sheet_frozen else 0
+            )
+            for _i in range(_n):
+                self._auto_calculate_sheet(_i)
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────────────────────
+
         col_offset = self.frozen_col_count
         raw_main = self.sheet.get_sheet_data()
         raw_frozen = self.sheet_frozen.get_sheet_data() if self.sheet_frozen else []

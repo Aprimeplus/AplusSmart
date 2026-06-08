@@ -20,10 +20,13 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
     def prepare_and_calculate_profit(df):
         # 1. Fill NA ให้ครบทุกฟิลด์
         cols_to_fix = [
-            'sales_service_amount', 'final_cost_amount', 'giveaways', 'brokerage_fee', 
-            'difference_amount', 'payment_before_vat', 'payment_no_vat', 
-            'shipping_cost', 'relocation_cost', 'so_cutting_rev', 'so_service_rev', 
-            'shipping_to_site_cost', 'shipping_to_stock_cost', 'po_cutting_cost', 'po_service_cost'
+            'sales_service_amount', 'final_cost_amount', 'giveaways', 'brokerage_fee',
+            'difference_amount', 'payment_before_vat', 'payment_no_vat',
+            'shipping_cost', 'relocation_cost', 'so_cutting_rev', 'so_service_rev',
+            'shipping_to_site_cost', 'shipping_to_stock_cost', 'po_cutting_cost', 'po_service_cost',
+            # ค่าตัด/เจาะ reconciliation columns
+            'cutting_drilling_fee',
+            'po_cutting_vat_cost', 'po_cutting_cash_cost', 'po_cutting_item_cost',
         ]
         
         for col in cols_to_fix:
@@ -49,29 +52,36 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         deduct_shipping_total = (total_shipping_cost - total_shipping_revenue).clip(lower=0)
         
         # บันทึกค่าลง DataFrame
-        df['excess_stock_shipping'] = deduct_shipping_total 
-        df['excess_site_shipping'] = 0.0 
+        df['excess_stock_shipping'] = deduct_shipping_total
+        df['excess_site_shipping'] = 0.0
 
-        # ค่าตัด/ค่าบริการ
-        deduct_cutting = (df['po_cutting_cost'] - df['so_cutting_rev']).clip(lower=0)
-        deduct_service = (df['po_service_cost'] - df['so_service_rev']).clip(lower=0)
+        # --- A2. ค่าตัด/เจาะ Reconciliation ────────────────────────────────
+        # Sale เลือก VAT → match กับ PO cutting (VAT type) + EXP items ในรายการสินค้า
+        # Sale เลือก CASH → match กับ PO cutting (CASH type)
+        # ถ้า SO < PO → ส่วนต่างหักกำไร (เหมือน logic ค่ารถ)
+        cutting_vat_option = df.get('cutting_drilling_fee_vat_option', pd.Series([''] * len(df), index=df.index))
+        so_cutting = df['cutting_drilling_fee']
+
+        # VAT case: SO cutting vs (PO cutting VAT + EXP items)
+        po_cutting_vat_total = df['po_cutting_vat_cost'] + df['po_cutting_item_cost']
+        so_cutting_vat = so_cutting.where(cutting_vat_option == 'VAT', 0.0)
+        excess_cutting_vat = (po_cutting_vat_total - so_cutting_vat).clip(lower=0)
+
+        # CASH case: SO cutting vs PO cutting CASH
+        so_cutting_cash = so_cutting.where(cutting_vat_option == 'CASH', 0.0)
+        excess_cutting_cash = (df['po_cutting_cash_cost'] - so_cutting_cash).clip(lower=0)
+
+        df['excess_cutting'] = excess_cutting_vat + excess_cutting_cash
 
         # --- B. คำนวณต้นทุนสินค้า (Main Cost Calculation) ---
-        # [จุดสำคัญ 1]: เรายังคงรวมค่ารถไว้ในต้นทุน เพื่อให้คูณ 1.03 ตามปกติ
-        product_cost_base = (df['final_cost_amount'] 
-                             - df['po_cutting_cost'] 
-                             - df['po_service_cost']).clip(lower=0)
+        # [ตาม HR Excel]: ทุกต้นทุนรวม (รวมค่าตัด/ค่าบริการ) × 1.03 ทั้งหมด
+        total_cost_calculated = df['final_cost_amount'] * df['cost_multiplier']
 
-        # ต้นทุนรวม Margin 3% (รวมค่ารถ * 1.03 แล้ว)
-        total_cost_calculated = product_cost_base * df['cost_multiplier']
-        
         # --- C. คำนวณกำไรสุทธิ (Final Profit) ---
-        # [จุดสำคัญ 2]: เพิ่ม - deduct_shipping_total เพื่อหักยอดขาดทุน 500 บาทออกจากกำไร
         df['profit'] = (df['sales_service_amount'] - total_cost_calculated) \
                         + df['difference_amount'] \
                         - deduct_shipping_total \
-                        - deduct_cutting \
-                        - deduct_service
+                        - df['excess_cutting']
         
         # คำนวณ Margin %
         df['margin'] = (df['profit'] / df['sales_service_amount'].replace(0, np.nan)) * 100
@@ -243,22 +253,23 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             comm_df['po_number'] = comm_df['so_number']
         
         agg_rules = {
-            'sales_service_amount': 'sum', 
-            'giveaways': 'sum', 
-            'brokerage_fee': 'sum', 
-            'difference_amount': 'sum', 
-            'final_cost_amount': 'sum', 
-            'cost_multiplier': 'first', 
+            'sales_service_amount': 'sum',
+            'giveaways': 'sum',
+            'brokerage_fee': 'sum',
+            'difference_amount': 'sum',
+            'final_cost_amount': 'sum',
+            'cost_multiplier': 'first',
             'so_number': lambda x: ', '.join(sorted(set(str(v) for v in x))),
-            'profit': 'sum', 
-            'po_cutting_cost': 'sum', 
+            'profit': 'sum',
+            'po_cutting_cost': 'sum',
             'po_service_cost': 'sum',
-            'shipping_to_stock_cost': 'sum', 
-            'shipping_to_site_cost': 'sum',  
-            'relocation_cost': 'sum',        
-            'shipping_cost': 'sum',          
+            'shipping_to_stock_cost': 'sum',
+            'shipping_to_site_cost': 'sum',
+            'relocation_cost': 'sum',
+            'shipping_cost': 'sum',
             'excess_site_shipping': 'sum',
-            'excess_stock_shipping': 'sum'
+            'excess_stock_shipping': 'sum',
+            'excess_cutting': 'sum',          # ค่าตัด/เจาะ excess
         }
         
         valid_agg_rules = {k: v for k, v in agg_rules.items() if k in comm_df.columns}

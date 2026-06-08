@@ -230,15 +230,16 @@ class SOPendingDetailWindow(CTkToplevel):
         try:
             # [แก้ไข] เพิ่ม item.product_code และ item.warehouse ใน SELECT
             query = """
-                SELECT 
-                    po.id as po_id, item.id as item_id, 
-                    po.po_number, po.supplier_name, 
-                    item.product_code, item.product_name, item.warehouse, 
-                    item.quantity, item.unit_price, item.total_price 
-                FROM purchase_orders po 
-                JOIN purchase_order_items item ON po.id = item.purchase_order_id 
-                WHERE po.so_number = %s 
-                  AND po.approval_status IN ('Pending Mgr 1', 'Pending Mgr 2', 'Pending Director') 
+                SELECT
+                    po.id as po_id, item.id as item_id,
+                    po.po_number, po.supplier_name,
+                    item.product_code, item.product_name, item.warehouse,
+                    COALESCE(item.status, 'Stock') as item_status,
+                    item.quantity, item.unit_price, item.total_price
+                FROM purchase_orders po
+                JOIN purchase_order_items item ON po.id = item.purchase_order_id
+                WHERE po.so_number = %s
+                  AND po.approval_status IN ('Pending Mgr 1', 'Pending Mgr 2', 'Pending Director')
                 ORDER BY po.id, item.id;
             """
             self.df = pd.read_sql_query(query, self.app_container.pg_engine, params=(self.so_number,))
@@ -252,38 +253,41 @@ class SOPendingDetailWindow(CTkToplevel):
         style = ttk.Style(self); style.theme_use("default"); style.configure("Treeview.Heading", font=('Roboto', 14, 'bold')); style.configure("Treeview", rowheight=28, font=('Roboto', 12))
         
         # [แก้ไข 1] เพิ่มชื่อคอลัมน์ 'Code' และ 'Warehouse'
-        columns = ['PO Number', 'Supplier', 'Code', 'Product Name', 'Warehouse', 'Quantity', 'Unit Price', 'Total Price']
-        
+        columns = ['PO Number', 'Supplier', 'Code', 'Product Name', 'Warehouse', 'Stock/Trade', 'Quantity', 'Unit Price', 'Total Price']
+
         tree = ttk.Treeview(self.tree_frame, columns=columns, show='headings')
-        
-        # [แก้ไข 2] กำหนดความกว้างและตำแหน่ง (Anchor)
+        tree.tag_configure("stock", background="#DBEAFE", foreground="#1E40AF")   # Stock — ฟ้า
+        tree.tag_configure("trade", background="#FEF9C3", foreground="#854D0E")   # Trade — เหลือง
+
         for col in columns:
-            width = 120 # Default width
+            width = 120
             anchor = 'w'
-            
-            if col == 'Product Name': width = 250
-            elif col == 'Supplier': width = 180
-            elif col == 'PO Number': width = 130
-            elif col == 'Code': width = 100
-            elif col == 'Warehouse': width = 80; anchor = 'center'
+            if col == 'Product Name':  width = 250
+            elif col == 'Supplier':    width = 180
+            elif col == 'PO Number':   width = 130
+            elif col == 'Code':        width = 100
+            elif col == 'Warehouse':   width = 80;  anchor = 'center'
+            elif col == 'Stock/Trade': width = 85;  anchor = 'center'
             elif col in ['Quantity', 'Unit Price', 'Total Price']: anchor = 'e'
-            
-            tree.heading(col, text=col); tree.column(col, width=width, anchor=anchor)
-            
+            tree.heading(col, text=col)
+            tree.column(col, width=width, anchor=anchor)
+
         for _, row in self.df.iterrows():
-            # [แก้ไข 3] เพิ่มข้อมูล product_code และ warehouse ลงใน values
+            item_status = str(row.get('item_status', 'Stock') or 'Stock')
+            tag = "trade" if item_status == "Trade" else "stock"
             values = (
-                row['po_number'], 
-                row['supplier_name'], 
-                row['product_code'],      # <--- เพิ่ม
-                row['product_name'], 
-                row['warehouse'],         # <--- เพิ่ม
-                f"{row['quantity']:,.2f}", 
-                f"{row['unit_price']:,.2f}", 
+                row['po_number'],
+                row['supplier_name'],
+                row['product_code'],
+                row['product_name'],
+                row['warehouse'],
+                item_status,
+                f"{row['quantity']:,.2f}",
+                f"{row['unit_price']:,.2f}",
                 f"{row['total_price']:,.2f}"
             )
             unique_iid = f"{row['po_id']}-{row['item_id']}"
-            tree.insert('', 'end', values=values, iid=unique_iid)
+            tree.insert('', 'end', values=values, iid=unique_iid, tags=(tag,))
             
         v_scroll = ttk.Scrollbar(self.tree_frame, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=v_scroll.set)
         tree.grid(row=0, column=0, sticky="nsew"); v_scroll.grid(row=0, column=1, sticky="ns")
@@ -2060,7 +2064,7 @@ class PurchasingManagerScreen(CTkFrame):
             ("📦 PO ทั้งหมด",     f"{total_po:,} ใบ",     "#3B82F6"),
             ("🔴 ตีกลับทั้งหมด",  f"{total_rej:,} ครั้ง", "#EF4444"),
             ("📈 อัตราตีกลับทีม", f"{rej_pct:.2f}%",      "#F59E0B"),
-            ("👥 PU ที่โดน",      f"{len(by_person)} คน", "#8B5CF6"),
+            ("👥 PU ที่มีตีกลับ", f"{len(by_person)} คน", "#8B5CF6"),
         ]:
             card = CTkFrame(kpi_row, fg_color=color, corner_radius=10)
             card.pack(side="left", padx=8, pady=4, fill="both", expand=True)
@@ -2180,7 +2184,7 @@ class PurchasingManagerScreen(CTkFrame):
         container = CTkFrame(parent_tab) # <-- ใช้ parent_tab
         container.grid(row=1, column=0, padx=10, pady=10, sticky="nsew") # <-- แก้ไข row เป็น 1
         container.grid_columnconfigure(0, weight=1)
-        container.grid_rowconfigure(2, weight=1)
+        container.grid_rowconfigure(3, weight=1)
 
         # --- ส่วนของช่องค้นหา ---
         search_frame = CTkFrame(container, fg_color="transparent")
@@ -2212,9 +2216,15 @@ class PurchasingManagerScreen(CTkFrame):
         self.next_button = CTkButton(pagination_frame, text="หน้าถัดไป >>", command=self._next_page, state="disabled")
         self.next_button.pack(side="right")
         
+        # --- ส่วน Extend SLA Approval (amber) ---
+        self.extend_section = CTkFrame(container, fg_color="#FEF3C7", corner_radius=10,
+                                       border_width=1, border_color="#F59E0B")
+        # ไม่ grid ตอนนี้ — จะแสดง/ซ่อนใน _build_extend_section()
+        self.extend_section.grid_columnconfigure(0, weight=1)
+
         # --- ส่วนของ Scrollable Frame ---
         self.main_frame = CTkScrollableFrame(container, label_text="รายการที่รอการอนุมัติ (Grouped by SO)")
-        self.main_frame.grid(row=2, column=0, padx=0, pady=0, sticky="nsew")
+        self.main_frame.grid(row=3, column=0, padx=0, pady=0, sticky="nsew")
         self.main_frame.grid_columnconfigure(0, weight=1)
         
     def _load_pending_pos(self):
@@ -2252,6 +2262,7 @@ class PurchasingManagerScreen(CTkFrame):
             else:
                 self.all_pending_df = pd.DataFrame()
 
+            self._build_extend_section()
             self._filter_pending_list()
 
         except Exception as e:
@@ -2260,6 +2271,156 @@ class PurchasingManagerScreen(CTkFrame):
             self.all_pending_df = pd.DataFrame()
             self._populate_pending_list(self.all_pending_df)
             
+    # =========================================================================
+    #  SLA EXTEND APPROVAL SECTION
+    # =========================================================================
+
+    def _build_extend_section(self):
+        """โหลดรายการ Extend 2 ที่รออนุมัติ และแสดง/ซ่อน section สีส้ม"""
+        # ล้าง widgets เดิม
+        for w in self.extend_section.winfo_children():
+            w.destroy()
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT e.id, e.so_number, e.requested_by, e.added_minutes,
+                           e.reason, e.reason_other,
+                           s.temp
+                    FROM   sla_extend e
+                    LEFT JOIN sla_benchmark s ON s.so_number = e.so_number
+                    WHERE  e.status = 'pending'
+                    ORDER  BY e.id ASC
+                """)
+                rows = cur.fetchall()
+        except Exception as exc:
+            print("extend_section load error:", exc)
+            rows = []
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+        if not rows:
+            # ซ่อน section ถ้าไม่มีรายการ
+            self.extend_section.grid_remove()
+            return
+
+        # แสดง section
+        self.extend_section.grid(row=2, column=0, padx=10, pady=(0, 6), sticky="ew")
+
+        # Header (พร้อมปุ่ม toggle)
+        hdr = CTkFrame(self.extend_section, fg_color="transparent")
+        hdr.pack(fill="x", padx=10, pady=(6, 2))
+
+        self._extend_collapsed = getattr(self, "_extend_collapsed", False)
+
+        toggle_text = "▲ ซ่อน" if not self._extend_collapsed else "▼ แสดง"
+        toggle_btn = CTkButton(hdr, text=toggle_text, width=70, height=24,
+                               font=CTkFont(size=11),
+                               fg_color="#F59E0B", hover_color="#D97706",
+                               text_color="white")
+        toggle_btn.pack(side="right", padx=(0, 4))
+
+        CTkLabel(hdr,
+                 text=f"  รายการขอขยาย SLA ที่รออนุมัติ  ({len(rows)} รายการ)",
+                 font=CTkFont(size=13, weight="bold"),
+                 text_color="#92400E").pack(side="left")
+
+        # Scroll area สำหรับแถวรายการ (จำกัดความสูง 160px)
+        scroll_area = CTkScrollableFrame(self.extend_section,
+                                         fg_color="transparent",
+                                         height=160)
+        if not self._extend_collapsed:
+            scroll_area.pack(fill="x", padx=6, pady=(0, 6))
+        scroll_area.grid_columnconfigure(0, weight=1)
+
+        def _toggle():
+            self._extend_collapsed = not self._extend_collapsed
+            if self._extend_collapsed:
+                scroll_area.pack_forget()
+                toggle_btn.configure(text="▼ แสดง")
+            else:
+                scroll_area.pack(fill="x", padx=6, pady=(0, 6))
+                toggle_btn.configure(text="▲ ซ่อน")
+
+        toggle_btn.configure(command=_toggle)
+
+        # แต่ละแถว
+        for ext_id, so_no, req_by, added_min, reason, reason_other, temp in rows:
+            reason_text = reason_other if reason == "อื่นๆ" and reason_other else reason
+
+            row_frame = CTkFrame(scroll_area, fg_color="#FFFBEB",
+                                 corner_radius=8, border_width=1, border_color="#FCD34D")
+            row_frame.pack(fill="x", padx=4, pady=3)
+            row_frame.grid_columnconfigure(0, weight=1)
+
+            info = CTkFrame(row_frame, fg_color="transparent")
+            info.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+
+            temp_str = temp or "-"
+
+            CTkLabel(info,
+                     text=f"SO: {so_no}   |   Temp: {temp_str}   |   ขอ +{added_min} นาที   |   โดย: {req_by}",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#78350F").pack(anchor="w")
+            CTkLabel(info,
+                     text=f"เหตุผล: {reason_text}",
+                     font=CTkFont(size=11),
+                     text_color="#92400E").pack(anchor="w")
+
+            btn_frame = CTkFrame(row_frame, fg_color="transparent")
+            btn_frame.grid(row=0, column=1, padx=10, pady=5, sticky="e")
+
+            CTkButton(btn_frame,
+                      text="อนุมัติ", width=90, height=28,
+                      font=CTkFont(size=12),
+                      fg_color="#16A34A", hover_color="#15803D",
+                      command=lambda eid=ext_id, sno=so_no, am=added_min: self._action_extend(eid, sno, am, "approved")
+                      ).pack(side="left", padx=(0, 6))
+
+            CTkButton(btn_frame,
+                      text="ปฏิเสธ", width=90, height=28,
+                      font=CTkFont(size=12),
+                      fg_color="#DC2626", hover_color="#B91C1C",
+                      command=lambda eid=ext_id, sno=so_no, am=added_min: self._action_extend(eid, sno, am, "rejected")
+                      ).pack(side="left")
+
+    def _action_extend(self, extend_id: int, so_number: str, added_min: int, action: str):
+        """อนุมัติ หรือ ปฏิเสธ Extend 2"""
+        action_th = "อนุมัติ" if action == "approved" else "ปฏิเสธ"
+        if not messagebox.askyesno(
+            f"{action_th}การขยาย SLA",
+            f"{action_th}การขอขยาย +{added_min} นาที\nสำหรับ SO: {so_number} ?",
+            parent=self
+        ):
+            return
+
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE sla_extend
+                    SET    status=%s, approved_by=%s, approved_at=NOW()
+                    WHERE  id=%s
+                """, (action, self.user_key, extend_id))
+            conn.commit()
+            messagebox.showinfo("สำเร็จ",
+                                f"{action_th}การขยาย SLA สำหรับ SO: {so_number} เรียบร้อยแล้ว",
+                                parent=self)
+            self._build_extend_section()       # รีเฟรช section
+        except Exception as exc:
+            messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {exc}", parent=self)
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+    # =========================================================================
+    #  END SLA EXTEND APPROVAL SECTION
+    # =========================================================================
+
     def _populate_pending_list(self, df_to_show):
         """(เวอร์ชันแก้ไข) แสดงรายการโดยจัดกลุ่มตาม SO และแสดงชื่อเจ้าของ"""
         for widget in self.main_frame.winfo_children(): widget.destroy()

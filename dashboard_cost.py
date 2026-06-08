@@ -794,8 +794,10 @@ class DashboardCostScreen(CTkFrame):
             header_fg=COLORS["header_text"],
             header_grid_fg="#3B6FE8",
             selected_rows_border_fg=COLORS["header_blue"],
-            selected_rows_bg="#EFF6FF",
+            selected_rows_bg="#DBEAFE",          # ฟ้าอ่อน (เลือก row)
             selected_rows_fg=COLORS["text_dark"],
+            selected_cells_bg="#DBEAFE",          # สีเดียวกัน ป้องกัน theme override
+            selected_cells_fg=COLORS["text_dark"],
             table_bg=COLORS["bg_white"],
             table_fg=COLORS["text_dark"],
             table_grid_fg=COLORS["border"],
@@ -926,11 +928,37 @@ class DashboardCostScreen(CTkFrame):
                     "WIN RATE %", "Markup Guide (%)",
                     "ต้นทุน/เส้น", "ส่วนลด 1 (%)", "ส่วนลด 2 (%)",
                     "ส่วนลด 1 (บาท)", "ส่วนลด 2 (บาท)",   # 🟢 เพิ่มใหม่
-                    "ต้นทุน/กก. (รวมย้าย)",
+                    "ต้นทุน/กก. (รวมย้าย)", "ค่าย้าย (ซื้อ)",
                 ]
                 for col in numeric_cols:
                     if col in df.columns:
                         df[col] = clean_numeric(df[col])
+
+                # ── Fallback: คำนวณ ต้นทุนรวม (รวมย้าย / ไม่รวมย้าย)
+                # สำหรับ rows เก่าที่ formula ไม่เคยวิ่ง → DB เก็บเป็น NULL → clean_numeric → 0
+                # สูตรเดียวกับ _auto_calculate_sheet:
+                #   ต้นทุนรวม (รวมย้าย)    = (ต้นทุน/เส้น - d1 - d2) × qty + ค่าย้าย(ซื้อ)
+                #   ต้นทุนรวม (ไม่รวมย้าย) = (ต้นทุน/เส้น - d1 - d2) × qty
+                try:
+                    if {"ต้นทุน/เส้น", "จำนวน"}.issubset(df.columns):
+                        _qty  = df["จำนวน"]
+                        _cost = df["ต้นทุน/เส้น"]
+                        _d1   = df["ส่วนลด 1 (บาท)"] if "ส่วนลด 1 (บาท)" in df.columns else 0
+                        _d2   = df["ส่วนลด 2 (บาท)"] if "ส่วนลด 2 (บาท)" in df.columns else 0
+                        _move = df["ค่าย้าย (ซื้อ)"]  if "ค่าย้าย (ซื้อ)"  in df.columns else 0
+                        _cost_after_disc = _cost - _d1 - _d2
+
+                        if "ต้นทุนรวม (รวมย้าย)" in df.columns:
+                            _computed_w = _cost_after_disc * _qty + _move
+                            _fix_w = (df["ต้นทุนรวม (รวมย้าย)"] == 0) & (_computed_w > 0)
+                            df.loc[_fix_w, "ต้นทุนรวม (รวมย้าย)"] = _computed_w[_fix_w]
+
+                        if "ต้นทุนรวม (ไม่รวมย้าย)" in df.columns:
+                            _computed_n = _cost_after_disc * _qty
+                            _fix_n = (df["ต้นทุนรวม (ไม่รวมย้าย)"] == 0) & (_computed_n > 0)
+                            df.loc[_fix_n, "ต้นทุนรวม (ไม่รวมย้าย)"] = _computed_n[_fix_n]
+                except Exception as _fe:
+                    print(f"[dashboard_cost fallback calc] {_fe}")
 
                 self.raw_df = df
 
@@ -1116,9 +1144,10 @@ class DashboardCostScreen(CTkFrame):
         if "รายการสินค้า" in df.columns:
             df_active = df[df["รายการสินค้า"].astype(str).str.strip() != ""]
 
-        # นับ Unique Sale Order No. (ไม่นับซ้ำ)
+        # นับ Unique Sale Order No. (ไม่นับซ้ำ) — กัน "nan"/"None" จาก pandas astype(str)
         if "Sale Order No." in df_active.columns:
-            total_orders = df_active["Sale Order No."].astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+            _so = df_active["Sale Order No."].astype(str).str.strip()
+            total_orders = _so[~_so.isin(["", "nan", "None", "NaN", "NaT"])].nunique()
         else:
             total_orders = len(df_active)
 
@@ -1167,6 +1196,7 @@ class DashboardCostScreen(CTkFrame):
             return
 
         self.sheet.set_sheet_data([])
+        self.sheet.deselect("all")   # ← ล้าง selection เก่าก่อนโหลดข้อมูลใหม่
 
         if df.empty:
             self.sheet.redraw()
@@ -1288,7 +1318,8 @@ class DashboardCostScreen(CTkFrame):
                     if pd.isna(fval):
                         row_data.append(str(val))
                     elif dcol in money_cols:
-                        row_data.append(f"฿{float(fval):,.2f}")
+                        # ฿0.00 หมายถึงคอลัมน์ formula ยังไม่ได้คำนวณ → แสดงเป็นว่าง
+                        row_data.append(f"฿{float(fval):,.2f}" if fval != 0 else "")
                     elif dcol in pct_cols:
                         row_data.append(f"{float(fval):.2f}%")
                     else:
@@ -1353,12 +1384,25 @@ class DashboardCostScreen(CTkFrame):
                 except Exception:
                     pass
 
-            # 🟢 AVG (ไม่เอา 0)
+            # 🟢 AVG (ไม่เอา 0) — ยกเว้น Markup ที่ต้องคำนวณแบบ weighted
             for dcol, src in avg_map.items():
                 idx = cidx(dcol)
                 if idx < 0 or src not in df.columns:
                     continue
                 try:
+                    # ── Average of Markup Guide — ใช้ Weighted Average ──────
+                    # = (ราคาขายรวม - ต้นทุนรวม) / ต้นทุนรวม × 100
+                    # ไม่ใช้ mean() ของแต่ละ row เพราะ row ที่มี qty ต่างกัน
+                    # จะทำให้ค่าบิดเบือน (simple avg ≠ weighted avg)
+                    if dcol == "Average of\nMarkup\nGuide (%)":
+                        if "ราคาขาย รวม" in df.columns and "ต้นทุนรวม (รวมย้าย)" in df.columns:
+                            total_s = pd.to_numeric(df["ราคาขาย รวม"], errors='coerce').fillna(0).sum()
+                            total_c = pd.to_numeric(df["ต้นทุนรวม (รวมย้าย)"], errors='coerce').fillna(0).sum()
+                            if total_c != 0:
+                                markup_w = (total_s - total_c) / total_c * 100
+                                total_row[idx] = f"{markup_w:.2f}%"
+                        continue
+
                     series = pd.to_numeric(df[src], errors='coerce').dropna()
                     series_non_zero = series[series != 0]
 
@@ -1509,5 +1553,10 @@ class DashboardCostScreen(CTkFrame):
             columns=list(range(len(self.display_columns))),
             readonly=True,
         )
+
+        # ── ล้าง row selection ที่ค้างมาจากครั้งก่อน ──────────────
+        # tksheet ธีม "light blue" จะระบายสีน้ำเงินทั้งแถวเมื่อ user เคยคลิก
+        # และ selection นั้นจะคงอยู่แม้ refresh ข้อมูลแล้ว → deselect ทุกครั้ง
+        self.sheet.deselect("all")
 
         self.sheet.redraw()

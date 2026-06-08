@@ -601,7 +601,11 @@ class HRScreen(CTkFrame):
         self.pg_engine = app_container.pg_engine
         self.user_key = user_key
         self.user_name = user_name
-        self.user_role = user_role
+
+        # ── Hardcode: user เหล่านี้ได้สิทธิ์เทียบเท่า Director ────────────
+        # (เห็น column ตัวคูณ + แก้ไข cost_multiplier per-SO ได้)
+        _DIRECTOR_LEVEL_USERS = {"LEK", "YUPIN"}
+        self.user_role = 'Director' if (user_key in _DIRECTOR_LEVEL_USERS) else user_role
 
         # --- Fonts ---
         self.label_font = CTkFont(size=16, weight="bold", family="Roboto")
@@ -1451,7 +1455,8 @@ class HRScreen(CTkFrame):
                 so_breakdown_df=so_breakdown_df,
                 plan_name=plan_name,
                 comm_df=self.current_comm_df if hasattr(self, 'current_comm_df') else None,
-                user_role=getattr(self, 'user_role', None)
+                user_role=getattr(self, 'user_role', None),
+                recalculate_callback=self._calculate_commission_for_period,
             )
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถเปิดหน้าต่างรายละเอียดได้: {e}", parent=self)
@@ -1830,6 +1835,7 @@ class HRScreen(CTkFrame):
                 refresh_callback=self._refresh_comparison_view,
                 target_commission_month=getattr(self, 'current_comparison_month', None),
                 target_commission_year=getattr(self, 'current_comparison_year', None),
+                user_role=getattr(self, 'user_role', None),
             )
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถเปิดหน้าต่างตรวจสอบได้: {e}", parent=self)
@@ -4341,7 +4347,9 @@ class HRScreen(CTkFrame):
         self.process_period_var = tk.StringVar()
         self.process_period_menu = CTkOptionMenu(control_frame, variable=self.process_period_var, values=["-ยังไม่ได้เลือก-"], command=self._calculate_commission_for_period)
         self.process_period_menu.pack(side="left", padx=5)
-        
+
+        # multiplier ปรับ per-SO ผ่าน popup "รายละเอียดตาม SO" แล้ว ไม่ต้องมี global control ที่นี่
+
         # --- [แก้ไข] เปลี่ยนเป็น CTkScrollableFrame ---
         # เพื่อให้หน้าจอเลื่อนลงได้เมื่อเนื้อหายาวเกินหน้าจอโน้ตบุ๊ก
         self.process_result_frame = CTkScrollableFrame(parent_tab, label_text="ผลลัพธ์การคำนวณ")
@@ -4350,6 +4358,33 @@ class HRScreen(CTkFrame):
 
         self.after(100, self._on_sale_selected_for_process)
         
+
+    def _apply_bulk_multiplier(self):
+        """Director: ตั้ง cost_multiplier ให้ทุก SO ในงวดพร้อมกัน แล้ว recalculate"""
+        if not hasattr(self, 'current_comm_df') or self.current_comm_df.empty:
+            messagebox.showwarning("ยังไม่มีข้อมูล", "กรุณาเลือกพนักงานและงวดก่อน", parent=self)
+            return
+        mult = float(self.director_multiplier_var.get())
+        so_ids = self.current_comm_df['id'].tolist()
+        if not so_ids:
+            return
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE commissions SET cost_multiplier = %s WHERE id = ANY(%s)",
+                    (mult, so_ids)
+                )
+            conn.commit()
+            self.app_container.release_connection(conn)
+            messagebox.showinfo(
+                "ตั้งค่าสำเร็จ",
+                f"ตั้ง ×{mult:.2f} ให้ {len(so_ids)} SO เรียบร้อยแล้ว\nกด 'คำนวณขั้นสุดท้าย' เพื่อเห็นผลลัพธ์",
+                parent=self
+            )
+            self._calculate_commission_for_period()
+        except Exception as e:
+            messagebox.showerror("Database Error", str(e), parent=self)
 
     def _on_sale_selected_for_process(self, sale_key=None):
         if sale_key is None:
@@ -4430,27 +4465,45 @@ class HRScreen(CTkFrame):
                     COALESCE(po_costs.shipping_to_site_cost, 0) as shipping_to_site_cost,
                     COALESCE(po_costs.po_cutting_cost, 0) as po_cutting_cost,
                     COALESCE(po_costs.po_service_cost, 0) as po_service_cost,
+                    -- ค่าตัด/เจาะ แยก VAT vs CASH (สำหรับ match กับฝั่ง SO)
+                    COALESCE(po_costs.po_cutting_vat_cost,  0) as po_cutting_vat_cost,
+                    COALESCE(po_costs.po_cutting_cash_cost, 0) as po_cutting_cash_cost,
+                    -- ค่าตัด/เจาะ ที่เป็น EXP items ในรายการสินค้า (VAT case)
+                    COALESCE(poi_cutting.po_cutting_item_cost, 0) as po_cutting_item_cost,
                     -- live_cogs: ยอดรวม PO items ปัจจุบัน (ครบทุก item รวม EXP-0006)
                     COALESCE(live_cogs.total_item_cost, c.final_cost_amount) as live_cogs
                 FROM commissions c
                 LEFT JOIN (
                     SELECT
                         so_number,
-                        -- รวมยอดแยกตามประเภท (จาก PO ที่สถานะ != Cancelled)
+                        -- รวมยอดแยกตามประเภท (เฉพาะ PO ที่ไม่ถูก Cancel/Reject)
                         SUM(COALESCE(shipping_to_stock_cost, 0)) as shipping_to_stock_cost,
                         SUM(COALESCE(shipping_to_site_cost, 0)) as shipping_to_site_cost,
                         SUM(COALESCE(cutting_cost, 0)) as po_cutting_cost,
+                        -- แยก cutting_cost ตาม VAT type
+                        SUM(CASE WHEN cutting_vat_type = 'VAT'  THEN COALESCE(cutting_cost, 0) ELSE 0 END) as po_cutting_vat_cost,
+                        SUM(CASE WHEN cutting_vat_type = 'CASH' THEN COALESCE(cutting_cost, 0) ELSE 0 END) as po_cutting_cash_cost,
                         0 as po_service_cost
                     FROM purchase_orders
-                    WHERE status != 'Cancelled'  -- <-- นับรวม PO ทุกใบที่ไม่ยกเลิก
+                    WHERE status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
                     GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
                 LEFT JOIN (
-                    SELECT p.so_number, SUM(COALESCE(poi.total_price, 0)) as total_item_cost
-                    FROM purchase_orders p
-                    JOIN purchase_order_items poi ON p.id = poi.purchase_order_id
-                    WHERE p.status NOT IN ('Cancelled')
-                    GROUP BY p.so_number
+                    -- EXP items ที่ชื่อขึ้นต้นด้วย ค่าตัด / ค่าเจาะ (VAT case: จาก product list)
+                    SELECT po.so_number,
+                           SUM(COALESCE(poi.total_price, 0)) as po_cutting_item_cost
+                    FROM purchase_order_items poi
+                    JOIN purchase_orders po ON po.id = poi.purchase_order_id
+                    WHERE (poi.product_name ILIKE '%%ค่าตัด%%' OR poi.product_name ILIKE '%%ค่าเจาะ%%')
+                      AND po.status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
+                    GROUP BY po.so_number
+                ) poi_cutting ON poi_cutting.so_number = c.so_number
+                LEFT JOIN (
+                    -- ใช้ total_cost จาก purchase_orders (หักส่วนลดท้ายบิลแล้ว) แทน SUM items
+                    SELECT so_number, COALESCE(SUM(total_cost), 0) as total_item_cost
+                    FROM purchase_orders
+                    WHERE status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
+                    GROUP BY so_number
                 ) live_cogs ON c.so_number = live_cogs.so_number
                 WHERE c.sale_key = %s
                     AND c.status = 'HR Verified'
@@ -4472,6 +4525,10 @@ class HRScreen(CTkFrame):
                 self.current_comm_df['final_cost_amount'] = self.current_comm_df['live_cogs'].fillna(
                     self.current_comm_df['final_cost_amount'])
                 self.current_comm_df.drop(columns=['live_cogs'], inplace=True)
+
+            # cost_multiplier ของแต่ละ SO ถูกดึงมาจาก DB โดยตรง (ผ่าน SELECT c.*)
+            # Director แก้ per-SO ผ่าน popup "รายละเอียดตาม SO" → บันทึกลง DB แล้ว
+            # ไม่ override ที่นี่ เพื่อให้ค่า per-SO จาก DB ถูกนำไปใช้จริง
 
             # บันทึก ID ของ SO ที่จะถูกประมวลผล
             self.current_so_ids = self.current_comm_df['id'].tolist()
@@ -4500,8 +4557,18 @@ class HRScreen(CTkFrame):
                         if col in self.current_comm_df.columns:
                             self.current_comm_df[col] = self.current_comm_df[col].fillna(0)
 
-            self.current_total_sales = self.current_comm_df['final_sales_amount'].sum()
-            self.current_total_cost = self.current_comm_df['final_cost_amount'].sum()
+            # ยอดขายรวม — ใช้ sales_service_amount เหมือน CalculationDetailViewer (col_mapping ลำดับแรก)
+            # fallback → final_sales_amount ถ้าไม่มี
+            _sales_col = ('sales_service_amount'
+                          if 'sales_service_amount' in self.current_comm_df.columns
+                          else 'final_sales_amount')
+            self.current_total_sales = pd.to_numeric(
+                self.current_comm_df[_sales_col], errors='coerce').fillna(0).sum()
+
+            # ต้นทุนรวม = final_cost_amount × cost_multiplier (ต้องตรงกับตาราง CalculationDetailViewer)
+            _cost_amt  = pd.to_numeric(self.current_comm_df['final_cost_amount'], errors='coerce').fillna(0)
+            _cost_mult = pd.to_numeric(self.current_comm_df.get('cost_multiplier', 1.03), errors='coerce').fillna(1.03)
+            self.current_total_cost = (_cost_amt * _cost_mult).sum()
 
             if self.current_comm_df.empty:
                 loading.destroy()
@@ -5012,11 +5079,21 @@ class HRScreen(CTkFrame):
 
                     so_ids_tuple = tuple(self.current_so_ids)
                     if so_ids_tuple:
-                        cursor.execute("""
-                            UPDATE commissions 
-                            SET status = 'Paid', payout_id = %s
-                            WHERE id IN %s
-                        """, (payout_id, so_ids_tuple))
+                        # ถ้า Director เลือก multiplier ไว้ → save ลง commissions ด้วย
+                        if (getattr(self, 'user_role', None) == 'Director'
+                                and hasattr(self, 'director_multiplier_var')):
+                            _mult = float(self.director_multiplier_var.get())
+                            cursor.execute("""
+                                UPDATE commissions
+                                SET status = 'Paid', payout_id = %s, cost_multiplier = %s
+                                WHERE id IN %s
+                            """, (payout_id, _mult, so_ids_tuple))
+                        else:
+                            cursor.execute("""
+                                UPDATE commissions
+                                SET status = 'Paid', payout_id = %s
+                                WHERE id IN %s
+                            """, (payout_id, so_ids_tuple))
                 
                     audit_msg = json.dumps({'payout_id': payout_id, 'net_amount': val_net})
                     cursor.execute("""

@@ -57,7 +57,15 @@ class SaleRevenueWidget(CTkFrame):
         self.custom_target_end = None
         self.sales_target_period_var = tk.StringVar(value="เดือนนี้")
         self._chart_canvas = None
-        self._map_after_id = None
+
+        # ── resize / draw guards (same pattern as SalesTargetWidget) ──────────
+        self._first_map_done  = False
+        self._frame_ready_job = None
+        self._ready_frame_w   = 0
+        self._ready_frame_h   = 0
+        self._drawing_chart   = False
+        self._last_chart_fw   = 0
+        self._last_chart_fh   = 0
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -65,18 +73,54 @@ class SaleRevenueWidget(CTkFrame):
         self._build_toolbar()
         self._build_chart_area()
 
-        # ✅ วาดกราฟใหม่ทุกครั้งที่ Tab นี้ถูกเปิดขึ้นมา (ได้ขนาดจริง)
         self.bind("<Map>", self._on_map)
 
     def _on_map(self, event=None):
-        """เรียกวาดกราฟใหม่เมื่อ tab ถูกแสดง — debounce 200ms"""
-        if self._map_after_id:
-            self.after_cancel(self._map_after_id)
-        self._map_after_id = self.after(200, self._do_map_update)
+        """ทำงานครั้งเดียว — bind Configure บน chart_frame แบบถาวร"""
+        if self._first_map_done:
+            return
+        self._first_map_done = True
+        self.unbind('<Map>')
+        self.chart_frame.bind('<Configure>', self._on_chart_frame_configure)
 
-    def _do_map_update(self):
-        self._map_after_id = None
-        self._refresh()
+    def _on_chart_frame_configure(self, event):
+        """debounce resize — suppress ระหว่าง _refresh รัน"""
+        if event.width < 200 or event.height < 100:
+            return
+        if self._drawing_chart:
+            return
+        fw, fh = event.width, event.height
+        if fw == self._last_chart_fw and fh == self._last_chart_fh:
+            return
+        if self._frame_ready_job:
+            self.after_cancel(self._frame_ready_job)
+        self._frame_ready_job = self.after(200, lambda: self._on_chart_resize(fw, fh))
+
+    def _on_chart_resize(self, fw, fh):
+        """Fired after debounce — initial draw หรือ window-resize redraw"""
+        self._frame_ready_job = None
+        if self.sales_view_mode != 'chart':
+            return
+        if self._chart_canvas is None:
+            self._ready_frame_w = fw
+            self._ready_frame_h = fh
+            self._refresh()
+        else:
+            try:
+                actual_fw = self.chart_frame.winfo_width()
+                actual_fh = self.chart_frame.winfo_height()
+                real_fw = actual_fw if actual_fw > 100 else fw
+                real_fh = actual_fh if actual_fh > 100 else fh
+                self._last_chart_fw = real_fw
+                self._last_chart_fh = real_fh
+                cw = max(real_fw - 22, 100)
+                ch = max(real_fh - 22, 100)
+                fig = self._chart_canvas.figure
+                fig.set_size_inches(cw / fig.dpi, ch / fig.dpi)
+                fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=0.12)
+                self.after(10, self._chart_canvas.draw)
+            except Exception:
+                traceback.print_exc()
 
     def _build_toolbar(self):
         bar = CTkFrame(self, fg_color="transparent")
@@ -128,7 +172,6 @@ class SaleRevenueWidget(CTkFrame):
     def _build_chart_area(self):
         self.chart_frame = CTkFrame(self, border_width=1, corner_radius=10)
         self.chart_frame.grid(row=1, column=0, padx=10, pady=(4, 10), sticky="nsew")
-        self.after(100, self._refresh)
 
     def _show_loading(self):
         for w in self.chart_frame.winfo_children():
@@ -165,6 +208,15 @@ class SaleRevenueWidget(CTkFrame):
             traceback.print_exc()
 
     def _refresh(self):
+        if self._frame_ready_job:
+            self.after_cancel(self._frame_ready_job)
+            self._frame_ready_job = None
+        pre_fw = self.chart_frame.winfo_width()
+        pre_fh = self.chart_frame.winfo_height()
+        if pre_fw > 100:
+            self._ready_frame_w = pre_fw
+            self._ready_frame_h = pre_fh
+        self._drawing_chart = True
         loading = self._show_loading()
         try:
             df = self._get_data()
@@ -177,6 +229,13 @@ class SaleRevenueWidget(CTkFrame):
             loading.destroy()
             messagebox.showerror("Error", f"เกิดข้อผิดพลาด: {e}", parent=self)
             traceback.print_exc()
+        finally:
+            self._drawing_chart = False
+            fw = self.chart_frame.winfo_width()
+            fh = self.chart_frame.winfo_height()
+            if fw > 100:
+                self._last_chart_fw = fw
+                self._last_chart_fh = fh
 
     # ── Data query ────────────────────────────────────────────────────────────
     def _get_data(self):
@@ -231,12 +290,27 @@ class SaleRevenueWidget(CTkFrame):
                 su.sale_key,
                 COALESCE(su.sales_target, 0) * %s AS sales_target,
                 COALESCE(SUM(c.total_sales), 0) AS total_sales,
-                0 AS total_outstanding
+                0 AS total_outstanding,
+                COALESCE(
+                    SUM(cm_agg.total_gp) / NULLIF(SUM(cm_agg.total_sales_amt), 0) * 100,
+                    0
+                ) AS avg_margin,
+                COALESCE(SUM(cm_agg.sales_normal), 0) AS sales_normal,
+                COALESCE(SUM(cm_agg.sales_below),  0) AS sales_below
             FROM sales_users su
             LEFT JOIN commission_payout_logs c
                    ON REPLACE(LOWER(su.sale_key), ' ', '')
                       = REPLACE(LOWER(c.sale_key), ' ', '')
                   AND {date_filter}
+            LEFT JOIN (
+                SELECT payout_id,
+                       SUM(final_gp)           AS total_gp,
+                       SUM(final_sales_amount) AS total_sales_amt,
+                       SUM(CASE WHEN final_margin >= 10 THEN final_sales_amount ELSE 0 END) AS sales_normal,
+                       SUM(CASE WHEN final_margin <  10 THEN final_sales_amount ELSE 0 END) AS sales_below
+                FROM   commissions
+                GROUP  BY payout_id
+            ) cm_agg ON cm_agg.payout_id = c.id
             WHERE su.status = 'Active'
             GROUP BY su.sale_name, su.sale_key, su.sales_target, su.role
             HAVING (su.role = 'Sale' OR COALESCE(SUM(c.total_sales), 0) > 0)
@@ -247,6 +321,8 @@ class SaleRevenueWidget(CTkFrame):
         df['sales_target'] = df['sales_target'].fillna(0)
         df['total_sales'] = df['total_sales'].fillna(0)
         df['total_outstanding'] = df['total_outstanding'].fillna(0)
+        df['sales_normal'] = df['sales_normal'].fillna(0)
+        df['sales_below']  = df['sales_below'].fillna(0)
         return df
 
     # ── Shared preprocessing ──────────────────────────────────────────────────
@@ -272,11 +348,22 @@ class SaleRevenueWidget(CTkFrame):
                 for _, row in grp.iterrows()
             ]
             sub_items.sort(key=lambda s: s['sales'], reverse=True)
+            # avg_margin: weighted avg ตาม total_sales ของแต่ละ sale_key ในกลุ่ม
+            total_s = float(grp['total_sales'].sum())
+            if 'avg_margin' in grp.columns and total_s > 0:
+                wtd_margin = float(
+                    (grp['avg_margin'] * grp['total_sales']).sum() / total_s
+                )
+            else:
+                wtd_margin = 0.0
             people_data.append({
                 'name': name,
-                'total_sales': float(grp['total_sales'].sum()),
+                'total_sales': total_s,
                 'total_outstanding': float(grp['total_outstanding'].sum()),
                 'target': float(grp['sales_target'].sum()),
+                'avg_margin': wtd_margin,
+                'sales_normal': float(grp['sales_normal'].sum()) if 'sales_normal' in grp.columns else 0.0,
+                'sales_below':  float(grp['sales_below'].sum())  if 'sales_below'  in grp.columns else 0.0,
                 'sub_items': sub_items,
             })
         people_data.sort(key=lambda p: p['total_sales'], reverse=True)
@@ -324,11 +411,17 @@ class SaleRevenueWidget(CTkFrame):
         max_t = max(targets or [1])
         BG, GRID_C = '#F8FAFC', '#E2E8F0'
 
-        chart_width = max(10, n * 1.6)
-        # ✅ คำนวณความสูงกราฟจากพื้นที่จริงที่มีอยู่ ไม่ใช้ค่าตายตัว
-        self.update_idletasks()
-        h_px = max(self.chart_frame.winfo_height() - 20, 420)
-        fig = Figure(figsize=(chart_width, h_px / 100), dpi=100, facecolor=BG)
+        _fw = getattr(self, '_ready_frame_w', 0) or self.chart_frame.winfo_width()
+        _fh = getattr(self, '_ready_frame_h', 0) or self.chart_frame.winfo_height()
+        self._ready_frame_w = 0
+        self._ready_frame_h = 0
+        if _fw <= 10:
+            _fw = self.winfo_width() - 20
+        if _fh <= 10:
+            _fh = self.winfo_height() - 80
+        cw = max(_fw - 22, 400)
+        ch = max(_fh - 22, 350)
+        fig = Figure(figsize=(cw / 100, ch / 100), dpi=100, facecolor=BG)
         ax = fig.add_subplot(111)
         ax.set_facecolor(BG)
 
@@ -468,11 +561,21 @@ class SaleRevenueWidget(CTkFrame):
                   prop={'weight': 'bold', 'size': 10},
                   borderpad=0.7, labelspacing=0.4, columnspacing=1.0)
 
-        fig.tight_layout(rect=[0, 0.05, 1, 1])
+        fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=0.12)
 
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        widget = canvas.get_tk_widget()
+        widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # อ่านขนาด canvas จริงหลัง layout settle แล้ว resize figure ให้พอดี
+        self.update_idletasks()
+        _cw = widget.winfo_width()
+        _ch = widget.winfo_height()
+        if _cw > 50 and _ch > 50:
+            fig.set_size_inches(_cw / fig.dpi, _ch / fig.dpi)
+            fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=0.12)
+
         canvas.draw()
-        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
         self._chart_canvas = canvas
 
     # ── Table ──────────────────────────────────────────────────────────────────
@@ -486,6 +589,7 @@ class SaleRevenueWidget(CTkFrame):
             return
 
         people_data = self._preprocess(data_df)
+        MARGIN_TARGET = 15.0  # % เป้า margin ตายตัวทุกคน
         rows = []
         for p in people_data:
             t, s = p['target'], p['total_sales']
@@ -495,12 +599,18 @@ class SaleRevenueWidget(CTkFrame):
                 'sales': s,
                 'pct': (s / t * 100) if t > 0 else 0.0,
                 'diff': s - t,
+                'margin_target': MARGIN_TARGET,
+                'actual_margin': p.get('avg_margin', 0.0),
+                'sales_normal': p.get('sales_normal', 0.0),
+                'sales_below':  p.get('sales_below', 0.0),
             })
         rows.sort(key=lambda r: r['sales'], reverse=True)
 
-        total_t = sum(r['target'] for r in rows)
-        total_s = sum(r['sales'] for r in rows)
-        total_pct = (total_s / total_t * 100) if total_t > 0 else 0.0
+        total_t      = sum(r['target']       for r in rows)
+        total_s      = sum(r['sales']        for r in rows)
+        total_normal = sum(r['sales_normal'] for r in rows)
+        total_below  = sum(r['sales_below']  for r in rows)
+        total_pct  = (total_s / total_t * 100) if total_t > 0 else 0.0
         total_diff = total_s - total_t
 
         try:
@@ -535,19 +645,28 @@ class SaleRevenueWidget(CTkFrame):
                   background=[('selected', '#EDE9FE')],
                   foreground=[('selected', '#1E293B')])
 
-        cols = ('name', 'target', 'sales', 'pct', 'diff')
+        cols = ('name', 'margin_target', 'actual_margin', 'target',
+                'sales', 'sales_normal', 'sales_below', 'pct', 'diff')
         tree = ttk.Treeview(outer, columns=cols, show='headings',
                             style="MgmtTable.Treeview", height=len(rows) + 1)
-        tree.heading('name',   text='พนักงาน')
-        tree.heading('target', text='เป้าหมาย (บาท)')
-        tree.heading('sales',  text='ยอดขายจริง (บาท)')
-        tree.heading('pct',    text='%')
-        tree.heading('diff',   text='ส่วนต่าง (บาท)')
-        tree.column('name',   width=200, anchor='w')
-        tree.column('target', width=170, anchor='e')
-        tree.column('sales',  width=170, anchor='e')
-        tree.column('pct',    width=90,  anchor='center')
-        tree.column('diff',   width=170, anchor='e')
+        tree.heading('name',          text='พนักงาน')
+        tree.heading('margin_target', text='Margin เป้า')
+        tree.heading('actual_margin', text='Avg Margin จริง')
+        tree.heading('target',        text='เป้าหมาย (บาท)')
+        tree.heading('sales',         text='ยอดขายจริง (บาท)')
+        tree.heading('sales_normal',  text='ยอดขาย Normal')
+        tree.heading('sales_below',   text='ยอดขาย Below T')
+        tree.heading('pct',           text='%')
+        tree.heading('diff',          text='ส่วนต่าง (บาท)')
+        tree.column('name',          width=170, anchor='w')
+        tree.column('margin_target', width=100, anchor='center')
+        tree.column('actual_margin', width=120, anchor='center')
+        tree.column('target',        width=150, anchor='e')
+        tree.column('sales',         width=150, anchor='e')
+        tree.column('sales_normal',  width=140, anchor='e')
+        tree.column('sales_below',   width=140, anchor='e')
+        tree.column('pct',           width=75,  anchor='center')
+        tree.column('diff',          width=140, anchor='e')
 
         tree.tag_configure('odd',      background='#F8FAFC')
         tree.tag_configure('even',     background='white')
@@ -561,19 +680,33 @@ class SaleRevenueWidget(CTkFrame):
             diff_str = f"+{r['diff']:,.0f}" if r['diff'] >= 0 else f"{r['diff']:,.0f}"
             tag_row  = 'odd' if idx % 2 else 'even'
             tag_diff = 'positive' if r['diff'] >= 0 else 'negative'
+            actual_m = r.get('actual_margin', 0.0)
+            actual_m_str = f"{actual_m:.2f}%" if actual_m else '—'
             tree.insert('', 'end', tags=(tag_row, tag_diff), values=(
                 r['name'],
+                f"{r['margin_target']:.0f}%",
+                actual_m_str,
                 f"{r['target']:,.0f}" if r['target'] > 0 else '—',
                 f"{r['sales']:,.0f}",
+                f"{r['sales_normal']:,.0f}" if r['sales_normal'] > 0 else '—',
+                f"{r['sales_below']:,.0f}"  if r['sales_below']  > 0 else '—',
                 f"{r['pct']:.1f}%",
                 diff_str if r['target'] > 0 else '—',
             ))
 
         total_diff_str = f"+{total_diff:,.0f}" if total_diff >= 0 else f"{total_diff:,.0f}"
+        # avg margin รวมทีม = weighted avg
+        total_wtd_margin = sum(r['actual_margin'] * r['sales'] for r in rows)
+        team_avg_margin = (total_wtd_margin / total_s) if total_s > 0 else 0.0
+        team_margin_str = f"{team_avg_margin:.2f}%" if team_avg_margin else '—'
         tree.insert('', 'end', tags=('total',), values=(
             'รวมทีม',
+            '15%',
+            team_margin_str,
             f"{total_t:,.0f}",
             f"{total_s:,.0f}",
+            f"{total_normal:,.0f}" if total_normal > 0 else '—',
+            f"{total_below:,.0f}"  if total_below  > 0 else '—',
             f"{total_pct:.1f}%",
             total_diff_str,
         ))
