@@ -95,7 +95,7 @@ class SalesProxyScreen(CommissionApp):
 
         # 2. เพิ่มปุ่มพิเศษต่อท้าย สำหรับ Sale Support เท่านั้น
         if self.user_role == 'Sale Support':
-            
+
             # เส้นคั่น
             separator = tk.Frame(parent, height=2, bd=1, relief="sunken")
             separator.pack(fill="x", padx=20, pady=(20, 10))
@@ -104,17 +104,33 @@ class SalesProxyScreen(CommissionApp):
             tool_label = CTkLabel(parent, text="เครื่องมือสำหรับ Sale Support:", font=CTkFont(size=14, weight="bold"), text_color="gray50")
             tool_label.pack(anchor="w", padx=20, pady=(0, 5))
 
+            # ปุ่มสีส้ม (จัดการยอดค้างชำระ)
+            payment_btn = CTkButton(
+                parent,
+                text="💰 จัดการยอดค้างชำระ (ทุก Sale)",
+                fg_color="#D97706",
+                hover_color="#B45309",
+                height=40,
+                font=CTkFont(size=16, weight="bold"),
+                command=self._open_payment_due_all_window
+            )
+            payment_btn.pack(fill="x", padx=20, pady=(0, 8))
+
             # ปุ่มสีม่วง (ย้ายเจ้าของ SO)
             reassign_btn = CTkButton(
-                parent, 
-                text="🔄 ย้ายเจ้าของ SO (Reassign Owner)", 
-                fg_color="#8B5CF6", # สีม่วง
+                parent,
+                text="🔄 ย้ายเจ้าของ SO (Reassign Owner)",
+                fg_color="#8B5CF6",
                 hover_color="#7C3AED",
                 height=40,
                 font=CTkFont(size=16, weight="bold"),
                 command=self._open_reassign_window
             )
             reassign_btn.pack(fill="x", padx=20, pady=(0, 20))
+
+    def _open_payment_due_all_window(self):
+        """เปิดหน้าต่างจัดการยอดค้างชำระของทุก Sale"""
+        AllPaymentDueWindow(self, self.app_container)
 
     def _open_reassign_window(self):
         """เปิดหน้าต่างย้ายเจ้าของ SO"""
@@ -177,6 +193,111 @@ class SalesProxyScreen(CommissionApp):
                 pass
             if child.winfo_children():
                 self._recursive_toggle_state(child, state)
+
+class AllPaymentDueWindow(CTkToplevel):
+    """หน้าต่างแสดงรายการยอดค้างชำระของทุก Sale สำหรับ Sale Support"""
+
+    def __init__(self, master, app_container):
+        super().__init__(master)
+        self.app_container = app_container
+        self.title("จัดการยอดค้างชำระ — ทุก Sale")
+        self.geometry("900x620")
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # --- Filter bar ---
+        filter_frame = CTkFrame(self, fg_color="transparent")
+        filter_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+
+        CTkLabel(filter_frame, text="🔍 ค้นหา SO / ลูกค้า / เซลส์:").pack(side="left", padx=(5, 4))
+        self.search_var = tk.StringVar()
+        CTkEntry(filter_frame, textvariable=self.search_var, placeholder_text="พิมพ์เพื่อค้นหา...", width=220).pack(side="left", padx=4)
+        CTkButton(filter_frame, text="ค้นหา", width=80, fg_color="#2563EB", command=self._load).pack(side="left", padx=4)
+        CTkButton(filter_frame, text="ล้างค่า", width=80, fg_color="gray", command=self._clear).pack(side="left", padx=4)
+
+        # --- Scrollable list ---
+        self.list_frame = CTkScrollableFrame(
+            self,
+            label_text="รายการที่ยอดโอนชำระไม่ครบ (แก้ไขยอดโอนแล้วกดบันทึก)"
+        )
+        self.list_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        self._load()
+        self.transient(master)
+        self.grab_set()
+
+    def _clear(self):
+        self.search_var.set("")
+        self._load()
+
+    def _load(self):
+        for w in self.list_frame.winfo_children():
+            w.destroy()
+
+        keyword = self.search_var.get().strip().lower()
+
+        try:
+            query = """
+                SELECT * FROM commissions
+                WHERE ROUND(difference_amount::numeric, 2) < 0
+                  AND is_active = 1
+                  AND status != 'Paid'
+                ORDER BY timestamp DESC
+            """
+            df = pd.read_sql_query(query, self.app_container.pg_engine)
+        except Exception as e:
+            CTkLabel(self.list_frame, text=f"โหลดข้อมูลไม่สำเร็จ: {e}", text_color="red").pack(pady=20)
+            return
+
+        if keyword:
+            mask = (
+                df['so_number'].str.lower().str.contains(keyword, na=False) |
+                df['customer_name'].str.lower().str.contains(keyword, na=False) |
+                df['sale_key'].str.lower().str.contains(keyword, na=False)
+            )
+            df = df[mask]
+
+        if df.empty:
+            CTkLabel(self.list_frame, text="ไม่พบรายการยอดค้างชำระ").pack(pady=20)
+            return
+
+        for _, row_data in df.iterrows():
+            difference = round(row_data.get('difference_amount', 0.0) or 0.0, 2)
+            if difference >= 0:
+                continue
+
+            card = CTkFrame(self.list_frame, border_width=1, fg_color="#FFFBEB")
+            card.pack(fill="x", padx=5, pady=4)
+            card.grid_columnconfigure(0, weight=1)
+
+            top = CTkFrame(card, fg_color="transparent")
+            top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 0))
+
+            sale_key_display = row_data.get('sale_key', '-')
+            info = f"SO: {row_data['so_number']}  |  ลูกค้า: {row_data['customer_name']}  |  เซลส์: {sale_key_display}  |  สถานะ: {row_data['status']}"
+            CTkLabel(top, text=info, font=CTkFont(size=13, weight="bold")).pack(side="left")
+
+            CTkButton(
+                top, text="แก้ไขยอดชำระ", width=120,
+                command=lambda r=row_data.to_dict(): self._open_updater(r)
+            ).pack(side="right")
+
+            CTkLabel(
+                card,
+                text=f"ยอดโอนขาด: {difference:,.2f} บาท",
+                text_color="#B45309",
+                anchor="w"
+            ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
+
+    def _open_updater(self, so_data_dict):
+        from commission_app import PaymentUpdateWindow
+        PaymentUpdateWindow(
+            master=self,
+            app_container=self.app_container,
+            so_data=so_data_dict,
+            on_save_callback=self._load
+        )
+
 
 class SOShortnoteSearchDialog(CTkToplevel):
     """หน้าต่างสำหรับค้นหา SO ของเซลส์ทุกคนเพื่อ Copy Shortnote (สำหรับ Sale Support)"""
@@ -445,7 +566,7 @@ class SOShortnoteSearchDialog(CTkToplevel):
                 f"วันที่ย้ายสินค้าเข้าคลัง132 : {date_to_wh}\n"
                 f"วันที่จัดส่งลูกค้า : {date_to_cust}\n"
                 f"การจัดส่ง : {delivery_type}\n"
-                f"Location จัดส่ง : {pickup_loc}\n"
+                f"Location เข้ารับ : {pickup_loc}\n"
                 f"ผู้ติดต่อ/เบอร์โทร : {contact_name} {contact_phone}\n"
                 f"ประเภทรถ/ทะเบียนรถ : {vehicle_type} ({rego})\n"
                 f"เงื่อนไขการลง/เอกสาร : {unloading_stat}\n"

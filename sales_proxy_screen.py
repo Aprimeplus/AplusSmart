@@ -232,13 +232,37 @@ class SOShortnoteSearchDialog(CTkToplevel):
             cutting_fee = format_money(so_data.get('cutting_drilling_fee'))
             discount = format_money(so_data.get('coupons'))
 
-            date_to_wh = utils.format_date_safe(so_data.get('date_to_warehouse'), '%d/%m')
-            date_to_cust = utils.format_date_safe(so_data.get('date_to_customer'), '%d/%m')
+            def _fmt_be(raw):
+                """แปลงวันที่เป็น DD/MM/YY (พ.ศ. 2 หลัก)"""
+                try:
+                    import datetime
+                    if raw is None:
+                        return "-"
+                    if isinstance(raw, str):
+                        raw = raw.strip()
+                        if not raw:
+                            return "-"
+                        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d/%m/%y'):
+                            try:
+                                raw = datetime.datetime.strptime(raw, fmt).date()
+                                break
+                            except Exception:
+                                pass
+                    if hasattr(raw, 'year'):
+                        be_year = (raw.year + 543) % 100
+                        return f"{raw.day:02d}/{raw.month:02d}/{be_year:02d}"
+                    return str(raw)
+                except Exception:
+                    return str(raw) if raw else "-"
+
+            date_to_wh   = _fmt_be(so_data.get('date_to_warehouse'))
+            date_to_cust = _fmt_be(so_data.get('date_to_customer'))
 
             delivery_type = so_data.get('delivery_type') or '-'
             order_pur_val = so_data.get('order_pur') or '-'
             rego = so_data.get('pickup_registration') or '-'
             
+            pickup_loc   = so_data.get('pickup_location') or '-'
             delivery_map = so_data.get('delivery_map') or '-'
             contact_name = so_data.get('onsite_contact_name') or '-'
             contact_phone = so_data.get('onsite_contact_phone') or '-'
@@ -295,12 +319,14 @@ class SOShortnoteSearchDialog(CTkToplevel):
             separator = "-" * 10
 
             shortnote_text = (
-                f"เลขที่ {so_number}\n"
-                f"ยอดขาย : {sales_amount}\n"
-                f"ค่าส่ง  : {shipping_cost}\n"
-                f"ค่าย้าย : {relocation_cost}\n"
-                f"ค่าตัด : {cutting_fee}\n"
-                f"ยอดชำระ : {payment_display}\n"
+                f"เลขที่ SO: {so_number}\n"
+                f"Order Pur : {order_pur_val}\n"
+                f"{separator}\n"
+                f"ยอดขาย(ก่อนVat) : {sales_amount}\n"
+                f"ค่าส่ง(ก่อนVat)  : {shipping_cost}\n"
+                f"ค่าย้าย(ก่อนVat) : {relocation_cost}\n"
+                f"ค่าตัด(ก่อนVat) : {cutting_fee}\n"
+                f"ยอดชำระ(รวม Vat) : {payment_display}\n"
                 f"ค่าธรรมเนียมบัตรเครดิต : {credit_card_fee}\n"
                 f"ค่าธรรมเนียมโอน : {transfer_fee}\n"
                 f"ภาษีหัก ณ ที่จ่าย : {wht_fee}\n"
@@ -311,21 +337,17 @@ class SOShortnoteSearchDialog(CTkToplevel):
                 f"{separator}\n"
                 f"วันที่ย้ายสินค้าเข้าคลัง132 : {date_to_wh}\n"
                 f"วันที่จัดส่งลูกค้า : {date_to_cust}\n"
-                f"Order Pur : {order_pur_val}\n"
-                f"Payment : {remark_text}\n"
-                f"{separator}\n"
                 f"การจัดส่ง : {delivery_type}\n"
-                f"แผนที่จัดส่ง : {delivery_map}\n"
                 f"Location เข้ารับ : {pickup_loc}\n"
-                f"ประเภทรถ : {vehicle_type}\n"
-                f"เงื่อนไขลงสินค้า : {unloading_stat}\n"
-                f"ทะเบียนรถ : {rego}\n"
-                f"ชื่อผู้ติดต่อหน้างาน : {contact_name}\n"
-                f"เบอร์ติดต่อหน้างาน : {contact_phone}\n"
+                f"Location จัดส่ง : {delivery_map}\n"
+                f"ผู้ติดต่อ/เบอร์โทร : {contact_name} {contact_phone}\n"
+                f"ประเภทรถ/ทะเบียนรถ : {vehicle_type} ({rego})\n"
+                f"เงื่อนไขการลง/เอกสาร : {unloading_stat}\n"
+                f"\n"
                 f"Special Request : {special_req}\n"
                 f"{separator}\n"
-                f"อ้างอิงจาก Aplus Smart\n"
-                f"ผู้จัดทำ: {maker_name}"
+                f"ผู้จัดทำ: {maker_name}\n"
+                f"อ้างอิงจาก: Aplus Smart"
             )
 
             self.clipboard_clear()
@@ -419,24 +441,38 @@ class SalesProxyScreen(CommissionApp):
             btn_container.pack(fill="x", padx=20, pady=(0, 20))
             btn_container.grid_columnconfigure(0, weight=1)
             btn_container.grid_columnconfigure(1, weight=1)
+            btn_container.grid_columnconfigure(2, weight=1)
 
             reassign_btn = CTkButton(
-                btn_container, 
-                text="🔄 ย้ายเจ้าของ SO", 
+                btn_container,
+                text="🔄 ย้ายเจ้าของ SO",
                 fg_color="#8B5CF6", hover_color="#7C3AED",
                 height=40, font=CTkFont(size=16, weight="bold"),
                 command=self._open_reassign_window
             )
-            reassign_btn.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+            reassign_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+            payment_btn = CTkButton(
+                btn_container,
+                text="💰 ยอดค้างชำระ (ทุก Sale)",
+                fg_color="#D97706", hover_color="#B45309",
+                height=40, font=CTkFont(size=16, weight="bold"),
+                command=self._open_payment_due_all_window
+            )
+            payment_btn.grid(row=0, column=1, sticky="ew", padx=4)
 
             shortnote_btn = CTkButton(
-                btn_container, 
-                text="📋 ค้นหา & Copy Shortnote", 
+                btn_container,
+                text="📋 ค้นหา & Copy Shortnote",
                 fg_color="#22C55E", hover_color="#16A34A",
                 height=40, font=CTkFont(size=16, weight="bold"),
                 command=self._open_shortnote_search_window
             )
-            shortnote_btn.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+            shortnote_btn.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+
+    def _open_payment_due_all_window(self):
+        from sale_support_screen import AllPaymentDueWindow
+        AllPaymentDueWindow(self, self.app_container)
 
     def _open_reassign_window(self):
         try:

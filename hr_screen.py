@@ -300,13 +300,29 @@ class ComparisonConfigDialog(CTkToplevel):
         if not file_path:
             return
         
+        SO_ALIASES = {'so number', 'so_number', 'so no.', 'เลขที่ so', 'อ้างถึง'}
+
+        def _find_header_row(raw_df):
+            """สแกนหา row ที่มี SO column — คืน index ของ header row (หรือ None)"""
+            for i, row in raw_df.iterrows():
+                vals = {str(v).lower().strip() for v in row.values if pd.notna(v)}
+                if vals & SO_ALIASES:
+                    return i
+            return None
+
         try:
             if file_path.endswith('.csv'):
                 with open(file_path, 'rb') as f: result = chardet.detect(f.read())
                 df = pd.read_csv(file_path, encoding=result['encoding'])
             else:
-                df = pd.read_excel(file_path)
-            
+                raw = pd.read_excel(file_path, header=None)
+                header_row = _find_header_row(raw)
+                if header_row is None:
+                    # ลองอ่านแบบปกติ (header=0) ถ้าหา SO row ไม่เจอ
+                    df = pd.read_excel(file_path)
+                else:
+                    df = pd.read_excel(file_path, header=header_row)
+
             self.imported_df = df
             self.file_label.configure(text=os.path.basename(file_path), text_color="green")
             self._check_run_button_state()
@@ -4007,7 +4023,21 @@ class HRScreen(CTkFrame):
                 self._create_styled_dataframe_table(self.results_frame, self.db_df)
                 return
                 
-            uploaded_compare_df = pd.concat(comparison_sources, ignore_index=True).drop_duplicates(subset=['so_number'], keep='last')
+            valid_sources = [df for df in comparison_sources if 'so_number' in df.columns]
+            if not valid_sources:
+                found_cols = []
+                for df in comparison_sources:
+                    found_cols.extend(list(df.columns))
+                col_list = ', '.join(found_cols) if found_cols else '(ไม่มี)'
+                messagebox.showwarning(
+                    "ข้อมูลไม่ถูกต้อง",
+                    f"ไม่พบคอลัมน์ 'so_number' ในข้อมูลที่นำเข้า\n\n"
+                    f"คอลัมน์ที่พบในไฟล์: {col_list}\n\n"
+                    f"ชื่อคอลัมน์ที่ระบบรับได้: so number, so_number, so no., เลขที่ so, อ้างถึง",
+                    parent=self
+                )
+                return
+            uploaded_compare_df = pd.concat(valid_sources, ignore_index=True).drop_duplicates(subset=['so_number'], keep='last')
 
             processed_so_query = "SELECT so_number FROM commissions WHERE status IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')"
             processed_so_df = pd.read_sql_query(processed_so_query, self.pg_engine)
@@ -5322,7 +5352,7 @@ class HRScreen(CTkFrame):
         v_scroll.grid(row=0, column=1, sticky='ns')
         h_scroll.grid(row=1, column=0, sticky='ew')
         
-        if on_row_click: 
+        if on_row_click:
             tree.bind("<Double-1>", lambda e: on_row_click(e, tree, df))
 
     def _get_archive_date_range(self, year, month=None):

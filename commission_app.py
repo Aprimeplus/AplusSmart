@@ -553,7 +553,8 @@ class SalesTasksWindow(CTkToplevel):
 
         try:
             so_number = so_data.get('so_number', '-')
-            pickup_loc = so_data.get('pickup_location') or '-'
+            pickup_loc   = so_data.get('pickup_location') or '-'
+            delivery_map = so_data.get('delivery_map') or '-'
             
             # 🟢 ฟังก์ชันจัดการตัวเลข (ไม่ใช้ utils และไม่ปัดเศษทิ้ง)
             def format_money(val):
@@ -672,7 +673,8 @@ class SalesTasksWindow(CTkToplevel):
                 f"วันที่ย้ายสินค้าเข้าคลัง132 : {date_to_wh}\n"
                 f"วันที่จัดส่งลูกค้า : {date_to_cust}\n"
                 f"การจัดส่ง : {delivery_type}\n"
-                f"Location จัดส่ง : {pickup_loc}\n"
+                f"Location เข้ารับ : {pickup_loc}\n"
+                f"Location จัดส่ง : {delivery_map}\n"
                 f"ผู้ติดต่อ/เบอร์โทร : {contact_name} {contact_phone}\n"
                 f"ประเภทรถ/ทะเบียนรถ : {vehicle_type} ({rego})\n"
                 f"เงื่อนไขการลง/เอกสาร : {unloading_stat}\n"

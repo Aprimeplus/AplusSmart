@@ -99,7 +99,7 @@ class SaleRevenueWidget(CTkFrame):
     def _on_chart_resize(self, fw, fh):
         """Fired after debounce — initial draw หรือ window-resize redraw"""
         self._frame_ready_job = None
-        if self.sales_view_mode != 'chart':
+        if self.sales_view_mode not in ('chart', 'monthly'):
             return
         if self._chart_canvas is None:
             self._ready_frame_w = fw
@@ -151,12 +151,11 @@ class SaleRevenueWidget(CTkFrame):
 
         def _set_view(mode):
             self.sales_view_mode = mode
-            if mode == 'chart':
-                self._btn_chart.configure(fg_color=self.theme["primary"], text_color="white")
-                self._btn_table.configure(fg_color="#E2E8F0", text_color="#475569")
-            else:
-                self._btn_table.configure(fg_color=self.theme["primary"], text_color="white")
-                self._btn_chart.configure(fg_color="#E2E8F0", text_color="#475569")
+            for btn, m in [(self._btn_chart, 'chart'), (self._btn_table, 'table'), (self._btn_monthly, 'monthly')]:
+                if m == mode:
+                    btn.configure(fg_color=self.theme["primary"], text_color="white")
+                else:
+                    btn.configure(fg_color="#E2E8F0", text_color="#475569")
             self._refresh()
 
         self._btn_chart = CTkButton(toggle, text="📊 กราฟ", width=90,
@@ -168,6 +167,11 @@ class SaleRevenueWidget(CTkFrame):
                                     fg_color="#E2E8F0", text_color="#475569",
                                     corner_radius=6, command=lambda: _set_view('table'))
         self._btn_table.pack(side="left", padx=2)
+
+        self._btn_monthly = CTkButton(toggle, text="📅 รายเดือน", width=100,
+                                      fg_color="#E2E8F0", text_color="#475569",
+                                      corner_radius=6, command=lambda: _set_view('monthly'))
+        self._btn_monthly.pack(side="left", padx=2)
 
     def _build_chart_area(self):
         self.chart_frame = CTkFrame(self, border_width=1, corner_radius=10)
@@ -223,6 +227,8 @@ class SaleRevenueWidget(CTkFrame):
             loading.destroy()
             if self.sales_view_mode == 'table':
                 self._draw_table(df)
+            elif self.sales_view_mode == 'monthly':
+                self._draw_monthly_chart(df)
             else:
                 self._draw_chart(df)
         except Exception as e:
@@ -578,6 +584,190 @@ class SaleRevenueWidget(CTkFrame):
         canvas.draw()
         self._chart_canvas = canvas
 
+    # ── Monthly chart ─────────────────────────────────────────────────────────
+    PERSON_COLOR_MAP = {
+        'กนกพร':    '#F9ED69',
+        'ปิยะวรรณ': '#F97316',
+        'ภาณุพงศ์': '#8B5CF6',
+        'ฐรินทร์ญา':'#8B5CF6',
+        'ไอยลดา':   '#38BDF8',
+    }
+    COLORS_MONTHLY_FALLBACK = ['#3B82F6','#22C55E','#EC4899','#14B8A6','#EF4444','#84CC16']
+
+    def _get_monthly_data(self):
+        params = []
+        if self.custom_target_start and self.custom_target_end:
+            date_sql = "MAKE_DATE(c.commission_year, c.commission_month, 1) BETWEEN %s::date AND %s::date"
+            params.extend([self.custom_target_start.strftime("%Y-%m-%d"),
+                           self.custom_target_end.strftime("%Y-%m-%d")])
+        else:
+            date_sql = "c.commission_year = %s"
+            params.append(datetime.now().year)
+        query = f"""
+            SELECT su.sale_name, su.sale_key,
+                   c.commission_month AS month,
+                   c.commission_year  AS year,
+                   COALESCE(SUM(c.total_sales), 0) AS total_sales
+            FROM   sales_users su
+            JOIN   commission_payout_logs c
+                   ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
+                  AND {date_sql}
+            WHERE  su.status = 'Active' AND su.role = 'Sale'
+            GROUP  BY su.sale_name, su.sale_key, c.commission_month, c.commission_year
+            ORDER  BY c.commission_year, c.commission_month, su.sale_name
+        """
+        df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+        df['total_sales'] = df['total_sales'].fillna(0)
+        return df
+
+    def _draw_monthly_chart(self, _ignored_df):
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.transforms import blended_transform_factory
+
+        # อ่านขนาด frame จริงก่อน destroy — เหมือน _draw_chart
+        _fw = getattr(self, '_ready_frame_w', 0) or self.chart_frame.winfo_width()
+        _fh = getattr(self, '_ready_frame_h', 0) or self.chart_frame.winfo_height()
+        self._ready_frame_w = 0
+        self._ready_frame_h = 0
+        if _fw <= 10: _fw = self.winfo_width() - 20
+        if _fh <= 10: _fh = self.winfo_height() - 80
+
+        if self._chart_canvas:
+            try: self._chart_canvas.get_tk_widget().destroy()
+            except Exception: pass
+            self._chart_canvas = None
+        for w in self.chart_frame.winfo_children():
+            w.destroy()
+
+        data_df = self._get_monthly_data()
+
+        if data_df.empty:
+            CTkLabel(self.chart_frame, text="ไม่พบข้อมูล", font=self.header_font).pack(expand=True)
+            return
+
+        df = data_df[~data_df['sale_key'].isin(self.EXCLUDE_SALE_KEYS)].copy()
+        df['_group'] = df.apply(
+            lambda r: self.PERSON_MERGE[r['sale_key']][0] if r['sale_key'] in self.PERSON_MERGE else r['sale_name'],
+            axis=1)
+        df = df.groupby(['_group', 'year', 'month'], as_index=False)['total_sales'].sum()
+        df.rename(columns={'_group': 'sale_name'}, inplace=True)
+
+        sales_list = sorted(df['sale_name'].unique())
+        THAI_MONTHS_SHORT = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                             "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+        QTR_NAME = {1:'Q1',2:'Q1',3:'Q1',4:'Q2',5:'Q2',6:'Q2',
+                    7:'Q3',8:'Q3',9:'Q3',10:'Q4',11:'Q4',12:'Q4'}
+        PERSON_GAP = 1.2
+
+        bar_xs, bar_vals, bar_colors, bar_labels = [], [], [], []
+        person_spans, qtr_spans = [], []
+        cur_x = 0
+
+        for i, sale in enumerate(sales_list):
+            p_df = df[df['sale_name'] == sale]
+            p_months = sorted(p_df[['year', 'month']].drop_duplicates().values.tolist())
+            if not p_months:
+                continue
+            color = next((v for k, v in self.PERSON_COLOR_MAP.items() if k in sale),
+                         self.COLORS_MONTHLY_FALLBACK[i % len(self.COLORS_MONTHLY_FALLBACK)])
+            p_start = cur_x; prev_qtr = None; q_start = cur_x
+            for ym in p_months:
+                yr, mo = int(ym[0]), int(ym[1])
+                row = p_df[(p_df['year'] == yr) & (p_df['month'] == mo)]
+                val = float(row['total_sales'].sum()) if not row.empty else 0.0
+                bar_xs.append(cur_x); bar_vals.append(val)
+                bar_colors.append(color); bar_labels.append(THAI_MONTHS_SHORT[mo - 1])
+                qtr = QTR_NAME[mo]
+                if prev_qtr is not None and qtr != prev_qtr:
+                    qtr_spans.append((prev_qtr, q_start, cur_x - 1)); q_start = cur_x
+                prev_qtr = qtr; cur_x += 1
+            if prev_qtr is not None:
+                qtr_spans.append((prev_qtr, q_start, cur_x - 1))
+            person_spans.append((sale, color, p_start, cur_x - 1))
+            cur_x += PERSON_GAP
+
+        if not bar_xs:
+            CTkLabel(self.chart_frame, text="ไม่พบข้อมูล", font=self.header_font).pack(expand=True)
+            return
+
+        dpi = 100
+        BOTTOM_MARGIN = 0.28
+        fig, ax = plt.subplots(figsize=(max(_fw - 22, 400) / dpi, max(_fh - 22, 300) / dpi), dpi=dpi)
+        fig.patch.set_facecolor('#F8FAFC')
+        ax.set_facecolor('#F8FAFC')
+
+        max_val = max(bar_vals) if bar_vals else 1
+        ax.bar(bar_xs, bar_vals, width=0.75, color=bar_colors, zorder=3,
+               edgecolor='white', linewidth=0.4)
+        for bx, bv in zip(bar_xs, bar_vals):
+            if bv > 0:
+                ax.text(bx, bv + max_val * 0.012, f"{bv/1e6:.2f}M",
+                        ha='center', va='bottom', fontsize=7, color='#1E293B', fontweight='bold')
+
+        ax.set_xticks(bar_xs)
+        ax.set_xticklabels(bar_labels, fontsize=7.5, color='#475569')
+        ax.tick_params(axis='x', length=0, pad=2)
+
+        trans = blended_transform_factory(ax.transData, ax.transAxes)
+        for idx, (qtr_lbl, qs, qe) in enumerate(qtr_spans):
+            mid = (qs + qe) / 2
+            ax.text(mid, -0.10, qtr_lbl, transform=trans,
+                    ha='center', va='top', fontsize=8, fontweight='bold', color='#334155', clip_on=False)
+            ax.plot([qs - 0.4, qe + 0.4], [-0.07, -0.07], transform=trans,
+                    color='#94A3B8', lw=0.8, clip_on=False, solid_capstyle='butt')
+            if idx > 0:
+                prev_end = qtr_spans[idx - 1][2]
+                if qs - prev_end < PERSON_GAP:
+                    ax.axvline((prev_end + qs) / 2, color='#94A3B8', lw=1.0, ls='--', zorder=1, alpha=0.5)
+
+        for sale, color, ps, pe in person_spans:
+            ax.text((ps + pe) / 2, -0.22, sale, transform=trans,
+                    ha='center', va='top', fontsize=9, fontweight='bold', color=color, clip_on=False)
+            ax.axvline(pe + PERSON_GAP / 2, color='#CBD5E1', lw=1.0, ls='--', zorder=1)
+
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+            lambda v, _: f"{v/1e6:.1f}M" if v >= 1e6 else f"{v/1e3:.0f}K"))
+        ax.set_ylabel("ยอดขายสุทธิ (บาท)", fontsize=9, color='#475569')
+        ax.tick_params(axis='y', colors='#475569', labelsize=8)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.spines[['left', 'bottom']].set_color('#CBD5E1')
+        ax.yaxis.grid(True, color='#E2E8F0', zorder=0)
+        ax.set_axisbelow(True)
+        ax.set_xlim(min(bar_xs) - 0.6, max(bar_xs) + 0.6)
+        ax.set_ylim(0, max_val * 1.18)
+
+        ytd_total = df['total_sales'].sum()
+        fig.text(0.5, 0.97, f"{ytd_total:,.2f}",
+                 ha='center', va='top', fontsize=20, fontweight='bold', color='#EF4444')
+        fig.text(0.5, 0.925, "Sale Rev. YTD  —  ยอดขายสุทธิ แยกตามเดือน (จัดกลุ่มตามพนักงาน)",
+                 ha='center', va='top', fontsize=9.5, color='#64748B')
+        fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=BOTTOM_MARGIN)
+
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        widget = canvas.get_tk_widget()
+        widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        _resizing = [False]
+        def _on_widget_configure(event, _fig=fig, _canvas=canvas, _dpi=dpi, _bm=BOTTOM_MARGIN):
+            if _resizing[0] or event.width < 100 or event.height < 100:
+                return
+            _resizing[0] = True
+            try:
+                _fig.set_size_inches(event.width / _dpi, event.height / _dpi)
+                _fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=_bm)
+                _canvas.draw()
+            finally:
+                _resizing[0] = False
+
+        widget.bind('<Configure>', _on_widget_configure)
+        canvas.draw()
+        self._chart_canvas = canvas
+        plt.close(fig)
+
     # ── Table ──────────────────────────────────────────────────────────────────
     def _draw_table(self, data_df):
         for w in self.chart_frame.winfo_children():
@@ -713,6 +903,7 @@ class SaleRevenueWidget(CTkFrame):
         tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Management Report Screen
 # ─────────────────────────────────────────────────────────────────────────────
@@ -751,3 +942,4 @@ class ManagementReportScreen(CTkFrame):
             fg_color="transparent",
         )
         revenue_widget.grid(row=0, column=0, sticky="nsew")
+

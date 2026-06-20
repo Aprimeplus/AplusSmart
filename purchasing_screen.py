@@ -685,7 +685,7 @@ class ProductManagementWindow(CTkToplevel):
                 cursor.execute(cursor_query)
                 products = cursor.fetchall()
                 for prod in products:
-                    price = f"{prod['last_unit_price']:,.2f}" if prod['last_unit_price'] else "-"
+                    price = f"{prod['last_unit_price']:,.3f}" if prod['last_unit_price'] else "-"
                     weight = f"{prod['last_weight_per_unit']:,.2f}" if prod['last_weight_per_unit'] else "-"
                     
                     self.tree.insert("", "end", values=(
@@ -720,7 +720,7 @@ class ProductManagementWindow(CTkToplevel):
                 cursor.execute(query, (f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"))
                 products = cursor.fetchall()
                 for prod in products:
-                    price = f"{prod['last_unit_price']:,.2f}" if prod['last_unit_price'] else "-"
+                    price = f"{prod['last_unit_price']:,.3f}" if prod['last_unit_price'] else "-"
                     weight = f"{prod['last_weight_per_unit']:,.2f}" if prod['last_weight_per_unit'] else "-"
                     
                     self.tree.insert("", "end", values=(
@@ -2375,7 +2375,7 @@ class PurchasingScreen(CTkFrame):
             if price_entry and price_entry.winfo_exists():
                 price_entry.delete(0, "end")
                 if pd.notna(last_price):
-                    price_entry.insert(0, f"{last_price:.2f}")
+                    price_entry.insert(0, f"{last_price:.3f}")
 
             weight_entry = row_widgets.get("weight")
             if weight_entry and weight_entry.winfo_exists():
@@ -3435,7 +3435,7 @@ class PurchasingScreen(CTkFrame):
                     last_row["warehouse_var"].set(str(item.get("warehouse") or ""))
                     last_row["qty"].insert(0, f"{(item.get('quantity') or 0):.2f}")
                     last_row["weight"].insert(0, f"{(item.get('weight_per_unit') or 0):.2f}")
-                    last_row["price"].insert(0, f"{(item.get('unit_price') or 0):.2f}")
+                    last_row["price"].insert(0, f"{(item.get('unit_price') or 0):.3f}")
                     last_row["discount_entry"].insert(0, f"{(item.get('discount_value') or 0):.2f}")
                     last_row["discount_type_var"].set(str(item.get("discount_type") or "บาท"))
             
@@ -3602,6 +3602,7 @@ class SLADashboard(CTkFrame):
     # SLA target (นาที) แยกตาม Normal vs 100K+ / >5 SKU
     SLA_TARGET_NORMAL = {"HOT": 30,  "WARM": 60,  "COLD": 120}
     SLA_TARGET_LARGE  = {"HOT": 60,  "WARM": 90,  "COLD": 150}
+    SLA_MADE_TO_ORDER_ADD = 1440  # +1 วัน (24 ชม.) สำหรับ สั่งผลิต
     TEMP_COLOR = {"HOT": "#FEE2E2", "WARM": "#FEF9C3", "COLD": "#DBEAFE"}
 
     def __init__(self, master, app_container):
@@ -4036,9 +4037,23 @@ class SLADashboard(CTkFrame):
                 total_cost  = float(r.get("total_cost", 0) or 0)
                 sku_count   = int(r.get("sku_count",  0) or 0)
                 is_large    = total_cost >= 100_000 or sku_count > 5
+
+                # แยก temp base (HOT/WARM/COLD) และ สั่งผลิต flag
+                temp_raw   = str(temp or "").strip()
+                temp_parts = temp_raw.split("-")
+                temp_base  = temp_parts[0].strip().upper()   # HOT / WARM / COLD
+                is_mto     = "สั่งผลิต" in temp_raw          # Made-to-Order
+
                 target_map  = self.SLA_TARGET_LARGE if is_large else self.SLA_TARGET_NORMAL
-                base_target = target_map.get(temp)
-                order_size  = ("100K+/>5SKU" if is_large else "Normal") if temp in self.SLA_TARGET_NORMAL else "-"
+                base_target = target_map.get(temp_base)
+                if base_target and is_mto:
+                    base_target += self.SLA_MADE_TO_ORDER_ADD  # บวก 1 วันทำการ
+
+                order_size = "-"
+                if temp_base in self.SLA_TARGET_NORMAL:
+                    order_size = "100K+/>5SKU" if is_large else "Normal"
+                    if is_mto:
+                        order_size += " (สั่งผลิต)"
 
                 # ── Extend: effective target + สถานะ ─────────────────────────
                 extends      = r.get("extends") or []

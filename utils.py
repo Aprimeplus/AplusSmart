@@ -135,24 +135,29 @@ class FormattedNumericEntry(ctk.CTkEntry):
         self._command = command
         self._is_formatting = False
         self._variable.trace_add("write", self._format_and_callback)
+        self.bind("<FocusOut>", self._format_on_blur)
+        self.bind("<FocusIn>", lambda e: self.after(10, lambda: (self.select_range(0, tk.END), self.icursor(tk.END))))
 
     def _format_and_callback(self, *args):
         if self._is_formatting: return
         self._is_formatting = True
         try:
             current_value = self._variable.get()
-            cursor_position = self.index(tk.INSERT)
-            numeric_chars = ''.join(filter(lambda char: char.isdigit() or char == '.', current_value))
+            # ไม่ auto-format ขณะพิมพ์ — แค่ trigger callback
+            if self._command: self._command()
+        except (ValueError, TypeError): pass
+        finally: self._is_formatting = False
+
+    def _format_on_blur(self, event=None):
+        """Format เป็น 3 ทศนิยมเมื่อ focus ออก"""
+        if self._is_formatting: return
+        self._is_formatting = True
+        try:
+            current_value = self._variable.get()
+            numeric_chars = ''.join(filter(lambda c: c.isdigit() or c == '.', current_value.replace(',', '')))
             if numeric_chars and numeric_chars != '.':
                 number = float(numeric_chars)
-                formatted_value = f"{number:,.2f}"
-                if formatted_value != current_value:
-                    self._variable.set(formatted_value)
-                    commas_before = current_value[:cursor_position].count(',')
-                    commas_after = formatted_value.count(',')
-                    new_cursor_pos = cursor_position + (commas_after - commas_before)
-                    if new_cursor_pos >= 0: self.icursor(new_cursor_pos)
-            if self._command: self._command()
+                self._variable.set(f"{number:,.3f}")
         except (ValueError, TypeError): pass
         finally: self._is_formatting = False
 
@@ -163,8 +168,8 @@ class FormattedNumericEntry(ctk.CTkEntry):
     def set(self, value: float):
         try:
             num_value = float(value)
-            self._variable.set(f"{num_value:,.2f}")
-        except (ValueError, TypeError): self._variable.set("0.00")
+            self._variable.set(f"{num_value:,.3f}")
+        except (ValueError, TypeError): self._variable.set("0.000")
 
 
 # =========================================================================

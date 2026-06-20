@@ -825,7 +825,13 @@ class CostBenchmarkScreen(CTkFrame):
         self.app_container = app_container
 
         self.auto_save_job_id = None
+        self.auto_calc_job_id = None
+        self._pending_calc_rows  = set()
         self.current_user = getattr(self.app_container, 'current_user_key', 'PU_Default')
+
+        # SLA tracking — เก็บเวลาเริ่มต้นของแต่ละ row (datarn → datetime)
+        self._sla_row_start_times = {}   # datarn → datetime ที่เริ่มกรอก
+        self._sla_reset_jobs      = {}   # datarn → after job id สำหรับ reset timer
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
@@ -1052,6 +1058,8 @@ class CostBenchmarkScreen(CTkFrame):
         if event:
             self._last_click_x = event.x_root
             self._last_click_y = event.y_root
+            import time as _t
+            self._last_click_time = _t.time()
 
     # ================================================================== #
     def _lighten_color(self, hex_color, amount=0.85):
@@ -1290,6 +1298,10 @@ class CostBenchmarkScreen(CTkFrame):
             empty_vertical=0,
         )
         self.sheet.grid(row=0, column=0, sticky="nsew")
+
+        # Enter เลื่อนขวา (tksheet built-in option)
+        self.sheet.set_options(edit_cell_return="right")
+
         self._load_user_settings()
 
         self._rebind_sheet()
@@ -1495,6 +1507,7 @@ class CostBenchmarkScreen(CTkFrame):
             
             self.sheet_frozen.place(x=0, y=0, width=frozen_width, relheight=1.0)
             self.after(10, lambda: self._hide_frozen_scrollbars())
+            self.sheet_frozen.set_options(edit_cell_return="right")
 
             self.sheet = Sheet(
                 self.table_frame,
@@ -2757,6 +2770,7 @@ class CostBenchmarkScreen(CTkFrame):
         self.sheet.bind("<<SheetModified>>", self._on_sheet_modified)
         self.sheet.bind("<Control-r>", self._copy_selected_rows)
         self.sheet.bind("<Control-R>", self._copy_selected_rows)
+
 
         try:
             self.sheet.MT.bind("<ButtonPress-1>", self._capture_click_pos, add="+")
@@ -4319,15 +4333,6 @@ class CostBenchmarkScreen(CTkFrame):
             self._active_popup = None
             self._last_popup_cell = None
 
-        # 🚀 3. ปิด Popup ค้นหาทันทีถ้ามีการคลิกเลือกเซลล์ใหม่
-        if self._active_popup is not None and not self._active_popup._destroyed:
-            try:
-                self._active_popup.safe_destroy()
-            except Exception:
-                pass
-            self._active_popup = None
-            self._last_popup_cell = None
-
     def _open_popup_delayed(self, row, col, data_list, current_val, on_select, is_frozen=False, data_col=None):
         try:
             if (self._active_popup is not None and not self._active_popup._destroyed and self._last_popup_cell == (row, col)):
@@ -5142,20 +5147,64 @@ class CostBenchmarkScreen(CTkFrame):
             except Exception as e:
                 print(f"Inline math error: {e}")
 
-            # 1. คำนวณสูตรในบรรทัดนั้น — ใช้ datarn เสมอ (filter-safe, data index)
-            self._auto_calculate_sheet(datarn)
+            # 1. คำนวณสูตรในบรรทัดนั้น — debounce 200ms เพื่อไม่บล็อก UI
+            self._schedule_calc(datarn)
 
-            # 1b. SLA — ถ้าแก้ไขคอลัมน์ "Sale Order No." ให้บันทึก started_at
+            # 1b. SLA — จับเวลาทันทีที่กรอกข้อมูลใดก็ได้ใน row
             try:
-                col_offset = self.frozen_col_count if self.sheet_frozen else 0
-                real_col = col + col_offset if not is_frozen else col
-                col_name = self.columns[real_col] if real_col < len(self.columns) else ""
-                if col_name == "Sale Order No.":
-                    so_val = str(event.get('value', '') if isinstance(event, dict) else
-                                 (self.sheet_frozen if is_frozen else self.sheet
-                                  ).get_cell_data(datarn, col) or "").strip()
+                from datetime import datetime as _dt
+                SLA_SKIP_COLS = {"Select", "Sale Order No.", "วันที่ขอราคา",
+                                 "Order No.", "รหัส Sale", "PRIORITY", "WIN RATE %",
+                                 "สถานะ", "QT"}
+                # ── หา SO Number ของ row นี้ ──
+                so_col_idx = self.columns.index("Sale Order No.") if "Sale Order No." in self.columns else -1
+                so_val = ""
+                if so_col_idx >= 0:
+                    if self.sheet_frozen and so_col_idx < self.frozen_col_count:
+                        so_val = str(self.sheet_frozen.get_cell_data(datarn, so_col_idx) or "").strip()
+                    else:
+                        adj = so_col_idx - (self.frozen_col_count if self.sheet_frozen else 0)
+                        so_val = str(self.sheet.get_cell_data(datarn, adj) or "").strip()
+
+                # ── เช็คว่า row นี้มีข้อมูลอยู่มั้ย (ไม่นับ skip cols) ──
+                has_data = False
+                for ci, cname in enumerate(self.columns):
+                    if cname in SLA_SKIP_COLS:
+                        continue
+                    if ci < self.frozen_col_count and self.sheet_frozen:
+                        v = self.sheet_frozen.get_cell_data(datarn, ci)
+                    else:
+                        v = self.sheet.get_cell_data(datarn, ci - (self.frozen_col_count if self.sheet_frozen else 0))
+                    if v is not None and str(v).strip() not in ("", "0", "0.0"):
+                        has_data = True
+                        break
+
+                if has_data:
+                    # ยกเลิก reset timer ถ้ามี
+                    if datarn in self._sla_reset_jobs:
+                        try: self.after_cancel(self._sla_reset_jobs.pop(datarn))
+                        except Exception: pass
+                    # เก็บเวลาเริ่มต้นของ row นี้ (ครั้งแรกเท่านั้น)
+                    if datarn not in self._sla_row_start_times:
+                        self._sla_row_start_times[datarn] = _dt.now()
+                    # ถ้ามี SO แล้ว → บันทึก DB ทันที
                     if so_val:
-                        self._sla_record_start(so_val)
+                        self._sla_record_start(so_val, self._sla_row_start_times[datarn])
+                else:
+                    # row ว่างแล้ว
+                    if datarn in self._sla_row_start_times:
+                        if so_val:
+                            # มี SO → schedule 5 นาที reset timer
+                            if datarn in self._sla_reset_jobs:
+                                try: self.after_cancel(self._sla_reset_jobs[datarn])
+                                except Exception: pass
+                            self._sla_reset_jobs[datarn] = self.after(
+                                5 * 60 * 1000,
+                                lambda dn=datarn, so=so_val: self._sla_check_reset(dn, so)
+                            )
+                        else:
+                            # ไม่มี SO และ row ว่าง → ล้าง memory ทันที (ไม่มี DB record อยู่แล้ว)
+                            self._sla_row_start_times.pop(datarn, None)
             except Exception as _sla_e:
                 print(f"SLA start error: {_sla_e}")
 
@@ -5172,15 +5221,17 @@ class CostBenchmarkScreen(CTkFrame):
             if hasattr(self, 'save_status_label'):
                 self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
 
-            # 4. เลื่อนเคอร์เซอร์ไปทางขวา (ใช้ display row/col สำหรับ navigation)
-            if not getattr(self, '_arrow_nav_in_progress', False):
-                self.after(10, lambda: self._move_right(row, col, is_frozen))
+            self._is_editing = False
+            self._return_pressed = False
+            self._edit_ended_by_click = False
 
         except Exception as e:
             print(f"_on_end_edit_combined error: {e}")
 
     def _move_right(self, row, col, is_frozen=False):
         try:
+            self._programmatic_select = True
+            self.after(80, lambda: setattr(self, '_programmatic_select', False))
             if is_frozen and self.sheet_frozen:
                 total_cols_frozen = self.sheet_frozen.get_total_columns()
                 next_col = col + 1
@@ -5300,11 +5351,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             # หน่วง 50ms ให้ tksheet commit ข้อมูลลงเซลล์ก่อนค่อยคำนวณ
             def _do_calc():
-                for r in sorted(rows):
-                    self._auto_calculate_sheet(r)
-                self.sheet.redraw()
-                if self.sheet_frozen:
-                    self.sheet_frozen.redraw()
+                self._schedule_calc(*rows)
                 if self.auto_save_job_id:
                     self.after_cancel(self.auto_save_job_id)
                 if hasattr(self, 'save_status_label'):
@@ -5323,13 +5370,7 @@ class CostBenchmarkScreen(CTkFrame):
             if not rows:
                 return
 
-            for r in sorted(rows):
-                self._auto_calculate_sheet(r)
-
-            self.sheet.redraw()
-            if self.sheet_frozen:
-                self.sheet_frozen.redraw()
-
+            self._schedule_calc(*rows)
             if self.auto_save_job_id:
                 self.after_cancel(self.auto_save_job_id)
             if hasattr(self, 'save_status_label'):
@@ -5337,6 +5378,24 @@ class CostBenchmarkScreen(CTkFrame):
             self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
         except Exception as e:
             print(f"_on_delete_event error: {e}")
+
+    def _schedule_calc(self, *row_indices):
+        """Debounce calculation — รอ 200ms หลัง edit สุดท้าย แล้วคำนวณทุก row ที่ค้างอยู่"""
+        for r in row_indices:
+            self._pending_calc_rows.add(r)
+        if self.auto_calc_job_id is not None:
+            self.after_cancel(self.auto_calc_job_id)
+        self.auto_calc_job_id = self.after(200, self._run_pending_calcs)
+
+    def _run_pending_calcs(self):
+        self.auto_calc_job_id = None
+        rows = sorted(self._pending_calc_rows)
+        self._pending_calc_rows.clear()
+        for r in rows:
+            self._auto_calculate_sheet(r)
+        self.sheet.redraw()
+        if self.sheet_frozen:
+            self.sheet_frozen.redraw()
 
     def _auto_calculate_sheet(self, row_idx):
         col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
@@ -5581,23 +5640,99 @@ class CostBenchmarkScreen(CTkFrame):
             current = datetime.combine(d + timedelta(days=1), WORK_START)
         return total_min
 
-    def _sla_record_start(self, so_number: str):
-        """บันทึก started_at เมื่อ PU พิมพ์ SO ลงตาราง (เฉพาะครั้งแรก)"""
+    def _sla_record_start(self, so_number: str, started_at=None):
+        """บันทึก started_at เมื่อ PU เริ่มกรอกข้อมูล (เฉพาะครั้งแรกของ SO นี้)"""
+        from datetime import datetime as _dt
+        if started_at is None:
+            started_at = _dt.now()
         conn = None
         try:
             conn = self.app_container.get_connection()
             cur = conn.cursor()
+            # เช็คก่อนว่ามี row อยู่แล้วมั้ย — ถ้ามีไม่ insert ใหม่ (preserve started_at เดิม)
             cur.execute("""
-                INSERT INTO sla_benchmark (so_number, user_key)
-                VALUES (%s, %s)
-                ON CONFLICT DO NOTHING
+                SELECT id FROM sla_benchmark
+                WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                LIMIT 1
             """, (so_number, self.current_user))
-            conn.commit()
+            if not cur.fetchone():
+                cur.execute("""
+                    INSERT INTO sla_benchmark (so_number, user_key, started_at)
+                    VALUES (%s, %s, %s)
+                """, (so_number, self.current_user, started_at))
+                conn.commit()
         except Exception as e:
             print(f"_sla_record_start error: {e}")
         finally:
             if conn:
                 self.app_container.release_connection(conn)
+
+    def _sla_check_reset(self, datarn: int, so_number: str):
+        """หลัง 5 นาที — ถ้า row ยังว่างอยู่ และไม่มี row อื่นของ SO นี้มีข้อมูล → reset"""
+        try:
+            SLA_SKIP_COLS = {"Select", "Sale Order No.", "วันที่ขอราคา",
+                             "Order No.", "รหัส Sale", "PRIORITY", "WIN RATE %",
+                             "สถานะ", "QT"}
+            # เช็ค row นี้ว่ายังว่างอยู่มั้ย
+            row_empty = True
+            for ci, cname in enumerate(self.columns):
+                if cname in SLA_SKIP_COLS:
+                    continue
+                if ci < self.frozen_col_count and self.sheet_frozen:
+                    v = self.sheet_frozen.get_cell_data(datarn, ci)
+                else:
+                    v = self.sheet.get_cell_data(datarn, ci - (self.frozen_col_count if self.sheet_frozen else 0))
+                if v is not None and str(v).strip() not in ("", "0", "0.0"):
+                    row_empty = False
+                    break
+            if not row_empty:
+                return  # กรอกใหม่แล้ว ไม่ต้อง reset
+
+            # เช็คว่ามี row อื่นของ SO เดียวกันที่มีข้อมูลอยู่มั้ย
+            total_rows = self.sheet.get_total_rows()
+            so_col_idx = self.columns.index("Sale Order No.") if "Sale Order No." in self.columns else -1
+            other_has_data = False
+            for r in range(total_rows):
+                if r == datarn:
+                    continue
+                if so_col_idx >= 0:
+                    if self.sheet_frozen and so_col_idx < self.frozen_col_count:
+                        r_so = str(self.sheet_frozen.get_cell_data(r, so_col_idx) or "").strip()
+                    else:
+                        r_so = str(self.sheet.get_cell_data(r, so_col_idx - (self.frozen_col_count if self.sheet_frozen else 0)) or "").strip()
+                    if r_so != so_number:
+                        continue
+                for ci, cname in enumerate(self.columns):
+                    if cname in SLA_SKIP_COLS:
+                        continue
+                    if ci < self.frozen_col_count and self.sheet_frozen:
+                        v = self.sheet_frozen.get_cell_data(r, ci)
+                    else:
+                        v = self.sheet.get_cell_data(r, ci - (self.frozen_col_count if self.sheet_frozen else 0))
+                    if v is not None and str(v).strip() not in ("", "0", "0.0"):
+                        other_has_data = True
+                        break
+                if other_has_data:
+                    break
+
+            if not other_has_data:
+                # Reset — ลบ sla_benchmark row และล้าง memory
+                conn = self.app_container.get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        DELETE FROM sla_benchmark
+                        WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                    """, (so_number, self.current_user))
+                    conn.commit()
+                finally:
+                    self.app_container.release_connection(conn)
+                self._sla_row_start_times.pop(datarn, None)
+                print(f"[SLA reset] SO={so_number} row={datarn} ว่างเกิน 5 นาที → reset")
+        except Exception as e:
+            print(f"_sla_check_reset error: {e}")
+        finally:
+            self._sla_reset_jobs.pop(datarn, None)
 
     def _sla_record_copy(self, so_number: str):
         """บันทึก copied_at + duration_min + temp เมื่อกด Copy Short Note (ครั้งแรก)"""
@@ -5636,53 +5771,30 @@ class CostBenchmarkScreen(CTkFrame):
                     WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
                 """, (so_number, self.current_user))
                 row = cur.fetchone()
-                now = datetime.now()
                 if not row:
-                    # SO นี้ไม่มีใน sla_benchmark (เช่น SO เก่าก่อนมี SLA Feature)
-                    # → ดึง created_at จริงจาก cost_benchmarks มาใช้เป็น started_at
-                    # (เฉพาะ row ที่ติ๊ก ✔ และมีสินค้า = ทำงานจริง)
-                    cur.execute("""
-                        SELECT MIN(created_at) FROM cost_benchmarks
-                        WHERE "Sale Order No." = %s
-                          AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
-                          AND "รายการสินค้า" IS NOT NULL
-                          AND TRIM("รายการสินค้า") != ''
-                    """, (so_number,))
-                    cb_row = cur.fetchone()
-                    real_start = cb_row[0] if cb_row and cb_row[0] else now
-                    biz_min_new = self._calc_business_minutes(real_start, now, holiday_set)
-                    try:
-                        cur.execute("""
-                            INSERT INTO sla_benchmark (so_number, user_key, started_at, copied_at, temp)
-                            VALUES (%s, %s, %s, %s, %s)
-                        """, (so_number, self.current_user, real_start, now, best_temp))
-                    except Exception:
-                        cur.execute("""
-                            INSERT INTO sla_benchmark (so_number, user_key, started_at, copied_at)
-                            VALUES (%s, %s, %s, %s)
-                        """, (so_number, self.current_user, real_start, now))
-                    conn.commit()
                     return
                 started_at = row[0]
+                now = datetime.now()
                 biz_min = self._calc_business_minutes(started_at, now, holiday_set)
-                # ลอง UPDATE ทั้ง duration_min ก่อน (กรณีเป็น regular column)
-                # ถ้า error (generated column) → UPDATE เฉพาะ copied_at + temp
-                try:
-                    cur.execute("""
-                        UPDATE sla_benchmark
-                        SET copied_at = %s, duration_min = %s, temp = %s
-                        WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-                    """, (now, biz_min, best_temp, so_number, self.current_user))
-                except Exception:
-                    conn.rollback()
-                    cur.execute("""
-                        UPDATE sla_benchmark
-                        SET copied_at = %s, temp = %s
-                        WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-                    """, (now, best_temp, so_number, self.current_user))
+                cur.execute("""
+                    UPDATE sla_benchmark
+                    SET copied_at = %s, temp = %s, duration_min = %s
+                    WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                """, (now, best_temp, biz_min, so_number, self.current_user))
                 conn.commit()
             finally:
                 self.app_container.release_connection(conn)
+
+            # ล้าง memory ทุก row ของ SO นี้ — ถ้า user ต้องทำใหม่จะได้เริ่มจับเวลาใหม่
+            so_col_idx = self.columns.index("Sale Order No.") if "Sale Order No." in self.columns else -1
+            if so_col_idx >= 0:
+                for dn in list(self._sla_row_start_times.keys()):
+                    if self.sheet_frozen and so_col_idx < self.frozen_col_count:
+                        row_so = str(self.sheet_frozen.get_cell_data(dn, so_col_idx) or "").strip()
+                    else:
+                        row_so = str(self.sheet.get_cell_data(dn, so_col_idx - (self.frozen_col_count if self.sheet_frozen else 0)) or "").strip()
+                    if row_so == so_number:
+                        self._sla_row_start_times.pop(dn, None)
         except Exception as e:
             print(f"_sla_record_copy error: {e}")
 
@@ -6039,11 +6151,6 @@ class CostBenchmarkScreen(CTkFrame):
             today = datetime.now().strftime("%d/%m/%Y")
             days  = validity_days.strip() or "1"
 
-            # group by (ปลายทาง, หมายเหตุ) = จุดรับ + สถานะ
-            groups = OrderedDict()
-            for it in items:
-                groups.setdefault((it["dest"], it["note2"]), []).append(it)
-
             grand_bill   = 0.0
             grand_weight = 0.0
             total_items  = 0
@@ -6054,29 +6161,28 @@ class CostBenchmarkScreen(CTkFrame):
                 "─" * 16,
             ]
 
-            for (dest, status), grp_items in groups.items():
-                for it in grp_items:
-                    spec     = it["note1"]
-                    prod_line = f"{it['product']} {spec}".strip() if spec else it["product"]
-                    wt_str    = _fmt_weight(it["weight_unit"])
-                    price_str = _fmt_price(it["unit_price"])
-                    parts = [prod_line]
-                    if it["qty"]:
-                        parts.append(it["qty"])
-                    if wt_str:
-                        parts.append(wt_str)
-                    if price_str:
-                        parts.append(price_str)
-                    lines.append("  ".join(parts))
-                    total_items += 1
-                    try:
-                        grand_bill += float(it["row_total"].replace(",", ""))
-                    except Exception:
-                        pass
-                    try:
-                        grand_weight += float(it["weight_total"].replace(",", ""))
-                    except Exception:
-                        pass
+            for it in items:
+                spec      = it["note1"]
+                prod_line = f"{it['product']} {spec}".strip() if spec else it["product"]
+                wt_str    = _fmt_weight(it["weight_unit"])
+                price_str = _fmt_price(it["unit_price"])
+                parts = [prod_line]
+                if it["qty"]:
+                    parts.append(it["qty"])
+                if wt_str:
+                    parts.append(wt_str)
+                if price_str:
+                    parts.append(price_str)
+                lines.append("  ".join(parts))
+                total_items += 1
+                try:
+                    grand_bill += float(it["row_total"].replace(",", ""))
+                except Exception:
+                    pass
+                try:
+                    grand_weight += float(it["weight_total"].replace(",", ""))
+                except Exception:
+                    pass
 
             # ── footer เดียวหลังรายการสินค้าทั้งหมด ──────────────────────
             # รวม unique จุดรับ และ หมายเหตุ จากทุก item

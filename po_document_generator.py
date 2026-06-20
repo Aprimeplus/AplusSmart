@@ -323,7 +323,7 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
             make_para(item.get('status', ''), 'Small_Center_TH'), 
             make_para(item.get('product_name', ''), 'Product_Name_TH'), 
             make_para(f"{item.get('quantity', 0):.2f}", 'Small_Right_TH'), 
-            make_para(format_num(item.get('unit_price', 0)), 'Small_Right_TH'), 
+            make_para(f"{float(item.get('unit_price', 0) or 0):,.3f}", 'Small_Right_TH'),
             make_para(format_num(total_price), 'Small_Right_TH'),
         ])
     

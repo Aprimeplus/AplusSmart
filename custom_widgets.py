@@ -13,6 +13,10 @@ class NumericEntry(ctk.CTkEntry):
         super().__init__(master, **kwargs)
         self.default_border_color = self.cget("border_color")
         self.bind("<KeyRelease>", self._validate_input)
+        self.bind("<FocusIn>", self._select_all)
+
+    def _select_all(self, event=None):
+        self.after(10, lambda: (self.select_range(0, tk.END), self.icursor(tk.END)))
 
     def _validate_input(self, event=None):
         current_value = self.get()

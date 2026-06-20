@@ -3817,7 +3817,7 @@ class EditPOWindowByHR(CTkToplevel):
         entry_qty.grid(row=row_index, column=1, padx=2, pady=2, sticky="ew")
 
         entry_price = NumericEntry(self.items_content_frame)
-        entry_price.insert(0, f"{item_data.get('unit_price', 0):.2f}")
+        entry_price.insert(0, f"{item_data.get('unit_price', 0):.3f}")
         entry_price.grid(row=row_index, column=2, padx=2, pady=2, sticky="ew")
         
         self.item_widgets.append({
