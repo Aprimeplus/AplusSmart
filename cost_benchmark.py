@@ -4310,7 +4310,7 @@ class CostBenchmarkScreen(CTkFrame):
         # 1. รองรับระบบคลิกเพื่อสร้างสูตร
         self._on_sheet_click_for_formula(event)
 
-        # 🚀 2. บังคับดึง Focus ทันทีที่คลิกเซลล์ (แก้ปัญหา Ctrl+Z, C, V ไม่ติดตอนแรก)
+        # 🚀 2. บังคับดึง Focus ทันทีที่คลิกเซลล์
         if is_frozen:
             self._last_active_sheet = 'frozen'
             if hasattr(self, 'sheet_frozen') and self.sheet_frozen:
@@ -4324,7 +4324,7 @@ class CostBenchmarkScreen(CTkFrame):
             if hasattr(self, 'sheet_frozen') and self.sheet_frozen:
                 self.sheet_frozen.deselect("all")
 
-        # 3. ปิด Popup ค้นหาทันทีถ้ามีการคลิกเลือกเซลล์ใหม่
+        # 3. ปิด Popup เมื่อคลิก cell ใหม่
         if self._active_popup is not None and not self._active_popup._destroyed:
             try:
                 self._active_popup.safe_destroy()
