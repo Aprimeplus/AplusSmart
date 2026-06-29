@@ -608,6 +608,13 @@ class SalesTargetWidget(CTkFrame):
                 if s <= max_t * 0.08:
                     ax.text(x[i], s + max_t*0.012, f"{s:,.0f}",
                             ha='center', va='bottom', fontsize=12, weight='bold', color='black', zorder=7)
+            elif s > 0:
+                # Sale Center (ไม่มีเป้า) — แสดงยอดบนหัวแท่ง
+                pct_y = s + max_t * 0.16
+                ax.text(x[i], pct_y, f"{s:,.0f}",
+                        ha='center', va='bottom', fontsize=14,
+                        weight='bold', color='#0369A1', zorder=8,
+                        path_effects=[pe.withStroke(linewidth=2, foreground='white')])
 
         # Axes
         max_sales = max((p['total_sales'] for p in people_data), default=0)
