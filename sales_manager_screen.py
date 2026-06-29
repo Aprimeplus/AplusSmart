@@ -699,6 +699,7 @@ class SalesTargetWidget(CTkFrame):
             params.append(today.year)
 
         date_sql = " AND ".join(date_clauses)
+        date_params_only = list(params)  # snapshot ก่อน sale filter
         sale_filter = ""
         if self.selected_sales_filter:
             ph = ','.join(["REPLACE(LOWER(%s), ' ', '')"] * len(self.selected_sales_filter))
@@ -722,6 +723,29 @@ class SalesTargetWidget(CTkFrame):
         """
         df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
         df['total_sales'] = df['total_sales'].fillna(0)
+
+        # ── Sale Center: ดึงรายเดือนจาก commissions โดยตรง ───────────
+        sc_date_filter = date_sql.replace("c.", "sc.")
+        sc_monthly_query = f"""
+            SELECT 'Sale Center' AS sale_name, 'Sale Center' AS sale_key,
+                   sc.commission_month AS month, sc.commission_year AS year,
+                   COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
+            FROM commissions sc
+            WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
+              AND {sc_date_filter}
+            GROUP BY sc.commission_month, sc.commission_year
+            ORDER BY sc.commission_year, sc.commission_month
+        """
+        try:
+            sc_monthly_df = pd.read_sql_query(sc_monthly_query, self.pg_engine,
+                                               params=tuple(date_params_only))
+            sc_monthly_df['total_sales'] = sc_monthly_df['total_sales'].fillna(0)
+            sc_monthly_df = sc_monthly_df[sc_monthly_df['total_sales'] > 0]
+            if not sc_monthly_df.empty:
+                df = pd.concat([df, sc_monthly_df], ignore_index=True)
+        except Exception as e:
+            print(f"Sale Center monthly query error: {e}")
+
         return df
 
     def _create_monthly_chart(self, parent_frame, data_df):
