@@ -74,16 +74,22 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         df['excess_cutting'] = excess_cutting_vat + excess_cutting_cash
 
         # --- B. คำนวณต้นทุนสินค้า (Main Cost Calculation) ---
-        # [ตาม HR Excel]: ทุกต้นทุนรวม (รวมค่าตัด/ค่าบริการ) × 1.03 ทั้งหมด
-        total_cost_calculated = df['final_cost_amount'] * df['cost_multiplier']
+        # PO cutting ไม่ใช่ต้นทุนสินค้า → ดึงออกก่อนคูณ 1.03
+        # ส่วนที่ SO covering จะ net-zero (pass-through), ส่วนที่ SO ขาด (excess) หักกำไรแยก
+        po_cutting_vat_remove = po_cutting_vat_total.clip(upper=df['final_cost_amount'])
+        po_cutting_cash_remove = df['po_cutting_cash_cost'].clip(upper=df['final_cost_amount'])
+        po_cutting_to_remove = po_cutting_vat_remove + po_cutting_cash_remove
+        product_cost_base = (df['final_cost_amount'] - po_cutting_to_remove).clip(lower=0)
+        total_cost_calculated = product_cost_base * df['cost_multiplier']
 
         # --- C. คำนวณกำไรสุทธิ (Final Profit) ---
+        # Revenue = ยอดขายสินค้า (cutting เป็น pass-through ไม่นับใน margin)
+        # excess_cutting = ส่วนที่ PO cutting เกิน SO cutting → หักกำไรโดยตรง (ไม่ × multiplier)
         df['profit'] = (df['sales_service_amount'] - total_cost_calculated) \
                         + df['difference_amount'] \
                         - deduct_shipping_total \
                         - df['excess_cutting']
-        
-        # คำนวณ Margin %
+
         df['margin'] = (df['profit'] / df['sales_service_amount'].replace(0, np.nan)) * 100
         df['margin'] = df['margin'].fillna(0)
 
