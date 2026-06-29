@@ -2342,9 +2342,34 @@ class HRScreen(CTkFrame):
             final_params = [target_multiplier] + params
             df = pd.read_sql_query(query, self.pg_engine, params=tuple(final_params))
 
-            df['sales_target']     = df['sales_target'].fillna(0)
-            df['total_sales']      = df['total_sales'].fillna(0)
+            df['sales_target']      = df['sales_target'].fillna(0)
+            df['total_sales']       = df['total_sales'].fillna(0)
             df['total_outstanding'] = df['total_outstanding'].fillna(0)
+
+            # ── Sale Center: ดึงจาก commissions table โดยตรง ──────────
+            # (ไม่ผ่าน commission_payout_logs เพราะไม่มีการคิดค่าคอม)
+            sc_date_filter = date_filter_sql.replace("c.", "sc.")
+            sc_query = f"""
+                SELECT
+                    COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
+                FROM commissions sc
+                WHERE REPLACE(LOWER(sc.sale_key), ' ', '') = 'salecenter'
+                  AND {sc_date_filter}
+            """
+            sc_params = params  # ใช้ params เดียวกัน (ไม่มี target_multiplier)
+            sc_df = pd.read_sql_query(sc_query, self.pg_engine, params=tuple(sc_params))
+            sc_total = float(sc_df['total_sales'].iloc[0]) if not sc_df.empty else 0.0
+
+            # เพิ่ม Sale Center row เข้า df ถ้ามียอด
+            if sc_total > 0:
+                sc_row = pd.DataFrame([{
+                    'sale_name':        'Sale Center',
+                    'sale_key':         'Sale Center',
+                    'sales_target':     0.0,
+                    'total_sales':      sc_total,
+                    'total_outstanding': 0.0,
+                }])
+                df = pd.concat([df, sc_row], ignore_index=True)
 
             return df
 
@@ -2382,8 +2407,10 @@ class HRScreen(CTkFrame):
         # sale_key ที่ต้องการซ่อน (test / admin accounts)
         EXCLUDE_SALE_KEYS = {
             's', 'd', 'p', 'mp', 'ms', 'hr', 'sm',
-            'Sale Center', 'Pimhathai',
+            'Pimhathai',
         }
+        # Sale Center แสดงด้วยสีพิเศษ (ยอดบริษัท ไม่คิดค่าคอม)
+        SALE_CENTER_KEY = 'Sale Center'
 
         # Merge config: sale_key → (ชื่อกลุ่ม, label ในแท่ง)
         # คนที่มีหลาย ID ให้เพิ่มคู่ตรงนี้
@@ -2453,8 +2480,15 @@ class HRScreen(CTkFrame):
             if pct >= 0.7: return 'yellow'
             return 'red'
 
-        pct_labels = [f"{s/t*100:.0f}%" if t > 0 else "N/A"
-                      for s, t in zip(sales, targets)]
+        pct_labels = []
+        for p, s, t in zip(people_data, sales, targets):
+            is_sc = any(sub['sale_key'] == SALE_CENTER_KEY for sub in p['sub_items'])
+            if is_sc:
+                pct_labels.append("ยอดบริษัท")
+            elif t > 0:
+                pct_labels.append(f"{s/t*100:.0f}%")
+            else:
+                pct_labels.append("N/A")
 
         # ── 3. Figure & Axes ─────────────────────────────────────────
         BG     = '#F8FAFC'
@@ -2480,11 +2514,16 @@ class HRScreen(CTkFrame):
                        color='#E2E8F0', zorder=2, linewidth=0)
 
         # ── 6. วาดแท่งยอดขาย (stacked ถ้ามีหลาย ID) ─────────────────
+        SALE_CENTER_COLOR = ('#0EA5E9', '#7DD3FC')  # sky blue สำหรับ Sale Center
         for i, p in enumerate(people_data):
             total_s  = p['total_sales']
             target   = p['target']
-            akey     = achievement_key(total_s, target)
-            colors   = ACHIEVE_COLORS[akey]        # (dark, light)
+            is_sc    = any(s['sale_key'] == SALE_CENTER_KEY for s in p['sub_items'])
+            if is_sc:
+                colors = SALE_CENTER_COLOR
+            else:
+                akey   = achievement_key(total_s, target)
+                colors = ACHIEVE_COLORS[akey]        # (dark, light)
             subs     = p['sub_items']
             multi_id = len([s for s in subs if s['sales'] > 0]) > 1
 
@@ -2669,8 +2708,11 @@ class HRScreen(CTkFrame):
         ax.tick_params(colors='black')
 
         # ── 11. Legend ────────────────────────────────────────────────
-        # ตรวจสอบว่ามีคนที่มีหลาย ID มั้ย เพื่อเพิ่ม legend แยกสี
         has_multi_id = any(len(p['sub_items']) > 1 for p in people_data)
+        has_sale_center = any(
+            any(s['sale_key'] == SALE_CENTER_KEY for s in p['sub_items'])
+            for p in people_data
+        )
         legend_items = [
             Patch(facecolor='#22C55E', label='≥ 100% เป้า'),
             Patch(facecolor='#F59E0B', label='70–99% เป้า'),
@@ -2683,6 +2725,10 @@ class HRScreen(CTkFrame):
         if has_multi_id:
             legend_items.append(
                 Patch(facecolor='#86EFAC', label='ยอดขายของพาร์ทเนอร์')
+            )
+        if has_sale_center:
+            legend_items.append(
+                Patch(facecolor='#0EA5E9', label='ยอดบริษัท (Sale Center)')
             )
         leg = ax.legend(handles=legend_items,
                         loc='upper right',

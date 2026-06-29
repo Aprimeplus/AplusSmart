@@ -2961,6 +2961,29 @@ class CostBenchmarkScreen(CTkFrame):
                 self._undo()
                 return "break"
 
+        # real-time calc while typing — peek ค่าใน text editor แล้ว write ชั่วคราว → schedule calc
+        def _editor_keyrelease(e, is_frozen=False):
+            try:
+                mt = self.sheet_frozen.MT if is_frozen else self.sheet.MT
+                te = getattr(mt, 'text_editor', None)
+                if not (te and getattr(te, 'open', False)):
+                    return
+                r = getattr(te, 'row', None)
+                c = getattr(te, 'column', None)
+                if r is None or c is None:
+                    return
+                # ดึงค่าปัจจุบันจาก text editor widget
+                widget = getattr(te, 'textedit', None) or getattr(te, 'tktext_editor', None)
+                if widget is None:
+                    return
+                current_val = widget.get("1.0", "end-1c").strip()
+                # write ชั่วคราวลง sheet เพื่อให้ _auto_calculate_sheet อ่านได้
+                target = self.sheet_frozen if is_frozen else self.sheet
+                target.set_cell_data(int(r), int(c), current_val, redraw=False)
+                self._schedule_calc(int(r))
+            except Exception:
+                pass
+
         # edit mode: ลูกศรใน text editor → commit + เลื่อน + เปิด editor ใหม่
         _editor_keys = {
             "<Up>":               lambda e: self._commit_and_move("up",    is_frozen=False),
@@ -2968,6 +2991,7 @@ class CostBenchmarkScreen(CTkFrame):
             "<Left>":             lambda e: self._commit_and_move("left",  is_frozen=False),
             "<Right>":            lambda e: self._commit_and_move("right", is_frozen=False),
             "<Control-KeyPress>": _editor_thai_cb,
+            "<KeyRelease>":       lambda e: _editor_keyrelease(e, is_frozen=False),
         }
         _editor_keys_frozen = {
             "<Up>":               lambda e: self._commit_and_move("up",    is_frozen=True),
@@ -2975,6 +2999,7 @@ class CostBenchmarkScreen(CTkFrame):
             "<Left>":             lambda e: self._commit_and_move("left",  is_frozen=True),
             "<Right>":            lambda e: self._commit_and_move("right", is_frozen=True),
             "<Control-KeyPress>": _editor_thai_cb,
+            "<KeyRelease>":       lambda e: _editor_keyrelease(e, is_frozen=True),
         }
         try:
             self.sheet.MT.text_editor_user_bound_keys = _editor_keys
@@ -5529,27 +5554,17 @@ class CostBenchmarkScreen(CTkFrame):
             self._pending_calc_rows.add(r)
         if self.auto_calc_job_id is not None:
             self.after_cancel(self.auto_calc_job_id)
-        self.auto_calc_job_id = self.after(400, self._run_pending_calcs)
+        self.auto_calc_job_id = self.after(150, self._run_pending_calcs)
 
     def _run_pending_calcs(self):
-        # defer ถ้า user กำลังพิมอยู่
-        if getattr(self, '_is_editing', False):
-            self.auto_calc_job_id = self.after(150, self._run_pending_calcs)
-            return
         self.auto_calc_job_id = None
         rows = sorted(self._pending_calc_rows)
         self._pending_calc_rows.clear()
         for r in rows:
             self._auto_calculate_sheet(r)
-        # redraw ก็ defer ถ้า user เริ่ม edit ใหม่แล้ว
-        def _safe_redraw():
-            if getattr(self, '_is_editing', False):
-                self.after(150, _safe_redraw)
-                return
-            self.sheet.redraw()
-            if self.sheet_frozen:
-                self.sheet_frozen.redraw()
-        self.after_idle(_safe_redraw)
+        self.sheet.redraw()
+        if self.sheet_frozen:
+            self.sheet_frozen.redraw()
 
     def _auto_calculate_sheet(self, row_idx):
         col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
