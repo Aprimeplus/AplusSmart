@@ -54,7 +54,7 @@ class SalesTargetWidget(CTkFrame):
     THAI_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
                    "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
     THAI_MONTH_MAP = {m: i+1 for i, m in enumerate(THAI_MONTHS)}
-    EXCLUDE_KEYS   = {'s','d','p','mp','ms','hr','sm','Pimhathai'}
+    EXCLUDE_KEYS   = {'s','d','p','mp','ms','hr','sm','Pimhathai','CHARITA-CT'}
     SALE_CENTER_KEY = 'Sale Center'
     PERSON_MERGE   = {
         'VOW-P': ('ภาณุพงศ์ / ฐรินทร์ญา', 'ภาณุพงศ์'),
