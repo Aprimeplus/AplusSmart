@@ -2968,12 +2968,13 @@ class CostBenchmarkScreen(CTkFrame):
                 te = getattr(mt, 'text_editor', None)
                 if not (te and getattr(te, 'open', False)):
                     return
-                r = getattr(te, 'row', None)
-                c = getattr(te, 'column', None)
-                if r is None or c is None:
+                # tksheet 7.x ใช้ te.coords = (r, c) แทน te.row / te.column
+                coords = getattr(te, 'coords', None)
+                if coords is None:
                     return
-                # ดึงค่าปัจจุบันจาก text editor widget
-                widget = getattr(te, 'textedit', None) or getattr(te, 'tktext_editor', None)
+                r, c = coords
+                # widget ชื่อ tktext ใน tksheet 7.x
+                widget = getattr(te, 'tktext', None) or getattr(te, 'textedit', None) or getattr(te, 'tktext_editor', None)
                 if widget is None:
                     return
                 current_val = widget.get("1.0", "end-1c").strip()
