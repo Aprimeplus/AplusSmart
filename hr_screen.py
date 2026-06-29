@@ -2295,6 +2295,7 @@ class HRScreen(CTkFrame):
                 params.append(current_year)
 
             date_filter_sql = " AND ".join(date_filter_clauses)
+            date_params = list(params)  # snapshot ก่อนเพิ่ม sale filter params
 
             # =========================================================
             # 2. จัดการกรองพนักงาน
@@ -2356,7 +2357,7 @@ class HRScreen(CTkFrame):
                 WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
                   AND {sc_date_filter}
             """
-            sc_params = params  # ใช้ params เดียวกัน (ไม่มี target_multiplier)
+            sc_params = date_params  # ใช้เฉพาะ date params (ไม่รวม sale filter)
             sc_df = pd.read_sql_query(sc_query, self.pg_engine, params=tuple(sc_params))
             sc_total = float(sc_df['total_sales'].iloc[0]) if not sc_df.empty else 0.0
 
