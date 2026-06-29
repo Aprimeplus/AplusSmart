@@ -519,7 +519,7 @@ class SalesTargetWidget(CTkFrame):
         for p, s, t in zip(people_data, sales, targets):
             is_sc = any(sub['sale_key'] == self.SALE_CENTER_KEY for sub in p['sub_items'])
             if is_sc:
-                pct_labels.append("ยอดบริษัท")
+                pct_labels.append("")
             elif t > 0:
                 pct_labels.append(f"{s/t*100:.0f}%")
             else:
@@ -600,7 +600,7 @@ class SalesTargetWidget(CTkFrame):
                 ax.text(x[i], t*0.5, "ยังไม่มี\nข้อมูล SO",
                         ha='center', va='center', fontsize=11, weight='bold',
                         color='#94A3B8', zorder=8, style='italic', linespacing=1.4)
-            else:
+            elif pct:
                 pct_y = max(s, t) + max_t * 0.16
                 ax.text(x[i], pct_y, pct, ha='center', va='bottom', fontsize=16,
                         weight='medium', color='black', zorder=8,
