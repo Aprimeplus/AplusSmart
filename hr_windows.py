@@ -228,13 +228,14 @@ class HRVerificationWindow(CTkToplevel):
         self._create_new_ui_layout()
 
         initial_multiplier = self.system_data.get('cost_multiplier')
-        _valid_range = [f"{v/100:.2f}" for v in range(101, 111)]   # 1.01-1.10
+        _valid_range = ["1.03", "1.05", "1.07", "1.10", "1.15", "1.20"]
         if initial_multiplier and f"{float(initial_multiplier):.2f}" in _valid_range:
             self.cost_multiplier_var.set(f"{float(initial_multiplier):.2f}")
         else:
             self.cost_multiplier_var.set("1.03")
 
-        # --- โหลดและคำนวณข้อมูล ---
+        # --- โหลดและคำนวณข้อมูล (reload fresh จาก DB ทันที) ---
+        self._reload_data()
         self.after(50, self._update_all_calculations_and_ui)
         
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1312,9 +1313,14 @@ class HRVerificationWindow(CTkToplevel):
                 hr_key = getattr(self.app_container, 'current_user_key', 'HR')
                 rejection_text = f"HR Request: {defer_type}" + (f" | {detail_str}" if detail_str else "")
 
-                # คำนวณ commission_month/year ของเดือนถัดไป เพื่อให้ SO โผล่ใน comparison เดือนหน้า
-                cur_month = int(self.system_data.get('commission_month') or 1)
-                cur_year = int(self.system_data.get('commission_year') or 2025)
+                # ใช้ bill_date เป็นเดือนต้นทาง ป้องกันกรณีเซลล์เปลี่ยน commission_month ไว้ก่อน HR defer
+                bill_date = self.system_data.get('bill_date')
+                if bill_date:
+                    cur_month = bill_date.month
+                    cur_year  = bill_date.year
+                else:
+                    cur_month = int(self.system_data.get('commission_month') or 1)
+                    cur_year  = int(self.system_data.get('commission_year') or 2025)
                 if cur_month >= 12:
                     next_month, next_year = 1, cur_year + 1
                 else:
@@ -3088,14 +3094,16 @@ class CalculationDetailViewer(CTkToplevel):
                 pop.overrideredirect(True)
                 pop.attributes('-topmost', True)
                 pop.configure(bg="#1E293B")
-                pop.geometry(f"180x90+{event.x_root}+{event.y_root}")
+                pop.geometry(f"200x120+{event.x_root}+{event.y_root}")
 
                 from customtkinter import CTkLabel as CL, CTkOptionMenu as COM, CTkButton as CB, CTkFont as CF
                 CL(pop, text=f"SO: {so_num}", font=CF(size=11, weight="bold"),
                    text_color="white", fg_color="#1E293B").pack(pady=(6, 2))
 
                 mult_var = tk.StringVar(value=f"{cur_mult:.2f}")
-                _opts = [f"{v/100:.2f}" for v in range(103, 111)]
+                _opts = ["1.03", "1.05", "1.07", "1.10", "1.15", "1.20"]
+                if mult_var.get() not in _opts:
+                    mult_var.set("1.03")
                 COM(pop, variable=mult_var, values=_opts, width=100, height=28,
                     fg_color="#7C3AED", button_color="#6D28D9").pack(pady=2)
 
@@ -3109,7 +3117,6 @@ class CalculationDetailViewer(CTkToplevel):
                                 "WHERE so_number = %s AND is_active = 1",
                                 (new_mult, so_num)
                             )
-                            # บันทึก log การเปลี่ยนตัวคูณ
                             changed_by = getattr(self.app_container, 'current_user_key', 'unknown')
                             cur.execute(
                                 """INSERT INTO commission_multiplier_log
@@ -3162,11 +3169,17 @@ class CalculationDetailViewer(CTkToplevel):
                     if self.recalculate_callback:
                         self.after(200, self.recalculate_callback)
 
-                CB(pop, text="✓ ยืนยัน", width=80, height=24,
+                btn_frame = ctk.CTkFrame(pop, fg_color="transparent")
+                btn_frame.pack(pady=4)
+                CB(btn_frame, text="✓", width=55, height=26,
                    fg_color="#16A34A", hover_color="#15803D",
-                   command=_apply).pack(pady=4)
+                   command=_apply).pack(side="left", padx=3)
+                CB(btn_frame, text="✕ ยกเลิก", width=75, height=26,
+                   fg_color="#6B7280", hover_color="#4B5563",
+                   command=pop.destroy).pack(side="left", padx=3)
 
                 pop.bind("<Escape>", lambda e: pop.destroy())
+                pop.bind("<FocusOut>", lambda e: pop.destroy())
                 pop.focus_set()
 
             tree.bind("<ButtonRelease-1>", _show_multiplier_editor)

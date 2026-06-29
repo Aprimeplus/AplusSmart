@@ -216,7 +216,7 @@ class SOPendingDetailWindow(CTkToplevel):
     def __init__(self, master, so_number):
         super().__init__(master)
         self.app_container = master.app_container; self.so_number = so_number; self.df = None
-        self.title(f"สรุปรายการสินค้าทั้งหมดสำหรับ SO: {self.so_number} (ดับเบิลคลิกเพื่อดู PO ต้นทาง)"); self.geometry("1200x800")
+        self.title(f"สรุปรายการสินค้าทั้งหมดสำหรับ SO: {self.so_number} (ดับเบิลคลิกเพื่อดู PO ต้นทาง)")
         self.grid_columnconfigure(0, weight=1); self.grid_rowconfigure(1, weight=1)
         header_frame = CTkFrame(self, fg_color="transparent"); header_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(10,5))
         CTkLabel(header_frame, text=f"รายการสินค้าทั้งหมดของ SO: {self.so_number} (ดับเบิลคลิกเพื่อดู PO ต้นทาง)", font=CTkFont(size=16, weight="bold")).pack(side="left")
@@ -224,6 +224,12 @@ class SOPendingDetailWindow(CTkToplevel):
         self.tree_frame = CTkFrame(self); self.tree_frame.grid(row=1, column=0, padx=15, pady=(5, 15), sticky="nsew")
         self.tree_frame.grid_columnconfigure(0, weight=1); self.tree_frame.grid_rowconfigure(0, weight=1)
         self._load_and_display_table(); self.transient(master); self.grab_set()
+        self.update_idletasks()
+        root = master.winfo_toplevel()
+        w, h = 1200, 800
+        rx = root.winfo_x() + (root.winfo_width()  - w) // 2
+        ry = root.winfo_y() + (root.winfo_height() - h) // 2
+        self.geometry(f"{w}x{h}+{rx}+{ry}")
 
     def _load_and_display_table(self):
         for widget in self.tree_frame.winfo_children(): widget.destroy()
@@ -235,7 +241,10 @@ class SOPendingDetailWindow(CTkToplevel):
                     po.po_number, po.supplier_name,
                     item.product_code, item.product_name, item.warehouse,
                     COALESCE(item.status, 'Stock') as item_status,
-                    item.quantity, item.unit_price, item.total_price
+                    item.quantity, item.unit_price,
+                    COALESCE(item.discount_value, 0) as discount_value,
+                    COALESCE(item.discount_type, '') as discount_type,
+                    item.total_price
                 FROM purchase_orders po
                 JOIN purchase_order_items item ON po.id = item.purchase_order_id
                 WHERE po.so_number = %s
@@ -253,7 +262,7 @@ class SOPendingDetailWindow(CTkToplevel):
         style = ttk.Style(self); style.theme_use("default"); style.configure("Treeview.Heading", font=('Roboto', 14, 'bold')); style.configure("Treeview", rowheight=28, font=('Roboto', 12))
         
         # [แก้ไข 1] เพิ่มชื่อคอลัมน์ 'Code' และ 'Warehouse'
-        columns = ['PO Number', 'Supplier', 'Code', 'Product Name', 'Warehouse', 'Stock/Trade', 'Quantity', 'Unit Price', 'Total Price']
+        columns = ['เลขที่ PO', 'ซัพพลายเออร์', 'รหัสสินค้า', 'ชื่อสินค้า', 'คลัง', 'Stock/Trade', 'จำนวน', 'ราคา/หน่วย', 'ส่วนลด', 'ราคารวม']
 
         tree = ttk.Treeview(self.tree_frame, columns=columns, show='headings')
         tree.tag_configure("stock", background="#DBEAFE", foreground="#1E40AF")   # Stock — ฟ้า
@@ -262,13 +271,14 @@ class SOPendingDetailWindow(CTkToplevel):
         for col in columns:
             width = 120
             anchor = 'w'
-            if col == 'Product Name':  width = 250
-            elif col == 'Supplier':    width = 180
-            elif col == 'PO Number':   width = 130
-            elif col == 'Code':        width = 100
-            elif col == 'Warehouse':   width = 80;  anchor = 'center'
-            elif col == 'Stock/Trade': width = 85;  anchor = 'center'
-            elif col in ['Quantity', 'Unit Price', 'Total Price']: anchor = 'e'
+            if col == 'ชื่อสินค้า':      width = 250
+            elif col == 'ซัพพลายเออร์': width = 180
+            elif col == 'เลขที่ PO':     width = 130
+            elif col == 'รหัสสินค้า':   width = 100
+            elif col == 'คลัง':          width = 80;  anchor = 'center'
+            elif col == 'Stock/Trade':   width = 85;  anchor = 'center'
+            elif col == 'ส่วนลด':        width = 80;  anchor = 'e'
+            elif col in ['จำนวน', 'ราคา/หน่วย', 'ราคารวม']: anchor = 'e'
             tree.heading(col, text=col)
             tree.column(col, width=width, anchor=anchor)
 
@@ -284,6 +294,7 @@ class SOPendingDetailWindow(CTkToplevel):
                 item_status,
                 f"{row['quantity']:,.2f}",
                 f"{row['unit_price']:,.2f}",
+                f"{row['discount_value']:,.2f} {row['discount_type']}".strip(),
                 f"{row['total_price']:,.2f}"
             )
             unique_iid = f"{row['po_id']}-{row['item_id']}"

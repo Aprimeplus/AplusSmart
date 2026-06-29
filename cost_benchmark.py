@@ -1282,6 +1282,7 @@ class CostBenchmarkScreen(CTkFrame):
 
     # ================================================================== #
     def _build_tksheet(self, parent):
+        self._build_col_index_cache()  # build O(1) cache ก่อนใช้ตาราง
         self.sheet = Sheet(
             parent,
             headers=self.columns,
@@ -1590,56 +1591,75 @@ class CostBenchmarkScreen(CTkFrame):
         if getattr(self, '_sync_loop_id', None):
             self.after_cancel(self._sync_loop_id)
 
-        self._last_yview_main = -1.0
+        self._last_yview_main   = -1.0
         self._last_yview_frozen = -1.0
 
-        def _do_sync():
-            if not getattr(self, "sheet", None) or not getattr(self, "sheet_frozen", None):
-                return
+        def _raw_sync_frozen(pos):
+            """sync frozen โดยตรงด้วย yview fraction + redraw"""
             try:
-                if not self.sheet.winfo_exists() or not self.sheet_frozen.winfo_exists():
-                    return
-            except Exception:
-                return
+                if not self.sheet_frozen.winfo_exists(): return
+                self.sheet_frozen.MT.yview_moveto(pos)
+                try: self.sheet_frozen.RI.yview_moveto(pos)
+                except Exception: pass
+                try: self.sheet_frozen.MT.main_table_redraw_grid_and_text(
+                        redraw_header=False, redraw_row_index=True)
+                except Exception:
+                    try: self.sheet_frozen.redraw()
+                    except Exception: pass
+            except Exception: pass
 
+        def _raw_sync_main(pos):
+            """sync main โดยตรงด้วย yview fraction + redraw"""
             try:
-                try: y_main = self.sheet.get_yview()[0]
-                except Exception: y_main = self.sheet.MT.yview()[0]
-                
-                try: y_frozen = self.sheet_frozen.get_yview()[0]
-                except Exception: y_frozen = self.sheet_frozen.MT.yview()[0]
-
-                if abs(y_main - self._last_yview_main) > 0.0001:
-                    self._last_yview_main = y_main
-                    self._last_yview_frozen = y_main
-                    self.sheet_frozen.yview_moveto(y_main)
-                    try: self.sheet_frozen.MT.yview_moveto(y_main)
+                if not self.sheet.winfo_exists(): return
+                self.sheet.MT.yview_moveto(pos)
+                try: self.sheet.MT.main_table_redraw_grid_and_text(
+                        redraw_header=False, redraw_row_index=False)
+                except Exception:
+                    try: self.sheet.redraw()
                     except Exception: pass
+            except Exception: pass
 
-                elif abs(y_frozen - self._last_yview_frozen) > 0.0001:
-                    self._last_yview_frozen = y_frozen
-                    self._last_yview_main = y_frozen
-                    self.sheet.yview_moveto(y_frozen)
-                    try: self.sheet.MT.yview_moveto(y_frozen)
-                    except Exception: pass
+        def _poll_sync():
+            try:
+                if not self.winfo_exists(): return
+                if not self.sheet.winfo_exists() or not self.sheet_frozen.winfo_exists(): return
+                try: pos_main = self.sheet.MT.yview()[0]
+                except Exception: pos_main = self._last_yview_main
+                try: pos_frozen = self.sheet_frozen.MT.yview()[0]
+                except Exception: pos_frozen = self._last_yview_frozen
 
-            except Exception:
-                pass
+                if abs(pos_main - self._last_yview_main) > 0.0005:
+                    # main เลื่อน → sync frozen
+                    self._last_yview_main   = pos_main
+                    self._last_yview_frozen = pos_main
+                    _raw_sync_frozen(pos_main)
+                elif abs(pos_frozen - self._last_yview_frozen) > 0.0005:
+                    # frozen เลื่อน (arrow key / select) → sync main
+                    self._last_yview_frozen = pos_frozen
+                    self._last_yview_main   = pos_frozen
+                    _raw_sync_main(pos_frozen)
+            except Exception: pass
+            self._sync_loop_id = self.after(80, _poll_sync)
 
-            if getattr(self, "frozen_col_count", 0) > 0:
-                self._sync_loop_id = self.after(20, _do_sync)
-
-        self._sync_loop_id = self.after(50, _do_sync)
+        self._sync_loop_id = self.after(80, _poll_sync)
 
         def _sync_to_frozen(event=None):
             try:
                 if not self.sheet.winfo_exists() or not self.sheet_frozen.winfo_exists(): return
-                pos = self.sheet.get_yview()[0]
-                self.sheet_frozen.yview_moveto(pos)
-                try: self.sheet_frozen.MT.yview_moveto(pos)
-                except Exception: pass
-                try: self.sheet_frozen.RI.yview_moveto(pos)
-                except Exception: pass
+                pos = self.sheet.MT.yview()[0]
+                self._last_yview_main   = pos
+                self._last_yview_frozen = pos
+                _raw_sync_frozen(pos)
+            except Exception: pass
+
+        def _sync_frozen_to_main(event=None):
+            try:
+                if not self.sheet_frozen.winfo_exists() or not self.sheet.winfo_exists(): return
+                pos = self.sheet_frozen.MT.yview()[0]
+                self._last_yview_frozen = pos
+                self._last_yview_main   = pos
+                _raw_sync_main(pos)
             except Exception: pass
 
         def _frozen_wheel(event=None):
@@ -1670,12 +1690,13 @@ class CostBenchmarkScreen(CTkFrame):
             self.after_idle(_sync_to_frozen)
             return "break"
 
-        # bind main → frozen
+        # bind main → frozen (wheel + keyboard arrows)
         for widget in [self.sheet, self.sheet.MT]:
             try:
                 widget.bind("<MouseWheel>", lambda e: self.after_idle(_sync_to_frozen), add="+")
                 widget.bind("<Button-4>",   lambda e: self.after_idle(_sync_to_frozen), add="+")
                 widget.bind("<Button-5>",   lambda e: self.after_idle(_sync_to_frozen), add="+")
+                widget.bind("<KeyRelease>", lambda e: self.after_idle(_sync_to_frozen), add="+")
             except Exception: pass
         try:
             self.sheet.RI.bind("<MouseWheel>", lambda e: self.after_idle(_sync_to_frozen), add="+")
@@ -1683,11 +1704,26 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet.RI.bind("<Button-5>",   lambda e: self.after_idle(_sync_to_frozen), add="+")
         except Exception: pass
 
-        # bind frozen → main (ใช้ unbind ก่อน)
+        # bind frozen → main: ใช้ bindtags เพื่อ intercept ทุก widget ลูกของ frozen
+        def _redirect_wheel(event):
+            widget_name = str(event.widget)
+            frozen_name = str(self.sheet_frozen)
+            if not widget_name.startswith(frozen_name):
+                return
+            if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
+                _frozen_wheel_up(event)
+            elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
+                _frozen_wheel_down(event)
+            else:
+                _frozen_wheel(event)
+            return "break"
+
         frozen_widgets = [self.sheet_frozen, self.sheet_frozen.MT]
         try: frozen_widgets.append(self.sheet_frozen.RI)
         except Exception: pass
         try: frozen_widgets.append(self.sheet_frozen.CH)
+        except Exception: pass
+        try: frozen_widgets.append(self.sheet_frozen.TL)
         except Exception: pass
 
         for w in frozen_widgets:
@@ -1696,12 +1732,43 @@ class CostBenchmarkScreen(CTkFrame):
                 w.unbind("<MouseWheel>")
                 w.unbind("<Button-4>")
                 w.unbind("<Button-5>")
+                w.bind("<MouseWheel>", _frozen_wheel,      add="")
+                w.bind("<Button-4>",   _frozen_wheel_up,   add="")
+                w.bind("<Button-5>",   _frozen_wheel_down, add="")
             except Exception: pass
+
+        # เมื่อ navigate ด้วย arrow key / click บน frozen → sync main
+        def _on_frozen_select(event=None):
+            self.after(30, _sync_frozen_to_main)
+
+        try:
+            self.sheet_frozen.extra_bindings([
+                ("cell_select",       _on_frozen_select),
+                ("row_select",        _on_frozen_select),
+                ("shift_cell_select", _on_frozen_select),
+            ])
+        except Exception: pass
+
+        # arrow key บน frozen widget
+        for w in [self.sheet_frozen, self.sheet_frozen.MT]:
             try:
-                w.bind("<MouseWheel>", _frozen_wheel)
-                w.bind("<Button-4>",   _frozen_wheel_up)
-                w.bind("<Button-5>",   _frozen_wheel_down)
+                w.bind("<KeyRelease-Up>",    lambda e: self.after(30, _sync_frozen_to_main), add="+")
+                w.bind("<KeyRelease-Down>",  lambda e: self.after(30, _sync_frozen_to_main), add="+")
+                w.bind("<KeyRelease-Prior>", lambda e: self.after(30, _sync_frozen_to_main), add="+")
+                w.bind("<KeyRelease-Next>",  lambda e: self.after(30, _sync_frozen_to_main), add="+")
             except Exception: pass
+
+        # เมื่อ navigate บน main → sync frozen (poll จัดการแล้ว แต่เพิ่ม instant sync)
+        def _on_main_select(event=None):
+            self.after(30, _sync_to_frozen)
+
+        try:
+            self.sheet.extra_bindings([
+                ("cell_select",       _on_main_select),
+                ("row_select",        _on_main_select),
+                ("shift_cell_select", _on_main_select),
+            ])
+        except Exception: pass
     # ================================================================== #
     # FORMATTING
     # ================================================================== #
@@ -1852,12 +1919,20 @@ class CostBenchmarkScreen(CTkFrame):
             # main sheet: data index = real_idx - col_offset
             return 'main', real_idx - col_offset
 
+    def _build_col_index_cache(self):
+        """สร้าง cache dict col_name → real_idx เพื่อ O(1) lookup แทน list.index()"""
+        self._col_index_cache = {name: i for i, name in enumerate(self.columns)}
+
     def _col_to_disp(self, col_name):
         """แปลง col_name -> (sheet_side, display_idx) โดยคำนึงคอลัมน์ซ่อน"""
-        try:
-            return self._real_to_disp(self.columns.index(col_name))
-        except ValueError:
+        cache = getattr(self, '_col_index_cache', None)
+        if cache is None:
+            self._build_col_index_cache()
+            cache = self._col_index_cache
+        real_idx = cache.get(col_name)
+        if real_idx is None:
             return None, None
+        return self._real_to_disp(real_idx)
 
     def _sheet_get(self, row_idx, col_name):
         """อ่านค่า cell จาก col_name (รองรับ hidden cols + frozen split)"""
@@ -1887,9 +1962,8 @@ class CostBenchmarkScreen(CTkFrame):
 
         def get_data_idx(col_name):
             # ใช้ Data Index (ไม่นับ hidden cols) เพื่อให้ readonly_columns ถูกต้องเสมอ
-            try:
-                real_idx = self.columns.index(col_name)
-            except ValueError:
+            real_idx = self._col_index_cache.get(col_name)
+            if real_idx is None:
                 return None
             if real_idx < col_offset:
                 return None
@@ -2776,20 +2850,26 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet.MT.bind("<ButtonPress-1>", self._capture_click_pos, add="+")
             self.sheet.MT.bind("<Double-ButtonPress-1>", self._on_mt_click, add="+")
             # KeyPress: เปิด popup เมื่อพิมพ์บน popup columns
+            # patch open_cell เพื่อ rescue ตัวอักษรที่ถูก drop ตอน focus ยัง transfer ไม่ทัน
+            # tksheet drop char เมื่อ text_editor.open=True แต่ focus ยังอยู่ที่ MT
+            self._patch_open_cell(self.sheet.MT)
             # ใช้ bind โดยตรงแทน begin_edit_cell เพราะ tksheet ไม่ fire begin_edit_cell
             # เมื่อ column ถูกซ่อนด้วย display_columns()
-            self.sheet.MT.bind("<KeyPress>", self._on_mt_keypress, add="+")
+            # ป้องกัน add="+" ซ้ำ ถ้า _rebind_sheet ถูกเรียกหลายครั้ง
+            if not getattr(self.sheet.MT, '_keypress_bound', False):
+                self.sheet.MT._keypress_bound = True
+                self.sheet.MT.bind("<KeyPress>", self._on_mt_keypress, add="+")
             
-            # 🟢 เพิ่ม 2 บรรทัดนี้: ให้คำนวณ Auto Sum เมื่อ "ปล่อยเมาส์" หรือ "ปล่อยปุ่มคีย์บอร์ด"
-            self.sheet.MT.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
-            self.sheet.bind("<KeyRelease>", lambda e: self.after(50, self._update_quick_calc), add="+")
+            # คำนวณ Auto Sum เมื่อ "ปล่อยเมาส์" หรือ "ปล่อยปุ่มคีย์บอร์ด" — debounce 300ms
+            self.sheet.MT.bind("<ButtonRelease-1>", lambda e: self._schedule_quick_calc(), add="+")
+            self.sheet.bind("<KeyRelease>", lambda e: self._schedule_quick_calc(), add="+")
         except Exception:
             self.sheet.bind("<ButtonPress-1>", self._capture_click_pos, add="+")
 
         # 🟢 เพิ่ม Block นี้ด้วย: รองรับกรณีลากคลุมจากเลขบรรทัด (Row Index) หรือ หัวตาราง (Header)
         try:
-            self.sheet.RI.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
-            self.sheet.CH.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
+            self.sheet.RI.bind("<ButtonRelease-1>", lambda e: self._schedule_quick_calc(), add="+")
+            self.sheet.CH.bind("<ButtonRelease-1>", lambda e: self._schedule_quick_calc(), add="+")
         except Exception: pass
 
         self.sheet.enable_bindings((
@@ -2996,6 +3076,7 @@ class CostBenchmarkScreen(CTkFrame):
             return self._undo(event)
 
     def _on_begin_edit_cell(self, event):
+        self._is_editing = True
         try:
             if isinstance(event, dict):
                 row = event.get('row')
@@ -3105,6 +3186,7 @@ class CostBenchmarkScreen(CTkFrame):
             return ""
 
     def _on_begin_edit_cell_frozen(self, event):
+        self._is_editing = True
         try:
             if isinstance(event, dict):
                 row = event.get('row')
@@ -3494,15 +3576,15 @@ class CostBenchmarkScreen(CTkFrame):
             # ✅ popup เปิดเฉพาะ double-click — single click แค่ select เซลล์ปกติ
             self.sheet_frozen.MT.bind("<Double-ButtonPress-1>", self._on_mt_click_frozen, add="+")
             
-            # 🟢 ปรับปรุงใหม่อีก 2 บรรทัด: ให้ครอบคลุมการลากและการใช้ปุ่ม Shift+ลูกศร
-            self.sheet_frozen.MT.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
-            self.sheet_frozen.bind("<KeyRelease>", lambda e: self.after(50, self._update_quick_calc), add="+")
+            # ครอบคลุมการลากและการใช้ปุ่ม Shift+ลูกศร — debounce 300ms
+            self.sheet_frozen.MT.bind("<ButtonRelease-1>", lambda e: self._schedule_quick_calc(), add="+")
+            self.sheet_frozen.bind("<KeyRelease>", lambda e: self._schedule_quick_calc(), add="+")
         except Exception: pass
 
         # 🟢 เพิ่ม Block นี้เช่นกัน: เผื่อเราลากคลุมจากเลขบรรทัดฝั่งที่ตรึงไว้
         try:
-            self.sheet_frozen.RI.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
-            self.sheet_frozen.CH.bind("<ButtonRelease-1>", lambda e: self.after(50, self._update_quick_calc), add="+")
+            self.sheet_frozen.RI.bind("<ButtonRelease-1>", lambda e: self._schedule_quick_calc(), add="+")
+            self.sheet_frozen.CH.bind("<ButtonRelease-1>", lambda e: self._schedule_quick_calc(), add="+")
         except Exception: pass
 
         # MT.bind ต้องมาหลัง enable_bindings — ใช้ router เดียวกับ main sheet เพื่อ consistency
@@ -3517,7 +3599,10 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet_frozen.MT.bind("<Control-y>", self._redo)
             self.sheet_frozen.MT.bind("<Control-Y>", self._redo)
             self.sheet_frozen.MT.bind("<Control-KeyPress>", self._on_ctrl_keypress_thai, add="+")
-            self.sheet_frozen.MT.bind("<KeyPress>", self._on_mt_keypress_frozen, add="+")
+            if not getattr(self.sheet_frozen.MT, '_keypress_bound', False):
+                self.sheet_frozen.MT._keypress_bound = True
+                self.sheet_frozen.MT.bind("<KeyPress>", self._on_mt_keypress_frozen, add="+")
+            self._patch_open_cell(self.sheet_frozen.MT)
         except Exception: pass
 
         # ✅ navigation mode arrow บน frozen MT (รองรับข้ามฝั่ง frozen→main)
@@ -3572,8 +3657,10 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _on_sheet_modified(self, event=None):
         try:
-            # หน่วงเวลา 50ms ให้ระบบตารางบันทึกค่าลงเซลล์เสร็จก่อน ค่อยจำประวัติ
-            self.after(50, self._push_undo)
+            # หน่วง undo — ยกเลิกอันเก่าก่อนเสมอ เพื่อไม่ให้ push_undo ซ้อนทับกัน
+            if getattr(self, '_push_undo_job', None):
+                self.after_cancel(self._push_undo_job)
+            self._push_undo_job = self.after(300, self._push_undo)
             if self.auto_save_job_id is not None:
                 self.after_cancel(self.auto_save_job_id)
             if hasattr(self, 'save_status_label'):
@@ -3583,6 +3670,11 @@ class CostBenchmarkScreen(CTkFrame):
             pass
 
     def _push_undo(self):
+        self._push_undo_job = None
+        # ถ้า user กำลังพิมอยู่ ให้รอก่อน — ไม่อยากให้ get_sheet_data() block UI ระหว่างพิม
+        if getattr(self, '_is_editing', False):
+            self._push_undo_job = self.after(200, self._push_undo)
+            return
         try:
             if not hasattr(self, '_history'):
                 self._history = []
@@ -3768,17 +3860,27 @@ class CostBenchmarkScreen(CTkFrame):
             col_name = self.columns[real_col]
             status_opts = [
                 "WIN", "STOCK",
-                "LOSE - เซลล์ไม่ทราบสาเหตุ",
-                "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
-                "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
-                "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
-                "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
-                "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
-                "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
+                "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
+                "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
+                "L-LOC แพ้พิกัด/ค่าขนส่ง",
+                "L-SPC ไม่มีสินค้า/แบรนด์ที่ต้องการ",
+                "L-CHG ลูกค้าเปลี่ยนสเปก",
+                "L-DEL Lead Time ไม่ได้",
+                "L-QTY คุณภาพ/ใบเซอร์ไม่ผ่านเกณฑ์",
+                "L-SPD ส่งราคาช้า(Late Quote)",
+                "L-FLW ขาดการติดตาม",
+                "L-INF ข้อมูลสเปกไม่ถูกต้อง",
+                "U-TRM เครดิตไม่ตรงนโยบาย",
+                "U-LCK สเปกล็อค/แบรนด์ล็อค",
+                "U-CON ความสัมพันธ์ส่วนตัว",
+                "U-CNC ยกเลิกโครงการ/งานพับ",
+                "U-BID รอผลประมูล(Bid Pipeline)",
+                "U-MKT สินค้าขาดตลาด",
+                "L-UNK ไม่ได้ติดตามสาเหตุ",
             ]
             popup_cols = {
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
-                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"],
+                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง", "ยกเลิก"],
                 "สถานะ":          status_opts,
                 "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔"],
             }
@@ -3913,6 +4015,36 @@ class CostBenchmarkScreen(CTkFrame):
         self.product_category_map = {}
         self._load_dropdown_data()
 
+    def _patch_open_cell(self, mt):
+        """Patch MT.open_cell เพื่อ rescue char ที่ถูก tksheet drop
+        กรณี: text_editor.open=True แต่ focus ยัง transfer ไม่ทัน → open_cell return early
+        เราดัก was_open ก่อนเรียก original แล้ว insert char ถ้าจำเป็น"""
+        # ป้องกัน double-wrap ถ้า _rebind_sheet ถูกเรียกซ้ำ
+        if getattr(mt, '_open_cell_patched', False):
+            return
+        mt._open_cell_patched = True
+        original_open_cell = mt.open_cell
+
+        def _patched(event=None, ignore_existing_editor=False):
+            was_open = getattr(mt.text_editor, 'open', False)
+            original_open_cell(event=event, ignore_existing_editor=ignore_existing_editor)
+            # ถ้า editor เปิดอยู่ก่อนแล้ว → open_cell ไม่ได้ใส่ char → rescue ใส่เอง
+            # ord(event.char) >= 32 แปลว่าเป็น printable char → ไม่ต้องเช็ค modifier ซ้ำ
+            # (Ctrl+key มักให้ char < 32, Alt+key มักให้ char ว่าง)
+            if was_open and event and getattr(event, 'char', '') and ord(event.char) >= 32:
+                try:
+                    te_win = mt.text_editor.window
+                    if te_win:
+                        current = te_win.get()
+                        te_win.set_text(current + event.char)
+                        mt.text_editor.tktext.mark_set("insert", "end-1c")
+                        mt.text_editor.tktext.focus_set()
+                except Exception:
+                    pass
+
+        mt.open_cell = _patched
+        mt.bind("<Key>", _patched)
+
     def _on_mt_keypress(self, event=None):
         """KeyPress บน main sheet MT — เปิด popup สำหรับ รายการสินค้า / ชื่อ Supplier / รหัส Sale
         ใช้วิธีนี้แทน begin_edit_cell เพราะ tksheet ไม่ fire begin_edit_cell
@@ -3923,6 +4055,8 @@ class CostBenchmarkScreen(CTkFrame):
             # ตรวจ modifier keys — ถ้ากด Ctrl/Alt ให้ข้ามไป
             if event.state & 0x4 or event.state & 0x8:  # Ctrl or Alt
                 return
+            # mark ว่า user กำลัง edit
+            self._is_editing = True
 
             # ดู selected cell
             sel = self.sheet.get_currently_selected()
@@ -4033,6 +4167,7 @@ class CostBenchmarkScreen(CTkFrame):
                 return
             if event.state & 0x4 or event.state & 0x8:  # Ctrl or Alt
                 return
+            self._is_editing = True
 
             sel = self.sheet_frozen.get_currently_selected()
             if not sel or len(sel) < 2:
@@ -4161,17 +4296,27 @@ class CostBenchmarkScreen(CTkFrame):
             col_name = self.columns[real_col]
             status_opts = [
                 "WIN", "STOCK",
-                "LOSE - เซลล์ไม่ทราบสาเหตุ",
-                "LOSE - ลูกค้าได้ราคาถูกกว่า (มีราคาเทียบ)",
-                "LOSE - ลูกค้าได้ราคาถูกกว่า (ไม่มีราคาเทียบ)",
-                "LOSE - ไม่มีกำหนดใช้งานที่แน่นอน เช่น ขอราคาเพื่อเสนอ",
-                "LOSE - ยื่นประมูลงาน (ระบุเดือนในหมายเหตุ)",
-                "LOSE - ลูกค้าเปลี่ยนสเปคการใช้งาน",
-                "LOSE - ลูกค้าใช้เจ้าที่มีเครดิต"
+                "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
+                "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
+                "L-LOC แพ้พิกัด/ค่าขนส่ง",
+                "L-SPC ไม่มีสินค้า/แบรนด์ที่ต้องการ",
+                "L-CHG ลูกค้าเปลี่ยนสเปก",
+                "L-DEL Lead Time ไม่ได้",
+                "L-QTY คุณภาพ/ใบเซอร์ไม่ผ่านเกณฑ์",
+                "L-SPD ส่งราคาช้า(Late Quote)",
+                "L-FLW ขาดการติดตาม",
+                "L-INF ข้อมูลสเปกไม่ถูกต้อง",
+                "U-TRM เครดิตไม่ตรงนโยบาย",
+                "U-LCK สเปกล็อค/แบรนด์ล็อค",
+                "U-CON ความสัมพันธ์ส่วนตัว",
+                "U-CNC ยกเลิกโครงการ/งานพับ",
+                "U-BID รอผลประมูล(Bid Pipeline)",
+                "U-MKT สินค้าขาดตลาด",
+                "L-UNK ไม่ได้ติดตามสาเหตุ",
             ]
             popup_cols = {
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
-                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"],
+                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง", "ยกเลิก"],
                 "สถานะ":          status_opts,
                 "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔"],
             }
@@ -4298,13 +4443,15 @@ class CostBenchmarkScreen(CTkFrame):
             print(f"manual refresh error: {e}")
 
     def _start_dropdown_refresh_timer(self):
-        """Refresh dropdown data ทุก 10 วินาที — timer วิ่งต่อเสมอแม้ refresh จะ error"""
-        try:
-            self._refresh_dropdown_data()
-        except Exception as e:
-            print(f"dropdown refresh error: {e}")
-        finally:
-            self.after(10000, self._start_dropdown_refresh_timer)
+        """Refresh dropdown data ทุก 10 วินาที — รันใน background thread ไม่ block UI"""
+        import threading
+        def _do():
+            try:
+                self._refresh_dropdown_data()
+            except Exception as e:
+                print(f"dropdown refresh error: {e}")
+        threading.Thread(target=_do, daemon=True).start()
+        self.after(10000, self._start_dropdown_refresh_timer)
 
     def _on_cell_select_combined(self, event=None, is_frozen=False):
         # 1. รองรับระบบคลิกเพื่อสร้างสูตร
@@ -4944,6 +5091,12 @@ class CostBenchmarkScreen(CTkFrame):
         except Exception as e:
             print(f"_save_col_widths error: {e}")
 
+    def _schedule_quick_calc(self):
+        """Debounce _update_quick_calc — รอ 300ms หลัง event สุดท้ายแล้วค่อยคำนวณ"""
+        if getattr(self, '_quick_calc_job', None):
+            self.after_cancel(self._quick_calc_job)
+        self._quick_calc_job = self.after(300, self._update_quick_calc)
+
     def _update_quick_calc(self, event=None):
         """คำนวณ Sum/Count/Avg จากเซลล์ที่เลือก เหมือน Excel — รองรับทั้ง main และ frozen sheet (แก้บั๊กซ่อนคอลัมน์)"""
         try:
@@ -5099,6 +5252,7 @@ class CostBenchmarkScreen(CTkFrame):
             print(f"Restore widths error: {e}")
 
     def _on_end_edit_combined(self, event=None, is_frozen=False):
+        self._is_editing = False  # reset ทันทีที่ edit จบ ไม่ว่า path ไหน
         try:
             row, col = None, None
             datarn = None  # data row index (filter-safe)
@@ -5157,7 +5311,7 @@ class CostBenchmarkScreen(CTkFrame):
                                  "Order No.", "รหัส Sale", "PRIORITY", "WIN RATE %",
                                  "สถานะ", "QT"}
                 # ── หา SO Number ของ row นี้ ──
-                so_col_idx = self.columns.index("Sale Order No.") if "Sale Order No." in self.columns else -1
+                so_col_idx = self._col_index_cache.get("Sale Order No.", -1)
                 so_val = ""
                 if so_col_idx >= 0:
                     if self.sheet_frozen and so_col_idx < self.frozen_col_count:
@@ -5166,18 +5320,10 @@ class CostBenchmarkScreen(CTkFrame):
                         adj = so_col_idx - (self.frozen_col_count if self.sheet_frozen else 0)
                         so_val = str(self.sheet.get_cell_data(datarn, adj) or "").strip()
 
-                # ── เช็คว่า row นี้มีข้อมูลอยู่มั้ย (ไม่นับ skip cols) ──
-                has_data = False
-                for ci, cname in enumerate(self.columns):
-                    if cname in SLA_SKIP_COLS:
-                        continue
-                    if ci < self.frozen_col_count and self.sheet_frozen:
-                        v = self.sheet_frozen.get_cell_data(datarn, ci)
-                    else:
-                        v = self.sheet.get_cell_data(datarn, ci - (self.frozen_col_count if self.sheet_frozen else 0))
-                    if v is not None and str(v).strip() not in ("", "0", "0.0"):
-                        has_data = True
-                        break
+                # ── เช็คว่า row นี้มีข้อมูลอยู่มั้ย — ใช้เฉพาะ col ที่เพิ่งแก้ก่อน เพื่อไม่ iterate ทั้ง table ──
+                cur_val = str(event.get('value', '') if isinstance(event, dict) else
+                              target_sheet.get_cell_data(datarn, col) or "").strip()
+                has_data = cur_val not in ("", "0", "0.0")
 
                 if has_data:
                     # ยกเลิก reset timer ถ้ามี
@@ -5208,10 +5354,8 @@ class CostBenchmarkScreen(CTkFrame):
             except Exception as _sla_e:
                 print(f"SLA start error: {_sla_e}")
 
-            # 2. รีเฟรชตาราง — ไม่แตะ display_rows เพื่อรักษา filter state ไว้
-            self.sheet.redraw()
-            if is_frozen and self.sheet_frozen:
-                self.sheet_frozen.redraw()
+            # 2. ไม่ต้อง redraw ที่นี่ — calc ยังไม่รัน (_schedule_calc debounce 200ms)
+            #    tksheet จะ redraw เองเมื่อ _run_pending_calcs เสร็จ
 
             # 3. สั่ง Auto Save
             if self.auto_save_job_id is not None:
@@ -5380,92 +5524,83 @@ class CostBenchmarkScreen(CTkFrame):
             print(f"_on_delete_event error: {e}")
 
     def _schedule_calc(self, *row_indices):
-        """Debounce calculation — รอ 200ms หลัง edit สุดท้าย แล้วคำนวณทุก row ที่ค้างอยู่"""
+        """Debounce calculation — รอหลัง edit จบ แล้วคำนวณทุก row ที่ค้างอยู่"""
         for r in row_indices:
             self._pending_calc_rows.add(r)
         if self.auto_calc_job_id is not None:
             self.after_cancel(self.auto_calc_job_id)
-        self.auto_calc_job_id = self.after(200, self._run_pending_calcs)
+        self.auto_calc_job_id = self.after(400, self._run_pending_calcs)
 
     def _run_pending_calcs(self):
+        # defer ถ้า user กำลังพิมอยู่
+        if getattr(self, '_is_editing', False):
+            self.auto_calc_job_id = self.after(150, self._run_pending_calcs)
+            return
         self.auto_calc_job_id = None
         rows = sorted(self._pending_calc_rows)
         self._pending_calc_rows.clear()
         for r in rows:
             self._auto_calculate_sheet(r)
-        self.sheet.redraw()
-        if self.sheet_frozen:
-            self.sheet_frozen.redraw()
+        # redraw ก็ defer ถ้า user เริ่ม edit ใหม่แล้ว
+        def _safe_redraw():
+            if getattr(self, '_is_editing', False):
+                self.after(150, _safe_redraw)
+                return
+            self.sheet.redraw()
+            if self.sheet_frozen:
+                self.sheet_frozen.redraw()
+        self.after_idle(_safe_redraw)
 
     def _auto_calculate_sheet(self, row_idx):
         col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+        cache = self._col_index_cache
 
-        def col2num(col_str):
-            expn = 0
-            col_num = 0
-            for char in reversed(col_str.upper()):
-                col_num += (ord(char) - ord('A') + 1) * (26 ** expn)
-                expn += 1
-            return col_num - 1
-
+        # ── อ่าน row ครั้งเดียว → buffer ──────────────────────────────────
         try:
-            row_data = self.sheet.get_row_data(row_idx)
-            for c_idx, cell_val in enumerate(row_data):
-                val_str = str(cell_val).strip()
-                if val_str.startswith('=') and len(val_str) > 1:
-                    try:
-                        expr = val_str[1:].replace(',', '').upper()
-                        cell_refs = set(re.findall(r'[A-Z]+\d+', expr))
-                        for ref in cell_refs:
-                            match = re.match(r'([A-Z]+)(\d+)', ref)
-                            if match:
-                                c_str, r_str = match.groups()
-                                target_col = col2num(c_str)
-                                target_row = int(r_str) - 1
-                                ref_val = self.sheet.get_cell_data(target_row, target_col)
-                                if not ref_val or str(ref_val).strip() == "":
-                                    ref_val = "0"
-                                else:
-                                    ref_val = str(ref_val).replace(',', '').replace('%', '')
-                                expr = re.sub(rf'\b{ref}\b', str(ref_val), expr)
-                        result = eval(expr, {"__builtins__": None}, {})
-                        if isinstance(result, (int, float)):
-                            self.sheet.set_cell_data(row_idx, c_idx, f"{float(result):.2f}", redraw=False)
-                    except Exception:
-                        pass
+            main_row = list(self.sheet.get_row_data(row_idx))
         except Exception:
-            pass
+            return
+        if self.sheet_frozen:
+            try:
+                frozen_row = list(self.sheet_frozen.get_row_data(row_idx))
+            except Exception:
+                frozen_row = [""] * col_offset
+        else:
+            frozen_row = []
+
+        # buf[real_col_idx] = cell string  (แก้ใน buffer เพื่อให้ get ถัดไปเห็นค่าใหม่)
+        buf = frozen_row + main_row
+        writes = {}  # real_idx → new_string (เก็บค่าที่จะ flush ทีหลัง)
+
+        def _raw(col_name):
+            idx = cache.get(col_name)
+            return str(buf[idx]) if idx is not None and idx < len(buf) else ""
 
         def get_val(col_name):
-            try:
-                val = self._sheet_get(row_idx, col_name)
-                return float(str(val).replace(',', '').replace('%', '')) if val and str(val).strip() else 0.0
-            except (ValueError, IndexError):
-                return 0.0
+            v = _raw(col_name).replace(',', '').replace('%', '').strip()
+            try: return float(v) if v else 0.0
+            except ValueError: return 0.0
 
         def get_str(col_name):
-            try:
-                val = self._sheet_get(row_idx, col_name)
-                return str(val or "").strip()
-            except (IndexError, ValueError):
-                return ""
+            return _raw(col_name).strip()
 
         def set_val(col_name, val, is_text=False):
+            idx = cache.get(col_name)
+            if idx is None:
+                return
             if not is_text:
-                formatted_val = "" if val == 0 else f"{val:,.2f}"
+                s = "" if val == 0 else f"{val:,.2f}"
             else:
-                formatted_val = "" if (val is None or val == "%") else str(val)
-            self._sheet_set(row_idx, col_name, formatted_val)
+                s = "" if (val is None or val == "%") else str(val)
+            if idx < len(buf):
+                buf[idx] = s
+            writes[idx] = s
 
-        _, _date_main_disp = self._col_to_disp("วันที่ขอราคา")
-        row_data = self.sheet.get_row_data(row_idx)
-        is_row_active = any(str(cell_val).strip() for i, cell_val in enumerate(row_data)
-                            if _date_main_disp is None or i != _date_main_disp)
-        if not is_row_active and self.sheet_frozen:
-            _, _date_frz_disp = self._col_to_disp("วันที่ขอราคา")
-            frozen_row = self.sheet_frozen.get_row_data(row_idx)
-            is_row_active = any(str(v).strip() for i, v in enumerate(frozen_row)
-                                if _date_frz_disp is None or i != _date_frz_disp)
+        # ── ตรวจ is_row_active จาก buffer ─────────────────────────────────
+        date_idx = cache.get("วันที่ขอราคา")
+        is_row_active = any(
+            str(v).strip() for i, v in enumerate(buf) if i != date_idx
+        )
 
         current_date = get_str("วันที่ขอราคา")
         if is_row_active and not current_date:
@@ -5584,6 +5719,19 @@ class CostBenchmarkScreen(CTkFrame):
         set_val("Vat. รวม", sell_total * 0.07)
         set_val("ราคาขาย รวม + Vat.", sell_total * 1.07)
 
+        # ── flush writes → tksheet (เขียนเฉพาะ cell ที่เปลี่ยน) ──────────────
+        for real_idx, new_val in writes.items():
+            if real_idx < col_offset:
+                if self.sheet_frozen:
+                    old = frozen_row[real_idx] if real_idx < len(frozen_row) else ""
+                    if str(old) != new_val:
+                        self.sheet_frozen.set_cell_data(row_idx, real_idx, new_val, redraw=False)
+            else:
+                data_idx = real_idx - col_offset
+                old = main_row[data_idx] if data_idx < len(main_row) else ""
+                if str(old) != new_val:
+                    self.sheet.set_cell_data(row_idx, data_idx, new_val, redraw=False)
+
         if getattr(self, '_header_filter_values', None):
             if hasattr(self, '_fix_render_job'):
                 self.after_cancel(self._fix_render_job)
@@ -5641,31 +5789,36 @@ class CostBenchmarkScreen(CTkFrame):
         return total_min
 
     def _sla_record_start(self, so_number: str, started_at=None):
-        """บันทึก started_at เมื่อ PU เริ่มกรอกข้อมูล (เฉพาะครั้งแรกของ SO นี้)"""
+        """บันทึก started_at เมื่อ PU เริ่มกรอกข้อมูล (เฉพาะครั้งแรกของ SO นี้) — รันใน background thread"""
+        import threading
         from datetime import datetime as _dt
         if started_at is None:
             started_at = _dt.now()
-        conn = None
-        try:
-            conn = self.app_container.get_connection()
-            cur = conn.cursor()
-            # เช็คก่อนว่ามี row อยู่แล้วมั้ย — ถ้ามีไม่ insert ใหม่ (preserve started_at เดิม)
-            cur.execute("""
-                SELECT id FROM sla_benchmark
-                WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-                LIMIT 1
-            """, (so_number, self.current_user))
-            if not cur.fetchone():
+
+        def _do():
+            conn = None
+            try:
+                conn = self.app_container.get_connection()
+                cur = conn.cursor()
                 cur.execute("""
-                    INSERT INTO sla_benchmark (so_number, user_key, started_at)
-                    VALUES (%s, %s, %s)
-                """, (so_number, self.current_user, started_at))
-                conn.commit()
-        except Exception as e:
-            print(f"_sla_record_start error: {e}")
-        finally:
-            if conn:
-                self.app_container.release_connection(conn)
+                    SELECT id FROM sla_benchmark
+                    WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
+                    LIMIT 1
+                """, (so_number, self.current_user))
+                if not cur.fetchone():
+                    cur.execute("""
+                        INSERT INTO sla_benchmark (so_number, user_key, started_at)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT ON CONSTRAINT uq_sla_so_user DO NOTHING
+                    """, (so_number, self.current_user, started_at))
+                    conn.commit()
+            except Exception as e:
+                print(f"_sla_record_start error: {e}")
+            finally:
+                if conn:
+                    self.app_container.release_connection(conn)
+
+        threading.Thread(target=_do, daemon=True).start()
 
     def _sla_check_reset(self, datarn: int, so_number: str):
         """หลัง 5 นาที — ถ้า row ยังว่างอยู่ และไม่มี row อื่นของ SO นี้มีข้อมูล → reset"""
@@ -5690,7 +5843,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             # เช็คว่ามี row อื่นของ SO เดียวกันที่มีข้อมูลอยู่มั้ย
             total_rows = self.sheet.get_total_rows()
-            so_col_idx = self.columns.index("Sale Order No.") if "Sale Order No." in self.columns else -1
+            so_col_idx = self._col_index_cache.get("Sale Order No.", -1)
             other_has_data = False
             for r in range(total_rows):
                 if r == datarn:
@@ -5786,7 +5939,7 @@ class CostBenchmarkScreen(CTkFrame):
                 self.app_container.release_connection(conn)
 
             # ล้าง memory ทุก row ของ SO นี้ — ถ้า user ต้องทำใหม่จะได้เริ่มจับเวลาใหม่
-            so_col_idx = self.columns.index("Sale Order No.") if "Sale Order No." in self.columns else -1
+            so_col_idx = self._col_index_cache.get("Sale Order No.", -1)
             if so_col_idx >= 0:
                 for dn in list(self._sla_row_start_times.keys()):
                     if self.sheet_frozen and so_col_idx < self.frozen_col_count:
@@ -6895,82 +7048,92 @@ class CostBenchmarkScreen(CTkFrame):
             pass
 
     def _save_to_db(self, show_msg=True):
-        # ── Re-run formula for every row so formula columns (ต้นทุนรวม etc.)
-        # are always populated even if the user never edited that cell ─────────
-        try:
-            _n = max(
-                len(self.sheet.get_sheet_data()),
-                len(self.sheet_frozen.get_sheet_data()) if self.sheet_frozen else 0
-            )
-            for _i in range(_n):
-                self._auto_calculate_sheet(_i)
-        except Exception:
-            pass
-        # ─────────────────────────────────────────────────────────────────────
+        import threading
+
+        # full recalc ทุก row — ทำเฉพาะ manual save (show_msg=True)
+        # auto-save ข้ามขั้นตอนนี้เพื่อไม่ block UI
+        if show_msg:
+            try:
+                _n = max(
+                    len(self.sheet.get_sheet_data()),
+                    len(self.sheet_frozen.get_sheet_data()) if self.sheet_frozen else 0
+                )
+                for _i in range(_n):
+                    self._auto_calculate_sheet(_i)
+            except Exception:
+                pass
 
         col_offset = self.frozen_col_count
-        raw_main = self.sheet.get_sheet_data()
+        raw_main   = self.sheet.get_sheet_data()
         raw_frozen = self.sheet_frozen.get_sheet_data() if self.sheet_frozen else []
 
         data = []
         n_rows = max(len(raw_main), len(raw_frozen))
-        date_col_idx = self.columns.index("วันที่ขอราคา")  # ← เพิ่มบรรทัดนี้
-        
+        date_col_idx = self._col_index_cache.get("วันที่ขอราคา", 0)
+
         for i in range(n_rows):
-            left = raw_frozen[i] if i < len(raw_frozen) else [""] * col_offset
-            right = raw_main[i] if i < len(raw_main) else [""] * (len(self.columns) - col_offset)
+            left  = raw_frozen[i] if i < len(raw_frozen) else [""] * col_offset
+            right = raw_main[i]   if i < len(raw_main)   else [""] * (len(self.columns) - col_offset)
             full_row = left + right
-            
-            # ← แก้ตรงนี้
             is_active = any(
                 str(cell).strip() not in ("", "%", "None", "nan")
                 for j, cell in enumerate(full_row)
                 if j != date_col_idx
             )
-            
             if is_active:
                 data.append([str(cell).strip() if cell is not None else "" for cell in full_row])
-    
 
         df = pd.DataFrame(data, columns=self.columns)
         if df.empty:
-            if show_msg: messagebox.showinfo("แจ้งเตือน", "ไม่มีข้อมูลให้บันทึก", parent=self)
+            if show_msg:
+                messagebox.showinfo("แจ้งเตือน", "ไม่มีข้อมูลให้บันทึก", parent=self)
             return
 
         month_val = self.month_var.get()
-        year_val = self.year_var.get()
+        year_val  = self.year_var.get()
         df = df.replace(r'^\s*$', None, regex=True)
+        values_list = [tuple(row) + (month_val, year_val, self.current_user)
+                       for row in df.to_numpy()]
+        columns_sql = (", ".join([f'"{col.replace("%", "%%")}"' for col in self.columns])
+                       + ", benchmark_month, benchmark_year, created_by")
+        n_saved = len(df)
 
-        conn = self.app_container.get_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "DELETE FROM cost_benchmarks WHERE benchmark_month = %s AND benchmark_year = %s AND created_by = %s",
-                    (month_val, year_val, self.current_user)
-                )
-                columns_sql = ", ".join([f'"{col.replace("%", "%%")}"' for col in self.columns]) + ", benchmark_month, benchmark_year, created_by"
-                values = [tuple(row) + (month_val, year_val, self.current_user) for row in df.to_numpy()]
-                insert_query = f"INSERT INTO cost_benchmarks ({columns_sql}) VALUES %s"
-                psycopg2.extras.execute_values(cursor, insert_query, values)
-            conn.commit()
-            current_time = datetime.now().strftime("%H:%M:%S")
+        def _do_db_write():
+            conn = self.app_container.get_connection()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM cost_benchmarks WHERE benchmark_month = %s AND benchmark_year = %s AND created_by = %s",
+                        (month_val, year_val, self.current_user)
+                    )
+                    insert_query = f"INSERT INTO cost_benchmarks ({columns_sql}) VALUES %s"
+                    psycopg2.extras.execute_values(cursor, insert_query, values_list)
+                conn.commit()
+                current_time = datetime.now().strftime("%H:%M:%S")
+                self.after(0, lambda: _on_success(current_time))
+            except Exception as e:
+                if conn: conn.rollback()
+                import traceback; traceback.print_exc()
+                self.after(0, lambda err=e: _on_error(err))
+            finally:
+                if conn: self.app_container.release_connection(conn)
+
+        def _on_success(current_time):
             if hasattr(self, 'save_status_label'):
-                self.save_status_label.configure(text=f"✅ บันทึกล่าสุด: {current_time}", text_color="#16A34A")
+                self.save_status_label.configure(
+                    text=f"✅ บันทึกล่าสุด: {current_time}", text_color="#16A34A")
             if show_msg:
-                messagebox.showinfo("สำเร็จ", f"บันทึกข้อมูล {len(df)} รายการเรียบร้อยแล้ว!", parent=self)
+                messagebox.showinfo("สำเร็จ", f"บันทึกข้อมูล {n_saved} รายการเรียบร้อยแล้ว!", parent=self)
+            threading.Thread(target=self._update_supplier_categories_from_benchmark, daemon=True).start()
 
-            # ── Auto-update supplier category จากข้อมูลที่เพิ่งบันทึก ──────────
-            self.after(500, self._update_supplier_categories_from_benchmark)
-
-        except Exception as e:
-            if conn: conn.rollback()
-            import traceback; traceback.print_exc()
+        def _on_error(err):
             if hasattr(self, 'save_status_label'):
-                self.save_status_label.configure(text="❌ บันทึกผิดพลาด กรุณาลองใหม่", text_color="#DC2626")
+                self.save_status_label.configure(
+                    text="❌ บันทึกผิดพลาด กรุณาลองใหม่", text_color="#DC2626")
             if show_msg:
-                messagebox.showerror("Error", f"เกิดข้อผิดพลาด:\n{e}", parent=self)
-        finally:
-            if conn: self.app_container.release_connection(conn)
+                messagebox.showerror("Error", f"เกิดข้อผิดพลาด:\n{err}", parent=self)
+
+        threading.Thread(target=_do_db_write, daemon=True).start()
 
     def _update_supplier_categories_from_benchmark(self):
         """

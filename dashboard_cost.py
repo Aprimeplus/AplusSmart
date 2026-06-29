@@ -86,6 +86,7 @@ class DashboardCostScreen(CTkFrame):
         self.all_sale_order_nos = []
         self.all_product_names = []
         self.all_suppliers = []
+        self._date_debounce_job = None
 
         self._build_sidebar()
         self._build_main_content()
@@ -182,8 +183,8 @@ class DashboardCostScreen(CTkFrame):
         self.cal_to.pack(side="left", fill="x", expand=True)
         self.cal_to.delete(0, 'end')
 
-        self.cal_from.bind("<<DateEntrySelected>>", self._apply_filters)
-        self.cal_to.bind("<<DateEntrySelected>>", self._apply_filters)
+        self.cal_from.bind("<<DateEntrySelected>>", self._on_date_changed)
+        self.cal_to.bind("<<DateEntrySelected>>", self._on_date_changed)
 
         filters_config = [
             ("🔍 Order No. (พิมพ์ค้นหา)", "order_no"),
@@ -803,8 +804,8 @@ class DashboardCostScreen(CTkFrame):
             headers=self.display_columns,
             data=[],
             theme="light",
-            font=(FONT_FAMILY, 10, "normal"),
-            header_font=(FONT_FAMILY, 9, "bold"),
+            font=(FONT_FAMILY, 9, "normal"),
+            header_font=(FONT_FAMILY, 8, "bold"),
             show_row_index=True,
             row_index_width=32,
             empty_horizontal=0,
@@ -860,6 +861,30 @@ class DashboardCostScreen(CTkFrame):
 
         self.sheet.extra_bindings([("copy", _copy_without_quotes)])
 
+        # รองรับ Ctrl+C / Ctrl+V ทั้งภาษาอังกฤษและไทย
+        # ผูกตรงที่ internal canvas ของ tksheet (MT) เพราะ event ไปลงที่นั่น
+        def _handle_ctrl_key(event):
+            if not (event.state & 0x4):
+                return
+            kc = event.keycode
+            if kc == 67:    # C / ฝ
+                # ยิง Control-c ปกติให้ tksheet วาดเส้นปะก่อน แล้วค่อย override clipboard
+                self.sheet.event_generate("<Control-c>")
+                self.after(10, _copy_without_quotes)
+                return "break"
+            if kc == 86:    # V / อ
+                self.sheet.paste()
+                return "break"
+
+        # ผูกทุก internal widget ของ tksheet (MT = main table canvas)
+        targets = [self.sheet]
+        for attr in ("MT", "CH", "RI", "TL"):
+            w = getattr(self.sheet, attr, None)
+            if w:
+                targets.append(w)
+        for w in targets:
+            w.bind("<KeyPress>", _handle_ctrl_key, add="+")
+
         self.sheet.set_options(
             header_bg=COLORS["header_blue"],
             header_fg=COLORS["header_text"],
@@ -874,38 +899,47 @@ class DashboardCostScreen(CTkFrame):
         )
 
         col_widths = {
-            "Selec\nt":                          42,
-            "วันที่ขอราคา":                      88,
-            "PRIORI\nTY":                        62,
-            "WIN RATE\n%":                        72,
-            "สถานะ":                             52,
-            "ชื่อ\nSale":                       52,
-            "Order No.":                          88,
-            "Sale Order No.":                    100,
-            "รายการสินค้า":                     260,
-            "จำนวน":                             68,
-            "Max of\nน้ำหนัก\n/เส้น":           80,
-            "Average of\nราคาขาย /\nเส้น":      95,
-            "ราคาขาย /\nกก.":                   80,
-            "Sum of\nราคาขาย\nรวม":            110,
-            "Total\nWin Sales":                110,
-            "Average of\nMarkup\nGuide (%)":    100,
-            "Sum of\nต้นทุนรวม\n(รวมย้าย)":   120,
-            "avg. cost/per\norder":             115,    # 🟢 เพิ่มใหม่
-            "Price\nCompetitive\nness":        100,    # 🟢 เพิ่มใหม่
-            "Sum of\nต้นทุน/เส้น":              90,
-            "ต้นทุน/\nกก.":                     85, 
-            "ชื่อ Supplier":                    160,
-            "Average of\nส่วนลด 2 (%)":        105,
-            "Average of\nส่วนลด 1 (%)":        105,
-            "Average of\nส่วนลด 1\n(บาท)":     105,    # 🟢 เพิ่มใหม่
-            "Average of\nส่วนลด 2\n(บาท)":     105,    # 🟢 เพิ่มใหม่
-            "ส่วนลดรวม\n1+2":                   110,    # 🟢 เพิ่มใหม่
-            "ส่วนลดรวม\n1+2 (%)":              100,    # 🟢 เพิ่มใหม่
-            "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)": 140,
+            "Selec\nt":                          47,
+            "วันที่ขอราคา":                      80,
+            "PRIORI\nTY":                        80,
+            "WIN RATE\n%":                       60,
+            "สถานะ":                             56,
+            "ชื่อ\nSale":                        86,
+            "Order No.":                         84,
+            "Sale Order No.":                   102,
+            "รายการสินค้า":                     320,
+            "จำนวน":                             54,
+            "Max of\nน้ำหนัก\n/เส้น":            68,
+            "Average of\nราคาขาย /\nเส้น":      120,
+            "ราคาขาย /\nกก.":                   120,
+            "Sum of\nราคาขาย\nรวม":             120,
+            "Total\nWin Sales":                 120,
+            "Average of\nMarkup\nGuide (%)":    120,
+            "Sum of\nต้นทุนรวม\n(รวมย้าย)":    120,
+            "avg. cost/per\norder":             120,
+            "Price\nCompetitive\nness":         120,
+            "Sum of\nต้นทุน/เส้น":              120,
+            "ต้นทุน/\nกก.":                     120,
+            "ชื่อ Supplier":                    120,
+            "Average of\nส่วนลด 2 (%)":         120,
+            "Average of\nส่วนลด 1 (%)":         120,
+            "Average of\nส่วนลด 1\n(บาท)":      120,
+            "Average of\nส่วนลด 2\n(บาท)":      120,
+            "ส่วนลดรวม\n1+2":                    120,
+            "ส่วนลดรวม\n1+2 (%)":               120,
+            "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)":   120,
         }
         for i, col in enumerate(self.display_columns):
             self.sheet.column_width(i, col_widths.get(col, 100))
+
+        def _print_col_widths(event=None):
+            print("\n── col_widths ──")
+            print("        col_widths = {")
+            for i, col in enumerate(self.display_columns):
+                w = self.sheet.column_width(i)
+                print(f'            {repr(col):45s}: {w},')
+            print("        }")
+        self.sheet.extra_bindings("column_width_resize", _print_col_widths)
 
     # =========================================================
     # DATA LOADING
@@ -1026,6 +1060,24 @@ class DashboardCostScreen(CTkFrame):
                 except Exception as _fe:
                     print(f"[dashboard_cost fallback calc] {_fe}")
 
+                # pre-parse วันที่ไว้ล่วงหน้า ไม่ต้อง parse ซ้ำทุกครั้งที่ filter
+                if "วันที่ขอราคา" in df.columns:
+                    def _parse_thai_date_pre(val):
+                        if pd.isna(val) or str(val).strip() in ("", "None", "nan"):
+                            return pd.NaT
+                        d_str = str(val).split()[0].replace("-", "/")
+                        parts = d_str.split("/")
+                        if len(parts) == 3:
+                            try:
+                                d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+                                if y < 100: y += 2500
+                                if y > 2400: y -= 543
+                                return pd.to_datetime(f"{y}-{m:02d}-{d:02d}", errors='coerce')
+                            except ValueError:
+                                return pd.to_datetime(val, errors='coerce')
+                        return pd.to_datetime(val, errors='coerce')
+                    df["_date_parsed"] = df["วันที่ขอราคา"].apply(_parse_thai_date_pre)
+
                 self.raw_df = df
 
             self._update_filter_dropdowns()
@@ -1119,6 +1171,11 @@ class DashboardCostScreen(CTkFrame):
     # =========================================================
     # APPLY FILTERS
     # =========================================================
+    def _on_date_changed(self, *args):
+        if self._date_debounce_job:
+            self.after_cancel(self._date_debounce_job)
+        self._date_debounce_job = self.after(400, self._apply_filters)
+
     def _apply_filters(self, *args):
         if self.raw_df.empty:
             self._update_kpis(pd.DataFrame())
@@ -1131,41 +1188,15 @@ class DashboardCostScreen(CTkFrame):
         date_to_str = self.filter_vars["date_to"].get()
 
         if date_from_str or date_to_str:
-            # 🟢 ฟังก์ชันอัจฉริยะ: แปลงวันที่จาก DB ให้เป็น ค.ศ. (รองรับ พ.ศ. 2569, ปีแบบย่อ 69, และ ค.ศ. 2026)
-            def parse_thai_date(val):
-                if pd.isna(val) or str(val).strip() in ("", "None", "nan"):
-                    return pd.NaT
-                
-                # ตัดเอาเฉพาะวันที่ (เผื่อมีเวลาติดมา) และเปลี่ยน - เป็น /
-                d_str = str(val).split()[0].replace("-", "/") 
-                parts = d_str.split("/")
-                
-                if len(parts) == 3:
-                    try:
-                        d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
-                        if y < 100: y += 2500        # ถ้าเป็นเลขย่อ เช่น 69 -> ให้บวกเป็น 2569
-                        if y > 2400: y -= 543        # ถ้าเป็น พ.ศ. (เกิน 2400) -> ลบ 543 ให้กลายเป็น ค.ศ.
-                        return pd.to_datetime(f"{y}-{m:02d}-{d:02d}", errors='coerce')
-                    except ValueError:
-                        return pd.to_datetime(val, errors='coerce')
-                
-                return pd.to_datetime(val, errors='coerce')
-
             try:
-                # 1. ตรวจสอบเงื่อนไขวันที่ "ตั้งแต่ (From)"
+                parsed = df["_date_parsed"] if "_date_parsed" in df.columns else pd.Series(pd.NaT, index=df.index)
                 if date_from_str:
-                    temp_dates_from = df["วันที่ขอราคา"].apply(parse_thai_date)
                     dt_from = pd.to_datetime(date_from_str, format='%d/%m/%Y')
-                    df = df[temp_dates_from >= dt_from]
-                    
-                # 2. ตรวจสอบเงื่อนไขวันที่ "ถึง (To)"
+                    df = df[parsed >= dt_from]
+                    parsed = parsed[df.index]
                 if date_to_str:
-                    temp_dates_to = df["วันที่ขอราคา"].apply(parse_thai_date)
-                    dt_to = pd.to_datetime(date_to_str, format='%d/%m/%Y')
-                    # บวกเวลาให้ dt_to ไปจบที่ 23:59:59 ของวันนั้น (คลุมข้อมูลให้ครบถ้วน)
-                    dt_to = dt_to.replace(hour=23, minute=59, second=59)
-                    df = df[temp_dates_to <= dt_to]
-                    
+                    dt_to = pd.to_datetime(date_to_str, format='%d/%m/%Y').replace(hour=23, minute=59, second=59)
+                    df = df[parsed <= dt_to]
             except Exception as e:
                 print(f"Date parsing error: {e}")
 
@@ -1261,7 +1292,7 @@ class DashboardCostScreen(CTkFrame):
         if not HAS_TKSHEET:
             return
 
-        self.sheet.set_sheet_data([])
+        self.sheet.set_sheet_data([], reset_col_positions=False)
         self.sheet.deselect("all")   # ← ล้าง selection เก่าก่อนโหลดข้อมูลใหม่
 
         if df.empty:
@@ -1568,27 +1599,35 @@ class DashboardCostScreen(CTkFrame):
             except Exception:
                 pass
 
-            # 🟢 Price Competitive Total = weighted avg จาก row ที่แสดงในตารางจริง
-            # = (Σ cost/per order × pct) / Σ cost/per order  ← weighted by cost
+            # 🟢 Price Competitive Total = (Σ select - Σ avg) / Σ avg × 100
+            # Σ select = sum ต้นทุนรวม (รวมย้าย) ของ row ที่ถูก ✔ และมี avg (cnt > 1)
+            # Σ avg    = sum avg cost ของกลุ่มเดียวกัน
             try:
                 idx_pc = cidx("Price\nCompetitive\nness")
-                if idx_pc >= 0 and idx_cpo >= 0:
-                    _pc_weighted_sum = 0.0
-                    _pc_weight_total = 0.0
-                    for _r in table_data:
-                        _cost_cell = str(_r[idx_cpo]).strip().replace("฿", "").replace(",", "")
-                        _pct_cell  = str(_r[idx_pc]).strip().replace("%", "")
-                        try:
-                            _cost = float(_cost_cell)
-                            _pct  = float(_pct_cell)
-                            if _cost > 0:
-                                _pc_weighted_sum += _cost * _pct
-                                _pc_weight_total += _cost
-                        except Exception:
-                            pass
-                    if _pc_weight_total > 0:
-                        _pc_total = _pc_weighted_sum / _pc_weight_total
-                        total_row[idx_pc] = f"{_pc_total:.2f}%"
+                if idx_pc >= 0 and ("รายการสินค้า" in df.columns
+                                     and "ต้นทุนรวม (รวมย้าย)" in df.columns
+                                     and "Select" in df.columns):
+                    _sum_select = 0.0
+                    _sum_avg    = 0.0
+                    for _, _row in df.iterrows():
+                        _sel = str(_row.get("Select", "")).strip()
+                        if _sel not in SELECT_TYPES:
+                            continue
+                        _sku  = str(_row.get("รายการสินค้า", "")).strip()
+                        _cost = pd.to_numeric(_row.get("ต้นทุนรวม (รวมย้าย)", 0), errors='coerce')
+                        if not _sku or pd.isna(_cost) or _cost <= 0:
+                            continue
+                        _grp   = "chub" if _sel in CHUB_TYPES else "normal"
+                        _entry = sku_avg_map.get((_sku, _grp))
+                        if _entry is None:
+                            continue
+                        _avg, _cnt = _entry
+                        if _avg and _avg != 0 and _cnt > 1:
+                            _sum_select += _cost
+                            _sum_avg    += _avg
+                    if _sum_avg > 0:
+                        _pc_total = (_sum_select - _sum_avg) / _sum_avg * 100
+                        total_row[idx_pc] = f"{_pc_total:+.2f}%" if _pc_total != 0 else "0.00%"
             except Exception:
                 pass
 
@@ -1596,7 +1635,7 @@ class DashboardCostScreen(CTkFrame):
 
         self.sheet.dehighlight_all()      # ล้าง highlight เก่าทั้งหมด (Total row สีเก่า ฯลฯ)
         self.sheet.deselect("all")        # ล้าง selection เก่า
-        self.sheet.set_sheet_data(table_data)
+        self.sheet.set_sheet_data(table_data, reset_col_positions=False)
 
         # ── Highlight columns ──────────────────────────────────
         blue_col  = "Sum of\nราคาขาย\nรวม"

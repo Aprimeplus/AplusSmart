@@ -4669,6 +4669,29 @@ class HRScreen(CTkFrame):
                 for _, r in _brok_nonzero.iterrows():
                     print(f"    {str(r.get('so_number','')):<20} {r.get('brokerage_fee',0):>12,.2f} {r.get('difference_amount',0):>12,.2f}")
 
+            # 2.5 Cutting/Drilling SO vs PO
+            _cut_so = pd.to_numeric(self.current_comm_df.get('cutting_drilling_fee', 0), errors='coerce').fillna(0)
+            _cut_po = pd.to_numeric(self.current_comm_df.get('po_cutting_cost', 0), errors='coerce').fillna(0)
+            _svc_po = pd.to_numeric(self.current_comm_df.get('po_service_cost', 0), errors='coerce').fillna(0)
+            _so_cut_total = _cut_so.sum()
+            _po_cut_total = (_cut_po + _svc_po).sum()
+            print(f"\n[2.5] ค่าตัด/เจาะ SO vs PO (ข้อมูลเปรียบเทียบ)")
+            print(f"    SO ค่าตัด+เจาะ รวม : {_so_cut_total:,.2f}  |  PO ค่าตัด+บริการ รวม : {_po_cut_total:,.2f}")
+            print(f"    ส่วนต่าง (PO-SO) : {_po_cut_total - _so_cut_total:,.2f}  {'(PO แพงกว่า)' if _po_cut_total > _so_cut_total else '(SO สูงกว่า)'}")
+            _cut_df = self.current_comm_df[['so_number']].copy()
+            _cut_df['so_cut']  = _cut_so.values
+            _cut_df['po_cut']  = (_cut_po + _svc_po).values
+            _cut_df['diff']    = _cut_df['po_cut'] - _cut_df['so_cut']
+            _cut_nonzero = _cut_df[(_cut_df['so_cut'] != 0) | (_cut_df['po_cut'] != 0)]
+            if not _cut_nonzero.empty:
+                print(f"    {'SO':<20} {'SO ตัด/เจาะ':>14} {'PO ตัด/บริการ':>14} {'ส่วนต่าง':>12}")
+                print(f"    {'-'*62}")
+                for _, r in _cut_nonzero.iterrows():
+                    flag = " ⚠" if r['diff'] > 0 else ""
+                    print(f"    {str(r.get('so_number','')):<20} {r['so_cut']:>14,.2f} {r['po_cut']:>14,.2f} {r['diff']:>12,.2f}{flag}")
+            else:
+                print(f"    (ไม่มี SO ที่มีค่าตัด/เจาะ)")
+
             # 3. Marketing deduction
             print(f"\n[3] Marketing Deduction (coupons+giveaways) = {marketing_deduction:,.2f} บาท")
             print(f"    total_marketing = {total_marketing:,.2f}")

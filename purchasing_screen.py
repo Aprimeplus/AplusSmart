@@ -4,7 +4,25 @@ from customtkinter import (CTkFrame, CTkLabel, CTkEntry, CTkFont, CTkButton,
                            CTkScrollableFrame, CTkOptionMenu, CTkCheckBox, CTkTabview, CTkComboBox,
                            CTkToplevel, CTkRadioButton, CTkSegmentedButton, CTkInputDialog)
 from tkinter import messagebox
-from datetime import datetime
+from datetime import datetime, timedelta
+try:
+    from tkcalendar import DateEntry as _DateEntry
+    class _PatchedDE(_DateEntry):
+        def _on_focus_out_cal(self, event):
+            try:
+                focused = self._top_cal.focus_get()
+                if focused and str(focused).startswith(str(self._top_cal)):
+                    return
+            except Exception:
+                pass
+            super()._on_focus_out_cal(event)
+        def _drop_down(self):
+            super()._drop_down()
+            if hasattr(self, '_top_cal') and self._top_cal:
+                self._top_cal.bind("<FocusOut>", self._on_focus_out_cal)
+    _HAS_CAL = True
+except ImportError:
+    _HAS_CAL = False
 import json
 import psycopg2
 import psycopg2.errors
@@ -2231,6 +2249,8 @@ class PurchasingScreen(CTkFrame):
                     )
                 else:
                     warning_label.configure(text="")
+            elif warning_label:
+                warning_label.configure(text="")
 
         except Exception as e:
             print(f"Error in _check_px_on_po_entry: {e}")
@@ -3179,12 +3199,20 @@ class PurchasingScreen(CTkFrame):
                 with conn.cursor() as cursor:
                     if not self.editing_po_id:
                         cursor.execute("""
-                            SELECT id FROM purchase_orders 
+                            SELECT id FROM purchase_orders
                             WHERE so_number = %s AND supplier_name = %s
                         """, (header.get("so_number"), header.get("supplier_name")))
-                        
+
                         if cursor.fetchone():
                             raise ValueError(f"มี PO สำหรับ SO '{header.get('so_number')}' และ Supplier '{header.get('supplier_name')}' นี้อยู่แล้ว")
+
+                        # ตรวจสอบ po_number ซ้ำ (ต่างซัพ ต่าง SO ก็ซ้ำไม่ได้)
+                        po_num_input = header.get("po_number", "").strip()
+                        if po_num_input:
+                            cursor.execute("SELECT id, so_number, supplier_name FROM purchase_orders WHERE po_number = %s", (po_num_input,))
+                            dup = cursor.fetchone()
+                            if dup:
+                                raise ValueError(f"เลข PO '{po_num_input}' ถูกใช้ไปแล้ว\n(SO: {dup[1]} | Supplier: {dup[2]})\nกรุณาใช้เลข PO อื่น")
 
                     if status == 'Pending Approval':
                         header['status'] = 'Pending Approval'; header['approval_status'] = 'Pending Mgr 1'
@@ -3199,6 +3227,14 @@ class PurchasingScreen(CTkFrame):
                         cursor.execute("SELECT id FROM purchase_orders WHERE id = %s", (self.editing_po_id,))
                         if not cursor.fetchone():
                             raise ValueError(f"ไม่พบ PO ID {self.editing_po_id} ในระบบ (อาจถูกลบไปแล้ว)\nกรุณาล้างฟอร์มแล้วเริ่มสร้าง PO ใหม่อีกครั้ง")
+
+                        # ตรวจสอบ po_number ซ้ำกับ PO ใบอื่น (ไม่นับตัวเอง)
+                        po_num_input = header.get("po_number", "").strip()
+                        if po_num_input:
+                            cursor.execute("SELECT id, so_number, supplier_name FROM purchase_orders WHERE po_number = %s AND id != %s", (po_num_input, self.editing_po_id))
+                            dup = cursor.fetchone()
+                            if dup:
+                                raise ValueError(f"เลข PO '{po_num_input}' ถูกใช้ไปแล้วโดย PO ใบอื่น\n(SO: {dup[1]} | Supplier: {dup[2]})\nกรุณาใช้เลข PO อื่น")
 
                         header.pop('user_key', None); header.pop('timestamp', None)
                         filtered_header = {k: v for k, v in header.items() if k in db_columns}
@@ -3584,20 +3620,21 @@ class SLADashboard(CTkFrame):
     """แสดง SLA ของจัดซื้อ — เวลาตั้งแต่พิมพ์ SO จนถึงกด Copy Short Note"""
 
     COLS = [
-        ("SO Number",        138),
-        ("Order No.",         90),
-        ("Sale",              84),
-        ("PU",                64),
-        ("Temp",              62),
-        ("เวลาเริ่มทำ",        68),   # แสดงแค่ HH:MM
-        ("เวลาส่งราคา",        68),   # แสดงแค่ HH:MM
-        ("ใช้เวลา",            80),
-        ("ประเภท",              90),
-        ("Target",              74),
-        ("Extend",             90),   # สถานะ extend
-        ("ผลต่าง",              82),
-        ("ผล SLA",              98),
-        ("สินค้า (สรุป)",     160),   # stretch=YES — ยืดเต็มพื้นที่ที่เหลือ
+        ("SO Number",        305),
+        ("Order No.",        190),
+        ("Sale",              62),
+        ("PU",               110),
+        ("Temp",              76),
+        ("เวลาเริ่มทำ",        98),
+        ("เวลาส่งราคา",       112),
+        ("ใช้เวลา",            79),
+        ("ประเภท",             125),
+        ("Target",             72),
+        ("Extend",             88),
+        ("ผลต่าง",             91),
+        ("ผล SLA",            104),
+        ("สถานะ W/L",          180),
+        ("Sum of ราคาขาย",    207),
     ]
     # SLA target (นาที) แยกตาม Normal vs 100K+ / >5 SKU
     SLA_TARGET_NORMAL = {"HOT": 30,  "WARM": 60,  "COLD": 120}
@@ -3622,29 +3659,54 @@ class SLADashboard(CTkFrame):
                         border_width=1, border_color="#E2E8F0")
         fbar.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
 
-        CTkLabel(fbar, text="ปี:", font=CTkFont(size=12)).pack(
+        CTkLabel(fbar, text="ตั้งแต่:", font=CTkFont(size=12)).pack(
             side="left", padx=(12, 4), pady=8)
-        self._year_var = tk.StringVar(value="ทั้งหมด")
-        self._year_cb = CTkComboBox(fbar, variable=self._year_var, width=90,
-                                    values=["ทั้งหมด"], font=CTkFont(size=12),
-                                    command=lambda _: self._load())
-        self._year_cb.pack(side="left", pady=8, padx=(0, 8))
+        self._date_from_var = tk.StringVar(value="")
+        _DE_KW = dict(
+            background="#1D4ED8", foreground="white", borderwidth=0,
+            headersbackground="#1D4ED8", headersforeground="white",
+            selectbackground="#2563EB", selectforeground="white",
+            normalbackground="#FFFFFF", normalforeground="#111827",
+            weekendbackground="#FFFFFF", weekendforeground="#991B1B",
+            othermonthforeground="#9CA3AF", othermonthbackground="#FFFFFF",
+            othermonthweforeground="#9CA3AF", othermonthwebackground="#FFFFFF",
+            font=("Tahoma", 14),
+            date_pattern="dd/mm/yyyy", locale="th_TH",
+            showweeknumbers=False, showothermonthdays=False,
+            year=datetime.now().year,
+        )
+        if _HAS_CAL:
+            self._cal_from = _PatchedDE(fbar, width=11, textvariable=self._date_from_var, **_DE_KW)
+            self._cal_from.delete(0, "end")
+            self._cal_from.pack(side="left", pady=8, padx=(0, 8))
+            self._cal_from.bind("<<DateEntrySelected>>", lambda e: self._load())
+        else:
+            CTkEntry(fbar, textvariable=self._date_from_var, width=100,
+                     placeholder_text="dd/mm/yyyy").pack(side="left", pady=8, padx=(0, 8))
 
-        CTkLabel(fbar, text="เดือน:", font=CTkFont(size=12)).pack(
+        CTkLabel(fbar, text="ถึง:", font=CTkFont(size=12)).pack(
             side="left", padx=(0, 4), pady=8)
-        self._month_var = tk.StringVar(value="ทั้งหมด")
-        self._month_cb = CTkComboBox(fbar, variable=self._month_var, width=90,
-                                     values=["ทั้งหมด"], font=CTkFont(size=12),
-                                     command=lambda _: self._load())
-        self._month_cb.pack(side="left", pady=8, padx=(0, 8))
+        self._date_to_var = tk.StringVar(value="")
+        if _HAS_CAL:
+            self._cal_to = _PatchedDE(fbar, width=11, textvariable=self._date_to_var, **_DE_KW)
+            self._cal_to.delete(0, "end")
+            self._cal_to.pack(side="left", pady=8, padx=(0, 16))
+            self._cal_to.bind("<<DateEntrySelected>>", lambda e: self._load())
+        else:
+            CTkEntry(fbar, textvariable=self._date_to_var, width=100,
+                     placeholder_text="dd/mm/yyyy").pack(side="left", pady=8, padx=(0, 16))
 
-        CTkLabel(fbar, text="วัน:", font=CTkFont(size=12)).pack(
+        CTkLabel(fbar, text="ยอด:", font=CTkFont(size=12)).pack(
             side="left", padx=(0, 4), pady=8)
-        self._day_var = tk.StringVar(value="ทั้งหมด")
-        self._day_cb = CTkComboBox(fbar, variable=self._day_var, width=75,
-                                   values=["ทั้งหมด"], font=CTkFont(size=12),
-                                   command=lambda _: self._load())
-        self._day_cb.pack(side="left", pady=8, padx=(0, 16))
+        self._sale_min_var = tk.StringVar(value="")
+        CTkEntry(fbar, textvariable=self._sale_min_var, width=90,
+                 placeholder_text="0").pack(side="left", pady=8, padx=(0, 4))
+        CTkLabel(fbar, text="ถึง", font=CTkFont(size=12)).pack(side="left", padx=(0, 4))
+        self._sale_max_var = tk.StringVar(value="")
+        CTkEntry(fbar, textvariable=self._sale_max_var, width=90,
+                 placeholder_text="ไม่จำกัด").pack(side="left", pady=8, padx=(0, 8))
+        CTkButton(fbar, text="ค้นหา", width=70, height=28, font=CTkFont(size=12),
+                  command=self._load).pack(side="left", pady=8, padx=(0, 16))
 
         CTkLabel(fbar, text="PU:", font=CTkFont(size=12)).pack(
             side="left", padx=(0, 4), pady=8)
@@ -3683,6 +3745,9 @@ class SLADashboard(CTkFrame):
         CTkButton(fbar, text="📌 วันนี้", width=85, height=30,
                   font=CTkFont(size=12), fg_color="#0EA5E9", hover_color="#0284C7",
                   command=self._filter_today).pack(side="right", padx=(0, 4), pady=8)
+        CTkButton(fbar, text="⏳ งานค้าง", width=95, height=30,
+                  font=CTkFont(size=12), fg_color="#D97706", hover_color="#B45309",
+                  command=self._show_pending_popup).pack(side="right", padx=(0, 4), pady=8)
 
         # ── row 2: Treeview ───────────────────────────────────────────────────
         frame = CTkFrame(self, fg_color="white", corner_radius=10,
@@ -3696,15 +3761,21 @@ class SLADashboard(CTkFrame):
                                  selectmode="browse")
         for label, w in self.COLS:
             self.tree.heading(label, text=label)
-            anchor  = "w" if label == "สินค้า (สรุป)" else "center"
-            stretch = tk.YES if label == "สินค้า (สรุป)" else tk.NO
-            self.tree.column(label, width=w, minwidth=w,
+            anchor  = "center"
+            stretch = tk.NO
+            self.tree.column(label, width=w, minwidth=40,
                              anchor=anchor, stretch=stretch)
 
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
+        def _vsb_set(*args):
+            vsb.set(*args)
+            self.after_idle(self._paint_status_cells)
+        self.tree.configure(yscrollcommand=_vsb_set)
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
+        self.tree.bind("<Configure>", lambda e: self.after_idle(self._paint_status_cells))
+        self.tree.bind("<ButtonRelease-1>", lambda e: self.after(50, self._paint_status_cells))
+        self._status_cell_labels = []
 
         style = ttk.Style()
         style.configure("Treeview",         font=("Tahoma", 11), rowheight=30)
@@ -3737,9 +3808,99 @@ class SLADashboard(CTkFrame):
                      font=CTkFont(size=11), text_color=fg,
                      fg_color=bg).pack(padx=8, pady=3)
 
-        # ── Tooltip สำหรับ สินค้า (สรุป) ─────────────────────────────────────
         self._products_map = {}   # iid → full product text
         self._extend_map   = {}   # iid → {"so_number", "extend_no", "extend_id", "status"}
+
+        # ── Double click → popup รายการสินค้า ──────────────────────────────
+        def _on_double_click(event):
+            import tkinter as tk
+            import tkinter.ttk as ttk2
+            iid = self.tree.identify_row(event.y)
+            if not iid:
+                return
+            products_raw = self._products_map.get(iid, "")
+            if not products_raw:
+                return
+
+            items = []
+            for entry in products_raw.split(";;"):
+                parts = entry.split("|")
+                name  = parts[0].strip() if len(parts) > 0 else ""
+                qty   = parts[1].strip() if len(parts) > 1 else "-"
+                price = parts[2].strip() if len(parts) > 2 else "-"
+                if name:
+                    items.append((name, qty, price))
+
+            vals      = self.tree.item(iid, "values")
+            col_names = [c[0] for c in self.COLS]
+            so_val    = vals[0] if vals else ""
+            sales_val = vals[-1] if vals else ""
+            temp_val  = vals[col_names.index("Temp")] if "Temp" in col_names and vals else "-"
+            TEMP_COLOR_MAP = {"HOT": "#EF4444", "WARM": "#F59E0B", "COLD": "#3B82F6"}
+            temp_bg   = TEMP_COLOR_MAP.get(str(temp_val).strip().upper(), "#6B7280")
+
+            pop = tk.Toplevel(self)
+            pop.title("รายการสินค้า")
+            pop.resizable(True, True)
+            pop.grab_set()
+            self._center_popup(pop, 620, min(len(items), 14) * 28 + 120)
+
+            # Header
+            hdr = tk.Frame(pop, bg="#1E3A5F")
+            hdr.pack(fill="x")
+            tk.Label(hdr, text=f"SO: {so_val}", font=("Tahoma", 12, "bold"),
+                     fg="white", bg="#1E3A5F").pack(side="left", padx=14, pady=10)
+            tk.Label(hdr, text=f"ยอดรวม: {sales_val}", font=("Tahoma", 11),
+                     fg="#93C5FD", bg="#1E3A5F").pack(side="right", padx=14, pady=10)
+            tk.Label(hdr, text=f" {temp_val} ", font=("Tahoma", 11, "bold"),
+                     fg="white", bg=temp_bg).pack(side="right", padx=(4, 8), pady=10)
+
+            # Table frame
+            tbl_frame = tk.Frame(pop, bg="white")
+            tbl_frame.pack(fill="both", expand=True, padx=12, pady=(8, 0))
+
+            cols = ("รายการสินค้า", "จำนวน", "ราคา/เส้น")
+            tree2 = ttk2.Treeview(tbl_frame, columns=cols, show="headings",
+                                  height=min(len(items), 12))
+            tree2.heading("รายการสินค้า", text="รายการสินค้า", anchor="w")
+            tree2.heading("จำนวน",        text="จำนวน",        anchor="center")
+            tree2.heading("ราคา/เส้น",    text="ราคา/เส้น",    anchor="center")
+            tree2.column("รายการสินค้า", width=380, anchor="w")
+            tree2.column("จำนวน",        width=80,  anchor="center")
+            tree2.column("ราคา/เส้น",    width=110, anchor="center")
+
+            style2 = ttk2.Style()
+            style2.configure("Popup.Treeview", font=("Tahoma", 11), rowheight=26)
+            style2.configure("Popup.Treeview.Heading", font=("Tahoma", 11, "bold"))
+            tree2.configure(style="Popup.Treeview")
+
+            for i, (name, qty, price) in enumerate(items):
+                tree2.insert("", "end", values=(name, qty, price),
+                             tags=("odd" if i % 2 == 0 else "even",))
+            tree2.tag_configure("odd",  background="#F8FAFC")
+            tree2.tag_configure("even", background="#FFFFFF")
+
+            sb2 = ttk2.Scrollbar(tbl_frame, orient="vertical", command=tree2.yview)
+            tree2.configure(yscrollcommand=sb2.set)
+            sb2.pack(side="right", fill="y")
+            tree2.pack(side="left", fill="both", expand=True)
+
+            # Footer
+            foot = tk.Frame(pop, bg="white")
+            foot.pack(fill="x", padx=12, pady=8)
+            tk.Label(foot, text=f"รายการทั้งหมด {len(items)} รายการ",
+                     font=("Tahoma", 10), fg="#6B7280", bg="white").pack(side="left")
+            tk.Button(foot, text="ปิด", command=pop.destroy, font=("Tahoma", 11),
+                      bg="#E5E7EB", relief="flat", padx=20, pady=4).pack(side="right")
+
+            pop.update_idletasks()
+            w, h = pop.winfo_reqwidth() + 20, pop.winfo_reqheight() + 20
+            px = self.winfo_rootx() + (self.winfo_width()  - w) // 2
+            py = self.winfo_rooty() + (self.winfo_height() - h) // 2
+            pop.geometry(f"{w}x{h}+{px}+{py}")
+
+        self.tree.bind("<Double-1>", _on_double_click)
+        self._on_double_click = _on_double_click
         self._refresh_all()
 
     def _refresh_all(self):
@@ -3750,59 +3911,17 @@ class SLADashboard(CTkFrame):
             df_all = pd.read_sql_query(
                 "SELECT user_key, started_at FROM sla_benchmark ORDER BY started_at DESC",
                 conn)
-            # ปี / เดือน / วัน — รวมจาก started_at (SLA rows) + cb_date (รอ Copy rows)
-            year_set  = set()
-            month_set = set()
-            day_set   = set()
-            if not df_all.empty and "started_at" in df_all.columns:
-                df_all["started_at"] = pd.to_datetime(df_all["started_at"])
-                year_set  |= set((df_all["started_at"].dt.year + 543).dropna().astype(int).tolist())
-                month_set |= set(df_all["started_at"].dt.month.dropna().astype(int).tolist())
-                day_set   |= set(df_all["started_at"].dt.day.dropna().astype(int).tolist())
-            # รวม cb_date จาก cost_benchmarks (รูปแบบ D/M/YY หรือ DD/MM/YY พ.ศ.)
-            try:
-                cb_dates_df = pd.read_sql_query(
-                    """SELECT DISTINCT "วันที่ขอราคา" AS cb_date FROM cost_benchmarks
-                       WHERE "Select" = '✔' AND "วันที่ขอราคา" IS NOT NULL AND "วันที่ขอราคา" != ''""",
-                    conn)
-                for cb_date in cb_dates_df["cb_date"].dropna():
-                    parts = str(cb_date).strip().split("/")
-                    if len(parts) == 3:
-                        try:
-                            d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
-                            # ตรวจ sanity: วัน 1-31, เดือน 1-12
-                            if not (1 <= d <= 31 and 1 <= m <= 12):
-                                continue
-                            day_set.add(d)
-                            month_set.add(m)
-                            # แปลง พ.ศ. → ค.ศ. (เช่น 69 → 2569 → 2026)
-                            # กรองปีที่เสีย เช่น "6" แทน "69"
-                            full_be = 2500 + y if y < 100 else y
-                            ce_year = full_be - 543
-                            if 2000 <= ce_year <= 2100:   # ช่วงที่สมเหตุสมผล
-                                year_set.add(full_be)  # เก็บเป็น พ.ศ.
-                        except (ValueError, TypeError):
-                            pass
-            except Exception as _e:
-                print(f"SLA cb_date date options error: {_e}")
-
-            years  = ["ทั้งหมด"] + sorted(str(y) for y in year_set)[::-1]
-            months = ["ทั้งหมด"] + [f"{m:02d}" for m in sorted(month_set)]
-            days   = ["ทั้งหมด"] + [f"{d:02d}" for d in sorted(day_set)]
-            # PU user — รวมจาก sla_benchmark (มี SLA แล้ว) + cost_benchmarks.created_by (รอ Copy)
-            pu_set = set(df_all["user_key"].dropna().unique().tolist())
+            # PU user — รวมจาก sla_benchmark + cost_benchmarks.created_by
+            pu_set = set(df_all["user_key"].dropna().unique().tolist()) if not df_all.empty else set()
             try:
                 cb_pu_df = pd.read_sql_query(
                     """SELECT DISTINCT created_by FROM cost_benchmarks
-                       WHERE "Select" = '✔' AND created_by IS NOT NULL AND created_by != ''""",
+                       WHERE created_by IS NOT NULL AND created_by != ''""",
                     conn)
                 pu_set |= set(cb_pu_df["created_by"].dropna().unique().tolist())
             except Exception as _e:
                 print(f"SLA cb PU filter error: {_e}")
             users = ["ทั้งหมด"] + sorted(pu_set)
-            self._year_cb.configure(values=years)
-            self._month_cb.configure(values=months)
-            self._day_cb.configure(values=days)
             self._user_cb.configure(values=users)
 
             # Sale keys จาก cost_benchmarks ตาม SO ที่มีใน sla_benchmark
@@ -3829,13 +3948,24 @@ class SLADashboard(CTkFrame):
                 self.app.release_connection(conn)
         self._load()
 
+    def _center_popup(self, pop, w, h):
+        """จัด popup ให้อยู่กลางหน้าต่างหลัก"""
+        self.update_idletasks()
+        root = self.winfo_toplevel()
+        rx = root.winfo_x() + (root.winfo_width()  - w) // 2
+        ry = root.winfo_y() + (root.winfo_height() - h) // 2
+        pop.geometry(f"{w}x{h}+{rx}+{ry}")
+
     def _filter_today(self):
-        """Set filter ปี/เดือน/วัน เป็นวันนี้ (ปี พ.ศ.) แล้วโหลดข้อมูล"""
+        """Set filter date range เป็นวันนี้"""
         from datetime import date as _date
         today = _date.today()
-        self._year_var.set(str(today.year + 543))   # พ.ศ.
-        self._month_var.set(f"{today.month:02d}")
-        self._day_var.set(f"{today.day:02d}")
+        today_str = today.strftime("%d/%m/%Y")
+        self._date_from_var.set(today_str)
+        self._date_to_var.set(today_str)
+        if _HAS_CAL:
+            self._cal_from.set_date(today)
+            self._cal_to.set_date(today)
         self._load()
 
     def _load(self):
@@ -3845,18 +3975,40 @@ class SLADashboard(CTkFrame):
         self._extend_map.clear()
         self._export_rows = []   # เก็บ rows สำหรับ Export Excel
         try:
-            year_sel  = self._year_var.get()
-            month_sel = self._month_var.get()
-            day_sel   = self._day_var.get()
             user_sel  = self._user_var.get()
             sale_sel  = self._sale_var.get()
             temp_sel  = self._temp_var.get()
+            date_from_str = self._date_from_var.get().strip()
+            date_to_str   = self._date_to_var.get().strip()
+            sale_min_str  = self._sale_min_var.get().strip()
+            sale_max_str  = self._sale_max_var.get().strip()
+
+            # parse date range (dd/mm/yyyy ค.ศ. จาก DateEntry)
+            def _parse_date(s):
+                if not s:
+                    return None
+                try:
+                    from datetime import datetime as _dt
+                    return _dt.strptime(s, "%d/%m/%Y").date()
+                except Exception:
+                    return None
+            date_from = _parse_date(date_from_str)
+            date_to   = _parse_date(date_to_str)
+
+            # parse ยอด range
+            try:
+                sale_min = float(sale_min_str.replace(",", "")) if sale_min_str else None
+            except ValueError:
+                sale_min = None
+            try:
+                sale_max = float(sale_max_str.replace(",", "")) if sale_max_str else None
+            except ValueError:
+                sale_max = None
 
             # ── ใช้ cost_benchmarks เป็น base → LEFT JOIN sla_benchmark ──────────
             # ทำให้เห็น SO ทุกตัวที่ติ๊ก ✔ ไม่ใช่แค่ที่มีใน sla_benchmark
             params = []
-            cb_where = ["\"Select\" = '✔'",
-                        "\"Sale Order No.\" IS NOT NULL",
+            cb_where = ["\"Sale Order No.\" IS NOT NULL",
                         "TRIM(\"Sale Order No.\") != ''"]
 
             if sale_sel != "ทั้งหมด":
@@ -3887,27 +4039,35 @@ class SLADashboard(CTkFrame):
                 WHERE 1=1
             """
 
-            # date/time filters:
-            # Row มีข้อมูล SLA  → filter ตาม started_at
-            # Row ไม่มีข้อมูล SLA → filter ตาม cb_date (วันที่ขอราคา รูปแบบ D/M/YY หรือ DD/MM/YY)
-            # ใช้ SPLIT_PART แทน SUBSTRING เพื่อรองรับกรณีที่ไม่มี zero-padding
-            if day_sel != "ทั้งหมด":
-                query += " AND (s.started_at IS NOT NULL AND EXTRACT(DAY FROM s.started_at) = %s OR s.started_at IS NULL AND CAST(SPLIT_PART(cb.cb_date, '/', 1) AS INTEGER) = %s)"
-                params.append(int(day_sel))
-                params.append(int(day_sel))
-            if month_sel != "ทั้งหมด":
-                query += " AND (s.started_at IS NOT NULL AND EXTRACT(MONTH FROM s.started_at) = %s OR s.started_at IS NULL AND CAST(SPLIT_PART(cb.cb_date, '/', 2) AS INTEGER) = %s)"
-                params.append(int(month_sel))
-                params.append(int(month_sel))
-            if year_sel != "ทั้งหมด":
-                # year_sel เป็น พ.ศ. (เช่น 2569)
-                # started_at ใช้ ค.ศ. → แปลง พ.ศ. → ค.ศ. ก่อน compare
-                # cb_date ใช้ พ.ศ. (2 หรือ 4 หลัก) → ใช้ % 100 รองรับทั้งสองรูปแบบ
-                ce_year      = int(year_sel) - 543
-                year_short_int = int(year_sel) % 100
-                query += " AND (s.started_at IS NOT NULL AND EXTRACT(YEAR FROM s.started_at) = %s OR s.started_at IS NULL AND CAST(SPLIT_PART(cb.cb_date, '/', 3) AS INTEGER) %% 100 = %s)"
-                params.append(ce_year)
-                params.append(year_short_int)
+            # date range filter — anchor = copied_at ถ้ามี, ถ้าไม่มีใช้ started_at, ถ้าไม่มีใช้ cb_date
+            if date_from:
+                query += """
+                    AND (
+                        COALESCE(s.copied_at, s.started_at)::date >= %s
+                        OR (s.started_at IS NULL AND (
+                            TO_DATE(LPAD(SPLIT_PART(cb.cb_date,'/',1),2,'0') || '/' ||
+                                    LPAD(SPLIT_PART(cb.cb_date,'/',2),2,'0') || '/' ||
+                                    CASE WHEN LENGTH(SPLIT_PART(cb.cb_date,'/',3)) = 2
+                                         THEN (2500 + SPLIT_PART(cb.cb_date,'/',3)::int - 543)::text
+                                         ELSE (SPLIT_PART(cb.cb_date,'/',3)::int - 543)::text END,
+                                    'DD/MM/YYYY') >= %s
+                        ))
+                    )"""
+                params.extend([date_from, date_from])
+            if date_to:
+                query += """
+                    AND (
+                        COALESCE(s.copied_at, s.started_at)::date <= %s
+                        OR (s.started_at IS NULL AND (
+                            TO_DATE(LPAD(SPLIT_PART(cb.cb_date,'/',1),2,'0') || '/' ||
+                                    LPAD(SPLIT_PART(cb.cb_date,'/',2),2,'0') || '/' ||
+                                    CASE WHEN LENGTH(SPLIT_PART(cb.cb_date,'/',3)) = 2
+                                         THEN (2500 + SPLIT_PART(cb.cb_date,'/',3)::int - 543)::text
+                                         ELSE (SPLIT_PART(cb.cb_date,'/',3)::int - 543)::text END,
+                                    'DD/MM/YYYY') <= %s
+                        ))
+                    )"""
+                params.extend([date_to, date_to])
             if user_sel != "ทั้งหมด":
                 # ใช้ COALESCE เพื่อรองรับทั้ง row ที่มี SLA (s.user_key) และ รอ Copy (cb.pu_cb)
                 query += " AND COALESCE(s.user_key, cb.pu_cb) = %s"
@@ -3963,7 +4123,11 @@ class SLADashboard(CTkFrame):
                         cb_raw = pd.read_sql_query(f"""
                             SELECT "Sale Order No."       AS so_number,
                                    "ต้นทุนรวม (รวมย้าย)"  AS cost_raw,
+                                   "ราคาขาย รวม"          AS sale_raw,
                                    "รายการสินค้า"         AS product_name,
+                                   "จำนวน"                AS qty,
+                                   "ราคาขาย / เส้น"       AS price_per_unit,
+                                   "สถานะ"                AS status_cb,
                                    "รหัส Sale"            AS sale_key_cb,
                                    "Order No."            AS order_no
                             FROM   cost_benchmarks
@@ -3972,22 +4136,29 @@ class SLADashboard(CTkFrame):
                         """, conn, params=so_list)
 
                         if not cb_raw.empty:
-                            cb_raw["cost_num"] = (
-                                cb_raw["cost_raw"].astype(str)
-                                .str.replace(",", "", regex=False)
-                                .str.replace("฿", "", regex=False)
-                                .str.strip()
-                                .pipe(lambda s: pd.to_numeric(s, errors="coerce"))
-                                .fillna(0)
-                            )
-                            # รวม product names เป็น string เดียว (unique, ไม่ซ้ำ)
-                            def _join_products(names):
+                            def _to_num(series):
+                                return (series.astype(str)
+                                        .str.replace(",", "", regex=False)
+                                        .str.replace("฿", "", regex=False)
+                                        .str.strip()
+                                        .pipe(lambda s: pd.to_numeric(s, errors="coerce"))
+                                        .fillna(0))
+
+                            cb_raw["cost_num"] = _to_num(cb_raw["cost_raw"])
+                            cb_raw["sale_num"] = _to_num(cb_raw["sale_raw"])
+
+                            # รวม product + qty เป็น list of "ชื่อ|qty|price"
+                            def _join_products(grp):
                                 seen = []
-                                for n in names:
-                                    n = str(n).strip()
-                                    if n and n not in seen:
-                                        seen.append(n)
-                                return ", ".join(seen)
+                                seen_names = set()
+                                for _, row in grp.iterrows():
+                                    name  = str(row.get("product_name", "") or "").strip()
+                                    qty   = str(row.get("qty", "") or "").strip()
+                                    price = str(row.get("price_per_unit", "") or "").strip()
+                                    if name and name not in seen_names:
+                                        seen_names.add(name)
+                                        seen.append(f"{name}|{qty}|{price}")
+                                return ";;".join(seen)
 
                             # sale_key: เอาค่าแรกที่ไม่ว่างของแต่ละ SO
                             def _first_sale(keys):
@@ -3997,20 +4168,32 @@ class SLADashboard(CTkFrame):
                                         return k
                                 return ""
 
+                            _prod_summary = cb_raw.groupby("so_number").apply(_join_products).rename("products").reset_index()
+                            def _so_status(statuses):
+                                # ถ้ามีหลาย row ใน SO เดียว เอาค่าแรกที่ไม่ว่าง
+                                for s in statuses:
+                                    s = str(s).strip()
+                                    if s and s.lower() not in ("nan", "none", ""):
+                                        return s
+                                return "-"
+
                             cb_summary = cb_raw.groupby("so_number").agg(
-                                total_cost=("cost_num",     "sum"),
-                                sku_count =("cost_num",     "count"),
-                                products  =("product_name", _join_products),
-                                sale_key  =("sale_key_cb",  _first_sale),
-                                order_no  =("order_no",     _first_sale),
+                                total_cost =("cost_num",     "sum"),
+                                total_sales=("sale_num",     "sum"),
+                                sku_count  =("cost_num",     "count"),
+                                so_status  =("status_cb",   _so_status),
+                                sale_key   =("sale_key_cb",  _first_sale),
+                                order_no   =("order_no",     _first_sale),
                             ).reset_index()
+                            cb_summary = cb_summary.merge(_prod_summary, on="so_number", how="left")
                             df = df.merge(cb_summary, on="so_number", how="left")
 
-                for col in ("total_cost", "sku_count", "products", "sale_key", "order_no"):
+                for col in ("total_cost", "total_sales", "sku_count", "so_status", "products", "sale_key", "order_no"):
                     if col not in df.columns:
                         df[col] = "" if col in ("products", "sale_key", "order_no") else 0
-                df["total_cost"] = df["total_cost"].fillna(0)
-                df["sku_count"]  = df["sku_count"].fillna(0)
+                df["total_cost"]  = df["total_cost"].fillna(0)
+                df["total_sales"] = df["total_sales"].fillna(0)
+                df["sku_count"]   = df["sku_count"].fillna(0)
                 df["products"]   = df["products"].fillna("")
                 df["sale_key"]   = df["sale_key"].fillna("")
                 if "extends" not in df.columns:
@@ -4031,7 +4214,11 @@ class SLADashboard(CTkFrame):
                 sale_key      = str(r.get("sale_key", "") or "")
                 order_no      = str(r.get("order_no",  "") or "")
                 products_full  = str(r.get("products", "") or "")
-                products_short = products_full   # stretch column — แสดงเท่าที่พอดี, tooltip แสดงเต็ม
+                total_sales    = float(r.get("total_sales", 0) or 0)
+                sales_str      = f"฿{total_sales:,.2f}" if total_sales else "-"
+                _ss = r.get("so_status", "")
+                _ss_raw = str(_ss).strip() if _ss and str(_ss).strip().lower() not in ("nan", "none", "", "-") else ""
+                so_status = self._STATUS_LABEL_MAP.get(_ss_raw, _ss_raw) if _ss_raw else "Waiting - รอเซลล์ติดตาม"
 
                 # ── คำนวณ order size และ base target ─────────────────────────
                 total_cost  = float(r.get("total_cost", 0) or 0)
@@ -4044,10 +4231,11 @@ class SLADashboard(CTkFrame):
                 temp_base  = temp_parts[0].strip().upper()   # HOT / WARM / COLD
                 is_mto     = "สั่งผลิต" in temp_raw          # Made-to-Order
 
-                target_map  = self.SLA_TARGET_LARGE if is_large else self.SLA_TARGET_NORMAL
-                base_target = target_map.get(temp_base)
-                if base_target and is_mto:
-                    base_target += self.SLA_MADE_TO_ORDER_ADD  # บวก 1 วันทำการ
+                if is_mto:
+                    base_target = 1440  # สั่งผลิตทุก temp = 24 ชม. (1,440 นาที)
+                else:
+                    target_map  = self.SLA_TARGET_LARGE if is_large else self.SLA_TARGET_NORMAL
+                    base_target = target_map.get(temp_base)
 
                 order_size = "-"
                 if temp_base in self.SLA_TARGET_NORMAL:
@@ -4080,58 +4268,86 @@ class SLADashboard(CTkFrame):
                     m = int(m)
                     return f"{m} นาที" if abs(m) < 60 else f"{m//60}h {abs(m)%60:02d}m"
 
-                if pd.notna(dur_raw):
+                def _biz_min(start, end):
+                    """คำนวณนาทีเฉพาะเวลาทำงาน จ-ส 08:30-17:30 หักพัก 12:00-13:00"""
+                    from datetime import time as _t, timedelta as _td
+                    if not start or not end or end <= start:
+                        return 0
+                    WS, LE, LS, WE = _t(8,30), _t(13,0), _t(12,0), _t(17,30)
+                    WORK_DAYS = {0,1,2,3,4,5}
+                    def _day(ts, te):
+                        s = max(ts, WS); e = min(te, WE)
+                        if s >= e: return 0
+                        lc = 0
+                        if s < LE and e > LS:
+                            from datetime import datetime as _dt2
+                            lc = ((_dt2.combine(_dt2.today(), min(e,LE)) -
+                                   _dt2.combine(_dt2.today(), max(s,LS))).seconds // 60)
+                        from datetime import datetime as _dt2
+                        return max(0, (_dt2.combine(_dt2.today(), e) -
+                                       _dt2.combine(_dt2.today(), s)).seconds // 60 - lc)
+                    total = 0
+                    cur = start
+                    while cur.date() <= end.date():
+                        d = cur.date()
+                        if cur.weekday() in WORK_DAYS:
+                            ds = cur.time() if d == start.date() else WS
+                            de = end.time() if d == end.date()   else WE
+                            total += _day(ds, de)
+                        cur = datetime.combine(d + timedelta(days=1), WS)
+                    return total
+
+                def _sla_tag(pct, has_target, mto):
+                    if not has_target or not mto:
+                        return "[ รวดเร็ว ]", "fast"
+                    if pct <= 1.0:
+                        return "[ รวดเร็ว ]", "fast"
+                    elif pct <= 1.5:
+                        return "[ ปานกลาง ]", "medium"
+                    else:
+                        return "[ ช้า ]", "slow"
+
+                if started_dt and copied_dt:
+                    # คำนวณ business minutes จาก started_at → copied_at
+                    d       = _biz_min(started_dt, copied_dt)
+                    dur_str = _fmt(d)
+                    if target is not None:
+                        diff_val   = d - target
+                        diff_str   = (f"+{_fmt(diff_val)}" if diff_val > 0
+                                      else ("0 นาที" if diff_val == 0 else _fmt(diff_val)))
+                        sla_result, row_tag = _sla_tag(d / target, True, is_mto)
+                    else:
+                        diff_str   = "-"
+                        sla_result, row_tag = _sla_tag(0, False, is_mto)
+                elif started_dt and pd.notna(dur_raw):
+                    # fallback: ใช้ duration_min จาก DB (เผื่อไม่มี copied_at)
                     d       = int(dur_raw)
                     dur_str = _fmt(d)
                     if target is not None:
                         diff_val   = d - target
                         diff_str   = (f"+{_fmt(diff_val)}" if diff_val > 0
                                       else ("0 นาที" if diff_val == 0 else _fmt(diff_val)))
-                        pct = d / target
-                        if pct < 0.5:
-                            sla_result = "[ รวดเร็ว ]"
-                            row_tag    = "fast"
-                        elif pct <= 1.0:
-                            sla_result = "[ ปานกลาง ]"
-                            row_tag    = "medium"
-                        else:
-                            sla_result = "[ ช้า ]"
-                            row_tag    = "slow"
+                        sla_result, row_tag = _sla_tag(d / target, True, is_mto)
                     else:
                         diff_str   = "-"
-                        sla_result = "[ รวดเร็ว ]"
-                        row_tag    = "fast"
-                elif copied_dt and started_dt:
-                    d       = int((copied_dt - started_dt).total_seconds() // 60)
-                    dur_str = f"~{_fmt(d)}"
-                    if target is not None:
-                        diff_val   = d - target
-                        diff_str   = (f"+{_fmt(diff_val)}" if diff_val > 0
-                                      else ("0 นาที" if diff_val == 0 else _fmt(diff_val)))
-                        pct = d / target
-                        if pct < 0.5:
-                            sla_result = "[ รวดเร็ว ]"
-                            row_tag    = "fast"
-                        elif pct <= 1.0:
-                            sla_result = "[ ปานกลาง ]"
-                            row_tag    = "medium"
-                        else:
-                            sla_result = "[ ช้า ]"
-                            row_tag    = "slow"
-                    else:
-                        diff_str   = "-"
-                        sla_result = "[ รวดเร็ว ]"
-                        row_tag    = "fast"
+                        sla_result, row_tag = _sla_tag(0, False, is_mto)
                 else:
                     dur_str    = "รอ Copy"
                     diff_str   = "-"
                     sla_result = "[ ดำเนินการ ]"
                     row_tag    = "pending"
 
-                row_vals = (r["so_number"], order_no, sale_key, r["user_key"], temp,
+                # filter ยอด Sum of ราคาขาย
+                if sale_min is not None and total_sales < sale_min:
+                    continue
+                if sale_max is not None and total_sales > sale_max:
+                    continue
+
+                sale_key_short = sale_key.split("-")[0] if sale_key and "-" in sale_key else sale_key
+                row_vals = (r["so_number"], order_no, sale_key_short, r["user_key"], temp,
                             started, copied, dur_str,
                             order_size, target_str, extend_str,
-                            diff_str, sla_result, products_full)
+                            diff_str, sla_result, so_status, sales_str)
                 iid = self.tree.insert("", "end", values=row_vals, tags=(row_tag,))
                 self._export_rows.append(row_vals)   # เก็บ full product text สำหรับ export
                 if products_full:
@@ -4163,6 +4379,332 @@ class SLADashboard(CTkFrame):
             pending_cnt = total - done_cnt
             self._summary_label.configure(
                 text=f"รวมทั้งหมด  {total}  Order  |  ✅ เสร็จแล้ว  {done_cnt}  |  ⏳ รอ Copy  {pending_cnt}")
+            self.after_idle(self._paint_status_cells)
+
+    # ── per-cell color สำหรับคอลัม "สถานะ" ─────────────────────────────────
+    _STATUS_LABEL_MAP = {
+        "L-PRC-1": "L-PRC-1 แพงกว่า (ราคา)",
+        "L-PRC-2": "L-PRC-2 แพงกว่า (ราคา+ส่วนลด)",
+        "L-LOC":   "L-LOC ทำเลไม่ได้เปรียบ",
+        "L-SPC":   "L-SPC สเปคไม่ตรง",
+        "L-CHG":   "L-CHG ราคาเปลี่ยนกะทันหัน",
+        "L-DEL":   "L-DEL ส่งช้า",
+        "L-QTY":   "L-QTY MOQ สูงเกิน",
+        "L-SPD":   "L-SPD กระบวนการช้า",
+        "L-FLW":   "L-FLW การติดตามพลาด",
+        "L-INF":   "L-INF ข้อมูลไม่ครบ",
+        "U-TRM":   "U-TRM เงื่อนไขการค้า",
+        "U-LCK":   "U-LCK ล็อคซัพพลายเออร์",
+        "U-CON":   "U-CON สัญญาผูกมัด",
+        "U-CNC":   "U-CNC ลูกค้ายกเลิก",
+        "U-BID":   "U-BID ประมูล/โปรเจกต์",
+        "U-MKT":   "U-MKT ตลาด/คู่แข่ง",
+        "L-UNK":   "L-UNK ไม่ทราบสาเหตุ",
+    }
+
+    _STATUS_CELL_COLORS = {
+        # เขียว — ชนะได้ถ้าแก้ด้านนี้
+        "L-PRC-1": ("#DCFCE7", "#166534"),
+        "L-PRC-2": ("#DCFCE7", "#166534"),
+        "L-LOC":   ("#DCFCE7", "#166534"),
+        "L-SPC":   ("#DCFCE7", "#166534"),
+        "L-CHG":   ("#DCFCE7", "#166534"),
+        "L-DEL":   ("#DCFCE7", "#166534"),
+        "L-QTY":   ("#DCFCE7", "#166534"),
+        # ส้ม — ปัญหากระบวนการ
+        "L-SPD":   ("#FED7AA", "#9A3412"),
+        "L-FLW":   ("#FED7AA", "#9A3412"),
+        "L-INF":   ("#FED7AA", "#9A3412"),
+        # ม่วง — ปัจจัยภายนอก ควบคุมไม่ได้
+        "U-TRM":   ("#EDE9FE", "#5B21B6"),
+        "U-LCK":   ("#EDE9FE", "#5B21B6"),
+        "U-CON":   ("#EDE9FE", "#5B21B6"),
+        "U-CNC":   ("#EDE9FE", "#5B21B6"),
+        "U-BID":   ("#EDE9FE", "#5B21B6"),
+        "U-MKT":   ("#EDE9FE", "#5B21B6"),
+        # เทา — ไม่ทราบสาเหตุ
+        "L-UNK":   ("#F3F4F6", "#374151"),
+    }
+
+    def _paint_status_cells(self):
+        # ลบ label เก่าออกก่อน
+        for lbl in self._status_cell_labels:
+            try:
+                lbl.destroy()
+            except Exception:
+                pass
+        self._status_cell_labels = []
+
+        col_ids = [c[0] for c in self.COLS]
+        try:
+            status_idx = col_ids.index("สถานะ W/L")
+        except ValueError:
+            return
+
+        font_obj = ("Tahoma", 10)
+        for iid in self.tree.get_children():
+            vals = self.tree.item(iid, "values")
+            if len(vals) <= status_idx:
+                continue
+            raw = str(vals[status_idx]).strip()
+            if not raw or raw == "-":
+                continue
+            code = raw.split()[0]
+            colors = self._STATUS_CELL_COLORS.get(code)
+            if not colors:
+                continue
+            bg, fg = colors
+            bbox = self.tree.bbox(iid, f"#{status_idx + 1}")
+            if not bbox:
+                continue
+            x, y, w, h = bbox
+            lbl = tk.Label(self.tree, text=raw, bg=bg, fg=fg,
+                           font=font_obj, anchor="center",
+                           relief="flat", bd=0)
+            lbl.place(x=x, y=y, width=w, height=h)
+            lbl.bind("<Button-1>", lambda e, i=iid: (
+                self.tree.selection_set(i),
+                self.tree.focus(i),
+            ))
+            lbl.bind("<Double-Button-1>", lambda e, i=iid: self._on_row_double_click_iid(i))
+            lbl.bind("<MouseWheel>", lambda e: self.tree.yview_scroll(
+                int(-1 * (e.delta / 120)), "units"))
+            self._status_cell_labels.append(lbl)
+
+    def _on_row_double_click_iid(self, iid):
+        products_raw = self._products_map.get(iid, "")
+        if not products_raw:
+            return
+        self.tree.selection_set(iid)
+        bbox = self.tree.bbox(iid)
+        if bbox and hasattr(self, '_on_double_click'):
+            fake_event = type("E", (), {"y": bbox[1] + 5})()
+            self._on_double_click(fake_event)
+
+    @staticmethod
+    def _calc_work_minutes(start, end, holidays: set) -> int:
+        """นับนาทีทำงานจริง จ-ส 08:30-12:00 และ 13:00-17:30 ไม่รวมวันหยุด"""
+        from datetime import datetime, time, timedelta
+        WORK_SEGS = [(time(8, 30), time(12, 0)), (time(13, 0), time(17, 30))]
+        MINS_PER_DAY = sum(int((e.hour*60+e.minute) - (s.hour*60+s.minute)) for s, e in WORK_SEGS)
+
+        if start >= end:
+            return 0
+        total = 0
+        cur = start
+        while cur.date() <= end.date():
+            # วันอาทิตย์ (weekday=6) หรือวันหยุด → ข้าม
+            if cur.weekday() == 6 or cur.date() in holidays:
+                cur = datetime.combine(cur.date() + timedelta(days=1), time(0, 0))
+                continue
+            for seg_start, seg_end in WORK_SEGS:
+                s = datetime.combine(cur.date(), seg_start)
+                e = datetime.combine(cur.date(), seg_end)
+                # clip กับ start/end จริง
+                s = max(s, start)
+                e = min(e, end)
+                if e > s:
+                    total += int((e - s).total_seconds() // 60)
+            cur = datetime.combine(cur.date() + timedelta(days=1), time(0, 0))
+        return total
+
+    def _show_pending_popup(self):
+        """Popup แสดงรายการงานค้าง (รอ Copy) ทุกคน"""
+        import tkinter as tk
+        from customtkinter import CTkToplevel, CTkLabel, CTkFont, CTkFrame
+        from tkinter import ttk
+        from datetime import datetime as _dt
+
+        conn = None
+        try:
+            conn = self.app.get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT
+                    s.so_number,
+                    COALESCE(s.user_key, cb.pu_cb)          AS pu,
+                    cb.temp_cb                               AS temp,
+                    s.started_at,
+                    cb.order_no                              AS order_no,
+                    cb.sale_key_cb                           AS sale_key,
+                    cb.total_sales                           AS total_sales
+                FROM sla_benchmark s
+                LEFT JOIN (
+                    SELECT
+                        "Sale Order No."            AS so_number,
+                        MAX("PRIORITY")             AS temp_cb,
+                        MAX("รหัส Sale")            AS sale_key_cb,
+                        MAX("Order No.")            AS order_no,
+                        SUM(CAST(REPLACE(REPLACE("ราคาขาย รวม"::text,'฿',''),',','') AS NUMERIC)) AS total_sales,
+                        MAX("created_by")           AS pu_cb
+                    FROM cost_benchmarks
+                    WHERE "Select" IN ('✔','เทียบเพื่อชุบ ✔')
+                    GROUP BY "Sale Order No."
+                ) cb ON cb.so_number = s.so_number
+                WHERE s.copied_at IS NULL
+                  AND s.started_at IS NOT NULL
+                ORDER BY s.started_at ASC
+            """)
+            rows = cur.fetchall()
+
+            # ดึง holidays
+            try:
+                cur.execute("SELECT holiday_date FROM company_holidays")
+                holidays = {r2[0] for r2 in cur.fetchall()}
+            except Exception:
+                holidays = set()
+
+            # ดึง products สำหรับ double-click
+            so_list = [r[0] for r in rows if r[0]]
+            products_map = {}
+            if so_list:
+                ph = ",".join(["%s"] * len(so_list))
+                cur.execute(f"""
+                    SELECT "Sale Order No.",
+                           STRING_AGG("รายการสินค้า" || '|' || COALESCE("จำนวน"::text,'-') || '|' || COALESCE("ราคาขาย / เส้น"::text,'-'), ';;')
+                    FROM cost_benchmarks
+                    WHERE "Sale Order No." IN ({ph})
+                      AND "Select" IN ('✔','เทียบเพื่อชุบ ✔')
+                    GROUP BY "Sale Order No."
+                """, so_list)
+                for so, prod in cur.fetchall():
+                    products_map[so] = prod or ""
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", str(e))
+            return
+        finally:
+            if conn:
+                self.app.release_connection(conn)
+
+        pop = CTkToplevel(self)
+        pop.title("⏳ งานค้าง — รอ Copy Short Note")
+        pop.grab_set()
+        self._center_popup(pop, 1100, 520)
+
+        CTkLabel(pop, text=f"⏳  งานค้างทั้งหมด {len(rows)} รายการ",
+                 font=CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(12, 4))
+
+        cols = [
+            ("SO Number",       180),
+            ("PU",               70),
+            ("Priority",         65),
+            ("Order No.",        90),
+            ("Sale",             90),
+            ("เวลาเริ่มทำ",      130),
+            ("ค้างมาแล้ว",        90),
+            ("Sum ราคาขาย",     120),
+        ]
+        frame = CTkFrame(pop, fg_color="white")
+        frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        style = ttk.Style()
+        style.configure("Pending.Treeview", font=("Tahoma", 11), rowheight=28)
+        style.configure("Pending.Treeview.Heading", font=("Tahoma", 11, "bold"))
+
+        tree = ttk.Treeview(frame, columns=[c[0] for c in cols],
+                            show="headings", style="Pending.Treeview")
+        for col, w in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=w, anchor="center")
+        tree.column("SO Number", anchor="w")
+        tree.column("Sale", anchor="w")
+
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+
+        tree.tag_configure("hot",  background="#FEE2E2")
+        tree.tag_configure("warm", background="#FEF9C3")
+        tree.tag_configure("cold", background="#DBEAFE")
+
+        from datetime import datetime as _dt2
+        _now = _dt2.now()
+        iid_to_so = {}
+        for r in rows:
+            so, pu, temp, started_at, order_no, sale_key, total_sales = r
+            started_str = started_at.strftime("%d/%m/%y %H:%M") if started_at else "-"
+            if started_at:
+                work_mins = self._calc_work_minutes(started_at.replace(tzinfo=None), _now, holidays)
+                h, m = divmod(work_mins, 60)
+                elapsed_str = f"{h}h {m}m"
+            else:
+                elapsed_str = "-"
+            sales_str = f"฿{float(total_sales):,.2f}" if total_sales else "-"
+            tag = (temp or "").upper()
+            tag = "hot" if tag == "HOT" else "warm" if tag == "WARM" else "cold" if tag == "COLD" else ""
+            iid = tree.insert("", "end", values=(
+                so or "-",
+                pu or "-",
+                temp or "-",
+                order_no or "-",
+                (sale_key or "-").split("-")[0] if sale_key and "-" in (sale_key or "") else (sale_key or "-"),
+                started_str,
+                elapsed_str,
+                sales_str,
+            ), tags=(tag,) if tag else ())
+            if so:
+                iid_to_so[iid] = so
+
+        def _on_pending_dblclick(event):
+            iid = tree.identify_row(event.y)
+            if not iid:
+                return
+            so = iid_to_so.get(iid)
+            if not so:
+                return
+            products_raw = products_map.get(so, "")
+            if not products_raw:
+                return
+            items = []
+            for entry in products_raw.split(";;"):
+                parts = entry.split("|")
+                name  = parts[0].strip() if len(parts) > 0 else ""
+                qty   = parts[1].strip() if len(parts) > 1 else "-"
+                price = parts[2].strip() if len(parts) > 2 else "-"
+                if name:
+                    items.append((name, qty, price))
+            vals = tree.item(iid, "values")
+            temp_val = vals[2] if vals else "-"
+            sales_val = vals[7] if vals else "-"
+            TEMP_COLOR_MAP = {"HOT": "#EF4444", "WARM": "#F59E0B", "COLD": "#3B82F6"}
+            temp_bg = TEMP_COLOR_MAP.get(str(temp_val).strip().upper(), "#6B7280")
+
+            import tkinter as tk
+            import tkinter.ttk as ttk2
+            pop2 = tk.Toplevel(pop)
+            pop2.title("รายการสินค้า")
+            pop2.grab_set()
+            self._center_popup(pop2, 620, min(len(items), 14) * 28 + 120)
+            hdr = tk.Frame(pop2, bg="#1E3A5F")
+            hdr.pack(fill="x")
+            tk.Label(hdr, text=f"SO: {so}", font=("Tahoma", 12, "bold"),
+                     fg="white", bg="#1E3A5F").pack(side="left", padx=14, pady=10)
+            tk.Label(hdr, text=f"ยอดรวม: {sales_val}", font=("Tahoma", 11),
+                     fg="#93C5FD", bg="#1E3A5F").pack(side="right", padx=14, pady=10)
+            tk.Label(hdr, text=f" {temp_val} ", font=("Tahoma", 11, "bold"),
+                     fg="white", bg=temp_bg).pack(side="right", padx=(4, 8), pady=10)
+            tbl = tk.Frame(pop2, bg="white")
+            tbl.pack(fill="both", expand=True, padx=12, pady=8)
+            prod_cols = ("รายการสินค้า", "จำนวน", "ราคา/เส้น")
+            t = ttk2.Treeview(tbl, columns=prod_cols, show="headings", height=min(len(items), 14))
+            t.heading("รายการสินค้า", text="รายการสินค้า", anchor="w")
+            t.heading("จำนวน",        text="จำนวน",        anchor="center")
+            t.heading("ราคา/เส้น",    text="ราคา/เส้น",    anchor="center")
+            t.column("รายการสินค้า", width=380, anchor="w")
+            t.column("จำนวน",        width=80,  anchor="center")
+            t.column("ราคา/เส้น",    width=110, anchor="center")
+            for i, (name, qty, price) in enumerate(items):
+                t.insert("", "end", values=(name, qty, price),
+                         tags=("odd" if i % 2 == 0 else "even",))
+            t.tag_configure("odd",  background="#F8FAFC")
+            t.tag_configure("even", background="#FFFFFF")
+            t.pack(fill="both", expand=True)
+
+        tree.bind("<Double-1>", _on_pending_dblclick)
 
     def _export_excel(self):
         """Export ข้อมูล SLA ที่กำลังแสดงอยู่เป็นไฟล์ Excel"""
@@ -4208,7 +4750,7 @@ class SLADashboard(CTkFrame):
             # ── Header ────────────────────────────────────────────
             headers = [c[0] for c in self.COLS]
             col_widths_map = {c[0]: max(c[1] // 7, 10) for c in self.COLS}
-            col_widths_map["สินค้า (สรุป)"] = 60
+            col_widths_map["Sum of ราคาขาย"] = 20
 
             for ci, h in enumerate(headers, start=1):
                 cell = ws.cell(row=1, column=ci, value=h)

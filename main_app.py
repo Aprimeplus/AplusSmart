@@ -106,37 +106,148 @@ class NotificationPopup(CTkToplevel):
         except Exception:
             pass
 
+APP_VERSION = "2026.06"
+
 class LoadingWindow(CTkToplevel):
+    _STAGES = [
+        "กำลังตรวจสอบสิทธิ์...",
+        "กำลังเชื่อมต่อฐานข้อมูล...",
+        "กำลังโหลดข้อมูลผู้ใช้งาน...",
+        "กำลังเตรียม Dashboard...",
+        "กำลังสร้างหน้าจอ...",
+        "เกือบเสร็จแล้ว...",
+    ]
+
     def __init__(self, master):
         super().__init__(master)
         self.title("Loading")
-        self.geometry("400x220")
         self.overrideredirect(True)
         self.resizable(False, False)
+        self.configure(fg_color="#DBEAFE")
         master.update_idletasks()
-        x = master.winfo_x() + (master.winfo_width() - self.winfo_width()) // 2
-        y = master.winfo_y() + (master.winfo_height() - self.winfo_height()) // 2
-        self.geometry(f"+{x}+{y}")
-        main_frame = CTkFrame(self, fg_color="#FFFFFF", corner_radius=10)
-        main_frame.pack(fill="both", expand=True, padx=2, pady=2)
+        W = master.winfo_width()
+        H = master.winfo_height()
+        x = master.winfo_rootx()
+        y = master.winfo_rooty()
+        self.geometry(f"{W}x{H}+{x}+{y}")
+
+        # Gradient background via canvas
+        import tkinter as _tk
+        canvas = _tk.Canvas(self, bg="#DBEAFE", highlightthickness=0)
+        canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self.bind("<Configure>", lambda e: self._draw_gradient(canvas))
+        self._draw_gradient(canvas)
+
+        # Card — white card
+        card = CTkFrame(self, fg_color="#FFFFFF", corner_radius=20,
+                        border_width=1, border_color="#C8DFF7")
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Inner padding frame
+        center = CTkFrame(card, fg_color="transparent")
+        center.pack(padx=48, pady=40)
+
+        # Logo with pulse animation
+        self._logo_label = None
+        self._pil_image = None
         try:
             logo_path = resource_path("company_logo.png")
-            pil_image = Image.open(logo_path)
-            logo_image = CTkImage(light_image=pil_image, dark_image=pil_image, size=(80, 80))
-            logo_label = CTkLabel(main_frame, image=logo_image, text="")
-            logo_label.pack(pady=(20, 10))
-        except Exception as e:
-            print(f"Could not load logo on loading screen: {e}")
-        self.label = CTkLabel(main_frame, text="กำลังโหลดข้อมูล...\nกรุณารอสักครู่", font=CTkFont(size=18, family="Roboto"), text_color="#374151")
-        self.label.pack(pady=5)
-        self.progressbar = CTkProgressBar(main_frame, mode='indeterminate', height=10)
-        self.progressbar.pack(pady=(10, 20), padx=40, fill="x")
+            self._pil_image = Image.open(logo_path)
+            logo_image = CTkImage(light_image=self._pil_image, dark_image=self._pil_image, size=(200, 200))
+            self._logo_label = CTkLabel(center, image=logo_image, text="", fg_color="transparent")
+            self._logo_label.pack()
+        except Exception:
+            self._logo_label = CTkLabel(center, text="A+", font=CTkFont(size=60, weight="bold"),
+                                        text_color="#F59E0B", fg_color="transparent")
+            self._logo_label.pack()
+
+        # App name + subtitle
+        CTkLabel(center, text="A+ WATSADU ONLINE",
+                 font=CTkFont(size=15, weight="bold", family="Tahoma"),
+                 text_color="#1E3A5C", fg_color="transparent").pack(pady=(16, 0))
+        CTkLabel(center, text="Sales & Operations Management System",
+                 font=CTkFont(size=11, family="Tahoma"),
+                 text_color="#4A7AAF", fg_color="transparent").pack(pady=(3, 0))
+
+        # Stage label
+        self._stage_idx = 0
+        self.label = CTkLabel(center, text=self._STAGES[0],
+                              font=CTkFont(size=13, family="Tahoma"),
+                              text_color="#4A7AAF", fg_color="transparent")
+        self.label.pack(pady=(28, 0))
+
+        # Progress bar
+        self.progressbar = CTkProgressBar(center, mode="indeterminate",
+                                          width=300, height=5, corner_radius=999,
+                                          fg_color="#BFDBFE",
+                                          progress_color="#2563EB")
+        self.progressbar.pack(pady=(10, 0))
+
+        # Version bottom-right
+        CTkLabel(self, text=f"Build {APP_VERSION}",
+                 font=CTkFont(size=10, family="Tahoma"),
+                 text_color="#93C5FD", fg_color="transparent").place(relx=1.0, rely=1.0,
+                                                                      anchor="se", x=-12, y=-10)
+
         self.progressbar.start()
         self.lift()
         self.grab_set()
+        self._cycle_stage()
+        self._pulse_step = 0
+        self._animate_logo()
+
+    def _draw_gradient(self, canvas):
+        try:
+            canvas.delete("grad")
+            w = self.winfo_width() or 800
+            h = self.winfo_height() or 600
+            steps = 40
+            # #DBEAFE (ฟ้าอ่อน) → #EBF5FF (ขาวฟ้า)
+            for i in range(steps):
+                r = int(0xDB + (0xEB - 0xDB) * i / steps)
+                g = int(0xEA + (0xF5 - 0xEA) * i / steps)
+                b = int(0xFE + (0xFF - 0xFE) * i / steps)
+                color = f"#{r:02x}{g:02x}{b:02x}"
+                y0 = h * i // steps
+                y1 = h * (i + 1) // steps
+                canvas.create_rectangle(0, y0, w, y1, fill=color, outline="", tags="grad")
+        except Exception:
+            pass
+
+    def _animate_logo(self):
+        if not self.winfo_exists() or self._logo_label is None or self._pil_image is None:
+            return
+        import math
+        self._pulse_step += 1
+        scale = 1.0 + 0.025 * math.sin(self._pulse_step * 0.15)
+        sz = int(175 * scale)
+        try:
+            img = CTkImage(light_image=self._pil_image, dark_image=self._pil_image, size=(sz, sz))
+            self._logo_label.configure(image=img)
+        except Exception:
+            pass
+        self._anim_job = self.after(40, self._animate_logo)
+
+    def _cycle_stage(self):
+        if not self.winfo_exists():
+            return
+        self._stage_idx = (self._stage_idx + 1) % len(self._STAGES)
+        self.label.configure(text=self._STAGES[self._stage_idx])
+        self._job = self.after(900, self._cycle_stage)
+
+    def set_stage(self, text: str):
+        if self.winfo_exists():
+            self.label.configure(text=text)
 
     def stop_animation(self):
+        for job in ("_job", "_anim_job"):
+            try:
+                self.after_cancel(getattr(self, job))
+            except Exception:
+                pass
         self.progressbar.stop()
+        if self.winfo_exists():
+            self.label.configure(text="✓  พร้อมใช้งาน", text_color="#34D399")
 
 class AppContainer(CTk):
     def __init__(self):
@@ -598,14 +709,17 @@ class AppContainer(CTk):
         self.after(5000, self._check_for_notifications)
         def create_new_screen_and_close_loading():
             from hr_screen import HRScreen
+            loading_win.set_stage("กำลังสร้างหน้าจอ...")
             screen = screen_class(self, **kwargs)
             screen.pack(fill="both", expand=True)
             if isinstance(screen, HRScreen):
-             self.hr_screen = screen
+                self.hr_screen = screen
             else:
-             self.hr_screen = None
+                self.hr_screen = None
+            loading_win.set_stage("เกือบเสร็จแล้ว...")
+            self.update_idletasks()
             loading_win.stop_animation()
-            loading_win.destroy()
+            self.after(400, loading_win.destroy)
         self.after(200, create_new_screen_and_close_loading)
 
     def show_login_screen(self): 

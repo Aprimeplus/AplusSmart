@@ -20,18 +20,24 @@ def resource_path(relative_path):
 
 class LoginScreen(CTkFrame):
     def __init__(self, master, app_container):
-        super().__init__(master, fg_color="#A6D7F3")
+        super().__init__(master, fg_color="#EBF5FF")
         self.app_container = app_container
         self.pack(fill="both", expand=True)
 
-        self.main_frame = CTkFrame(self, fg_color="white", corner_radius=15)
+        import tkinter as _tk
+        canvas = _tk.Canvas(self, highlightthickness=0, bd=0)
+        canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self.bind("<Configure>", lambda e: self._draw_bg(canvas))
+        self._draw_bg(canvas)
+
+        self.main_frame = CTkFrame(self, fg_color="#FFFFFF", corner_radius=20,
+                                   border_width=1, border_color="#C8DFF7")
         self.main_frame.place(relx=0.5, rely=0.5, anchor="center")
-        self.main_frame.pack(expand=True, ipadx=80, ipady=70)
-        
+        self.main_frame.pack(expand=True, ipadx=80, ipady=36)
+
         try:
             self.user_icon = CTkImage(Image.open(resource_path("user_icon.png")), size=(20, 20))
             self.lock_icon = CTkImage(Image.open(resource_path("lock_icon.png")), size=(20, 20))
-            # 1. โหลดไอคอนรูปตา
             self.eye_open_icon = CTkImage(Image.open(resource_path("eye_open.png")), size=(20, 20))
             self.eye_closed_icon = CTkImage(Image.open(resource_path("eye_closed.png")), size=(20, 20))
         except FileNotFoundError as e:
@@ -41,57 +47,82 @@ class LoginScreen(CTkFrame):
         try:
             logo_path = resource_path("company_logo.png")
             pil_image = Image.open(logo_path)
-            logo_image = CTkImage(light_image=pil_image, dark_image=pil_image, size=(120, 120))
+            logo_image = CTkImage(light_image=pil_image, dark_image=pil_image, size=(165, 165))
             logo_label = CTkLabel(self.main_frame, image=logo_image, text="")
-            logo_label.pack(pady=(30, 15), padx=60)
+            logo_label.pack(pady=(28, 12), padx=60)
         except Exception as e:
             print(f"Warning: Could not load logo: {e}")
 
-        welcome_font = CTkFont(size=28, weight="bold", family="Roboto")
-        subtitle_font = CTkFont(size=16, family="Roboto")
-        
-        CTkLabel(self.main_frame, text="A+ Smart Solution", font=welcome_font, text_color="#2A2D34").pack(pady=(0, 5))
-        CTkLabel(self.main_frame, text="Login to your account", font=subtitle_font, text_color="#8A91A0").pack(pady=(0, 30))
+        welcome_font = CTkFont(size=24, weight="bold", family="Tahoma")
 
-        username_frame = CTkFrame(self.main_frame, fg_color="#F7F7F9", corner_radius=8)
+        CTkLabel(self.main_frame, text="A+ Smart Solution", font=welcome_font, text_color="#1E3A5C").pack(pady=(0, 4))
+        CTkLabel(self.main_frame, text="Sales & Operations Management System",
+                 font=CTkFont(size=12, weight="bold", family="Tahoma"), text_color="#4A7AAF").pack(pady=(0, 20))
+
+        username_frame = CTkFrame(self.main_frame, fg_color="#EFF6FF", corner_radius=8,
+                                   border_width=2, border_color="#3B82F6")
         username_frame.pack(fill="x", padx=40)
         if self.user_icon:
-            CTkLabel(username_frame, image=self.user_icon, text="").pack(side="left", padx=(15, 10))
-        
-        self.user_key_entry = CTkEntry(username_frame, height=50, border_width=0, fg_color="transparent",
-                                       placeholder_text="Username", font=CTkFont(size=14))
-        self.user_key_entry.pack(side="left", fill="x", expand=True, padx=(0, 15))
+            CTkLabel(username_frame, image=self.user_icon, text="", fg_color="transparent").pack(side="left", padx=(12, 8))
+
+        self.user_key_entry = CTkEntry(username_frame, height=46, border_width=0, fg_color="#EFF6FF",
+                                       placeholder_text="Username", font=CTkFont(size=14),
+                                       text_color="#1E3A5C", placeholder_text_color="#9CA3AF")
+        self.user_key_entry.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=2)
         self.user_key_entry.bind("<Return>", lambda event: self.password_entry.focus_set())
-        self.user_key_entry.bind("<KP_Enter>", lambda event: self.password_entry.focus_set()) # สำหรับ Enter ที่ Numpad
+        self.user_key_entry.bind("<KP_Enter>", lambda event: self.password_entry.focus_set())
+        self.user_key_entry.bind("<FocusIn>",  lambda e: username_frame.configure(border_color="#1D4ED8"))
+        self.user_key_entry.bind("<FocusOut>", lambda e: username_frame.configure(border_color="#3B82F6"))
 
-        password_frame = CTkFrame(self.main_frame, fg_color="#F7F7F9", corner_radius=8)
-        password_frame.pack(fill="x", padx=40, pady=15)
+        password_frame = CTkFrame(self.main_frame, fg_color="#EFF6FF", corner_radius=8,
+                                   border_width=2, border_color="#3B82F6")
+        password_frame.pack(fill="x", padx=40, pady=12)
         if self.lock_icon:
-            CTkLabel(password_frame, image=self.lock_icon, text="").pack(side="left", padx=(15, 10))
+            CTkLabel(password_frame, image=self.lock_icon, text="", fg_color="transparent").pack(side="left", padx=(12, 8))
 
-        self.password_entry = CTkEntry(password_frame, height=50, border_width=0, fg_color="transparent",
-                                       placeholder_text="Password", show="*", font=CTkFont(size=14))
-        self.password_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.password_entry = CTkEntry(password_frame, height=46, border_width=0, fg_color="#EFF6FF",
+                                       placeholder_text="Password", show="*", font=CTkFont(size=14),
+                                       text_color="#1E3A5C", placeholder_text_color="#9CA3AF")
+        self.password_entry.pack(side="left", fill="x", expand=True, padx=(0, 5), pady=2)
         self.password_entry.bind("<Return>", self.login_event)
-        
-        # 2. สร้างปุ่มสำหรับซ่อน/แสดงรหัสผ่าน
+        self.password_entry.bind("<FocusIn>",  lambda e: password_frame.configure(border_color="#1D4ED8"))
+        self.password_entry.bind("<FocusOut>", lambda e: password_frame.configure(border_color="#3B82F6"))
+
         if self.eye_closed_icon:
             self.show_password_button = CTkButton(
-                password_frame,
-                text="",
-                image=self.eye_closed_icon,
-                width=30,
-                height=30,
-                fg_color="transparent",
-                hover_color="#E5E7EB", # สีพื้นหลังตอนเอาเมาส์ไปชี้
-                command=self._toggle_password_visibility
+                password_frame, text="", image=self.eye_closed_icon,
+                width=30, height=30, fg_color="transparent",
+                hover_color="#DBEAFE", command=self._toggle_password_visibility
             )
             self.show_password_button.pack(side="right", padx=(0, 10))
 
-        button_font = CTkFont(size=16, weight="bold", family="Roboto")
-        self.login_button = CTkButton(self.main_frame, text="Sign in", command=self.login,
-                                      height=50, font=button_font, corner_radius=10)
-        self.login_button.pack(pady=(20, 30), padx=40, fill="x")
+        button_font = CTkFont(size=15, weight="bold", family="Tahoma")
+        self.login_button = CTkButton(self.main_frame, text="เข้าสู่ระบบ", command=self.login,
+                                      height=48, font=button_font, corner_radius=10,
+                                      fg_color="#2563EB", hover_color="#1D4ED8", text_color="#FFFFFF")
+        self.login_button.pack(pady=(16, 20), padx=40, fill="x")
+
+        CTkLabel(self.main_frame, text="Build 2026.06",
+                 font=CTkFont(size=10, family="Tahoma"),
+                 text_color="#93C5FD").pack(pady=(0, 10))
+
+    def _draw_bg(self, canvas):
+        try:
+            canvas.delete("bg")
+            w = self.winfo_width() or 800
+            h = self.winfo_height() or 600
+            steps = 50
+            # #DBEAFE (ฟ้าอ่อน) → #EBF5FF (ขาวฟ้า)
+            for i in range(steps):
+                r = int(0xDB + (0xEB - 0xDB) * i / steps)
+                g = int(0xEA + (0xF5 - 0xEA) * i / steps)
+                b = int(0xFE + (0xFF - 0xFE) * i / steps)
+                color = f"#{r:02x}{g:02x}{b:02x}"
+                y0 = h * i // steps
+                y1 = h * (i + 1) // steps
+                canvas.create_rectangle(0, y0, w, y1, fill=color, outline="", tags="bg")
+        except Exception:
+            pass
 
     def _toggle_password_visibility(self):
         """สลับการแสดง/ซ่อนรหัสผ่าน และเปลี่ยนไอคอนปุ่ม"""
