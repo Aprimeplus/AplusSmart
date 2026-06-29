@@ -56,29 +56,20 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         df['excess_site_shipping'] = 0.0
 
         # --- A2. ค่าตัด/เจาะ Reconciliation ────────────────────────────────
-        # Sale เลือก VAT → match กับ PO cutting (VAT type) + EXP items ในรายการสินค้า
-        # Sale เลือก CASH → match กับ PO cutting (CASH type)
-        # ถ้า SO < PO → ส่วนต่างหักกำไร (เหมือน logic ค่ารถ)
-        cutting_vat_option = df.get('cutting_drilling_fee_vat_option', pd.Series([''] * len(df), index=df.index))
+        # po_cutting_cost = ค่าตัด/เจาะ PO ทั้งหมด (จาก _get_special_service_amounts รวม EXP-0079/0128)
+        # so_cutting = ค่าตัด/เจาะ ที่เรียกเก็บจากลูกค้าใน SO
+        # ถ้า SO >= PO → เป็น pass-through, ดึง PO cutting ออกจาก cost base (ไม่ × multiplier)
+        # ถ้า SO < PO → ส่วนที่ขาด (excess) หักกำไรโดยตรง
         so_cutting = df['cutting_drilling_fee']
+        po_cutting_total = df['po_cutting_cost']  # comprehensive total from _get_special_service_amounts
 
-        # VAT case: SO cutting vs (PO cutting VAT + EXP items)
-        po_cutting_vat_total = df['po_cutting_vat_cost'] + df['po_cutting_item_cost']
-        so_cutting_vat = so_cutting.where(cutting_vat_option == 'VAT', 0.0)
-        excess_cutting_vat = (po_cutting_vat_total - so_cutting_vat).clip(lower=0)
-
-        # CASH case: SO cutting vs PO cutting CASH
-        so_cutting_cash = so_cutting.where(cutting_vat_option == 'CASH', 0.0)
-        excess_cutting_cash = (df['po_cutting_cash_cost'] - so_cutting_cash).clip(lower=0)
-
-        df['excess_cutting'] = excess_cutting_vat + excess_cutting_cash
+        # excess = ส่วนที่ PO มากกว่า SO → หักกำไร (ไม่ × multiplier)
+        df['excess_cutting'] = (po_cutting_total - so_cutting).clip(lower=0)
 
         # --- B. คำนวณต้นทุนสินค้า (Main Cost Calculation) ---
-        # PO cutting ไม่ใช่ต้นทุนสินค้า → ดึงออกก่อนคูณ 1.03
-        # ส่วนที่ SO covering จะ net-zero (pass-through), ส่วนที่ SO ขาด (excess) หักกำไรแยก
-        po_cutting_vat_remove = po_cutting_vat_total.clip(upper=df['final_cost_amount'])
-        po_cutting_cash_remove = df['po_cutting_cash_cost'].clip(upper=df['final_cost_amount'])
-        po_cutting_to_remove = po_cutting_vat_remove + po_cutting_cash_remove
+        # ดึง PO cutting ออกจาก final_cost_amount ก่อนคูณ 1.03
+        # (PO cutting เป็น pass-through — ถูก match กับ SO cutting แล้ว ไม่ควร × multiplier)
+        po_cutting_to_remove = po_cutting_total.clip(upper=df['final_cost_amount'])
         product_cost_base = (df['final_cost_amount'] - po_cutting_to_remove).clip(lower=0)
         total_cost_calculated = product_cost_base * df['cost_multiplier']
 
