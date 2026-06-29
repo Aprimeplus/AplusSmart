@@ -54,7 +54,8 @@ class SalesTargetWidget(CTkFrame):
     THAI_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
                    "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
     THAI_MONTH_MAP = {m: i+1 for i, m in enumerate(THAI_MONTHS)}
-    EXCLUDE_KEYS   = {'s','d','p','mp','ms','hr','sm','Sale Center','Pimhathai'}
+    EXCLUDE_KEYS   = {'s','d','p','mp','ms','hr','sm','Pimhathai'}
+    SALE_CENTER_KEY = 'Sale Center'
     PERSON_MERGE   = {
         'VOW-P': ('ภาณุพงศ์ / ฐรินทร์ญา', 'ภาณุพงศ์'),
         'VOW-S': ('ภาณุพงศ์ / ฐรินทร์ญา', 'ฐรินทร์ญา'),
@@ -380,6 +381,7 @@ class SalesTargetWidget(CTkFrame):
             params.append(today.year)
 
         date_sql = " AND ".join(date_clauses)
+        date_params = list(params)  # snapshot ก่อนเพิ่ม sale filter
 
         sale_filter = ""
         if self.selected_sales_filter:
@@ -424,6 +426,30 @@ class SalesTargetWidget(CTkFrame):
         df['total_outstanding'] = df['total_outstanding'].fillna(0)
         df['sales_normal']      = df['sales_normal'].fillna(0)
         df['sales_below']       = df['sales_below'].fillna(0)
+
+        # ── Sale Center: ดึงจาก commissions โดยตรง (ไม่มีค่าคอม) ─────
+        sc_date_filter = date_sql.replace("c.", "sc.")
+        sc_query = f"""
+            SELECT COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
+            FROM commissions sc
+            WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
+              AND {sc_date_filter}
+        """
+        try:
+            sc_df = pd.read_sql_query(sc_query, self.pg_engine, params=tuple(date_params))
+            sc_total = float(sc_df['total_sales'].iloc[0]) if not sc_df.empty else 0.0
+        except Exception:
+            sc_total = 0.0
+
+        if sc_total > 0:
+            sc_row = pd.DataFrame([{
+                'sale_name': 'Sale Center', 'sale_key': 'Sale Center',
+                'sales_target': 0.0, 'total_sales': sc_total,
+                'total_outstanding': 0.0, 'avg_margin': 0.0,
+                'sales_normal': sc_total, 'sales_below': 0.0,
+            }])
+            df = pd.concat([df, sc_row], ignore_index=True)
+
         return df
 
     # ── Chart ─────────────────────────────────────────────────────────────────
@@ -488,7 +514,16 @@ class SalesTargetWidget(CTkFrame):
             if t <= 0: return 'gray'
             return 'green' if s/t >= 1.0 else ('yellow' if s/t >= 0.7 else 'red')
 
-        pct_labels = [f"{s/t*100:.0f}%" if t > 0 else "N/A" for s, t in zip(sales, targets)]
+        SC_COLOR = ('#0EA5E9', '#7DD3FC')
+        pct_labels = []
+        for p, s, t in zip(people_data, sales, targets):
+            is_sc = any(sub['sale_key'] == self.SALE_CENTER_KEY for sub in p['sub_items'])
+            if is_sc:
+                pct_labels.append("ยอดบริษัท")
+            elif t > 0:
+                pct_labels.append(f"{s/t*100:.0f}%")
+            else:
+                pct_labels.append("N/A")
 
         BG = '#F8FAFC'; GRID_C = '#E2E8F0'
         # สร้าง Figure ด้วยขนาดจริงของ frame (อ่านไว้แล้วตอนต้น)
@@ -513,8 +548,8 @@ class SalesTargetWidget(CTkFrame):
         # แท่งยอดขาย (stacked)
         for i, p in enumerate(people_data):
             total_s = p['total_sales']; target = p['target']
-            akey = achievement_key(total_s, target)
-            colors = ACHIEVE_COLORS[akey]
+            is_sc = any(s['sale_key'] == self.SALE_CENTER_KEY for s in p['sub_items'])
+            colors = SC_COLOR if is_sc else ACHIEVE_COLORS[achievement_key(total_s, target)]
             subs   = p['sub_items']
             multi_id = len([s for s in subs if s['sales'] > 0]) > 1
             bottom = 0.0
@@ -620,6 +655,8 @@ class SalesTargetWidget(CTkFrame):
         ]
         if has_multi:
             legend_items.append(Patch(facecolor='#86EFAC', label='ยอดขายของพาร์ทเนอร์'))
+        if any(any(s['sale_key'] == self.SALE_CENTER_KEY for s in p['sub_items']) for p in people_data):
+            legend_items.append(Patch(facecolor='#0EA5E9', label='ยอดบริษัท (Sale Center)'))
         ax.legend(handles=legend_items, loc='upper right', bbox_to_anchor=(1.0, 1.0),
                   ncol=2, frameon=True, framealpha=0.95, edgecolor='#CBD5E1', fontsize=10,
                   prop={'weight': 'bold', 'size': 10}, borderpad=0.7, labelspacing=0.4, columnspacing=1.0)
