@@ -2353,7 +2353,7 @@ class HRScreen(CTkFrame):
                 SELECT
                     COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
                 FROM commissions sc
-                WHERE REPLACE(LOWER(sc.sale_key), ' ', '') = 'salecenter'
+                WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
                   AND {sc_date_filter}
             """
             sc_params = params  # ใช้ params เดียวกัน (ไม่มี target_multiplier)
