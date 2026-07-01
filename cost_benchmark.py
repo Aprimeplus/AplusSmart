@@ -4216,6 +4216,12 @@ class CostBenchmarkScreen(CTkFrame):
             _data_list = popup_cols[col_name]
             # data col = นับ visible cols ก่อน real_col (ถูกต้องแม้มี hidden cols)
             _data_col = real_col - col_offset
+            # แปลง display row → data row เพื่อรองรับ filter
+            try:
+                dr = self.sheet.MT.displayed_rows
+                _data_row = dr[row] if (dr is not None and not isinstance(dr, str)) else row
+            except Exception:
+                _data_row = row
 
             def _open_popup():
                 self._popup_opening = False
@@ -4225,7 +4231,7 @@ class CostBenchmarkScreen(CTkFrame):
                 except Exception: pass
 
                 try:
-                    current_val = str(self.sheet.get_cell_data(_row, _data_col) or '').strip()
+                    current_val = str(self.sheet.MT.data[_data_row][_data_col] if _data_row < len(self.sheet.MT.data) and _data_col < len(self.sheet.MT.data[_data_row]) else '').strip()
                 except Exception:
                     current_val = ''
 
@@ -4234,10 +4240,10 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception: pass
                     self._active_popup = None
 
-                def on_select(value, r=_row, dc=_data_col, c=_col):
+                def on_select(value, r=_row, dr=_data_row, dc=_data_col, c=_col):
                     try:
-                        self.sheet.set_cell_data(r, dc, value, redraw=True)
-                        self._auto_calculate_sheet(r)
+                        self.sheet.set_cell_data(dr, dc, value, redraw=True)
+                        self._auto_calculate_sheet(dr)
                         self.sheet.redraw()
                         if self.auto_save_job_id is not None:
                             self.after_cancel(self.auto_save_job_id)
@@ -4321,6 +4327,12 @@ class CostBenchmarkScreen(CTkFrame):
             _typed = event.char
             _data_list = popup_cols[col_name]
             _data_col = real_col
+            # แปลง display row → data row เพื่อรองรับ filter
+            try:
+                dr = self.sheet_frozen.MT.displayed_rows
+                _data_row = dr[row] if (dr is not None and not isinstance(dr, str)) else row
+            except Exception:
+                _data_row = row
 
             def _open_popup():
                 self._popup_opening = False
@@ -4330,7 +4342,7 @@ class CostBenchmarkScreen(CTkFrame):
                 except Exception: pass
 
                 try:
-                    current_val = str(self.sheet_frozen.get_cell_data(_row, _data_col) or '').strip()
+                    current_val = str(self.sheet_frozen.MT.data[_data_row][_data_col] if _data_row < len(self.sheet_frozen.MT.data) and _data_col < len(self.sheet_frozen.MT.data[_data_row]) else '').strip()
                 except Exception:
                     current_val = ''
 
@@ -4339,10 +4351,10 @@ class CostBenchmarkScreen(CTkFrame):
                     except Exception: pass
                     self._active_popup = None
 
-                def on_select(value, r=_row, dc=_data_col, c=_col):
+                def on_select(value, r=_row, dr=_data_row, dc=_data_col, c=_col):
                     try:
-                        self.sheet_frozen.set_cell_data(r, dc, value, redraw=True)
-                        self._auto_calculate_sheet(r)
+                        self.sheet_frozen.set_cell_data(dr, dc, value, redraw=True)
+                        self._auto_calculate_sheet(dr)
                         self.sheet_frozen.redraw()
                         if self.auto_save_job_id is not None:
                             self.after_cancel(self.auto_save_job_id)
