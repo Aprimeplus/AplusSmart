@@ -3335,7 +3335,6 @@ class CostBenchmarkScreen(CTkFrame):
 
                 def on_select(value):
                     try:
-                        print(f"[DEBUG] _on_begin_edit_cell_frozen on_select: value={repr(value)}, _row={_row}, _data_col={_data_col}")
                         self.sheet_frozen.set_cell_data(_row, _data_col, value, redraw=True)
                         self._auto_calculate_sheet(_row)
                         self.sheet_frozen.redraw()
@@ -4243,7 +4242,6 @@ class CostBenchmarkScreen(CTkFrame):
 
                 def on_select(value, r=_row, dr=_data_row, dc=_data_col, c=_col):
                     try:
-                        print(f"[DEBUG] _on_mt_keypress on_select: value={repr(value)}, display_r={r}, data_r={dr}, dc={dc}")
                         self.sheet.set_cell_data(dr, dc, value, redraw=True)
                         self._auto_calculate_sheet(dr)
                         self.sheet.redraw()
@@ -4355,10 +4353,10 @@ class CostBenchmarkScreen(CTkFrame):
 
                 def on_select(value, r=_row, dr=_data_row, dc=_data_col, c=_col):
                     try:
-                        print(f"[DEBUG] _on_mt_keypress_frozen on_select: value={repr(value)}, display_r={r}, data_r={dr}, dc={dc}")
                         self.sheet_frozen.set_cell_data(dr, dc, value, redraw=True)
                         self._auto_calculate_sheet(dr)
                         self.sheet_frozen.redraw()
+                        self.sheet.redraw()
                         if self.auto_save_job_id is not None:
                             self.after_cancel(self.auto_save_job_id)
                         self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
@@ -5753,23 +5751,15 @@ class CostBenchmarkScreen(CTkFrame):
             set_val("วันที่ขอราคา", "", is_text=True)
 
         product_name = get_str("รายการสินค้า")
-        print(f"[DEBUG SKU] row_idx={row_idx}, col_offset={col_offset}, product_name={repr(product_name)}, buf_len={len(buf)}, frozen_len={len(frozen_row)}, main_len={len(main_row)}")
-        print(f"[DEBUG SKU] product_sku_map has {len(self.product_sku_map)} items, sample keys={list(self.product_sku_map.keys())[:3]}")
-        sku_idx = cache.get("Product SKU.")
-        prod_idx = cache.get("รายการสินค้า")
-        print(f"[DEBUG SKU] รายการสินค้า idx={prod_idx}, Product SKU. idx={sku_idx}, buf[prod_idx]={repr(buf[prod_idx]) if prod_idx is not None and prod_idx < len(buf) else 'OOB'}")
         if product_name in self.product_sku_map:
             if get_str("Product SKU.") != self.product_sku_map[product_name]:
                 set_val("Product SKU.", self.product_sku_map[product_name], is_text=True)
-                print(f"[DEBUG SKU] SET SKU={repr(self.product_sku_map[product_name])}")
             mapped_category = self.product_category_map.get(product_name, "")
             if get_str("หมวด") != mapped_category:
                 set_val("หมวด", mapped_category, is_text=True)
         elif not product_name:
             if get_str("Product SKU.") != "": set_val("Product SKU.", "", is_text=True)
             if get_str("หมวด") != "": set_val("หมวด", "", is_text=True)
-        else:
-            print(f"[DEBUG SKU] product_name NOT in product_sku_map!")
 
         supplier_name = get_str("ชื่อ Supplier")
         if supplier_name:
