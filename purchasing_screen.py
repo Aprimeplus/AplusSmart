@@ -4083,12 +4083,13 @@ class SLADashboard(CTkFrame):
             try:
                 df = pd.read_sql_query(query, conn, params=params if params else None)
 
-                # dedup: ถ้า SO เดียวกันมีหลาย row (cb_date ต่างกัน)
-                # เก็บ row ที่ started_at มีค่า (SLA) ก่อน มิฉะนั้นเก็บ row แรก
+                # dedup: ถ้า SO เดียวกันมีหลาย user ทำ SLA
+                # เรียง copied_at DESC ก่อน (record ที่ทำเสร็จขึ้นก่อน) แล้วค่อย started_at ASC
+                # เพื่อให้ได้ record ที่ copy เสร็จจริง ไม่ใช่ record ที่เริ่มก่อนแต่ไม่ finish
                 if not df.empty:
                     df = df.sort_values(
-                        by=["so_number", "started_at"],
-                        ascending=[True, True],
+                        by=["so_number", "copied_at", "started_at"],
+                        ascending=[True, False, True],
                         na_position="last"
                     ).drop_duplicates(subset=["so_number"], keep="first")
 
