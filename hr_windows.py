@@ -4208,14 +4208,29 @@ class HRCoverSheetDialog(CTkToplevel):
         try:
             # 1. ดึง SO Header
             so_df = pd.read_sql_query("""
-                SELECT c.*, u_so.sale_name AS sale_name
+                SELECT c.*, u_so.sale_name AS sale_name,
+                    cu.customer_code AS customer_code
                 FROM commissions c
                 LEFT JOIN sales_users u_so ON c.sale_key = u_so.sale_key
+                LEFT JOIN customers cu ON c.customer_name = cu.customer_name
                 WHERE c.so_number = %s AND c.is_active = 1 LIMIT 1
             """, self.pg_engine, params=(so_number,))
             
             if so_df.empty: return
             so_header_data = so_df.iloc[0].to_dict()
+
+            # ดึง customer_code แยกต่างหากเพื่อกัน NaN จาก LEFT JOIN
+            try:
+                cust_name = so_header_data.get('customer_name', '')
+                ccode_df = pd.read_sql_query(
+                    "SELECT customer_code FROM customers WHERE customer_name = %s LIMIT 1",
+                    self.pg_engine, params=(cust_name,)
+                )
+                so_header_data['customer_code'] = ccode_df.iloc[0]['customer_code'] if not ccode_df.empty else ''
+            except Exception as e:
+                print(f"[DEBUG customer_code error] {e}")
+                so_header_data['customer_code'] = ''
+            print(f"[DEBUG] customer_name={so_header_data.get('customer_name')} customer_code={so_header_data.get('customer_code')}")
 
             # 2. ดึง PO List (ไม่สน Approved, เอาหมดที่ไม่ใช่ Cancelled)
             po_query = """

@@ -799,23 +799,36 @@ class HRScreen(CTkFrame):
         so_ids_str = ', '.join(map(str, so_ids))
 
         # 2. เขียน SQL Query — match by both product_name patterns AND product_code
+        # ใช้ GREATEST(items_sum, po.cutting_cost) per PO เพื่อ fallback กรณีไม่มี item แต่ cutting_cost field มีค่า
         sql = f"""
-        WITH po_items AS (
+        WITH po_cutting AS (
             SELECT
                 c.id AS comm_id,
-                COALESCE(SUM(CASE
-                    WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%'
-                         OR COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
-                    THEN poi.total_price ELSE 0 END), 0) as po_cutting_cost,
+                po.id AS po_id,
+                GREATEST(
+                    COALESCE(SUM(CASE
+                        WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%'
+                             OR COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
+                        THEN poi.total_price ELSE 0 END), 0),
+                    COALESCE(MAX(po.cutting_cost), 0)
+                ) AS po_cutting_per_po,
                 COALESCE(SUM(CASE
                     WHEN poi.product_name LIKE '%%ค่าบริการ%%'
                          OR COALESCE(poi.product_code, '') IN ('EXP-0006', 'EXP-0049', 'EXP-0077', 'EXP-0174')
-                    THEN poi.total_price ELSE 0 END), 0) as po_service_cost
+                    THEN poi.total_price ELSE 0 END), 0) as po_service_per_po
             FROM commissions c
             JOIN purchase_orders po ON c.so_number = po.so_number
             JOIN purchase_order_items poi ON po.id = poi.purchase_order_id
             WHERE c.id IN ({so_ids_str}) AND po.status = 'Approved'
-            GROUP BY c.id
+            GROUP BY c.id, po.id
+        ),
+        po_items AS (
+            SELECT
+                comm_id,
+                SUM(po_cutting_per_po) as po_cutting_cost,
+                SUM(po_service_per_po) as po_service_cost
+            FROM po_cutting
+            GROUP BY comm_id
         )
         SELECT 
             c.id,

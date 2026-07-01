@@ -838,7 +838,7 @@ class SaleRevenueWidget(CTkFrame):
         cols = ('name', 'margin_target', 'actual_margin', 'target',
                 'sales', 'sales_normal', 'sales_below', 'pct', 'diff')
         tree = ttk.Treeview(outer, columns=cols, show='headings',
-                            style="MgmtTable.Treeview", height=len(rows) + 1)
+                            style="MgmtTable.Treeview", height=len(rows) + 3)
         tree.heading('name',          text='พนักงาน')
         tree.heading('margin_target', text='Margin เป้า')
         tree.heading('actual_margin', text='Avg Margin จริง')
@@ -858,13 +858,19 @@ class SaleRevenueWidget(CTkFrame):
         tree.column('pct',           width=75,  anchor='center')
         tree.column('diff',          width=140, anchor='e')
 
-        tree.tag_configure('odd',      background='#F8FAFC')
-        tree.tag_configure('even',     background='white')
-        tree.tag_configure('negative', foreground='#DC2626')
-        tree.tag_configure('positive', foreground='#16A34A')
-        tree.tag_configure('total',    background='#EFF6FF',
+        tree.tag_configure('odd',       background='#F8FAFC')
+        tree.tag_configure('even',      background='white')
+        tree.tag_configure('negative',  foreground='#DC2626')
+        tree.tag_configure('positive',  foreground='#16A34A')
+        tree.tag_configure('total',     background='#EFF6FF',
                            font=('TH Sarabun New', 13, 'bold'),
                            foreground='#1D4ED8')
+        tree.tag_configure('ct_row',    background='#FEFCE8',
+                           font=('TH Sarabun New', 13, 'bold'),
+                           foreground='#92400E')
+        tree.tag_configure('grand_total', background='#DCFCE7',
+                           font=('TH Sarabun New', 13, 'bold'),
+                           foreground='#166534')
 
         for idx, r in enumerate(rows):
             diff_str = f"+{r['diff']:,.0f}" if r['diff'] >= 0 else f"{r['diff']:,.0f}"
@@ -884,8 +890,8 @@ class SaleRevenueWidget(CTkFrame):
                 diff_str if r['target'] > 0 else '—',
             ))
 
+        # ── รวมทีม (Sale staff only) ─────────────────────────────────────────
         total_diff_str = f"+{total_diff:,.0f}" if total_diff >= 0 else f"{total_diff:,.0f}"
-        # avg margin รวมทีม = weighted avg
         total_wtd_margin = sum(r['actual_margin'] * r['sales'] for r in rows)
         team_avg_margin = (total_wtd_margin / total_s) if total_s > 0 else 0.0
         team_margin_str = f"{team_avg_margin:.2f}%" if team_avg_margin else '—'
@@ -900,6 +906,60 @@ class SaleRevenueWidget(CTkFrame):
             f"{total_pct:.1f}%",
             total_diff_str,
         ))
+
+        # ── CT (Sale Center) ─────────────────────────────────────────────────
+        ct_sales = 0.0
+        try:
+            today = datetime.now()
+            # ใช้ custom_target_start/end เสมอ (set โดย _on_search ซึ่งแปลง พ.ศ.→ ค.ศ. แล้ว)
+            # fallback เป็นเดือนปัจจุบัน
+            if self.custom_target_start and self.custom_target_end:
+                ct_date_sql = ("MAKE_DATE(commission_year, commission_month, 1) "
+                               "BETWEEN %s::date AND %s::date")
+                ct_params = [self.custom_target_start.strftime("%Y-%m-%d"),
+                             self.custom_target_end.strftime("%Y-%m-%d")]
+            else:
+                ct_date_sql = "commission_month = %s AND commission_year = %s"
+                ct_params = [today.month, today.year]
+
+            ct_q = f"""
+                SELECT COALESCE(SUM(sales_service_amount), 0) AS ct_total
+                FROM commissions
+                WHERE sale_key = 'Sale Center'
+                  AND {ct_date_sql}
+            """
+            ct_df = pd.read_sql_query(ct_q, self.pg_engine, params=tuple(ct_params))
+            ct_sales = float(ct_df['ct_total'].iloc[0]) if not ct_df.empty else 0.0
+        except Exception as e:
+            print(f"[CT query error] {e}")
+
+        if ct_sales > 0:
+            tree.insert('', 'end', tags=('ct_row',), values=(
+                'Sale Center (CT)',
+                '—', '—', '—',
+                f"{ct_sales:,.0f}",
+                f"{ct_sales:,.0f}",
+                '—', '—', '—',
+            ))
+
+        # ── รวมทีม Total (Sale + CT) ─────────────────────────────────────────
+        grand_s    = total_s + ct_sales
+        grand_pct  = (grand_s / total_t * 100) if total_t > 0 else 0.0
+        grand_diff = grand_s - total_t
+        grand_diff_str = f"+{grand_diff:,.0f}" if grand_diff >= 0 else f"{grand_diff:,.0f}"
+        grand_normal = total_normal + ct_sales
+        tree.insert('', 'end', tags=('grand_total',), values=(
+            'รวมทีม Total',
+            '15%',
+            team_margin_str,
+            f"{total_t:,.0f}",
+            f"{grand_s:,.0f}",
+            f"{grand_normal:,.0f}" if grand_normal > 0 else '—',
+            f"{total_below:,.0f}"  if total_below  > 0 else '—',
+            f"{grand_pct:.1f}%",
+            grand_diff_str,
+        ))
+
         tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
 

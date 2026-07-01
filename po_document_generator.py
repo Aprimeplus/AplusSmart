@@ -83,25 +83,35 @@ def _build_left_column(header_data, styles, P, PB, format_num, width):
         except:
             return ""
 
-    c1, c3, c4 = 2.2*cm, 1.0*cm, 2.0*cm 
+    c1, c3, c4 = 2.2*cm, 1.5*cm, 2.0*cm
     c2 = width - (c1 + c3 + c4)
 
     # --- ส่วน Header ---
+    cust_code = '' if str(header_data.get('customer_code', '') or '').lower() in ('', 'nan', 'none') else str(header_data.get('customer_code', ''))
+    cust_type = str(header_data.get('customer_type', '') or '').strip()
+    credit_term = str(header_data.get('credit_term', '') or '').strip()
+    # ตรวจ credit_term ว่าเป็นเครดิตหรือเงินสด
+    CASH_KEYWORDS = ('เงินสด', 'cash', '')
+    is_credit = credit_term.lower() not in ('', 'nan', 'none') and not any(k in credit_term.lower() for k in ('เงินสด', 'cash'))
+
+    status_label3 = PS('')
+    status_val4 = PS('')
+
     combined_header_data = [
         [PB('ขาย', 'Small_TH'), PS('SELL AUDITOR', 'Small_Center_TH'), PB('ผู้ตรวจ..............', 'Small_TH'), None],
         [PB('SO NUMBER', 'Small_TH'), PSafe(header_data.get('so_number', ''), 'Small_TH'), PB('แผนก', 'Small_TH'), PS(header_data.get('department', ''))],
         [PB('Sale Name', 'Small_TH'), PSafe(header_data.get('sale_name', ''), 'Small_TH'), PB('วันที่', 'Small_TH'), PS(str(header_data.get('bill_date', '')))],
-        [PB('Customer Name', 'Small_TH'), PSafe(header_data.get('customer_name', ''), 'Small_TH', 80), None, None]
+        [PB('Customer Name', 'Small_TH'), PSafe(header_data.get('customer_name', ''), 'Small_TH', 80), PB('รหัสลูกค้า', 'Small_TH'), PS(cust_code)],
+        [PB('สถานะ', 'Small_TH'), PS('เครดิต' if is_credit else 'เงินสด'), status_label3, status_val4],
     ]
-    
-    header_table = Table(combined_header_data, colWidths=[c1, c2, c3, c4]) 
+
+    header_table = Table(combined_header_data, colWidths=[c1, c2, c3, c4])
     header_table.setStyle(TableStyle([
-        ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), 
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 3),
-        ('SPAN', (2,0), (3,0)), 
-        ('SPAN', (1,3), (-1,3)), 
-        ('BACKGROUND', (0,1), (0,3), colors.lemonchiffon), 
-        ('BACKGROUND', (2,1), (2,2), colors.lemonchiffon)
+        ('SPAN', (2,0), (3,0)),
+        ('BACKGROUND', (0,1), (0,4), colors.lemonchiffon),
+        ('BACKGROUND', (2,1), (2,4), colors.lemonchiffon),
     ]))
     story.append(header_table)
 

@@ -1110,10 +1110,11 @@ class CostBenchmarkScreen(CTkFrame):
                         self.sheet.set_options(
                             font=("Tahoma", self.zoom_level, "normal"),
                             header_font=("Tahoma", self.zoom_level, "bold"),
+                            index_font=("Tahoma", self.zoom_level, "normal"),
                             row_height=new_row_height,
                             header_height=new_header_height,
-                            auto_resize_columns=False,   # ✅ มีอยู่แล้ว — ตรวจให้แน่ใจ
-                            auto_resize_row_index=False  # ✅ เพิ่มตรงนี้
+                            auto_resize_columns=False,
+                            auto_resize_row_index=False
                         )
                         if hasattr(self, 'zoom_label'):
                             pct = int((self.zoom_level / 11) * 100)
@@ -1738,13 +1739,28 @@ class CostBenchmarkScreen(CTkFrame):
             except Exception: pass
 
         # เมื่อ navigate ด้วย arrow key / click บน frozen → sync main
+        def _sync_row_selection_to_main(event=None):
+            try:
+                sel_rows = self.sheet_frozen.get_selected_rows()
+                if sel_rows:
+                    self.sheet.deselect("all")
+                    for r in sel_rows:
+                        self.sheet.select_row(r, redraw=False)
+                    self.sheet.redraw()
+            except Exception:
+                pass
+            self.after(30, _sync_frozen_to_main)
+
         def _on_frozen_select(event=None):
             self.after(30, _sync_frozen_to_main)
+
+        def _on_frozen_row_select(event=None):
+            self.after(10, _sync_row_selection_to_main)
 
         try:
             self.sheet_frozen.extra_bindings([
                 ("cell_select",       _on_frozen_select),
-                ("row_select",        _on_frozen_select),
+                ("row_select",        _on_frozen_row_select),
                 ("shift_cell_select", _on_frozen_select),
             ])
         except Exception: pass
@@ -2426,53 +2442,52 @@ class CostBenchmarkScreen(CTkFrame):
                 except ValueError:
                     pass
 
-            # 2. แสดง (Unhide) แถวทั้งหมดกลับมาก่อน 
+            # 2. แสดงทุก row กลับมาก่อน
             try:
                 self.sheet.display_rows("all")
                 if self.sheet_frozen:
                     self.sheet_frozen.display_rows("all")
             except Exception:
-                pass # ถ้าใช้เวอร์ชันเก่ามากๆ จะข้ามไป
+                pass
 
             # 3. ตรวจสอบเงื่อนไขเพื่อหาว่า "แถวไหนบ้างที่ต้องซ่อน"
             if main_filter_map or frozen_filter_map:
-                total_rows = self.sheet.get_total_rows()
+                main_data   = self.sheet.MT.data
+                frozen_data = self.sheet_frozen.MT.data if self.sheet_frozen else []
+                total_rows  = len(main_data)
                 rows_to_hide = []
 
                 for r in range(total_rows):
                     match = True
 
-                    # เช็คฝั่ง Main sheet
                     for d_idx, allowed_vals in main_filter_map.items():
-                        cell_val = str(self.sheet.get_cell_data(r, d_idx) or "").strip()
+                        row_data = main_data[r] if r < len(main_data) else []
+                        cell_val = str(row_data[d_idx] if d_idx < len(row_data) else "").strip()
                         if cell_val not in allowed_vals:
                             match = False
                             break
 
-                    # เช็คฝั่ง Frozen sheet
                     if match and self.sheet_frozen and frozen_filter_map:
                         for f_idx, allowed_vals in frozen_filter_map.items():
-                            cell_val = str(self.sheet_frozen.get_cell_data(r, f_idx) or "").strip()
+                            row_data = frozen_data[r] if r < len(frozen_data) else []
+                            cell_val = str(row_data[f_idx] if f_idx < len(row_data) else "").strip()
                             if cell_val not in allowed_vals:
                                 match = False
                                 break
 
-                    # ถ้าข้อมูลไม่ตรงกับที่กรองไว้ ให้เก็บเข้า List สำหรับซ่อน
                     if not match:
                         rows_to_hide.append(r)
 
-                # 4. สั่งซ่อนแถวทั้งหมดที่หาเจอพร้อมกัน (Tksheet Native)
                 if rows_to_hide:
                     try:
                         self.sheet.hide_rows(rows_to_hide)
                         if self.sheet_frozen:
                             self.sheet_frozen.hide_rows(rows_to_hide)
                     except Exception:
-                        # Fallback สำหรับเวอร์ชั่นเก่ามากๆ
                         for r in rows_to_hide:
-                            self.sheet.row_height(r, 0)
+                            self.sheet.row_height(r, 0, redraw=False)
                             if self.sheet_frozen:
-                                self.sheet_frozen.row_height(r, 0)
+                                self.sheet_frozen.row_height(r, 0, redraw=False)
 
             # 5. อัพเดทสีหัวคอลัมน์ที่เป็นสีส้ม (#F59E0B) เมื่อมี Filter ทำงานอยู่
             header_styles = self._get_header_styles_map()
@@ -2512,13 +2527,23 @@ class CostBenchmarkScreen(CTkFrame):
                 except Exception:
                     pass
 
-            self.sheet.redraw()
+            # อัปเดต index_font ให้ตรงกับ zoom ก่อน redraw
+            # (ป้องกัน index_txt_height > row_height ทำให้ row numbers ไม่ถูก draw)
+            def _fix_index_font_and_redraw(sheet):
+                try:
+                    idx_font = ("Tahoma", self.zoom_level, "normal")
+                    sheet.set_options(index_font=idx_font, auto_resize_columns=False)
+                except Exception:
+                    pass
+                try:
+                    sheet.redraw()
+                except Exception:
+                    pass
+
             if self.sheet_frozen:
-                self.sheet_frozen.redraw()
-                
-            # Sync scroll แก้อาการหน้าจอเด้ง
+                _fix_index_font_and_redraw(self.sheet_frozen)
+            _fix_index_font_and_redraw(self.sheet)
             self.after(50, self._sync_vertical_scroll)
-            # อัปเดตลูกศร filter หลัง redraw
             self.after(50, self._draw_filter_arrows)
 
         except Exception as e:
@@ -2892,7 +2917,7 @@ class CostBenchmarkScreen(CTkFrame):
         # 📌 เพิ่มเมนูคลิกขวา (แทรกบรรทัด / ลบบรรทัด) สำหรับตารางหลัก
         # ==========================================================
         try:
-            self.sheet.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", self._insert_selected_row)
+            self.sheet.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", lambda: self._insert_selected_row(is_frozen=False))
             self.sheet.popup_menu_add_command("🗑️ ลบบรรทัด (Delete Row)", self._delete_selected_rows)
             # เพิ่ม 2 บรรทัดนี้ครับ 👇
             self.sheet.popup_menu_add_command("🎨 ไฮไลท์สีช่อง (Highlight)", self._highlight_selected_cells)
@@ -2968,20 +2993,33 @@ class CostBenchmarkScreen(CTkFrame):
                 te = getattr(mt, 'text_editor', None)
                 if not (te and getattr(te, 'open', False)):
                     return
-                # tksheet 7.x ใช้ te.coords = (r, c) แทน te.row / te.column
+                # te.coords เป็น DISPLAY row/col — ต้องแปลงเป็น data row
                 coords = getattr(te, 'coords', None)
                 if coords is None:
                     return
-                r, c = coords
+                disp_r, disp_c = int(coords[0]), int(coords[1])
+                try:
+                    dr = mt.displayed_rows
+                    data_r = dr[disp_r] if (dr is not None and not isinstance(dr, str)) else disp_r
+                except Exception:
+                    data_r = disp_r
                 # widget ชื่อ tktext ใน tksheet 7.x
                 widget = getattr(te, 'tktext', None) or getattr(te, 'textedit', None) or getattr(te, 'tktext_editor', None)
                 if widget is None:
                     return
                 current_val = widget.get("1.0", "end-1c").strip()
-                # write ชั่วคราวลง sheet เพื่อให้ _auto_calculate_sheet อ่านได้
-                target = self.sheet_frozen if is_frozen else self.sheet
-                target.set_cell_data(int(r), int(c), current_val, redraw=False)
-                self._schedule_calc(int(r))
+                # write ชั่วคราวลง MT.data ด้วย data row
+                try:
+                    mt.data[data_r][disp_c] = current_val
+                except Exception:
+                    pass
+                self._schedule_calc(data_r)
+                # auto-save หลัง user หยุดพิม 1.5 วินาที
+                if self.auto_save_job_id:
+                    self.after_cancel(self.auto_save_job_id)
+                self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+                if hasattr(self, 'save_status_label'):
+                    self.save_status_label.configure(text="⏳ รอการบันทึก...", text_color="#D97706")
             except Exception:
                 pass
 
@@ -2991,6 +3029,8 @@ class CostBenchmarkScreen(CTkFrame):
             "<Down>":             lambda e: self._commit_and_move("down",  is_frozen=False),
             "<Left>":             lambda e: self._commit_and_move("left",  is_frozen=False),
             "<Right>":            lambda e: self._commit_and_move("right", is_frozen=False),
+            "<Return>":           lambda e: self._commit_and_move("right", is_frozen=False),
+            "<KP_Enter>":         lambda e: self._commit_and_move("right", is_frozen=False),
             "<Control-KeyPress>": _editor_thai_cb,
             "<KeyRelease>":       lambda e: _editor_keyrelease(e, is_frozen=False),
         }
@@ -2999,6 +3039,8 @@ class CostBenchmarkScreen(CTkFrame):
             "<Down>":             lambda e: self._commit_and_move("down",  is_frozen=True),
             "<Left>":             lambda e: self._commit_and_move("left",  is_frozen=True),
             "<Right>":            lambda e: self._commit_and_move("right", is_frozen=True),
+            "<Return>":           lambda e: self._commit_and_move("right", is_frozen=True),
+            "<KP_Enter>":         lambda e: self._commit_and_move("right", is_frozen=True),
             "<Control-KeyPress>": _editor_thai_cb,
             "<KeyRelease>":       lambda e: _editor_keyrelease(e, is_frozen=True),
         }
@@ -3150,7 +3192,13 @@ class CostBenchmarkScreen(CTkFrame):
                 return None
 
             self._popup_opening = True
-            _row, _col = int(row), int(col)
+            _disp_row = int(row)
+            try:
+                dr = self.sheet.MT.displayed_rows
+                _row = dr[_disp_row] if (dr is not None and not isinstance(dr, str)) else _disp_row
+            except Exception:
+                _row = _disp_row
+            _col = int(col)
             _typed = str(typed).strip() if typed and typed not in ('\r', '\n', '\t') else ''
             _data_col = _data_col_for_popup
             _data_list = popup_cols[col_name]
@@ -3257,6 +3305,12 @@ class CostBenchmarkScreen(CTkFrame):
                 return None
 
             self._popup_opening = True
+            _disp_row = int(row)
+            try:
+                dr = self.sheet_frozen.MT.displayed_rows
+                _row = dr[_disp_row] if (dr is not None and not isinstance(dr, str)) else _disp_row
+            except Exception:
+                _row = _disp_row
             _typed = str(typed).strip() if typed and typed not in ('\r', '\n', '\t') else ''
             _data_list = popup_cols_frozen[col_name]
             _data_col = real_col  # 🛠️ Data Index ของ Frozen Sheet จะเท่ากับ real_col ตรงๆ
@@ -3284,6 +3338,8 @@ class CostBenchmarkScreen(CTkFrame):
                         self.sheet_frozen.set_cell_data(_row, _data_col, value, redraw=True)
                         self._auto_calculate_sheet(_row)
                         self.sheet_frozen.redraw()
+                        self.sheet.redraw()
+                        self.after(100, self.sheet.redraw)
                         if self.auto_save_job_id is not None:
                             self.after_cancel(self.auto_save_job_id)
                         self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
@@ -3405,6 +3461,27 @@ class CostBenchmarkScreen(CTkFrame):
             if not sel or len(sel) < 2:
                 return "break"
             row, col = int(sel[0]), int(sel[1])
+
+            # ── evaluate formula ก่อน commit (=2+2 → 4) ─────────────────────
+            try:
+                te = getattr(tgt.MT, 'text_editor', None)
+                if te and getattr(te, 'open', False):
+                    widget = (getattr(te, 'tktext', None) or
+                              getattr(te, 'textedit', None) or
+                              getattr(te, 'tktext_editor', None))
+                    if widget:
+                        raw = widget.get("1.0", "end-1c").strip()
+                        if raw.startswith("=") and len(raw) > 1:
+                            import re as _re
+                            expr = raw[1:].replace(',', '')
+                            if _re.match(r'^[\d\.\+\-\*\/\(\)\s]+$', expr):
+                                res = eval(expr, {"__builtins__": None}, {})
+                                if isinstance(res, (int, float)):
+                                    fmt = f"{int(res)}" if res == int(res) else f"{res:.2f}"
+                                    widget.delete("1.0", "end")
+                                    widget.insert("1.0", fmt)
+            except Exception:
+                pass
             row_count = len(tgt.get_sheet_data())
             col_count = len(tgt.MT.col_positions) - 1  # displayed cols only
 
@@ -3577,7 +3654,7 @@ class CostBenchmarkScreen(CTkFrame):
         # 📌 เพิ่มเมนูคลิกขวา (แทรกบรรทัด / ลบบรรทัด) สำหรับตารางที่ตรึง
         # ==========================================================
         try:
-            self.sheet_frozen.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", self._insert_selected_row)
+            self.sheet_frozen.popup_menu_add_command("⮑ แทรกบรรทัดตรงนี้ (Insert Row)", lambda: self._insert_selected_row(is_frozen=True))
             self.sheet_frozen.popup_menu_add_command("🗑️ ลบบรรทัด (Delete Row)", self._delete_selected_rows)
             # เพิ่ม 2 บรรทัดนี้ครับ 👇
             self.sheet_frozen.popup_menu_add_command("🎨 ไฮไลท์สีช่อง (Highlight)", self._highlight_selected_cells)
@@ -3872,7 +3949,12 @@ class CostBenchmarkScreen(CTkFrame):
             if row is None or col is None:
                 return
 
-            row, col = int(row), int(col)
+            disp_row, col = int(row), int(col)
+            try:
+                dr = self.sheet_frozen.MT.displayed_rows
+                row = dr[disp_row] if (dr is not None and not isinstance(dr, str)) else disp_row
+            except Exception:
+                row = disp_row
 
             # Map display col → real col (frozen zone อาจมีคอลัมซ่อนได้)
             hidden_set = set(getattr(self, "hidden_cols_list", []))
@@ -4307,7 +4389,12 @@ class CostBenchmarkScreen(CTkFrame):
             if row is None or col is None:
                 return
 
-            row, col = int(row), int(col)
+            disp_row, col = int(row), int(col)
+            try:
+                dr = self.sheet.MT.displayed_rows
+                row = dr[disp_row] if (dr is not None and not isinstance(dr, str)) else disp_row
+            except Exception:
+                row = disp_row
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
 
             # Map display col → real col (accounts for hidden columns)
@@ -5540,6 +5627,26 @@ class CostBenchmarkScreen(CTkFrame):
             if not rows:
                 return
 
+            # ถ้าเลือกทั้งแถว (row header) ให้ clear อีกฝั่งด้วย
+            if self.sheet_frozen:
+                other = self.sheet if is_frozen else self.sheet_frozen
+                try:
+                    sel_rows = (self.sheet_frozen if is_frozen else self.sheet).get_selected_rows()
+                except Exception:
+                    sel_rows = set()
+                if sel_rows:
+                    for r in rows:
+                        try:
+                            n_cols = other.get_total_columns()
+                            for c in range(n_cols):
+                                other.set_cell_data(r, c, "", redraw=False)
+                        except Exception:
+                            pass
+                    try:
+                        other.redraw()
+                    except Exception:
+                        pass
+
             self._schedule_calc(*rows)
             if self.auto_save_job_id:
                 self.after_cancel(self.auto_save_job_id)
@@ -5571,14 +5678,18 @@ class CostBenchmarkScreen(CTkFrame):
         col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
         cache = self._col_index_cache
 
-        # ── อ่าน row ครั้งเดียว → buffer ──────────────────────────────────
+        # ── อ่าน row ครั้งเดียว → buffer (ใช้ MT.data โดยตรงเพื่อรองรับ filter) ──
         try:
-            main_row = list(self.sheet.get_row_data(row_idx))
+            main_data = self.sheet.MT.data
+            if row_idx >= len(main_data):
+                return
+            main_row = list(main_data[row_idx])
         except Exception:
             return
         if self.sheet_frozen:
             try:
-                frozen_row = list(self.sheet_frozen.get_row_data(row_idx))
+                frozen_data = self.sheet_frozen.MT.data
+                frozen_row = list(frozen_data[row_idx]) if row_idx < len(frozen_data) else [""] * col_offset
             except Exception:
                 frozen_row = [""] * col_offset
         else:
@@ -5670,6 +5781,18 @@ class CostBenchmarkScreen(CTkFrame):
             ]
             for col in auto_cols_to_clear:
                 set_val(col, "", is_text=True)
+            # flush writes ก่อน return เพื่อให้ SKU/หมวด/Supplier ที่ set ไว้ข้างบนถูก write ด้วย
+            for real_idx, new_val in writes.items():
+                if real_idx < col_offset:
+                    if self.sheet_frozen:
+                        old = frozen_row[real_idx] if real_idx < len(frozen_row) else ""
+                        if str(old) != new_val:
+                            self.sheet_frozen.set_cell_data(row_idx, real_idx, new_val, redraw=False)
+                else:
+                    data_idx = real_idx - col_offset
+                    old = main_row[data_idx] if data_idx < len(main_row) else ""
+                    if str(old) != new_val:
+                        self.sheet.set_cell_data(row_idx, data_idx, new_val, redraw=False)
             return
 
         total_weight = weight_per_unit * qty
@@ -5735,23 +5858,42 @@ class CostBenchmarkScreen(CTkFrame):
         set_val("Vat. รวม", sell_total * 0.07)
         set_val("ราคาขาย รวม + Vat.", sell_total * 1.07)
 
-        # ── flush writes → tksheet (เขียนเฉพาะ cell ที่เปลี่ยน) ──────────────
+        # ── flush writes → MT.data โดยตรง (ถูก row แม้ filter ใช้งาน) ──────────
         for real_idx, new_val in writes.items():
             if real_idx < col_offset:
                 if self.sheet_frozen:
                     old = frozen_row[real_idx] if real_idx < len(frozen_row) else ""
                     if str(old) != new_val:
-                        self.sheet_frozen.set_cell_data(row_idx, real_idx, new_val, redraw=False)
+                        try:
+                            self.sheet_frozen.MT.data[row_idx][real_idx] = new_val
+                        except Exception:
+                            self.sheet_frozen.set_cell_data(row_idx, real_idx, new_val, redraw=False)
             else:
                 data_idx = real_idx - col_offset
                 old = main_row[data_idx] if data_idx < len(main_row) else ""
                 if str(old) != new_val:
-                    self.sheet.set_cell_data(row_idx, data_idx, new_val, redraw=False)
+                    try:
+                        self.sheet.MT.data[row_idx][data_idx] = new_val
+                    except Exception:
+                        self.sheet.set_cell_data(row_idx, data_idx, new_val, redraw=False)
 
         if getattr(self, '_header_filter_values', None):
-            if hasattr(self, '_fix_render_job'):
-                self.after_cancel(self._fix_render_job)
-            self._fix_render_job = self.after(150, self._apply_header_filters)
+            is_editing = False
+            try:
+                is_editing = (getattr(self.sheet.MT, 'text_editor', None) is not None and
+                              getattr(self.sheet.MT.text_editor, 'open', False))
+            except Exception:
+                pass
+            if not is_editing and self.sheet_frozen:
+                try:
+                    is_editing = (getattr(self.sheet_frozen.MT, 'text_editor', None) is not None and
+                                  getattr(self.sheet_frozen.MT.text_editor, 'open', False))
+                except Exception:
+                    pass
+            if not is_editing:
+                if hasattr(self, '_fix_render_job'):
+                    self.after_cancel(self._fix_render_job)
+                self._fix_render_job = self.after(150, self._apply_header_filters)
 
     # ================================================================== #
     # ── SLA helpers ────────────────────────────────────────────────────────────
@@ -6664,47 +6806,49 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet_frozen.insert_row([""] * self.frozen_col_count)
             self.sheet_frozen.redraw()
 
-    def _insert_selected_row(self):
+    def _insert_selected_row(self, is_frozen=False):
         if not HAS_TKSHEET:
             return
 
         insert_idx = None
-        
+        src = self.sheet_frozen if (is_frozen and self.sheet_frozen) else self.sheet
+
         try:
-            curr = self.sheet.get_currently_selected()
+            curr = src.get_currently_selected()
             if curr:
                 insert_idx = int(curr[0])
         except Exception:
             pass
-
         if insert_idx is None:
             try:
-                selected_rows = self.sheet.get_selected_rows()
-                if selected_rows:
-                    insert_idx = min(int(r) for r in selected_rows)
+                sel = src.get_selected_rows()
+                if sel:
+                    insert_idx = min(int(r) for r in sel)
             except Exception:
                 pass
-
         if insert_idx is None:
             try:
-                selected_cells = self.sheet.get_selected_cells()
-                if selected_cells:
-                    insert_idx = min(int(r) for r, c in selected_cells)
+                sel = src.get_selected_cells()
+                if sel:
+                    insert_idx = min(int(r) for r, c in sel)
             except Exception:
                 pass
-
-        if insert_idx is None:
-            if self.sheet_frozen:
-                try:
-                    curr = self.sheet_frozen.get_currently_selected()
-                    if curr:
-                        insert_idx = int(curr[0])
-                except Exception:
-                    pass
 
         if insert_idx is None:
             messagebox.showwarning("แจ้งเตือน", "กรุณาคลิกเลือกบรรทัดที่ต้องการแทรกก่อน", parent=self)
             return
+
+        # sync row count ก่อน insert
+        if self.sheet_frozen is not None:
+            try:
+                main_rows = self.sheet.get_total_rows()
+                frozen_rows = self.sheet_frozen.get_total_rows()
+                if main_rows > frozen_rows:
+                    self.sheet_frozen.insert_rows(main_rows - frozen_rows)
+                elif frozen_rows > main_rows:
+                    self.sheet.insert_rows(frozen_rows - main_rows)
+            except Exception:
+                pass
 
         empty_main_row = [""] * (len(self.columns) - self.frozen_col_count)
         self.sheet.insert_row(empty_main_row, idx=insert_idx)
@@ -6714,12 +6858,12 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet_frozen.insert_row(empty_frozen_row, idx=insert_idx)
             self.sheet_frozen.redraw()
 
+        self.sheet.redraw()
         self._apply_formatting(col_offset=self.frozen_col_count)
         self.sheet.see(insert_idx, 0)
-        self.sheet.deselect("all")  # ← เพิ่ม: ล้าง selection ให้ user คลิกเองใหม่
+        self.sheet.deselect("all")
         if self.sheet_frozen:
             self.sheet_frozen.deselect("all")
-        self.sheet.redraw()
         if self.sheet_frozen:
             self.after(100, self._sync_vertical_scroll)
     
@@ -7535,6 +7679,7 @@ class CostBenchmarkScreen(CTkFrame):
         opts = dict(
             font=("Tahoma", self.zoom_level, "normal"),
             header_font=("Tahoma", self.zoom_level, "bold"),
+            index_font=("Tahoma", self.zoom_level, "normal"),
             row_height=new_row_height,
             header_height=new_header_height,
             auto_resize_columns=False,

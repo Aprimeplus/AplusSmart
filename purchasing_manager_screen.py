@@ -1054,6 +1054,15 @@ class PurchasingManagerScreen(CTkFrame):
                 return
 
             header_data = po_df.iloc[0].to_dict()
+
+            # ดึง customer_code แยก
+            try:
+                cust_name = header_data.get('customer_name', '')
+                cc_df = pd.read_sql_query("SELECT customer_code FROM customers WHERE customer_name = %s LIMIT 1", self.pg_engine, params=(cust_name,))
+                header_data['customer_code'] = cc_df.iloc[0]['customer_code'] if not cc_df.empty else ''
+            except Exception:
+                header_data['customer_code'] = ''
+
             items_df = pd.read_sql_query("SELECT * FROM purchase_order_items WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
             payments_df = pd.read_sql_query("SELECT * FROM purchase_order_payments WHERE purchase_order_id = %s ORDER BY id", self.pg_engine, params=(po_id,))
 
@@ -1062,7 +1071,7 @@ class PurchasingManagerScreen(CTkFrame):
                 "items": items_df.to_dict('records'),
                 "payments": payments_df.to_dict('records')
             }]
-            
+
             # ส่งข้อมูลที่ครบถ้วนไปให้ฟังก์ชันสร้าง PDF
             from po_document_generator import generate_multi_po_pdf
             generate_multi_po_pdf(so_header_data=header_data, all_po_data=all_po_data)
@@ -1103,6 +1112,14 @@ class PurchasingManagerScreen(CTkFrame):
                 messagebox.showerror("Error", f"ไม่พบข้อมูล SO: {so_number}", parent=self)
                 return
             so_header_data = so_header_df.iloc[0].to_dict()
+
+            # ดึง customer_code แยก
+            try:
+                cust_name = so_header_data.get('customer_name', '')
+                cc_df = pd.read_sql_query("SELECT customer_code FROM customers WHERE customer_name = %s LIMIT 1", self.pg_engine, params=(cust_name,))
+                so_header_data['customer_code'] = cc_df.iloc[0]['customer_code'] if not cc_df.empty else ''
+            except Exception:
+                so_header_data['customer_code'] = ''
 
             # 2. ดึงข้อมูล PO ทั้งหมดที่เกี่ยวข้อง (เหมือนเดิม)
             po_query = """

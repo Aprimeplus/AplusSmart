@@ -970,7 +970,11 @@ class SalesTargetWidget(CTkFrame):
                          'margin_target': MARGIN_TARGET, 'actual_margin': wtd_margin,
                          'sales_normal': float(grp['sales_normal'].sum()) if 'sales_normal' in grp.columns else 0.0,
                          'sales_below':  float(grp['sales_below'].sum())  if 'sales_below'  in grp.columns else 0.0})
-        rows.sort(key=lambda r: r['sales'], reverse=True)
+        # แยก Sale Center (CT) ออกจาก sale staff
+        ct_rows   = [r for r in rows if r['name'] == self.SALE_CENTER_KEY]
+        sale_rows = [r for r in rows if r['name'] != self.SALE_CENTER_KEY]
+        sale_rows.sort(key=lambda r: r['sales'], reverse=True)
+        rows = sale_rows  # rows หลักคือ sale staff เท่านั้น
 
         total_t      = sum(r['target']       for r in rows)
         total_s      = sum(r['sales']        for r in rows)
@@ -1005,7 +1009,7 @@ class SalesTargetWidget(CTkFrame):
 
         cols = ('name','margin_target','actual_margin','target','sales','sales_normal','sales_below','pct','diff')
         tree = ttk.Treeview(outer, columns=cols, show='headings',
-                            style="SMSalesTable.Treeview", height=len(rows)+1)
+                            style="SMSalesTable.Treeview", height=len(rows)+3)
         tree.heading('name',          text='พนักงาน');           tree.column('name',          width=170, anchor='w')
         tree.heading('margin_target', text='Margin เป้า');       tree.column('margin_target', width=100, anchor='center')
         tree.heading('actual_margin', text='Avg Margin จริง');   tree.column('actual_margin', width=120, anchor='center')
@@ -1016,13 +1020,18 @@ class SalesTargetWidget(CTkFrame):
         tree.heading('pct',           text='%');                  tree.column('pct',           width=75,  anchor='center')
         tree.heading('diff',          text='ส่วนต่าง (บาท)');   tree.column('diff',          width=140, anchor='e')
 
-        tree.tag_configure('odd',      background='#F8FAFC')
-        tree.tag_configure('even',     background='white')
-        tree.tag_configure('negative', foreground='#DC2626')
-        tree.tag_configure('positive', foreground='#16A34A')
-        tree.tag_configure('total',    background='#EFF6FF',
+        tree.tag_configure('odd',         background='#F8FAFC')
+        tree.tag_configure('even',        background='white')
+        tree.tag_configure('negative',    foreground='#DC2626')
+        tree.tag_configure('positive',    foreground='#16A34A')
+        tree.tag_configure('total',       background='#EFF6FF',
                            font=('TH Sarabun New', 13, 'bold'), foreground='#1D4ED8')
+        tree.tag_configure('ct_row',      background='#FEFCE8',
+                           font=('TH Sarabun New', 13, 'bold'), foreground='#92400E')
+        tree.tag_configure('grand_total', background='#DCFCE7',
+                           font=('TH Sarabun New', 13, 'bold'), foreground='#166534')
 
+        # ── Sale staff rows ───────────────────────────────────────────────────
         for idx, r in enumerate(rows):
             diff_str = f"+{r['diff']:,.0f}" if r['diff'] >= 0 else f"{r['diff']:,.0f}"
             actual_m = r.get('actual_margin', 0.0)
@@ -1039,6 +1048,7 @@ class SalesTargetWidget(CTkFrame):
                                 f"{r['pct']:.1f}%",
                                 diff_str if r['target'] > 0 else '—'))
 
+        # ── รวมทีม (Sale staff only) ──────────────────────────────────────────
         total_diff = total_s - total_t
         total_wtd_margin = sum(r['actual_margin'] * r['sales'] for r in rows)
         team_avg_margin = (total_wtd_margin / total_s) if total_s > 0 else 0.0
@@ -1050,6 +1060,34 @@ class SalesTargetWidget(CTkFrame):
                             f"{total_below:,.0f}"  if total_below  > 0 else '—',
                             f"{total_pct:.1f}%",
                             f"+{total_diff:,.0f}" if total_diff >= 0 else f"{total_diff:,.0f}"))
+
+        # ── Sale Center (CT) ──────────────────────────────────────────────────
+        ct_sales = ct_normal = ct_below = 0.0
+        if ct_rows:
+            ct = ct_rows[0]
+            ct_sales  = ct['sales']
+            ct_normal = ct.get('sales_normal', ct_sales)
+            ct_below  = ct.get('sales_below', 0.0)
+            tree.insert('', 'end', tags=('ct_row',),
+                        values=('Sale Center (CT)', '15%', '—', '—',
+                                f"{ct_sales:,.0f}",
+                                f"{ct_normal:,.0f}" if ct_normal > 0 else '—',
+                                f"{ct_below:,.0f}"  if ct_below  > 0 else '—',
+                                '—', '—'))
+
+        # ── รวมทีม Total (Sale + CT) ──────────────────────────────────────────
+        grand_s    = total_s + ct_sales
+        grand_norm = total_normal + ct_normal
+        grand_pct  = (grand_s / total_t * 100) if total_t > 0 else 0.0
+        grand_diff = grand_s - total_t
+        tree.insert('', 'end', tags=('grand_total',),
+                    values=('รวมทีม Total', '15%', team_margin_str,
+                            f"{total_t:,.0f}", f"{grand_s:,.0f}",
+                            f"{grand_norm:,.0f}" if grand_norm > 0 else '—',
+                            f"{total_below + ct_below:,.0f}" if (total_below + ct_below) > 0 else '—',
+                            f"{grand_pct:.1f}%",
+                            f"+{grand_diff:,.0f}" if grand_diff >= 0 else f"{grand_diff:,.0f}"))
+
         tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
 
