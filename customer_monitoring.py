@@ -195,7 +195,10 @@ class CustomerMonitoringWidget(CTkFrame):
         self._pivot_base: "pd.DataFrame | None" = None
         self._months_stored: list = []
         self._year_stored: int = 0
-        self._sheet.extra_bindings([("column_header_left_click", self._on_header_click)])
+        self._header_press_x: int = 0
+        # bind ตรงบน column-header canvas — ทำงานได้ทุก tksheet version
+        self._sheet.MT.CH.bind("<ButtonPress-1>",   self._on_ch_press,   add=True)
+        self._sheet.MT.CH.bind("<ButtonRelease-1>", self._on_ch_release, add=True)
 
     # ── data ─────────────────────────────────────────────────────────────────
 
@@ -371,13 +374,24 @@ class CustomerMonitoringWidget(CTkFrame):
 
         self._draw_table(pivot, months, year_thai)
 
-    def _on_header_click(self, event):
+    def _on_ch_press(self, event):
+        self._header_press_x = event.x
+
+    def _on_ch_release(self, event):
+        if abs(event.x - self._header_press_x) > 6:
+            return  # drag (column resize) — ไม่ sort
+        import bisect
+        x = self._sheet.MT.CH.canvasx(event.x)
+        positions = self._sheet.MT.col_positions
+        if not positions or len(positions) < 2:
+            return
+        col = bisect.bisect_right(positions, x) - 1
+        col = max(0, min(col, len(positions) - 2))
+        self._on_header_click(col)
+
+    def _on_header_click(self, col: int):
         """เรียงข้อมูลตาม column ที่คลิก — สลับ ▲/▼"""
         if self._pivot_base is None:
-            return
-        try:
-            col = event.column
-        except AttributeError:
             return
 
         months  = self._months_stored
