@@ -5,6 +5,39 @@ import pandas as pd
 from tksheet import Sheet
 from datetime import datetime
 
+try:
+    from tkcalendar import DateEntry as _DateEntry
+    class _PatchedDE(_DateEntry):
+        def _on_focus_out_cal(self, event):
+            try:
+                focused = self._top_cal.focus_get()
+                if focused and str(focused).startswith(str(self._top_cal)):
+                    return
+            except Exception:
+                pass
+            super()._on_focus_out_cal(event)
+        def _drop_down(self):
+            super()._drop_down()
+            if hasattr(self, '_top_cal') and self._top_cal:
+                self._top_cal.bind("<FocusOut>", self._on_focus_out_cal)
+    _HAS_CAL = True
+except ImportError:
+    _HAS_CAL = False
+
+_DE_KW = dict(
+    background="#1D4ED8", foreground="white", borderwidth=0,
+    headersbackground="#1D4ED8", headersforeground="white",
+    selectbackground="#2563EB", selectforeground="white",
+    normalbackground="#FFFFFF", normalforeground="#111827",
+    weekendbackground="#FFFFFF", weekendforeground="#991B1B",
+    othermonthforeground="#9CA3AF", othermonthbackground="#FFFFFF",
+    othermonthweforeground="#9CA3AF", othermonthwebackground="#FFFFFF",
+    font=("Tahoma", 12),
+    date_pattern="dd/mm/yyyy", locale="th_TH",
+    showweeknumbers=False, showothermonthdays=False,
+    year=datetime.now().year,
+)
+
 THAI_MONTHS_SHORT = {
     1: 'ม.ค.', 2: 'ก.พ.', 3: 'มี.ค.', 4: 'เม.ย.',
     5: 'พ.ค.', 6: 'มิ.ย.', 7: 'ก.ค.', 8: 'ส.ค.',
@@ -84,17 +117,33 @@ class CustomerMonitoringWidget(CTkFrame):
 
         lbl("วันที่เริ่ม", r); r += 1
         self._from_var = tk.StringVar()
-        CTkEntry(panel, textvariable=self._from_var,
-                 placeholder_text="dd/mm/yyyy", height=28,
-                 font=CTkFont(size=11)).grid(
-            row=r, column=0, padx=10, pady=(0, 2), sticky="ew"); r += 1
+        if _HAS_CAL:
+            self._cal_from = _PatchedDE(panel, width=13,
+                                        textvariable=self._from_var, **_DE_KW)
+            self._cal_from.delete(0, "end")
+            self._cal_from.grid(row=r, column=0, padx=10, pady=(0, 2), sticky="w")
+            self._cal_from.bind("<<DateEntrySelected>>", lambda e: self._load())
+        else:
+            CTkEntry(panel, textvariable=self._from_var,
+                     placeholder_text="dd/mm/yyyy", height=28,
+                     font=CTkFont(size=11)).grid(
+                row=r, column=0, padx=10, pady=(0, 2), sticky="ew")
+        r += 1
 
         lbl("วันที่สิ้นสุด", r); r += 1
         self._to_var = tk.StringVar()
-        CTkEntry(panel, textvariable=self._to_var,
-                 placeholder_text="dd/mm/yyyy", height=28,
-                 font=CTkFont(size=11)).grid(
-            row=r, column=0, padx=10, pady=(0, 8), sticky="ew"); r += 1
+        if _HAS_CAL:
+            self._cal_to = _PatchedDE(panel, width=13,
+                                      textvariable=self._to_var, **_DE_KW)
+            self._cal_to.delete(0, "end")
+            self._cal_to.grid(row=r, column=0, padx=10, pady=(0, 8), sticky="w")
+            self._cal_to.bind("<<DateEntrySelected>>", lambda e: self._load())
+        else:
+            CTkEntry(panel, textvariable=self._to_var,
+                     placeholder_text="dd/mm/yyyy", height=28,
+                     font=CTkFont(size=11)).grid(
+                row=r, column=0, padx=10, pady=(0, 8), sticky="ew")
+        r += 1
 
         CTkButton(panel, text="🔍 ค้นหา", height=30,
                   font=CTkFont(size=12, weight="bold"),
@@ -177,6 +226,9 @@ class CustomerMonitoringWidget(CTkFrame):
         self._year_var.set(str(datetime.now().year + 543))
         self._from_var.set("")
         self._to_var.set("")
+        if _HAS_CAL:
+            self._cal_from.delete(0, "end")
+            self._cal_to.delete(0, "end")
         self._load()
 
     def _load(self):
