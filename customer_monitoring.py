@@ -289,6 +289,25 @@ class CustomerMonitoringWidget(CTkFrame):
 
     # ── render ───────────────────────────────────────────────────────────────
 
+    # heat map: 5 levels white → dark blue based on value ratio per column
+    _HEAT = [
+        (0.80, "#1E40AF", "white"),
+        (0.60, "#2563EB", "white"),
+        (0.40, "#60A5FA", "#0F172A"),
+        (0.20, "#BFDBFE", "#0F172A"),
+        (0.01, "#EFF6FF", "#0F172A"),
+    ]
+
+    @classmethod
+    def _heat_color(cls, v, col_max):
+        if col_max <= 0 or v <= 0:
+            return None, None
+        ratio = v / col_max
+        for threshold, bg, fg in cls._HEAT:
+            if ratio >= threshold:
+                return bg, fg
+        return None, None
+
     def _render(self, df, year_thai):
         self._sheet.dehighlight_all()
 
@@ -298,8 +317,6 @@ class CustomerMonitoringWidget(CTkFrame):
             self._info_lbl.configure(text="0 ลูกค้า")
             self._sheet.redraw()
             return
-
-        year = year_thai  # ใช้ชื่อเดิมต่อใน _render
 
         now = datetime.now()
         current_year_thai = now.year + 543
@@ -326,26 +343,33 @@ class CustomerMonitoringWidget(CTkFrame):
 
         def _fmt(v):
             v = float(v)
-            return f"{v:,.0f}" if v else "-"
+            return f"{v:,.0f}" if v else ""
 
-        rows = []
+        # build rows + keep numeric matrix for heat map
+        rows, num_matrix = [], []
         for _, r in pivot.iterrows():
             row = [r["customer_id"], r["customer_name"], r["sale_key"]]
+            num_row = []
             for m in months:
-                row.append(_fmt(r.get(m, 0)))
-            row.append(_fmt(r["_total"]))
+                v = float(r.get(m, 0))
+                row.append(_fmt(v))
+                num_row.append(v)
+            total = float(r["_total"])
+            row.append(_fmt(total))
+            num_row.append(total)
             rows.append(row)
+            num_matrix.append(num_row)
 
         # summary row
         s_row = ["", "รวมทั้งหมด", ""]
         for m in months:
-            s_row.append(_fmt(pivot[m].sum()))
-        s_row.append(_fmt(pivot["_total"].sum()))
+            s_row.append(_fmt(float(pivot[m].sum())))
+        s_row.append(_fmt(float(pivot["_total"].sum())))
         rows.append(s_row)
 
         self._sheet.set_sheet_data(rows)
 
-        # column widths: รหัส | ชื่อ | พนักงาน | months... | รวม
+        # column widths
         widths = [88, 230, 105] + [82] * len(months) + [100]
         self._sheet.set_column_widths(widths)
 
@@ -353,14 +377,28 @@ class CustomerMonitoringWidget(CTkFrame):
         self._sheet.align_columns(
             columns=list(range(3, len(headers))), align="right")
 
-        # total row: dark blue bg + white text
+        # ── heat map per column ───────────────────────────────────────────
+        n_data = len(rows) - 1          # exclude summary row
+        n_num  = len(months) + 1        # month cols + total col
+        col_maxes = [
+            max((num_matrix[ri][ci] for ri in range(n_data)), default=0)
+            for ci in range(n_num)
+        ]
+        for ri in range(n_data):
+            for ci in range(n_num):
+                bg, fg = self._heat_color(num_matrix[ri][ci], col_maxes[ci])
+                if bg:
+                    self._sheet.highlight_cells(
+                        row=ri, column=3 + ci, bg=bg, fg=fg, redraw=False)
+
+        # summary row: dark navy
         self._sheet.highlight_rows(
             rows=[len(rows) - 1], bg="#1E3A5F", fg="white", redraw=False)
 
-        # light blue tint for identity columns
+        # identity columns: subtle tint
         self._sheet.highlight_columns(
-            columns=[0, 1, 2], bg="#EFF6FF", fg="#0F172A", redraw=False)
+            columns=[0, 1, 2], bg="#F8FAFC", fg="#0F172A", redraw=False)
 
         self._sheet.redraw()
         self._info_lbl.configure(
-            text=f"{len(pivot)} ลูกค้า | ปี {year} | {len(months)} เดือน")
+            text=f"{len(pivot)} ลูกค้า | ปี {year_thai} | {len(months)} เดือน")
