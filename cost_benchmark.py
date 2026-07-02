@@ -6096,8 +6096,21 @@ class CostBenchmarkScreen(CTkFrame):
                 """, (so_number, self.current_user))
                 row = cur.fetchone()
                 if not row:
-                    return
-                started_at = row[0]
+                    # ไม่มี sla_benchmark record → fallback ใช้ created_at จาก cost_benchmarks
+                    cur.execute("""
+                        SELECT created_at FROM cost_benchmarks
+                        WHERE "Sale Order No." = %s AND created_by = %s
+                        ORDER BY created_at ASC LIMIT 1
+                    """, (so_number, self.current_user))
+                    cb_row = cur.fetchone()
+                    started_at = cb_row[0] if cb_row else datetime.now()
+                    cur.execute("""
+                        INSERT INTO sla_benchmark (so_number, user_key, started_at)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT ON CONSTRAINT uq_sla_so_user DO NOTHING
+                    """, (so_number, self.current_user, started_at))
+                else:
+                    started_at = row[0]
                 now = datetime.now()
                 biz_min = self._calc_business_minutes(started_at, now, holiday_set)
                 cur.execute("""
