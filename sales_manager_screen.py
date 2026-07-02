@@ -26,6 +26,7 @@ matplotlib.use('TkAgg')
 from history_windows import SOPopupWindow, DeferralHistoryWindow, ManagerDeferApprovalDialog
 from daily_report_widget import DailyReportWidget
 from hr_screen import SalesFilterDialog
+from customer_monitoring import CustomerMonitoringWidget
 
 STATUS_THAI_MAP = {
     'Draft': 'ฉบับร่าง',
@@ -1171,6 +1172,7 @@ class SalesManagerScreen(CTkFrame):
         self.master_tab = self.tab_view.add("🛠️ ค้นหาและจัดการ (Master)")
         self.cancelled_tab = self.tab_view.add("❌ ยกเลิก SO (Cancel)")
         self.target_tab = self.tab_view.add("📊 เป้าการขาย")
+        self.monitoring_tab = self.tab_view.add("👥 Customer Monitoring")
 
         # สร้างเนื้อหาในแต่ละ Tab
         self._create_approval_tab(self.approval_tab)
@@ -1179,6 +1181,7 @@ class SalesManagerScreen(CTkFrame):
         self._create_master_tab(self.master_tab)
         self._create_cancelled_so_tab(self.cancelled_tab)
         self._create_sales_target_tab(self.target_tab)
+        self._create_customer_monitoring_tab(self.monitoring_tab)
 
         # ตั้งค่าหน้าแรกที่เปิดขึ้นมา
         self.tab_view.set("🗳️ รายการรออนุมัติ (SM Approval)")
@@ -1204,6 +1207,14 @@ class SalesManagerScreen(CTkFrame):
             fg_color="transparent"
         )
         widget.grid(row=0, column=0, sticky="nsew")
+
+    def _create_customer_monitoring_tab(self, parent_tab):
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(0, weight=1)
+        CustomerMonitoringWidget(
+            master=parent_tab,
+            app_container=self.app_container,
+        ).grid(row=0, column=0, sticky="nsew")
 
     def _create_cancelled_so_tab(self, parent_tab):
         # --- Grid Setup: แบ่งหน้าจอเป็น 2 ส่วน (บน-เล็ก / ล่าง-ใหญ่) ---
