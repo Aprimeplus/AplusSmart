@@ -75,10 +75,10 @@ class CustomerMonitoringWidget(CTkFrame):
             height=28, font=CTkFont(size=11), state="readonly",
         ).grid(row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
 
-        lbl("ปี (ค.ศ.)", r); r += 1
-        self._year_var = tk.StringVar(value=str(datetime.now().year))
+        lbl("ปี (พ.ศ.)", r); r += 1
+        self._year_var = tk.StringVar(value=str(datetime.now().year + 543))
         self._year_cb = CTkComboBox(
-            panel, variable=self._year_var, values=["2025", "2026"],
+            panel, variable=self._year_var, values=["2568", "2569"],
             height=28, font=CTkFont(size=11), state="readonly")
         self._year_cb.grid(row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
 
@@ -161,7 +161,7 @@ class CustomerMonitoringWidget(CTkFrame):
                     "WHERE is_active=1 ORDER BY commission_year",
                     conn,
                 )
-                years = [str(y) for y in df_y["commission_year"].tolist()]
+                years = [str(y + 543) for y in df_y["commission_year"].tolist()]
                 if years:
                     self._year_cb.configure(values=years)
                     self._year_var.set(years[-1])
@@ -174,15 +174,17 @@ class CustomerMonitoringWidget(CTkFrame):
         self._search_var.set("")
         self._sale_var.set("ทั้งหมด")
         self._ctype_var.set("ทั้งหมด")
-        self._year_var.set(str(datetime.now().year))
+        self._year_var.set(str(datetime.now().year + 543))
         self._from_var.set("")
         self._to_var.set("")
         self._load()
 
     def _load(self):
         try:
-            year = int(self._year_var.get())
+            year_thai = int(self._year_var.get())
+            year = year_thai - 543          # แปลง พ.ศ. → ค.ศ. สำหรับ query DB
         except Exception:
+            year_thai = datetime.now().year + 543
             year = datetime.now().year
 
         search   = self._search_var.get().strip()
@@ -224,7 +226,7 @@ class CustomerMonitoringWidget(CTkFrame):
             print(f"CustomerMonitoring _load error: {e}")
             return
 
-        self._render(df, year)
+        self._render(df, year_thai)
 
     @staticmethod
     def _parse_date(s):
@@ -235,7 +237,7 @@ class CustomerMonitoringWidget(CTkFrame):
 
     # ── render ───────────────────────────────────────────────────────────────
 
-    def _render(self, df, year):
+    def _render(self, df, year_thai):
         self._sheet.dehighlight_all()
 
         if df.empty:
@@ -244,6 +246,8 @@ class CustomerMonitoringWidget(CTkFrame):
             self._info_lbl.configure(text="0 ลูกค้า")
             self._sheet.redraw()
             return
+
+        year = year_thai  # ใช้ชื่อเดิมต่อใน _render
 
         months  = sorted(df["commission_month"].dropna().unique().tolist())
         m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
