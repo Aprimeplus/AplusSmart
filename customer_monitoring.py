@@ -159,6 +159,7 @@ class CustomerMonitoringWidget(CTkFrame):
     # ── table area ───────────────────────────────────────────────────────────
 
     def _build_table_area(self):
+        from customtkinter import CTkButton, CTkOptionMenu
         area = CTkFrame(self, fg_color="transparent")
         area.grid(row=0, column=1, sticky="nsew", padx=(4, 6), pady=6)
         area.grid_columnconfigure(0, weight=1)
@@ -169,12 +170,31 @@ class CustomerMonitoringWidget(CTkFrame):
         CTkLabel(hdr, text="👥  Customer Monitoring — ยอดขายรายลูกค้า",
                  font=CTkFont(size=14, weight="bold"),
                  text_color="#0F172A").pack(side="left")
+
+        # toggle buttons (right side)
+        self._btn_chart = CTkButton(
+            hdr, text="📊 แผนภูมิ", width=95, height=28,
+            font=CTkFont(size=11), fg_color="#6B7280", hover_color="#4B5563",
+            command=lambda: self._set_view("chart"))
+        self._btn_chart.pack(side="right", padx=(4, 0))
+        self._btn_table = CTkButton(
+            hdr, text="📋 ตาราง", width=85, height=28,
+            font=CTkFont(size=11), fg_color="#1D4ED8", hover_color="#1E40AF",
+            command=lambda: self._set_view("table"))
+        self._btn_table.pack(side="right", padx=(0, 4))
+
         self._info_lbl = CTkLabel(hdr, text="",
                                    font=CTkFont(size=11), text_color="#64748B")
         self._info_lbl.pack(side="right", padx=8)
 
+        # ── table sheet frame ─────────────────────────────────────────────
+        self._sheet_frame = CTkFrame(area, fg_color="transparent")
+        self._sheet_frame.grid(row=1, column=0, sticky="nsew")
+        self._sheet_frame.grid_columnconfigure(0, weight=1)
+        self._sheet_frame.grid_rowconfigure(0, weight=1)
+
         self._sheet = Sheet(
-            area,
+            self._sheet_frame,
             theme="light blue",
             header_font=("Tahoma", 11, "bold"),
             data_font=("Tahoma", 11),
@@ -182,7 +202,7 @@ class CustomerMonitoringWidget(CTkFrame):
             show_x_scrollbar=True,
             show_y_scrollbar=True,
         )
-        self._sheet.grid(row=1, column=0, sticky="nsew")
+        self._sheet.grid(row=0, column=0, sticky="nsew")
         self._sheet.enable_bindings(
             "column_width_resize",
             "double_click_column_resize",
@@ -196,9 +216,34 @@ class CustomerMonitoringWidget(CTkFrame):
         self._months_stored: list = []
         self._year_stored: int = 0
         self._header_press_x: int = 0
-        # bind ตรงบน column-header canvas — ทำงานได้ทุก tksheet version
         self._sheet.MT.CH.bind("<ButtonPress-1>",   self._on_ch_press,   add=True)
         self._sheet.MT.CH.bind("<ButtonRelease-1>", self._on_ch_release, add=True)
+
+        # ── chart frame (hidden initially) ────────────────────────────────
+        self._chart_frame = CTkFrame(area, fg_color="white", corner_radius=8)
+        # chart controls bar
+        self._chart_ctrl = CTkFrame(self._chart_frame, fg_color="#F1F5F9",
+                                     corner_radius=6)
+        self._chart_ctrl.pack(fill="x", padx=8, pady=(8, 4))
+        CTkLabel(self._chart_ctrl, text="แสดง Top",
+                 font=CTkFont(size=11)).pack(side="left", padx=(10, 4))
+        self._top_n_var = tk.StringVar(value="20")
+        CTkOptionMenu(self._chart_ctrl, variable=self._top_n_var,
+                      values=["10", "20", "30", "50"],
+                      width=70, height=26, font=CTkFont(size=11),
+                      command=lambda _: self._draw_chart()).pack(side="left")
+        CTkLabel(self._chart_ctrl, text="ลูกค้า",
+                 font=CTkFont(size=11)).pack(side="left", padx=(4, 16))
+
+        self._chart_type_var = tk.StringVar(value="ยอดรวมรายลูกค้า")
+        CTkOptionMenu(self._chart_ctrl, variable=self._chart_type_var,
+                      values=["ยอดรวมรายลูกค้า", "ยอดรายเดือน (รวม)"],
+                      width=170, height=26, font=CTkFont(size=11),
+                      command=lambda _: self._draw_chart()).pack(side="left")
+
+        self._chart_canvas_widget = None   # FigureCanvasTkAgg widget
+        self._chart_container = CTkFrame(self._chart_frame, fg_color="white")
+        self._chart_container.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
     # ── data ─────────────────────────────────────────────────────────────────
 
@@ -373,6 +418,117 @@ class CustomerMonitoringWidget(CTkFrame):
         self._sort_asc      = True
 
         self._draw_table(pivot, months, year_thai)
+
+    # ── view toggle ──────────────────────────────────────────────────────────
+
+    def _set_view(self, mode: str):
+        if mode == "table":
+            self._chart_frame.grid_remove()
+            self._sheet_frame.grid(row=1, column=0, sticky="nsew")
+            self._btn_table.configure(fg_color="#1D4ED8")
+            self._btn_chart.configure(fg_color="#6B7280")
+        else:
+            self._sheet_frame.grid_remove()
+            self._chart_frame.grid(row=1, column=0, sticky="nsew")
+            self._btn_chart.configure(fg_color="#1D4ED8")
+            self._btn_table.configure(fg_color="#6B7280")
+            self._draw_chart()
+
+    def _draw_chart(self):
+        if self._pivot_base is None:
+            return
+        try:
+            import matplotlib
+            import matplotlib.ticker
+            matplotlib.rcParams["font.family"] = "Tahoma"
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except ImportError:
+            from customtkinter import CTkLabel as _L
+            _L(self._chart_container,
+               text="กรุณาติดตั้ง matplotlib ก่อน (pip install matplotlib)").pack()
+            return
+
+        # clear previous chart
+        if self._chart_canvas_widget:
+            self._chart_canvas_widget.get_tk_widget().destroy()
+            self._chart_canvas_widget = None
+
+        top_n   = int(self._top_n_var.get())
+        ctype   = self._chart_type_var.get()
+        pivot   = self._pivot_base
+        months  = self._months_stored
+        m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
+
+        fig = Figure(facecolor="white")
+        ax  = fig.add_subplot(111)
+
+        _SALE_HEX = {
+            "VOW-S":    "#7C3AED", "VOW-P":    "#7C3AED",
+            "ILADA":    "#2563EB", "BUNNYCEE": "#CA8A04",
+            "PIYAWAN":  "#EA580C", "JIRAPORN": "#DB2777",
+            "LETHAI":   "#DB2777", "WACHIRA":  "#DB2777",
+        }
+        _FALLBACK = ["#059669", "#DC2626", "#0891B2", "#6B7280"]
+        _fallback_map: dict = {}
+        def _hex(key):
+            if key in _SALE_HEX:
+                return _SALE_HEX[key]
+            if key not in _fallback_map:
+                _fallback_map[key] = _FALLBACK[len(_fallback_map) % len(_FALLBACK)]
+            return _fallback_map[key]
+
+        if ctype == "ยอดรวมรายลูกค้า":
+            df_top = pivot.nlargest(top_n, "_total")
+            labels = df_top["customer_name"].tolist()
+            values = (df_top["_total"] / 1000).tolist()   # หน่วย พัน
+            colors = [_hex(k) for k in df_top["sale_key"].tolist()]
+
+            bars = ax.barh(range(len(labels)), values, color=colors, height=0.65)
+            ax.set_yticks(range(len(labels)))
+            ax.set_yticklabels(labels, fontsize=9)
+            ax.invert_yaxis()
+            ax.set_xlabel("ยอดขาย (พัน บาท)", fontsize=10)
+            ax.set_title(
+                f"Top {top_n} ลูกค้า — ยอดขายรวม ปี {self._year_stored}",
+                fontsize=12, fontweight="bold", pad=10)
+            # value labels
+            for bar, v in zip(bars, values):
+                ax.text(bar.get_width() + max(values) * 0.01,
+                        bar.get_y() + bar.get_height() / 2,
+                        f"{v:,.0f}", va="center", fontsize=8)
+            ax.set_xlim(0, max(values) * 1.15 if values else 1)
+            ax.xaxis.set_major_formatter(
+                matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+            ax.grid(axis="x", alpha=0.3, linestyle="--")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+        else:  # ยอดรายเดือน (รวม)
+            monthly_totals = [float(pivot[m].sum()) / 1000 for m in months]
+            bar_colors = ["#2563EB"] * len(months)
+            ax.bar(m_names, monthly_totals, color=bar_colors, width=0.6)
+            ax.set_ylabel("ยอดขาย (พัน บาท)", fontsize=10)
+            ax.set_title(
+                f"ยอดขายรายเดือน — ปี {self._year_stored}",
+                fontsize=12, fontweight="bold", pad=10)
+            for i, v in enumerate(monthly_totals):
+                ax.text(i, v + max(monthly_totals) * 0.01,
+                        f"{v:,.0f}", ha="center", fontsize=9)
+            ax.set_ylim(0, max(monthly_totals) * 1.15 if monthly_totals else 1)
+            ax.yaxis.set_major_formatter(
+                matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+            ax.grid(axis="y", alpha=0.3, linestyle="--")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+        fig.tight_layout(pad=1.5)
+        canvas = FigureCanvasTkAgg(fig, master=self._chart_container)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._chart_canvas_widget = canvas
+
+    # ── header sort ──────────────────────────────────────────────────────────
 
     def _on_ch_press(self, event):
         self._header_press_x = event.x
