@@ -460,14 +460,11 @@ class CustomerMonitoringWidget(CTkFrame):
         months  = self._months_stored
         m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
 
-        fig = Figure(facecolor="white")
-        ax  = fig.add_subplot(111)
-
         _SALE_HEX = {
-            "VOW-S":    "#7C3AED", "VOW-P":    "#7C3AED",
-            "ILADA":    "#2563EB", "BUNNYCEE": "#CA8A04",
-            "PIYAWAN":  "#EA580C", "JIRAPORN": "#DB2777",
-            "LETHAI":   "#DB2777", "WACHIRA":  "#DB2777",
+            "VOW-S": "#7C3AED", "VOW-P": "#7C3AED",
+            "ILADA": "#2563EB", "BUNNYCEE": "#CA8A04",
+            "PIYAWAN": "#EA580C", "JIRAPORN": "#DB2777",
+            "LETHAI": "#DB2777", "WACHIRA": "#DB2777",
         }
         _FALLBACK = ["#059669", "#DC2626", "#0891B2", "#6B7280"]
         _fallback_map: dict = {}
@@ -478,51 +475,86 @@ class CustomerMonitoringWidget(CTkFrame):
                 _fallback_map[key] = _FALLBACK[len(_fallback_map) % len(_FALLBACK)]
             return _fallback_map[key]
 
-        if ctype == "ยอดรวมรายลูกค้า":
-            df_top = pivot.nlargest(top_n, "_total")
-            labels = df_top["customer_name"].tolist()
-            values = (df_top["_total"] / 1000).tolist()   # หน่วย พัน
-            colors = [_hex(k) for k in df_top["sale_key"].tolist()]
+        def _fmt_val(v):
+            """แสดงยอดเป็น K หรือ M"""
+            if v >= 1_000:
+                return f"{v/1_000:.1f}M"
+            return f"{v:,.0f}K"
 
-            bars = ax.barh(range(len(labels)), values, color=colors, height=0.65)
-            ax.set_yticks(range(len(labels)))
+        if ctype == "ยอดรวมรายลูกค้า":
+            df_top  = pivot.nlargest(top_n, "_total")
+            labels  = df_top["customer_name"].tolist()
+            values  = (df_top["_total"] / 1_000).tolist()   # หน่วย พัน (K)
+            colors  = [_hex(k) for k in df_top["sale_key"].tolist()]
+            n_bars  = len(labels)
+
+            fig_h = max(5, n_bars * 0.42)
+            fig = Figure(figsize=(10, fig_h), facecolor="white")
+            ax  = fig.add_subplot(111)
+
+            bars = ax.barh(range(n_bars), values, color=colors, height=0.65)
+            ax.set_yticks(range(n_bars))
             ax.set_yticklabels(labels, fontsize=9)
             ax.invert_yaxis()
+
+            # scale axis ที่ P90 เพื่อไม่ให้ outlier บีบ — bar ยาวกว่าจะ clip
+            import numpy as np
+            p90 = float(np.percentile(values, 90)) if len(values) > 3 else max(values)
+            x_lim = max(p90 * 1.35, sorted(values)[-2] * 1.2) if len(values) > 1 else values[0] * 1.2
+            ax.set_xlim(0, x_lim)
+            ax.set_clip_on(True)
+
+            # value labels — วางในแท่งถ้า bar ยาวพอ ไม่งั้นวางนอก
+            for bar, v in zip(bars, values):
+                w = bar.get_width()
+                label_txt = _fmt_val(v)
+                if w > x_lim * 0.15:   # วางในแท่ง
+                    ax.text(min(w, x_lim) - x_lim * 0.01,
+                            bar.get_y() + bar.get_height() / 2,
+                            label_txt, va="center", ha="right",
+                            fontsize=8, color="white", fontweight="bold")
+                else:                   # วางนอกแท่ง
+                    ax.text(w + x_lim * 0.01,
+                            bar.get_y() + bar.get_height() / 2,
+                            label_txt, va="center", ha="left", fontsize=8)
+
             ax.set_xlabel("ยอดขาย (พัน บาท)", fontsize=10)
             ax.set_title(
                 f"Top {top_n} ลูกค้า — ยอดขายรวม ปี {self._year_stored}",
-                fontsize=12, fontweight="bold", pad=10)
-            # value labels
-            for bar, v in zip(bars, values):
-                ax.text(bar.get_width() + max(values) * 0.01,
-                        bar.get_y() + bar.get_height() / 2,
-                        f"{v:,.0f}", va="center", fontsize=8)
-            ax.set_xlim(0, max(values) * 1.15 if values else 1)
+                fontsize=12, fontweight="bold", loc="left", pad=10)
             ax.xaxis.set_major_formatter(
                 matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-            ax.grid(axis="x", alpha=0.3, linestyle="--")
+            ax.grid(axis="x", alpha=0.25, linestyle="--")
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
+            # margin ซ้ายสำหรับชื่อ Thai
+            fig.subplots_adjust(left=0.38, right=0.97, top=0.93, bottom=0.07)
+
         else:  # ยอดรายเดือน (รวม)
-            monthly_totals = [float(pivot[m].sum()) / 1000 for m in months]
+            monthly_totals = [float(pivot[m].sum()) / 1_000 for m in months]
+            fig = Figure(figsize=(10, 5), facecolor="white")
+            ax  = fig.add_subplot(111)
+
             bar_colors = ["#2563EB"] * len(months)
-            ax.bar(m_names, monthly_totals, color=bar_colors, width=0.6)
+            bars2 = ax.bar(m_names, monthly_totals, color=bar_colors, width=0.6)
+            y_max = max(monthly_totals) * 1.18 if monthly_totals else 1
+            ax.set_ylim(0, y_max)
+            for bar, v in zip(bars2, monthly_totals):
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + y_max * 0.01,
+                        _fmt_val(v), ha="center", fontsize=9)
             ax.set_ylabel("ยอดขาย (พัน บาท)", fontsize=10)
             ax.set_title(
                 f"ยอดขายรายเดือน — ปี {self._year_stored}",
-                fontsize=12, fontweight="bold", pad=10)
-            for i, v in enumerate(monthly_totals):
-                ax.text(i, v + max(monthly_totals) * 0.01,
-                        f"{v:,.0f}", ha="center", fontsize=9)
-            ax.set_ylim(0, max(monthly_totals) * 1.15 if monthly_totals else 1)
+                fontsize=12, fontweight="bold", loc="left", pad=10)
             ax.yaxis.set_major_formatter(
                 matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-            ax.grid(axis="y", alpha=0.3, linestyle="--")
+            ax.grid(axis="y", alpha=0.25, linestyle="--")
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
+            fig.subplots_adjust(left=0.12, right=0.97, top=0.91, bottom=0.10)
 
-        fig.tight_layout(pad=1.5)
         canvas = FigureCanvasTkAgg(fig, master=self._chart_container)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
