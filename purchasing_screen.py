@@ -4599,10 +4599,13 @@ class SLADashboard(CTkFrame):
         pop = CTkToplevel(self)
         pop.title("⏳ งานค้าง — รอ Copy Short Note")
         pop.grab_set()
-        self._center_popup(pop, 1100, 520)
+        self._center_popup(pop, 1100, 580)
 
-        CTkLabel(pop, text=f"⏳  งานค้างทั้งหมด {len(rows)} รายการ",
-                 font=CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(12, 4))
+        from customtkinter import CTkButton
+        _count = {"n": len(rows)}
+        count_lbl = CTkLabel(pop, text=f"⏳  งานค้างทั้งหมด {_count['n']} รายการ",
+                             font=CTkFont(size=14, weight="bold"))
+        count_lbl.pack(anchor="w", padx=16, pady=(12, 4))
 
         cols = [
             ("SO Number",       180),
@@ -4622,7 +4625,8 @@ class SLADashboard(CTkFrame):
         style.configure("Pending.Treeview.Heading", font=("Tahoma", 11, "bold"))
 
         tree = ttk.Treeview(frame, columns=[c[0] for c in cols],
-                            show="headings", style="Pending.Treeview")
+                            show="headings", style="Pending.Treeview",
+                            selectmode="extended")
         for col, w in cols:
             tree.heading(col, text=col)
             tree.column(col, width=w, anchor="center")
@@ -4724,6 +4728,65 @@ class SLADashboard(CTkFrame):
             t.pack(fill="both", expand=True)
 
         tree.bind("<Double-1>", _on_pending_dblclick)
+
+        # ── ปุ่มปิดงาน ──────────────────────────────────────────────────────
+        btn_frame = CTkFrame(pop, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=12, pady=(0, 12))
+
+        def _close_selected():
+            sel = tree.selection()
+            if not sel:
+                from tkinter import messagebox
+                messagebox.showinfo("ปิดงาน", "กรุณาเลือกรายการก่อน", parent=pop)
+                return
+            so_list_close = [iid_to_so[iid] for iid in sel if iid in iid_to_so]
+            if not so_list_close:
+                return
+            from tkinter import messagebox
+            if not messagebox.askyesno(
+                "ยืนยันปิดงาน",
+                f"ปิดงาน {len(so_list_close)} รายการ?\n\n" +
+                "\n".join(so_list_close[:10]) + ("\n..." if len(so_list_close) > 10 else ""),
+                parent=pop
+            ):
+                return
+            try:
+                from datetime import datetime as _dt3
+                _now2 = _dt3.now()
+                conn2 = self.app.get_connection()
+                try:
+                    cur2 = conn2.cursor()
+                    ph2 = ",".join(["%s"] * len(so_list_close))
+                    cur2.execute(f"""
+                        UPDATE sla_benchmark
+                        SET copied_at = %s
+                        WHERE so_number IN ({ph2}) AND copied_at IS NULL
+                    """, [_now2] + so_list_close)
+                    conn2.commit()
+                finally:
+                    self.app.release_connection(conn2)
+                for iid in sel:
+                    tree.delete(iid)
+                    iid_to_so.pop(iid, None)
+                _count["n"] -= len(so_list_close)
+                count_lbl.configure(text=f"⏳  งานค้างทั้งหมด {_count['n']} รายการ")
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("Error", str(e), parent=pop)
+
+        def _select_all_tree():
+            tree.selection_set(tree.get_children())
+
+        CTkButton(btn_frame, text="เลือกทั้งหมด",
+                  width=120, height=32, font=CTkFont(size=12),
+                  fg_color="#6B7280", hover_color="#4B5563",
+                  command=_select_all_tree).pack(side="left", padx=(0, 6))
+        CTkButton(btn_frame, text="✅ ปิดงานที่เลือก",
+                  width=150, height=32, font=CTkFont(size=12, weight="bold"),
+                  fg_color="#059669", hover_color="#047857",
+                  command=_close_selected).pack(side="left")
+        CTkLabel(btn_frame, text="(Ctrl+Click หรือ Shift+Click เพื่อเลือกหลายรายการ)",
+                 font=CTkFont(size=11), text_color="#6B7280").pack(side="left", padx=12)
 
     def _export_excel(self):
         """Export ข้อมูล SLA ที่กำลังแสดงอยู่เป็นไฟล์ Excel"""
