@@ -4332,6 +4332,24 @@ class SLADashboard(CTkFrame):
                     else:
                         diff_str   = "-"
                         sla_result, row_tag = _sla_tag(0, False, is_mto)
+                elif copied_dt:
+                    # copied_at มีค่าแต่ started_at หาย → ใช้ duration_min จาก DB หรือแสดงว่าเสร็จ
+                    if pd.notna(dur_raw) and int(dur_raw) > 0:
+                        d       = int(dur_raw)
+                        dur_str = _fmt(d)
+                        if target is not None:
+                            diff_val   = d - target
+                            diff_str   = (f"+{_fmt(diff_val)}" if diff_val > 0
+                                          else ("0 นาที" if diff_val == 0 else _fmt(diff_val)))
+                            sla_result, row_tag = _sla_tag(d / target, True, is_mto)
+                        else:
+                            diff_str   = "-"
+                            sla_result, row_tag = _sla_tag(0, False, is_mto)
+                    else:
+                        dur_str    = "-"
+                        diff_str   = "-"
+                        sla_result = "[ รวดเร็ว ]"
+                        row_tag    = "fast"
                 else:
                     dur_str    = "รอ Copy"
                     diff_str   = "-"

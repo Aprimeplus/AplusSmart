@@ -6095,20 +6095,29 @@ class CostBenchmarkScreen(CTkFrame):
                     WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
                 """, (so_number, self.current_user))
                 row = cur.fetchone()
-                if not row:
-                    # ไม่มี sla_benchmark record → fallback ใช้ created_at จาก cost_benchmarks
+                if not row or row[0] is None:
+                    # ไม่มี record หรือมีแต่ started_at = NULL → fallback จาก cost_benchmarks
                     cur.execute("""
                         SELECT created_at FROM cost_benchmarks
                         WHERE "Sale Order No." = %s AND created_by = %s
+                          AND created_at IS NOT NULL
                         ORDER BY created_at ASC LIMIT 1
                     """, (so_number, self.current_user))
                     cb_row = cur.fetchone()
                     started_at = cb_row[0] if cb_row else datetime.now()
-                    cur.execute("""
-                        INSERT INTO sla_benchmark (so_number, user_key, started_at)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT ON CONSTRAINT uq_sla_so_user DO NOTHING
-                    """, (so_number, self.current_user, started_at))
+                    if not row:
+                        cur.execute("""
+                            INSERT INTO sla_benchmark (so_number, user_key, started_at)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT ON CONSTRAINT uq_sla_so_user DO NOTHING
+                        """, (so_number, self.current_user, started_at))
+                    else:
+                        # record มีอยู่แต่ started_at เป็น NULL → update started_at ด้วย
+                        cur.execute("""
+                            UPDATE sla_benchmark SET started_at = %s
+                            WHERE so_number = %s AND user_key = %s
+                              AND copied_at IS NULL AND started_at IS NULL
+                        """, (started_at, so_number, self.current_user))
                 else:
                     started_at = row[0]
                 now = datetime.now()
