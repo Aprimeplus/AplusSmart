@@ -190,6 +190,12 @@ class CustomerMonitoringWidget(CTkFrame):
             "rc_select",
             "copy",
         )
+        self._sort_col_idx: int | None = None
+        self._sort_asc: bool = True
+        self._pivot_base: "pd.DataFrame | None" = None
+        self._months_stored: list = []
+        self._year_stored: int = 0
+        self._sheet.extra_bindings([("column_header_left_click", self._on_header_click)])
 
     # ── data ─────────────────────────────────────────────────────────────────
 
@@ -344,7 +350,6 @@ class CustomerMonitoringWidget(CTkFrame):
             m for m in df["commission_month"].dropna().unique().tolist()
             if int(m) <= max_month
         )
-        m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
 
         pivot = df.pivot_table(
             index=["customer_id", "customer_name", "sale_key"],
@@ -357,14 +362,79 @@ class CustomerMonitoringWidget(CTkFrame):
         pivot["_total"] = pivot[months].sum(axis=1)
         pivot = pivot.sort_values("_total", ascending=False).reset_index(drop=True)
 
-        headers = ["รหัสลูกค้า", "ชื่อลูกค้า", "รหัสพนักงาน"] + m_names + ["รวม"]
+        # เก็บไว้สำหรับ sort โดยไม่ต้อง query DB ใหม่
+        self._pivot_base   = pivot.copy()
+        self._months_stored = months
+        self._year_stored   = year_thai
+        self._sort_col_idx  = None   # reset sort state เมื่อโหลดใหม่
+        self._sort_asc      = True
+
+        self._draw_table(pivot, months, year_thai)
+
+    def _on_header_click(self, event):
+        """เรียงข้อมูลตาม column ที่คลิก — สลับ ▲/▼"""
+        if self._pivot_base is None:
+            return
+        try:
+            col = event.column
+        except AttributeError:
+            return
+
+        months  = self._months_stored
+        pivot   = self._pivot_base.copy()
+        n_month = len(months)
+
+        # กำหนด column DB ที่จะ sort
+        if col == 0:
+            sort_key = "customer_id"
+            numeric  = False
+        elif col == 1:
+            sort_key = "customer_name"
+            numeric  = False
+        elif col == 2:
+            sort_key = "sale_key"
+            numeric  = False
+        elif col == n_month + 3:          # คอลัมน์ "รวม"
+            sort_key = "_total"
+            numeric  = True
+        elif 3 <= col < n_month + 3:      # คอลัมน์เดือน
+            sort_key = months[col - 3]
+            numeric  = True
+        else:
+            return
+
+        # toggle: ถ้าคลิก col เดิม → สลับ asc/desc, ถ้า col ใหม่ → desc ก่อน (ตัวเลข) / asc (text)
+        if self._sort_col_idx == col:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_col_idx = col
+            self._sort_asc = not numeric   # ตัวเลข: เริ่ม desc | text: เริ่ม asc
+
+        pivot = pivot.sort_values(sort_key, ascending=self._sort_asc).reset_index(drop=True)
+        self._draw_table(pivot, months, self._year_stored)
+
+    def _draw_table(self, pivot, months, year_thai):
+        """วาด sheet จาก pivot ที่ส่งมา (ใช้ได้ทั้งตอน render ครั้งแรกและตอน sort)"""
+        self._sheet.dehighlight_all()
+
+        m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
+
+        # สร้าง header พร้อม sort indicator
+        def _hdr(text, col_idx):
+            if self._sort_col_idx == col_idx:
+                return text + (" ▲" if self._sort_asc else " ▼")
+            return text
+
+        base_hdrs   = ["รหัสลูกค้า", "ชื่อลูกค้า", "รหัสพนักงาน"]
+        month_hdrs  = [_hdr(mn, 3 + i) for i, mn in enumerate(m_names)]
+        total_hdr   = _hdr("รวม", 3 + len(months))
+        headers     = [_hdr(b, i) for i, b in enumerate(base_hdrs)] + month_hdrs + [total_hdr]
         self._sheet.headers(headers)
 
         def _fmt(v):
             v = float(v)
             return f"{v:,.0f}" if v else ""
 
-        # build rows + keep numeric matrix for heat map
         rows, num_matrix = [], []
         for _, r in pivot.iterrows():
             row = [r["customer_id"], r["customer_name"], r["sale_key"]]
@@ -379,24 +449,22 @@ class CustomerMonitoringWidget(CTkFrame):
             rows.append(row)
             num_matrix.append(num_row)
 
-        # summary row
+        # summary row (ไม่เปลี่ยนตาม sort)
+        base = self._pivot_base if self._pivot_base is not None else pivot
         s_row = ["", "รวมทั้งหมด", ""]
         for m in months:
-            s_row.append(_fmt(float(pivot[m].sum())))
-        s_row.append(_fmt(float(pivot["_total"].sum())))
+            s_row.append(_fmt(float(base[m].sum())))
+        s_row.append(_fmt(float(base["_total"].sum())))
         rows.append(s_row)
 
         self._sheet.set_sheet_data(rows)
 
-        # column widths
         widths = [88, 230, 105] + [82] * len(months) + [100]
         self._sheet.set_column_widths(widths)
-
-        # right-align numeric columns
         self._sheet.align_columns(
             columns=list(range(3, len(headers))), align="right")
 
-        # ── salesperson badge colors (col 2) ─────────────────────────────
+        # salesperson badge colors
         _fallback: dict = {}
         def _sale_color(key):
             if key in self._SALE_COLORS:
@@ -407,12 +475,11 @@ class CustomerMonitoringWidget(CTkFrame):
 
         for ri, (_, r) in enumerate(pivot.iterrows()):
             bg, fg = _sale_color(r["sale_key"])
-            self._sheet.highlight_cells(
-                row=ri, column=2, bg=bg, fg=fg, redraw=False)
+            self._sheet.highlight_cells(row=ri, column=2, bg=bg, fg=fg, redraw=False)
 
-        # ── heat map per column ───────────────────────────────────────────
-        n_data = len(rows) - 1          # exclude summary row
-        n_num  = len(months) + 1        # month cols + total col
+        # heat map per column
+        n_data = len(rows) - 1
+        n_num  = len(months) + 1
         col_maxes = [
             max((num_matrix[ri][ci] for ri in range(n_data)), default=0)
             for ci in range(n_num)
@@ -424,11 +491,8 @@ class CustomerMonitoringWidget(CTkFrame):
                     self._sheet.highlight_cells(
                         row=ri, column=3 + ci, bg=bg, fg=fg, redraw=False)
 
-        # summary row: dark navy
         self._sheet.highlight_rows(
             rows=[len(rows) - 1], bg="#1E3A5F", fg="white", redraw=False)
-
-        # identity columns: subtle tint
         self._sheet.highlight_columns(
             columns=[0, 1, 2], bg="#F8FAFC", fg="#0F172A", redraw=False)
 
