@@ -298,6 +298,18 @@ class CustomerMonitoringWidget(CTkFrame):
         (0.01, "#EFF6FF", "#0F172A"),
     ]
 
+    # salesperson badge colors — bg / fg pairs (assigned dynamically in order of first appearance)
+    _SALE_PALETTE = [
+        ("#FEF3C7", "#92400E"),  # amber
+        ("#FCE7F3", "#9D174D"),  # pink
+        ("#D1FAE5", "#065F46"),  # green
+        ("#EDE9FE", "#4C1D95"),  # violet
+        ("#FEE2E2", "#991B1B"),  # red
+        ("#CFFAFE", "#164E63"),  # cyan
+        ("#FEF9C3", "#713F12"),  # yellow
+        ("#F3F4F6", "#111827"),  # gray
+    ]
+
     @classmethod
     def _heat_color(cls, v, col_max):
         if col_max <= 0 or v <= 0:
@@ -376,6 +388,19 @@ class CustomerMonitoringWidget(CTkFrame):
         # right-align numeric columns
         self._sheet.align_columns(
             columns=list(range(3, len(headers))), align="right")
+
+        # ── salesperson badge colors (col 2) ─────────────────────────────
+        sale_color: dict = {}
+        for key in pivot["sale_key"].unique():
+            if key not in sale_color:
+                idx = len(sale_color) % len(self._SALE_PALETTE)
+                sale_color[key] = self._SALE_PALETTE[idx]
+        for ri, (_, r) in enumerate(pivot.iterrows()):
+            key = r["sale_key"]
+            if key in sale_color:
+                bg, fg = sale_color[key]
+                self._sheet.highlight_cells(
+                    row=ri, column=2, bg=bg, fg=fg, redraw=False)
 
         # ── heat map per column ───────────────────────────────────────────
         n_data = len(rows) - 1          # exclude summary row
