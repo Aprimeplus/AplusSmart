@@ -249,7 +249,13 @@ class CustomerMonitoringWidget(CTkFrame):
 
         year = year_thai  # ใช้ชื่อเดิมต่อใน _render
 
-        months  = sorted(df["commission_month"].dropna().unique().tolist())
+        now = datetime.now()
+        current_year_thai = now.year + 543
+        max_month = now.month if year_thai == current_year_thai else 12
+        months = sorted(
+            m for m in df["commission_month"].dropna().unique().tolist()
+            if int(m) <= max_month
+        )
         m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
 
         pivot = df.pivot_table(
