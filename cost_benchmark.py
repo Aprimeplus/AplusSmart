@@ -1399,12 +1399,14 @@ class CostBenchmarkScreen(CTkFrame):
             hidden_set_snap = set(getattr(self, "hidden_cols_list", []))
             DEFAULT_W = 120
             if self.sheet_frozen is not None:
-                for i in range(self.frozen_col_count):
+                # Map display index → real col index, skipping hidden cols (เหมือนฝั่ง main ด้านล่าง)
+                visible_frozen_snap = [c for c in range(self.frozen_col_count) if c not in hidden_set_snap]
+                for i, real_c in enumerate(visible_frozen_snap):
                     try:
                         w = self.sheet_frozen.column_width(i)
                         # อัปเดต cache เฉพาะถ้าค่าจาก sheet ไม่ใช่ default (แสดงว่า user resize แล้ว)
                         if w and w >= 8 and w != DEFAULT_W:
-                            self.col_widths_cache[i] = w
+                            self.col_widths_cache[real_c] = w
                     except Exception: pass
                 visible_real_snap = [c for c in range(self.frozen_col_count, len(self.columns)) if c not in hidden_set_snap]
                 for di in range(self.sheet.get_total_columns()):
@@ -2945,6 +2947,17 @@ class CostBenchmarkScreen(CTkFrame):
             self.sheet.MT.bind("<Control-KeyPress>", self._on_ctrl_keypress_thai, add="+")
         except Exception: pass
 
+        # 🛠️ Ctrl+Z/Ctrl+Y ต้องผูกกับ RI/CH/TL ด้วย ไม่งั้นถ้า focus ค้างอยู่ที่เลขบรรทัด/หัวตาราง
+        # (เช่นหลังคลิกเลขแถวหรือหัวคอลัมน์) การกด Ctrl+Z/Ctrl+Y จะไม่ทำงานเลย
+        # (self.bind ระดับ frame ไม่ได้ช่วยเพราะ bindtags ของ Tkinter ไม่ไล่ผ่าน parent widget)
+        for _w in (self.sheet.RI, self.sheet.CH, self.sheet.TL):
+            try:
+                _w.bind("<Control-z>", self._undo)
+                _w.bind("<Control-Z>", self._undo)
+                _w.bind("<Control-y>", self._redo)
+                _w.bind("<Control-Y>", self._redo)
+            except Exception: pass
+
         # Safety-net: dialog-level binding เผื่อ focus ไม่อยู่บน sheet ใดเลย
         self.bind("<Control-v>", self._mt_paste_router)
         self.bind("<Control-V>", self._mt_paste_router)
@@ -3003,14 +3016,22 @@ class CostBenchmarkScreen(CTkFrame):
                     data_r = dr[disp_r] if (dr is not None and not isinstance(dr, str)) else disp_r
                 except Exception:
                     data_r = disp_r
+                # 🛠️ disp_c ก็เป็น DISPLAY col เหมือนกัน — ต้องแปลงเป็น data col ด้วย (ข้าม hidden columns)
+                hidden_set = set(getattr(self, 'hidden_cols_list', []))
+                if is_frozen:
+                    visible_cols = [c for c in range(self.frozen_col_count) if c not in hidden_set]
+                else:
+                    col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
+                    visible_cols = [c - col_offset for c in range(col_offset, len(self.columns)) if c not in hidden_set]
+                data_c = visible_cols[disp_c] if disp_c < len(visible_cols) else disp_c
                 # widget ชื่อ tktext ใน tksheet 7.x
                 widget = getattr(te, 'tktext', None) or getattr(te, 'textedit', None) or getattr(te, 'tktext_editor', None)
                 if widget is None:
                     return
                 current_val = widget.get("1.0", "end-1c").strip()
-                # write ชั่วคราวลง MT.data ด้วย data row
+                # write ชั่วคราวลง MT.data ด้วย data row/col
                 try:
-                    mt.data[data_r][disp_c] = current_val
+                    mt.data[data_r][data_c] = current_val
                 except Exception:
                     pass
                 self._schedule_calc(data_r)
@@ -3167,6 +3188,7 @@ class CostBenchmarkScreen(CTkFrame):
                 return typed
             real_col = visible_main[int(col)]
             col_name = self.columns[real_col]
+            print(f"[DEBUG begin_edit] disp_col={col} hidden={hidden_set} real_col={real_col} col_name={col_name}")
 
             popup_cols = {
                 "รายการสินค้า": self.product_list,
@@ -3276,7 +3298,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             hidden_set = set(getattr(self, 'hidden_cols_list', []))
 
-            # 🛠️ แปลง Display Index เป็น Real Index เพื่อหาชื่อคอลัมน์ให้ถูกต้อง
+            #  แปลง Display Index เป็น Real Index เพื่อหาชื่อคอลัมน์ให้ถูกต้อง
             visible_frozen = [c for c in range(self.frozen_col_count) if c not in hidden_set]
             if int(col) >= len(visible_frozen):
                 return typed
@@ -3708,6 +3730,15 @@ class CostBenchmarkScreen(CTkFrame):
             self._patch_open_cell(self.sheet_frozen.MT)
         except Exception: pass
 
+        # 🛠️ Ctrl+Z/Ctrl+Y บนฝั่ง frozen ก็ต้องผูกกับ RI/CH/TL เหมือนฝั่ง main
+        for _w in (self.sheet_frozen.RI, self.sheet_frozen.CH, self.sheet_frozen.TL):
+            try:
+                _w.bind("<Control-z>", self._undo)
+                _w.bind("<Control-Z>", self._undo)
+                _w.bind("<Control-y>", self._redo)
+                _w.bind("<Control-Y>", self._redo)
+            except Exception: pass
+
         # ✅ navigation mode arrow บน frozen MT (รองรับข้ามฝั่ง frozen→main)
         try:
             def _make_nav_frozen(direction):
@@ -3775,9 +3806,27 @@ class CostBenchmarkScreen(CTkFrame):
     def _push_undo(self):
         self._push_undo_job = None
         # ถ้า user กำลังพิมอยู่ ให้รอก่อน — ไม่อยากให้ get_sheet_data() block UI ระหว่างพิม
-        if getattr(self, '_is_editing', False):
-            self._push_undo_job = self.after(200, self._push_undo)
-            return
+        # 🛠️ เช็ค focus จริงแทนธง _is_editing ล้วนๆ เพราะธงนี้อาจค้างเป็น True ตลอดไป
+        # ถ้า user กด Escape ยกเลิกการแก้ไข (ไม่ผ่าน end_edit_cell) — ทำให้ _push_undo วนรอไม่จบ
+        # และไม่เคยบันทึกประวัติเลยสักครั้ง (Ctrl+Z เลยกดไม่ได้ตลอด)
+        _still_editing = getattr(self, '_is_editing', False)
+        if _still_editing:
+            try:
+                focused = self.focus_get()
+                _still_editing = bool(focused and focused.winfo_class() in ('Entry', 'Text', 'TEntry'))
+            except Exception:
+                _still_editing = False
+            if not _still_editing:
+                self._is_editing = False
+        if _still_editing:
+            _retries = getattr(self, '_push_undo_retries', 0) + 1
+            self._push_undo_retries = _retries
+            # กันค้างถาวร: ถ้ารอเกิน ~3 วินาที (15 ครั้ง x 200ms) ให้ฝืนบันทึกไปเลย
+            if _retries < 15:
+                self._push_undo_job = self.after(200, self._push_undo)
+                return
+            self._is_editing = False
+        self._push_undo_retries = 0
         try:
             if not hasattr(self, '_history'):
                 self._history = []
@@ -3785,7 +3834,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             main_data = [list(row) for row in self.sheet.get_sheet_data()]
             frozen_data = [list(row) for row in self.sheet_frozen.get_sheet_data()] if getattr(self, 'sheet_frozen', None) else []
-            
+
             # กันซ้ำกับสถานะล่าสุด (ถ้าไม่มีอะไรเปลี่ยน ไม่ต้องจำ)
             if self._history and self._history_idx >= 0:
                 if self._history[self._history_idx] == (frozen_data, main_data):
@@ -3796,13 +3845,13 @@ class CostBenchmarkScreen(CTkFrame):
                 self._history = self._history[:self._history_idx + 1]
 
             self._history.append((frozen_data, main_data))
-            
+
             # จำกัดประวัติไม่เกิน 50 ครั้งเพื่อประหยัด RAM
             if len(self._history) > 50:
                 self._history.pop(0)
             else:
                 self._history_idx += 1
-                
+
         except Exception as e:
             print(f"_push_undo error: {e}")
 
@@ -3990,7 +4039,8 @@ class CostBenchmarkScreen(CTkFrame):
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
                 "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง", "ยกเลิก"],
                 "สถานะ":          status_opts,
-                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔"],
+                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
+                                   "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"],
             }
 
             # รายการสินค้า / ชื่อ Supplier / รหัส Sale → เปิด popup โดยตรง
@@ -4175,11 +4225,12 @@ class CostBenchmarkScreen(CTkFrame):
             col_offset = self.frozen_col_count if self.sheet_frozen is not None else 0
             hidden_set = set(getattr(self, 'hidden_cols_list', []))
             visible_real = [c for c in range(col_offset, len(self.columns)) if c not in hidden_set]
-            
+
             if col >= len(visible_real):
                 return
             real_col = visible_real[col]
             col_name = self.columns[real_col]
+            print(f"[DEBUG keypress] char={repr(event.char)} disp_col={col} hidden={hidden_set} real_col={real_col} col_name={col_name}")
 
             popup_cols = {
                 "รายการสินค้า": self.product_list,
@@ -4420,6 +4471,7 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             col_name = self.columns[real_col]
+            print(f"[DEBUG click] disp_col={col} hidden={hidden_set} real_col={real_col} col_name={col_name}")
             status_opts = [
                 "WIN", "STOCK",
                 "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
@@ -4444,7 +4496,8 @@ class CostBenchmarkScreen(CTkFrame):
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
                 "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง", "ยกเลิก"],
                 "สถานะ":          status_opts,
-                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔"],
+                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
+                                   "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"],
             }
 
             # รายการสินค้า / ชื่อ Supplier / รหัส Sale → เปิด popup โดยตรง
@@ -5156,12 +5209,14 @@ class CostBenchmarkScreen(CTkFrame):
 
             frozen_width = 40
             if self.sheet_frozen:
-                # Frozen columns: display idx == real idx (ไม่มี hidden ใน frozen ปกติ)
-                for i in range(self.frozen_col_count):
+                # Frozen columns: map display idx → real idx โดยใช้ visible_frozen list
+                # (เพราะถ้ามี hidden columns ในช่วง frozen display idx ≠ real idx)
+                visible_frozen = [c for c in range(self.frozen_col_count) if c not in hidden_set]
+                for display_i, real_c in enumerate(visible_frozen):
                     try:
-                        w = self.sheet_frozen.column_width(i)
+                        w = self.sheet_frozen.column_width(display_i)
                         if w and w > 0:
-                            self.col_widths_cache[i] = w
+                            self.col_widths_cache[real_c] = w
                             frozen_width += w
                     except IndexError: pass
 
@@ -5332,10 +5387,12 @@ class CostBenchmarkScreen(CTkFrame):
             hidden_set_r = set(getattr(self, "hidden_cols_list", []))
             if self.sheet_frozen is not None:
                 frozen_width = 40
-                for i in range(self.frozen_col_count):
-                    w = self.col_widths_cache.get(i)
+                # Map display index → real col index, skipping hidden cols (เหมือนฝั่ง main ด้านล่าง)
+                visible_frozen_r = [c for c in range(self.frozen_col_count) if c not in hidden_set_r]
+                for di, real_c in enumerate(visible_frozen_r):
+                    w = self.col_widths_cache.get(real_c)
                     w = w if w and w >= 8 else 120
-                    self.sheet_frozen.column_width(i, w)
+                    self.sheet_frozen.column_width(di, w)
                     frozen_width += w
 
                 # Map display index → real col index, skipping hidden cols
@@ -5379,6 +5436,13 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _on_end_edit_combined(self, event=None, is_frozen=False):
         self._is_editing = False  # reset ทันทีที่ edit จบ ไม่ว่า path ไหน
+        # 🛠️ เรียก undo-scheduling ตรงนี้เลย แทนที่จะรอ "<<SheetModified>>" อย่างเดียว
+        # เพราะ event นี้ของ tksheet ไม่ยิงสม่ำเสมอทุกครั้งที่แก้เซลล์เดี่ยวๆ (พบว่าพิมพ์แก้หลายช่อง
+        # แล้ว event ไม่ยิงเลยจนกว่าจะมี bulk operation อื่นมากระตุ้น — undo history เลยไม่ถูกบันทึก)
+        # ฟังก์ชันนี้ยิงแน่นอนทุกครั้งที่ edit จบ ไม่ว่าจะผ่าน path ไหน จึงเป็นจุดที่เชื่อถือได้กว่า
+        try:
+            self._on_sheet_modified(event)
+        except Exception: pass
         try:
             row, col = None, None
             datarn = None  # data row index (filter-safe)
@@ -5409,9 +5473,20 @@ class CostBenchmarkScreen(CTkFrame):
             # --- ส่วนที่ 1: คำนวณคณิตศาสตร์ Inline (เช่น =2+2) ---
             target_sheet = self.sheet_frozen if is_frozen else self.sheet
             try:
+                # แปลง display col → data col (display_columns อาจซ่อนบางคอลัมน์ทำให้ index เพี้ยน)
+                if is_frozen:
+                    _hidden_f = set(getattr(self, 'hidden_cols_list', []))
+                    _visible_f = [c for c in range(self.frozen_col_count) if c not in _hidden_f]
+                    data_col = _visible_f[col] if col < len(_visible_f) else col  # frozen sheet: data idx = real_col ตรงๆ (ต้องข้าม hidden ก่อน)
+                else:
+                    _col_off = self.frozen_col_count if self.sheet_frozen is not None else 0
+                    _hidden = set(getattr(self, 'hidden_cols_list', []))
+                    _visible = [c - _col_off for c in range(_col_off, len(self.columns)) if c not in _hidden]
+                    data_col = _visible[col] if col < len(_visible) else col
+
                 # อ่านค่าที่เพิ่งพิมพ์จาก event['value'] (ไม่ต้องอ่านจาก sheet ซึ่งอาจใช้ display index)
                 cell_val = str(event.get('value', '') if isinstance(event, dict) else
-                               (target_sheet.get_cell_data(datarn, col) or "")).strip()
+                               (target_sheet.get_cell_data(datarn, data_col) or "")).strip()
                 if cell_val.startswith("=") and len(cell_val) > 1:
                     math_expr = cell_val[1:].replace(',', '')
                     import re
@@ -5422,8 +5497,8 @@ class CostBenchmarkScreen(CTkFrame):
                                 formatted_result = f"{int(result)}"
                             else:
                                 formatted_result = f"{result:.2f}"
-                            # ใช้ datarn (data index) เพื่อเขียนลง sheet ได้ถูก row เสมอ
-                            target_sheet.set_cell_data(datarn, col, formatted_result, redraw=False)
+                            # ใช้ data_col (data index จริง) เพื่อเขียนลง sheet ได้ถูกคอลัมน์เสมอ
+                            target_sheet.set_cell_data(datarn, data_col, formatted_result, redraw=False)
             except Exception as e:
                 print(f"Inline math error: {e}")
 
@@ -6488,7 +6563,9 @@ class CostBenchmarkScreen(CTkFrame):
                 return f"@{s}+" if s else ""
 
         # ── 3. สร้าง note text ─────────────────────────────────────────────
-        def _build_note(chosen_so: str, validity_days: str, yod_status: str) -> str:
+        def _build_note(chosen_so: str, validity_days: str, yod_status: str,
+                        delivery: str = "ไม่รวมส่ง ไม่รวมลง",
+                        vehicle: str = "-") -> str:
             items = [r for r in all_rows
                      if r["so"] == chosen_so and r["select"] == "✔"]
             if not items:
@@ -6544,6 +6621,8 @@ class CostBenchmarkScreen(CTkFrame):
             lines.append("สถานะ :")
             lines.append(f"ยืนราคา {days} วัน")
             lines.append(f"จุดรับ : {dest_str}")
+            lines.append(f"การจัดส่ง : {delivery}")
+            lines.append(f"ประเภทรถ : {vehicle}")
             lines.append(f"หมายเหตุ : {note1_str}")
             lines.append("")
 
@@ -6578,8 +6657,8 @@ class CostBenchmarkScreen(CTkFrame):
         cy = root_y + (root_h - h) // 2
         pop.geometry(f"{w}x{h}+{cx}+{cy}")
         pop.grid_columnconfigure(0, weight=1)
-        pop.grid_rowconfigure(3, weight=1)   # txtbox
-        pop.grid_rowconfigure(4, minsize=60) # buttons
+        pop.grid_rowconfigure(4, weight=1)   # txtbox
+        pop.grid_rowconfigure(5, minsize=60) # buttons
 
         # row 0 — Header
         CTkLabel(pop, text="📋 Short Note",
@@ -6635,10 +6714,34 @@ class CostBenchmarkScreen(CTkFrame):
                            variable=yod_var, font=CTkFont(size=12),
                            width=160).pack(side="left", pady=8)
 
-        # row 3 — Note display
+        # row 3 — การจัดส่ง + ประเภทรถ
+        from customtkinter import CTkComboBox as _CBox
+        dv_frame = CTkFrame(pop, fg_color="#F8FAFC", corner_radius=8,
+                            border_width=1, border_color="#E2E8F0")
+        dv_frame.grid(row=3, column=0, padx=20, pady=(0, 6), sticky="ew")
+
+        CTkLabel(dv_frame, text="การจัดส่ง:", font=CTkFont(size=12),
+                 text_color="#374151").pack(side="left", padx=(12, 4), pady=8)
+        delivery_var = tk.StringVar(value="ไม่รวมส่ง ไม่รวมลง")
+        _CBox(dv_frame, variable=delivery_var, state="readonly",
+              values=["ไม่รวมส่ง ไม่รวมลง", "รวมส่ง ไม่รวมลง", "รวมส่ง รวมลง"],
+              width=190, height=28, font=CTkFont(size=12)).pack(
+            side="left", pady=8, padx=(0, 20))
+
+        CTkLabel(dv_frame, text="ประเภทรถ:", font=CTkFont(size=12),
+                 text_color="#374151").pack(side="left", padx=(0, 4), pady=8)
+        vehicle_var = tk.StringVar(value="-")
+        _CBox(dv_frame, variable=vehicle_var, state="readonly",
+              values=["-", "กระบะ", "เฮี๊ยบ - 6 ล้อ", "เฮี๊ยบ - 10 ล้อ",
+                      "รถ6ล้อ", "รถ10ล้อ",
+                      "เทรลเลอร์ เฮี๊ยบ", "เทรลเลอร์ ธรรมดา", "เทรลเลอร์ + พ่วง"],
+              width=180, height=28, font=CTkFont(size=12)).pack(
+            side="left", pady=8)
+
+        # row 4 — Note display
         txt = CTkTextbox(pop, font=CTkFont(family="Courier New", size=15),
                          wrap="none", corner_radius=8)
-        txt.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="nsew")
+        txt.grid(row=4, column=0, padx=20, pady=(0, 8), sticky="nsew")
         txt.insert("0.0", "← เลือก Sale Order ด้านบนเพื่อสร้าง Short Note")
 
         _current_note = {"text": ""}
@@ -6667,9 +6770,11 @@ class CostBenchmarkScreen(CTkFrame):
             chosen = listbox.get(sel[0])
 
             if not force and _user_edited["value"]:
-                # ── Surgical update: แก้เฉพาะ 2 บรรทัดที่ขึ้นกับ dropdown ──
+                # ── Surgical update: แก้เฉพาะบรรทัดที่ขึ้นกับ dropdown ──
                 days     = validity_var.get().strip() or "1"
                 yod      = yod_var.get()
+                dv       = delivery_var.get()
+                veh      = vehicle_var.get()
                 current  = txt.get("0.0", "end")
                 new_lines = []
                 for line in current.splitlines():
@@ -6677,6 +6782,10 @@ class CostBenchmarkScreen(CTkFrame):
                         line = f"ยืนราคา {days} วัน"
                     elif line.startswith("สถานะยอด"):
                         line = f"สถานะยอด      : {yod}"
+                    elif line.startswith("การจัดส่ง :"):
+                        line = f"การจัดส่ง : {dv}"
+                    elif line.startswith("ประเภทรถ :"):
+                        line = f"ประเภทรถ : {veh}"
                     new_lines.append(line)
                 new_text = "\n".join(new_lines)
                 txt.delete("0.0", "end")
@@ -6684,7 +6793,8 @@ class CostBenchmarkScreen(CTkFrame):
                 return
 
             # ── Full regenerate (SO เปลี่ยน หรือโหลดครั้งแรก) ───────────
-            note = _build_note(chosen, validity_var.get(), yod_var.get())
+            note = _build_note(chosen, validity_var.get(), yod_var.get(),
+                               delivery_var.get(), vehicle_var.get())
             _current_note["text"] = note
             txt.delete("0.0", "end")
             txt.insert("0.0", note)
@@ -6699,6 +6809,8 @@ class CostBenchmarkScreen(CTkFrame):
         listbox.bind("<<ListboxSelect>>", _on_so_select)
         validity_var.trace_add("write", _refresh_note)
         yod_var.trace_add("write", _refresh_note)
+        delivery_var.trace_add("write", _refresh_note)
+        vehicle_var.trace_add("write", _refresh_note)
 
         def _filter_so(*_):
             term = search_var.get().strip().lower()
@@ -6756,24 +6868,105 @@ class CostBenchmarkScreen(CTkFrame):
 
         txt._textbox.bind("<Key>", _on_ctrl_key, add=True)
 
-        # row 4 — Bottom buttons
+        # row 5 — Bottom buttons
         btn_row = CTkFrame(pop, fg_color="transparent")
-        btn_row.grid(row=4, column=0, padx=20, pady=(0, 16), sticky="ew")
+        btn_row.grid(row=5, column=0, padx=20, pady=(0, 16), sticky="ew")
         btn_row.grid_columnconfigure(0, weight=1)
 
         def _copy():
             note = _get_txt_content()
             if not note:
                 return
-            pop.clipboard_clear()
-            pop.clipboard_append(note)
-            copy_btn.configure(text="✅ คัดลอกแล้ว!", fg_color="#047857")
-            pop.after(2000, lambda: copy_btn.configure(
-                text="📋 Copy to Clipboard", fg_color="#059669"))
-            # SLA — บันทึก copied_at ครั้งแรก
-            sel = listbox.curselection()
-            if sel:
-                self._sla_record_copy(listbox.get(sel[0]))
+
+            # ── Reminder: ยืนยันก่อน copy ────────────────────────────────
+            # รวบรวมข้อมูลสำหรับ double-check
+            _sel = listbox.curselection()
+            _chosen_so = listbox.get(_sel[0]) if _sel else "?"
+            _chk_items = [r for r in all_rows
+                          if r["so"] == _chosen_so and r["select"] == "✔"]
+            _grand = 0.0
+            for _r in _chk_items:
+                try:
+                    _grand += float(_r["row_total"].replace(",", ""))
+                except Exception:
+                    pass
+            _n_items  = len(_chk_items)
+            _delivery = delivery_var.get()
+            _vehicle  = vehicle_var.get()
+            _validity = validity_var.get().strip() or "1"
+
+            confirm = CTkToplevel(pop)
+            confirm.title("ยืนยันก่อน Copy")
+            confirm.resizable(False, False)
+            confirm.grab_set()
+            confirm.lift()
+            confirm.focus_force()
+            cw, ch = 460, 360
+            px = pop.winfo_rootx() + (pop.winfo_width()  - cw) // 2
+            py = pop.winfo_rooty() + (pop.winfo_height() - ch) // 2
+            confirm.geometry(f"{cw}x{ch}+{px}+{py}")
+            confirm.grid_columnconfigure(0, weight=1)
+
+            CTkLabel(confirm, text="⚠️  ตรวจสอบข้อมูลก่อน Copy",
+                     font=CTkFont(size=14, weight="bold"),
+                     text_color="#B45309").grid(
+                row=0, column=0, padx=24, pady=(18, 4), sticky="w")
+
+            # ── detail card ───────────────────────────────────────────────
+            card = CTkFrame(confirm, fg_color="#F8FAFC", corner_radius=8,
+                            border_width=1, border_color="#E2E8F0")
+            card.grid(row=1, column=0, padx=20, pady=(4, 12), sticky="ew")
+            card.grid_columnconfigure(1, weight=1)
+
+            def _row(label, value, r, color="#1E293B", bold=False):
+                CTkLabel(card, text=label,
+                         font=CTkFont(size=12), text_color="#64748B",
+                         anchor="w").grid(row=r, column=0, padx=(16, 8),
+                                          pady=(6 if r == 0 else 3, 6 if r == 4 else 3),
+                                          sticky="w")
+                CTkLabel(card, text=value,
+                         font=CTkFont(size=12, weight="bold" if bold else "normal"),
+                         text_color=color, anchor="w").grid(
+                    row=r, column=1, padx=(0, 16), pady=(6 if r == 0 else 3, 6 if r == 4 else 3),
+                    sticky="w")
+
+            _row("Sale Order :",  _chosen_so,                   0)
+            _row("จำนวนรายการ :", f"{_n_items} รายการ",          1)
+            _row("ราคารวม :",     f"{_grand:,.2f} บาท",          2, color="#059669", bold=True)
+            _row("การจัดส่ง :",   _delivery,                    3, color="#1D4ED8", bold=True)
+            _row("ประเภทรถ :",    _vehicle,                     4, color="#1D4ED8", bold=True)
+
+            CTkLabel(confirm,
+                     text="ข้อมูลด้านบนถูกต้องแล้วหรือไม่?",
+                     font=CTkFont(size=12), text_color="#64748B").grid(
+                row=2, column=0, padx=24, pady=(0, 10), sticky="w")
+
+            btn_f = CTkFrame(confirm, fg_color="transparent")
+            btn_f.grid(row=3, column=0, padx=20, pady=(0, 16), sticky="ew")
+            btn_f.grid_columnconfigure(0, weight=1)
+            btn_f.grid_columnconfigure(1, weight=1)
+
+            def _do_copy():
+                confirm.destroy()
+                pop.clipboard_clear()
+                pop.clipboard_append(note)
+                copy_btn.configure(text="✅ คัดลอกแล้ว!", fg_color="#047857")
+                pop.after(2000, lambda: copy_btn.configure(
+                    text="📋 Copy to Clipboard", fg_color="#059669"))
+                sel = listbox.curselection()
+                if sel:
+                    self._sla_record_copy(listbox.get(sel[0]))
+
+            CTkButton(btn_f, text="✅ ตรวจสอบแล้ว — Copy เลย",
+                      fg_color="#059669", hover_color="#047857",
+                      font=CTkFont(size=12, weight="bold"),
+                      height=34, command=_do_copy).grid(
+                row=0, column=0, sticky="ew", padx=(0, 6))
+            CTkButton(btn_f, text="ยกเลิก",
+                      fg_color="#6B7280", hover_color="#4B5563",
+                      font=CTkFont(size=12), height=34,
+                      command=confirm.destroy).grid(
+                row=0, column=1, sticky="ew")
 
         def _print():
             import tempfile, subprocess
@@ -7734,7 +7927,9 @@ class CostBenchmarkScreen(CTkFrame):
 
             frozen_width = 40
             if self.sheet_frozen:
-                for i in range(self.frozen_col_count):
+                hidden_set_zoom = set(getattr(self, "hidden_cols_list", []))
+                n_visible_frozen = len([c for c in range(self.frozen_col_count) if c not in hidden_set_zoom])
+                for i in range(n_visible_frozen):
                     try:
                         current_w = self.sheet_frozen.column_width(i)
                         if current_w:
