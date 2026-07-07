@@ -1919,7 +1919,7 @@ class AddSupplierPopup(CTkToplevel):
         fields_cfg = [
             ("supplier_id",   "รหัสซัพพลายเออร์", "เว้นว่างเพื่อสร้าง SN อัตโนมัติ", False), # <--- เพิ่มบรรทัดนี้
             ("name",          "ชื่อบริษัท *",   "พิมพ์ชื่อ Supplier...",  True),
-            ("category",      "หมวดสินค้า *",   None,                      True),
+            ("category",      "หมวดสินค้า",     None,                      False),
             ("contact",       "ผู้ติดต่อ",       "",                       False),
             ("phone",         "เบอร์โทร *",      "0XX-XXX-XXXX",          True),
             ("line_id",       "Line ID",          "@",                      False),
@@ -1937,10 +1937,15 @@ class AddSupplierPopup(CTkToplevel):
                      font=F(size=12), width=110, anchor="w").grid(
                 row=ri * 2, column=0, sticky="w", pady=(6, 0), padx=(0, 10))
             if key == "category":
+                cat_row = CTkFrame(form, fg_color="transparent")
+                cat_row.grid(row=ri * 2, column=1, sticky="w", pady=(6, 0))
                 self._cat_var = tk.StringVar(value=_live_cats[0])
-                w = CTkOptionMenu(form, variable=self._cat_var,
+                w = CTkOptionMenu(cat_row, variable=self._cat_var,
                                   values=_live_cats, font=F(size=13))
-                w.grid(row=ri * 2, column=1, sticky="w", pady=(6, 0))
+                w.pack(side="left")
+                CTkButton(cat_row, text="➕ ขอเพิ่มหมวดใหม่", width=140, height=28,
+                          font=F(size=12), fg_color=CLR["gray"], hover_color=CLR["blue"],
+                          command=self._show_add_category_sop).pack(side="left", padx=(8, 0))
                 self._inputs[key] = self._cat_var
             else:
                 e = CTkEntry(form, font=F(size=13), height=34,
@@ -2087,6 +2092,39 @@ class AddSupplierPopup(CTkToplevel):
 
         self.transient(master)
         self.grab_set()
+
+    def _show_add_category_sop(self):
+        """แจ้งขั้นตอน SOP การขอเพิ่มหมวดสินค้าใหม่ (ไม่มีการอนุมัติในระบบ — ทำนอกระบบตาม SOP)"""
+        win = CTkToplevel(self)
+        win.title("ขอเพิ่มหมวดสินค้าใหม่")
+        win.transient(self)
+        _place_popup(win, 460, 420)
+        win.grab_set()
+
+        CTkLabel(win, text="ขั้นตอนการขอเพิ่มหมวดสินค้าใหม่",
+                 font=CTkFont(size=15, weight="bold"),
+                 text_color=CLR["navy"]).pack(padx=20, pady=(16, 4), anchor="w")
+        CTkLabel(win, text="กรุณาติดต่อ ผู้จัดการฝ่ายขาย / ผช.ผู้จัดการฝ่ายขาย",
+                 font=CTkFont(size=13, weight="bold"),
+                 text_color=CLR["blue"]).pack(padx=20, pady=(0, 10), anchor="w")
+
+        steps = [
+            "1. ผู้จัดการฝ่ายขาย / ผช.ผู้จัดการฝ่ายขาย พิจารณาตามเห็นควร "
+            "เช่น เพื่อขอเพิ่ม code หมวดใหม่ หรือพิจารณาแล้วให้ใช้หมวดเดิมที่สอดคล้องกัน",
+            "2. ประสานงานปิ้น + บัญชี เพิ่มหมวดใน Express จริง",
+            "3. หากต้องเพิ่มหมวดใหม่ ทาง ผจก. จะอนุมัติและแจ้งทาง DEV เพื่อเพิ่มหมวดใน "
+            "A+ Smart เป็นลายลักษณ์อักษร ผ่าน LINE กลุ่ม 19.2",
+            "4. ส่วนนี้ไม่ใช่ required field มาอัพเดตย้อนหลังได้ และ ผจก./ผช.ผจก. "
+            "หรือเจ้าหน้าที่ทำเองย้อนหลังได้",
+        ]
+        body = CTkFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        for s in steps:
+            CTkLabel(body, text=s, font=CTkFont(size=12), justify="left",
+                     wraplength=410, anchor="w").pack(fill="x", pady=(0, 10), anchor="w")
+
+        CTkButton(win, text="รับทราบ", width=120, fg_color=CLR["navy"],
+                  hover_color=CLR["blue"], command=win.destroy).pack(pady=(0, 16))
 
     def _refresh_sn_preview(self):
         sn_code = db_next_sn_code(self.current_user)

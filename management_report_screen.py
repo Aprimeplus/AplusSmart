@@ -127,7 +127,7 @@ class SaleRevenueWidget(CTkFrame):
         bar.grid(row=0, column=0, padx=10, pady=(10, 4), sticky="ew")
 
         current_year = datetime.now().year
-        years = [str(y + 543) for y in range(current_year - 2, current_year + 3)]
+        years = [str(y + 543) for y in range(2020, current_year + 3)]
 
         def month_picker(label):
             f = CTkFrame(bar, fg_color="transparent")
@@ -244,6 +244,34 @@ class SaleRevenueWidget(CTkFrame):
                 self._last_chart_fh = fh
 
     # ── Data query ────────────────────────────────────────────────────────────
+    HISTORY_CUTOFF_YEAR = 2025  # ปีที่ระบบเริ่มมีข้อมูลจริง (ก่อนหน้านี้ใช้ sales_history_monthly)
+
+    def _get_history_totals(self, start_key, end_key):
+        """รวม target/actual จากเดือนที่ยังไม่มีข้อมูลจริงในระบบ จาก sales_history_monthly
+        ตารางนี้เก็บเฉพาะเดือนที่ไม่ทับกับ commission_payout_logs อยู่แล้ว จึงรวมได้ตรง ๆ ไม่ซ้ำ"""
+        try:
+            hdf = pd.read_sql_query(
+                """
+                SELECT REPLACE(LOWER(sale_key), ' ', '') AS sale_key,
+                       COALESCE(SUM(target), 0)       AS hist_target,
+                       COALESCE(SUM(actual_sales), 0) AS hist_actual,
+                       COALESCE(SUM(CASE WHEN margin_pct IS NOT NULL
+                                         THEN margin_pct / 100 * actual_sales ELSE 0 END), 0) AS hist_gp,
+                       COALESCE(SUM(CASE WHEN margin_pct IS NOT NULL
+                                         THEN actual_sales ELSE 0 END), 0) AS hist_margin_base
+                FROM   sales_history_monthly
+                WHERE  (year * 12 + month) BETWEEN %s AND %s
+                GROUP  BY sale_key
+                """,
+                self.pg_engine, params=(start_key, end_key)
+            )
+        except Exception:
+            traceback.print_exc()
+            return {}
+        return {r['sale_key']: {'target': float(r['hist_target']), 'actual': float(r['hist_actual']),
+                                 'gp': float(r['hist_gp']), 'margin_base': float(r['hist_margin_base'])}
+                for _, r in hdf.iterrows()}
+
     def _get_data(self):
         today = datetime.now()
         current_year = today.year
@@ -251,6 +279,7 @@ class SaleRevenueWidget(CTkFrame):
         clauses = []
         target_multiplier = 1.0
         period = self.sales_target_period_var.get()
+        hist_totals = {}
 
         if period == "กำหนดช่วงเวลาเอง..." and self.custom_target_start:
             s = self.custom_target_start
@@ -260,8 +289,19 @@ class SaleRevenueWidget(CTkFrame):
                 "BETWEEN %s::date AND %s::date"
             )
             params.extend([s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")])
-            months_diff = (e.year - s.year) * 12 + (e.month - s.month) + 1
-            target_multiplier = max(1, months_diff)
+            # นับเฉพาะเดือนที่อยู่ในยุคระบบ (>= HISTORY_CUTOFF_YEAR) สำหรับคูณเป้าคงที่
+            # เดือนก่อนหน้านั้นใช้ข้อมูลจาก sales_history_monthly แทน
+            live_months = 0
+            y, m = s.year, s.month
+            while (y, m) <= (e.year, e.month):
+                if y >= self.HISTORY_CUTOFF_YEAR:
+                    live_months += 1
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+            target_multiplier = max(0, live_months)
+            hist_totals = self._get_history_totals(s.year * 12 + s.month, e.year * 12 + e.month)
 
         elif period == "ปีนี้":
             clauses.append("c.commission_year = %s")
@@ -297,10 +337,8 @@ class SaleRevenueWidget(CTkFrame):
                 COALESCE(su.sales_target, 0) * %s AS sales_target,
                 COALESCE(SUM(c.total_sales), 0) AS total_sales,
                 0 AS total_outstanding,
-                COALESCE(
-                    SUM(cm_agg.total_gp) / NULLIF(SUM(cm_agg.total_sales_amt), 0) * 100,
-                    0
-                ) AS avg_margin,
+                COALESCE(SUM(cm_agg.total_gp), 0)        AS total_gp,
+                COALESCE(SUM(cm_agg.total_sales_amt), 0) AS total_sales_amt,
                 COALESCE(SUM(cm_agg.sales_normal), 0) AS sales_normal,
                 COALESCE(SUM(cm_agg.sales_below),  0) AS sales_below
             FROM sales_users su
@@ -327,8 +365,29 @@ class SaleRevenueWidget(CTkFrame):
         df['sales_target'] = df['sales_target'].fillna(0)
         df['total_sales'] = df['total_sales'].fillna(0)
         df['total_outstanding'] = df['total_outstanding'].fillna(0)
+        df['total_gp'] = df['total_gp'].fillna(0)
+        df['total_sales_amt'] = df['total_sales_amt'].fillna(0)
         df['sales_normal'] = df['sales_normal'].fillna(0)
         df['sales_below']  = df['sales_below'].fillna(0)
+
+        if hist_totals:
+            def _norm_key(k):
+                return str(k).lower().replace(' ', '')
+            df['sales_target'] = df.apply(
+                lambda r: r['sales_target'] + hist_totals.get(_norm_key(r['sale_key']), {}).get('target', 0),
+                axis=1)
+            df['total_sales'] = df.apply(
+                lambda r: r['total_sales'] + hist_totals.get(_norm_key(r['sale_key']), {}).get('actual', 0),
+                axis=1)
+            df['total_gp'] = df.apply(
+                lambda r: r['total_gp'] + hist_totals.get(_norm_key(r['sale_key']), {}).get('gp', 0),
+                axis=1)
+            df['total_sales_amt'] = df.apply(
+                lambda r: r['total_sales_amt'] + hist_totals.get(_norm_key(r['sale_key']), {}).get('margin_base', 0),
+                axis=1)
+        df['avg_margin'] = df.apply(
+            lambda r: (r['total_gp'] / r['total_sales_amt'] * 100) if r['total_sales_amt'] > 0 else 0,
+            axis=1)
         return df
 
     # ── Shared preprocessing ──────────────────────────────────────────────────
@@ -596,13 +655,17 @@ class SaleRevenueWidget(CTkFrame):
 
     def _get_monthly_data(self):
         params = []
-        if self.custom_target_start and self.custom_target_end:
+        s = self.custom_target_start
+        e = self.custom_target_end
+        if s and e:
             date_sql = "MAKE_DATE(c.commission_year, c.commission_month, 1) BETWEEN %s::date AND %s::date"
-            params.extend([self.custom_target_start.strftime("%Y-%m-%d"),
-                           self.custom_target_end.strftime("%Y-%m-%d")])
+            params.extend([s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")])
+            hist_start, hist_end = s.year * 12 + s.month, e.year * 12 + e.month
         else:
+            today = datetime.now()
             date_sql = "c.commission_year = %s"
-            params.append(datetime.now().year)
+            params.append(today.year)
+            hist_start = hist_end = today.year * 12 + today.month
         query = f"""
             SELECT su.sale_name, su.sale_key,
                    c.commission_month AS month,
@@ -618,6 +681,25 @@ class SaleRevenueWidget(CTkFrame):
         """
         df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
         df['total_sales'] = df['total_sales'].fillna(0)
+
+        # ── ข้อมูลย้อนหลัง / เดือนที่ยังไม่มีข้อมูลจริง จาก sales_history_monthly ──
+        try:
+            hist_query = f"""
+                SELECT su.sale_name, su.sale_key, h.month, h.year,
+                       h.actual_sales AS total_sales
+                FROM   sales_history_monthly h
+                JOIN   sales_users su
+                       ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(h.sale_key), ' ', '')
+                WHERE  (h.year * 12 + h.month) BETWEEN %s AND %s
+            """
+            hist_df = pd.read_sql_query(hist_query, self.pg_engine,
+                                         params=(hist_start, hist_end))
+            hist_df['total_sales'] = hist_df['total_sales'].fillna(0)
+            if not hist_df.empty:
+                df = pd.concat([df, hist_df], ignore_index=True)
+        except Exception:
+            traceback.print_exc()
+
         return df
 
     def _draw_monthly_chart(self, _ignored_df):

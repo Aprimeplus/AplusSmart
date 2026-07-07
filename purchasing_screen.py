@@ -3620,21 +3620,21 @@ class SLADashboard(CTkFrame):
     """แสดง SLA ของจัดซื้อ — เวลาตั้งแต่พิมพ์ SO จนถึงกด Copy Short Note"""
 
     COLS = [
-        ("SO Number",        305),
-        ("Order No.",        190),
+        ("Sale order",       223),
+        ("Order No.",        128),
         ("Sale",              62),
-        ("PU",               110),
+        ("PU",                88),
         ("Temp",              76),
         ("เวลาเริ่มทำ",        98),
         ("เวลาส่งราคา",       112),
-        ("ใช้เวลา",            79),
+        ("ใช้เวลา",            86),
         ("ประเภท",             125),
         ("Target",             72),
         ("Extend",             88),
         ("ผลต่าง",             91),
-        ("ผล SLA",            104),
-        ("สถานะ W/L",          180),
-        ("Sum of ราคาขาย",    207),
+        ("ผล SLA",            115),
+        ("สถานะ W/L",          227),
+        ("Sum of ราคาขาย",    260),
     ]
     # SLA target (นาที) แยกตาม Normal vs 100K+ / >5 SKU
     SLA_TARGET_NORMAL = {"HOT": 30,  "WARM": 60,  "COLD": 120}
@@ -3761,7 +3761,7 @@ class SLADashboard(CTkFrame):
                                  selectmode="browse")
         for label, w in self.COLS:
             self.tree.heading(label, text=label)
-            anchor  = "center"
+            anchor  = "w" if label == "Sale order" else "center"
             stretch = tk.NO
             self.tree.column(label, width=w, minwidth=40,
                              anchor=anchor, stretch=stretch)

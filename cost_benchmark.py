@@ -2880,6 +2880,7 @@ class CostBenchmarkScreen(CTkFrame):
             # patch open_cell เพื่อ rescue ตัวอักษรที่ถูก drop ตอน focus ยัง transfer ไม่ทัน
             # tksheet drop char เมื่อ text_editor.open=True แต่ focus ยังอยู่ที่ MT
             self._patch_open_cell(self.sheet.MT)
+            self._patch_ctrl_c_cleanup(self.sheet.MT)
             # ใช้ bind โดยตรงแทน begin_edit_cell เพราะ tksheet ไม่ fire begin_edit_cell
             # เมื่อ column ถูกซ่อนด้วย display_columns()
             # ป้องกัน add="+" ซ้ำ ถ้า _rebind_sheet ถูกเรียกหลายครั้ง
@@ -3115,7 +3116,9 @@ class CostBenchmarkScreen(CTkFrame):
             pass
 
     def _mt_copy_router(self, event=None):
-        """Ctrl+C router — copy จาก sheet ที่ user click ล่าสุด"""
+        """Ctrl+C router — copy จาก sheet ที่ user click ล่าสุด
+        (ไม่ต้องเรียก _clean_clipboard_quotes เองแล้ว — sheet.copy() เรียก MT.ctrl_c ที่ถูก
+        _patch_ctrl_c_cleanup แพตช์ไว้แล้ว จะล้างฟันหนูให้อัตโนมัติเสมอไม่ว่าจะ copy ทางไหน)"""
         try:
             focused = self.focus_get()
             if focused and focused.winfo_class() in ('Entry', 'Text', 'TEntry'):
@@ -3124,9 +3127,6 @@ class CostBenchmarkScreen(CTkFrame):
                 self.sheet_frozen.copy()
             else:
                 self.sheet.copy()
-                
-            # ✅ หน่วงเวลา 50ms ให้ tksheet ทำงานเสร็จ แล้วเรียกฟังก์ชันล้างฟันหนู
-            self.after(50, self._clean_clipboard_quotes)
         except Exception:
             pass
         return "break"
@@ -3728,6 +3728,7 @@ class CostBenchmarkScreen(CTkFrame):
                 self.sheet_frozen.MT._keypress_bound = True
                 self.sheet_frozen.MT.bind("<KeyPress>", self._on_mt_keypress_frozen, add="+")
             self._patch_open_cell(self.sheet_frozen.MT)
+            self._patch_ctrl_c_cleanup(self.sheet_frozen.MT)
         except Exception: pass
 
         # 🛠️ Ctrl+Z/Ctrl+Y บนฝั่ง frozen ก็ต้องผูกกับ RI/CH/TL เหมือนฝั่ง main
@@ -4016,7 +4017,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             col_name = self.columns[real_col]
             status_opts = [
-                "WIN", "STOCK",
+                "WIN", "STOCK", "ยกเลิก",
                 "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-LOC แพ้พิกัด/ค่าขนส่ง",
@@ -4037,7 +4038,7 @@ class CostBenchmarkScreen(CTkFrame):
             ]
             popup_cols = {
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
-                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง", "ยกเลิก"],
+                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
                 "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
                                    "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"],
@@ -4172,6 +4173,24 @@ class CostBenchmarkScreen(CTkFrame):
         self.supplier_code_map = {}
         self.product_category_map = {}
         self._load_dropdown_data()
+
+    def _patch_ctrl_c_cleanup(self, mt):
+        """Patch MT.ctrl_c เพื่อล้างฟันหนู (double-quote จาก CSV escaping) ให้เสมอ
+        เดิม _clean_clipboard_quotes ถูกเรียกแค่ตอนกด Ctrl+C ผ่าน _mt_copy_router
+        แต่เมนู "Copy" ที่คลิกขวา (tksheet เรียก MT.ctrl_c ตรงๆ) ไม่ผ่าน router เลยข้ามการล้างไป
+        แพตช์ตรงนี้ทำให้ล้างฟันหนูทุกครั้งไม่ว่าจะ copy จากทางไหน (ไม่แตะ ctrl_c_plain
+        เพราะข้อความจากตัวนั้นไม่ได้ csv-escape มาแต่แรก ถ้าไปรันซ้ำอาจตัดเนื้อหาที่มี " จริงๆ ผิดได้)"""
+        if getattr(mt, '_ctrl_c_cleanup_patched', False):
+            return
+        mt._ctrl_c_cleanup_patched = True
+        original_ctrl_c = mt.ctrl_c
+
+        def _patched(event=None):
+            result = original_ctrl_c(event=event)
+            self.after(50, self._clean_clipboard_quotes)
+            return result
+
+        mt.ctrl_c = _patched
 
     def _patch_open_cell(self, mt):
         """Patch MT.open_cell เพื่อ rescue char ที่ถูก tksheet drop
@@ -4473,7 +4492,7 @@ class CostBenchmarkScreen(CTkFrame):
             col_name = self.columns[real_col]
             print(f"[DEBUG click] disp_col={col} hidden={hidden_set} real_col={real_col} col_name={col_name}")
             status_opts = [
-                "WIN", "STOCK",
+                "WIN", "STOCK", "ยกเลิก",
                 "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-LOC แพ้พิกัด/ค่าขนส่ง",
@@ -4494,7 +4513,7 @@ class CostBenchmarkScreen(CTkFrame):
             ]
             popup_cols = {
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
-                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง", "ยกเลิก"],
+                "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
                 "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
                                    "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"],
@@ -6734,7 +6753,8 @@ class CostBenchmarkScreen(CTkFrame):
         _CBox(dv_frame, variable=vehicle_var, state="readonly",
               values=["-", "กระบะ", "เฮี๊ยบ - 6 ล้อ", "เฮี๊ยบ - 10 ล้อ",
                       "รถ6ล้อ", "รถ10ล้อ",
-                      "เทรลเลอร์ เฮี๊ยบ", "เทรลเลอร์ ธรรมดา", "เทรลเลอร์ + พ่วง"],
+                      "เทรลเลอร์ เฮี๊ยบ", "เทรลเลอร์ ธรรมดา", "เทรลเลอร์ + พ่วง",
+                      "ขนส่ง-lalamove /Flash", "ขนส่งเอกชน..ระบุ"],
               width=180, height=28, font=CTkFont(size=12)).pack(
             side="left", pady=8)
 
