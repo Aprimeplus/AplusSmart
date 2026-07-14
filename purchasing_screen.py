@@ -1369,6 +1369,8 @@ class PurchasingScreen(CTkFrame):
         
         self.cost_benchmark_view = CostBenchmarkScreen(benchmark_tab, self.app_container)
         self.cost_benchmark_view.pack(fill="both", expand=True)
+        # เก็บ reference ไว้ที่ app_container เพื่อให้แท็บอื่น (เช่น SLA) เรียก refresh ได้โดยตรง
+        self.app_container.cost_benchmark_view = self.cost_benchmark_view
 
         self.tab_view.add("Dashboard เทียบราคา")
         dashboard_cost_tab = self.tab_view.tab("Dashboard เทียบราคา")
@@ -1377,6 +1379,7 @@ class PurchasingScreen(CTkFrame):
         
         self.dashboard_cost_view = DashboardCostScreen(dashboard_cost_tab, self.app_container)
         self.dashboard_cost_view.pack(fill="both", expand=True)
+        self.app_container.dashboard_cost_view = self.dashboard_cost_view
 
         self.tab_view.add("Super Supplier List")
         ssl_tab = self.tab_view.tab("Super Supplier List")
@@ -3621,19 +3624,20 @@ class SLADashboard(CTkFrame):
 
     COLS = [
         ("Sale order",       223),
-        ("Order No.",        128),
-        ("Sale",              62),
+        ("Order No.",        116),
+        ("Sale",              72),
         ("PU",                88),
-        ("Temp",              76),
-        ("เวลาเริ่มทำ",        98),
-        ("เวลาส่งราคา",       112),
-        ("ใช้เวลา",            86),
+        ("Win %",              72),
+        ("Temp",              68),
+        ("เวลาเริ่มทำ",       104),
+        ("เวลาส่งราคา",       114),
+        ("ใช้เวลา",            79),
         ("ประเภท",             125),
         ("Target",             72),
-        ("Extend",             88),
-        ("ผลต่าง",             91),
-        ("ผล SLA",            115),
-        ("สถานะ W/L",          227),
+        ("Extend",             75),
+        ("ผลต่าง",             80),
+        ("ผล SLA",            116),
+        ("สถานะ W/L",          198),
         ("Sum of ราคาขาย",    260),
     ]
     # SLA target (นาที) แยกตาม Normal vs 100K+ / >5 SKU
@@ -3835,9 +3839,13 @@ class SLADashboard(CTkFrame):
             col_names = [c[0] for c in self.COLS]
             so_val    = vals[0] if vals else ""
             sales_val = vals[-1] if vals else ""
+            pu_val    = vals[col_names.index("PU")] if "PU" in col_names and vals else ""
             temp_val  = vals[col_names.index("Temp")] if "Temp" in col_names and vals else "-"
             TEMP_COLOR_MAP = {"HOT": "#EF4444", "WARM": "#F59E0B", "COLD": "#3B82F6"}
-            temp_bg   = TEMP_COLOR_MAP.get(str(temp_val).strip().upper(), "#6B7280")
+
+            def _temp_bg(t):
+                base = str(t).strip().upper().split("-")[0]
+                return TEMP_COLOR_MAP.get(base, "#6B7280")
 
             pop = tk.Toplevel(self)
             pop.title("รายการสินค้า")
@@ -3852,8 +3860,89 @@ class SLADashboard(CTkFrame):
                      fg="white", bg="#1E3A5F").pack(side="left", padx=14, pady=10)
             tk.Label(hdr, text=f"ยอดรวม: {sales_val}", font=("Tahoma", 11),
                      fg="#93C5FD", bg="#1E3A5F").pack(side="right", padx=14, pady=10)
-            tk.Label(hdr, text=f" {temp_val} ", font=("Tahoma", 11, "bold"),
-                     fg="white", bg=temp_bg).pack(side="right", padx=(4, 8), pady=10)
+
+            # Temp — แก้ไขได้ตรงนี้ (เขียนกลับไปที่ sla_benchmark + cost_benchmarks.PRIORITY)
+            temp_row = tk.Frame(pop, bg="white")
+            temp_row.pack(fill="x", padx=14, pady=(10, 0))
+            tk.Label(temp_row, text="Temp", font=("Tahoma", 10),
+                     fg="#6B7280", bg="white", width=10, anchor="w").pack(side="left")
+
+            temp_lbl = tk.Label(temp_row, text=f"  {str(temp_val).strip() or 'ยังไม่ระบุ'}  ",
+                                 font=("Tahoma", 10, "bold"), fg="white", bg=_temp_bg(temp_val),
+                                 padx=6, pady=3)
+            temp_lbl.pack(side="left", padx=(10, 0))
+
+            def _on_temp_picked(opt, so=so_val, pu=pu_val, lbl=temp_lbl):
+                self._update_so_temp(so, pu, opt)
+                lbl.configure(text=f"  {opt}  ", bg=_temp_bg(opt))
+
+            def _open_temp_menu():
+                menu = tk.Menu(pop, tearoff=0, font=("Tahoma", 10))
+                for opt in self._TEMP_OPTIONS:
+                    menu.add_command(label=opt, command=lambda o=opt: _on_temp_picked(o))
+                x = temp_edit_btn.winfo_rootx()
+                y = temp_edit_btn.winfo_rooty() + temp_edit_btn.winfo_height() + 2
+                try:
+                    menu.tk_popup(x, y)
+                finally:
+                    menu.grab_release()
+
+            temp_edit_btn = tk.Button(temp_row, text="✎  แก้ไข Temp", font=("Tahoma", 10, "bold"),
+                                       fg="white", bg="#1D4ED8", activebackground="#1E40AF",
+                                       activeforeground="white", relief="flat", bd=0,
+                                       padx=14, pady=5, cursor="hand2",
+                                       command=_open_temp_menu)
+            temp_edit_btn.pack(side="right")
+            temp_edit_btn.bind("<Enter>", lambda e: temp_edit_btn.configure(bg="#1E40AF"))
+            temp_edit_btn.bind("<Leave>", lambda e: temp_edit_btn.configure(bg="#1D4ED8"))
+
+            # สถานะ W/L — แก้ไขได้ตรงนี้ (เขียนกลับไปที่ cost_benchmarks โดยตรง
+            # มีผลกับตารางเทียบราคาและ Dashboard เทียบราคาด้วย ไม่ใช่แค่หน้า SLA)
+            status_val = (vals[col_names.index("สถานะ W/L")]
+                          if "สถานะ W/L" in col_names and vals else "-")
+
+            def _status_colors(raw):
+                raw = str(raw).strip()
+                code = raw.split()[0] if raw and raw != "-" else None
+                return self._STATUS_CELL_COLORS.get(code, ("#E5E7EB", "#374151"))
+
+            status_row = tk.Frame(pop, bg="white")
+            status_row.pack(fill="x", padx=14, pady=(6, 4))
+            tk.Label(status_row, text="สถานะ W/L", font=("Tahoma", 10),
+                     fg="#6B7280", bg="white", width=10, anchor="w").pack(side="left")
+
+            badge_bg, badge_fg = _status_colors(status_val)
+            status_lbl = tk.Label(status_row, text=f"  {str(status_val).strip() or '-'}  ",
+                                   font=("Tahoma", 10, "bold"), fg=badge_fg, bg=badge_bg,
+                                   padx=6, pady=3)
+            status_lbl.pack(side="left", padx=(10, 0))
+
+            def _on_status_picked(opt, so=so_val, lbl=status_lbl):
+                self._update_so_status(so, opt)
+                bg, fg = _status_colors(opt)
+                lbl.configure(text=f"  {opt}  ", bg=bg, fg=fg)
+
+            def _open_edit_menu():
+                menu = tk.Menu(pop, tearoff=0, font=("Tahoma", 10))
+                for opt in self._STATUS_OPTIONS:
+                    menu.add_command(label=opt, command=lambda o=opt: _on_status_picked(o))
+                x = edit_btn.winfo_rootx()
+                y = edit_btn.winfo_rooty() + edit_btn.winfo_height() + 2
+                try:
+                    menu.tk_popup(x, y)
+                finally:
+                    menu.grab_release()
+
+            edit_btn = tk.Button(status_row, text="✎  แก้ไขสถานะ", font=("Tahoma", 10, "bold"),
+                                  fg="white", bg="#1D4ED8", activebackground="#1E40AF",
+                                  activeforeground="white", relief="flat", bd=0,
+                                  padx=14, pady=5, cursor="hand2",
+                                  command=_open_edit_menu)
+            edit_btn.pack(side="right")
+            edit_btn.bind("<Enter>", lambda e: edit_btn.configure(bg="#1E40AF"))
+            edit_btn.bind("<Leave>", lambda e: edit_btn.configure(bg="#1D4ED8"))
+
+            tk.Frame(pop, bg="#E5E7EB", height=1).pack(fill="x")
 
             # Table frame
             tbl_frame = tk.Frame(pop, bg="white")
@@ -4130,7 +4219,8 @@ class SLADashboard(CTkFrame):
                                    "ราคาขาย / เส้น"       AS price_per_unit,
                                    "สถานะ"                AS status_cb,
                                    "รหัส Sale"            AS sale_key_cb,
-                                   "Order No."            AS order_no
+                                   "Order No."            AS order_no,
+                                   "WIN RATE %%"          AS win_rate_cb
                             FROM   cost_benchmarks
                             WHERE  "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
                             AND    "Sale Order No." IN ({ph})
@@ -4185,18 +4275,20 @@ class SLADashboard(CTkFrame):
                                 so_status  =("status_cb",   _so_status),
                                 sale_key   =("sale_key_cb",  _first_sale),
                                 order_no   =("order_no",     _first_sale),
+                                win_rate   =("win_rate_cb",  _so_status),
                             ).reset_index()
                             cb_summary = cb_summary.merge(_prod_summary, on="so_number", how="left")
                             df = df.merge(cb_summary, on="so_number", how="left")
 
-                for col in ("total_cost", "total_sales", "sku_count", "so_status", "products", "sale_key", "order_no"):
+                for col in ("total_cost", "total_sales", "sku_count", "so_status", "products", "sale_key", "order_no", "win_rate"):
                     if col not in df.columns:
-                        df[col] = "" if col in ("products", "sale_key", "order_no") else 0
+                        df[col] = "" if col in ("products", "sale_key", "order_no", "win_rate") else 0
                 df["total_cost"]  = df["total_cost"].fillna(0)
                 df["total_sales"] = df["total_sales"].fillna(0)
                 df["sku_count"]   = df["sku_count"].fillna(0)
                 df["products"]   = df["products"].fillna("")
                 df["sale_key"]   = df["sale_key"].fillna("")
+                df["win_rate"]   = df["win_rate"].fillna("-")
                 if "extends" not in df.columns:
                     df["extends"] = [[] for _ in range(len(df))]
                 df["extends"] = df["extends"].apply(lambda x: x if isinstance(x, list) else [])
@@ -4217,6 +4309,7 @@ class SLADashboard(CTkFrame):
                 products_full  = str(r.get("products", "") or "")
                 total_sales    = float(r.get("total_sales", 0) or 0)
                 sales_str      = f"฿{total_sales:,.2f}" if total_sales else "-"
+                win_rate_val   = str(r.get("win_rate", "") or "").strip() or "-"
                 _ss = r.get("so_status", "")
                 _ss_raw = str(_ss).strip() if _ss and str(_ss).strip().lower() not in ("nan", "none", "", "-") else ""
                 so_status = self._STATUS_LABEL_MAP.get(_ss_raw, _ss_raw) if _ss_raw else "Waiting - รอเซลล์ติดตาม"
@@ -4363,7 +4456,7 @@ class SLADashboard(CTkFrame):
                     continue
 
                 sale_key_short = sale_key.split("-")[0] if sale_key and "-" in sale_key else sale_key
-                row_vals = (r["so_number"], order_no, sale_key_short, r["user_key"], temp,
+                row_vals = (r["so_number"], order_no, sale_key_short, r["user_key"], win_rate_val, temp,
                             started, copied, dur_str,
                             order_size, target_str, extend_str,
                             diff_str, sla_result, so_status, sales_str)
@@ -4420,6 +4513,31 @@ class SLADashboard(CTkFrame):
         "U-MKT":   "U-MKT ตลาด/คู่แข่ง",
         "L-UNK":   "L-UNK ไม่ทราบสาเหตุ",
     }
+
+    # ตรงกับ popup_cols["PRIORITY"] ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
+    _TEMP_OPTIONS = ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"]
+
+    # ตรงกับ status_opts ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
+    _STATUS_OPTIONS = [
+        "WIN", "STOCK", "ยกเลิก",
+        "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
+        "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
+        "L-LOC แพ้พิกัด/ค่าขนส่ง",
+        "L-SPC ไม่มีสินค้า/แบรนด์ที่ต้องการ",
+        "L-CHG ลูกค้าเปลี่ยนสเปก",
+        "L-DEL Lead Time ไม่ได้",
+        "L-QTY คุณภาพ/ใบเซอร์ไม่ผ่านเกณฑ์",
+        "L-SPD ส่งราคาช้า(Late Quote)",
+        "L-FLW ขาดการติดตาม",
+        "L-INF ข้อมูลสเปกไม่ถูกต้อง",
+        "U-TRM เครดิตไม่ตรงนโยบาย",
+        "U-LCK สเปกล็อค/แบรนด์ล็อค",
+        "U-CON ความสัมพันธ์ส่วนตัว",
+        "U-CNC ยกเลิกโครงการ/งานพับ",
+        "U-BID รอผลประมูล(Bid Pipeline)",
+        "U-MKT สินค้าขาดตลาด",
+        "L-UNK ไม่ได้ติดตามสาเหตุ",
+    ]
 
     _STATUS_CELL_COLORS = {
         # เขียว — ชนะได้ถ้าแก้ด้านนี้
@@ -4489,6 +4607,131 @@ class SLADashboard(CTkFrame):
             lbl.bind("<MouseWheel>", lambda e: self.tree.yview_scroll(
                 int(-1 * (e.delta / 120)), "units"))
             self._status_cell_labels.append(lbl)
+
+    def _update_so_status(self, so_number, new_status):
+        """อัปเดต 'สถานะ' ใน cost_benchmarks — ทับได้ (รวมถึงแถวที่ตั้งไว้แล้ว) ตราบใดที่ทุกแถว
+        ของ SO นั้นมีสถานะเดิม 'เหมือนกันหมด' (หรือยังว่างบางแถว) เพื่อไม่ให้เผลอไปรวมสถานะที่
+        purchasing ตั้งใจแยกไว้ต่างกันในแต่ละสินค้าให้กลายเป็นค่าเดียวกันโดยไม่ได้ตั้งใจ"""
+        conn = self.app.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT "สถานะ" FROM cost_benchmarks
+                WHERE "Sale Order No." = %s AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+            """, (so_number,))
+            existing = {str(r[0]).strip() for r in cursor.fetchall() if r[0] and str(r[0]).strip()}
+            if len(existing) > 1:
+                messagebox.showinfo(
+                    "แก้ไขไม่ได้",
+                    f"SO {so_number} มีสถานะต่างกันอยู่แล้วในแต่ละแถวของตารางเทียบราคา\n"
+                    f"กรุณาแก้ไขทีละแถวในหน้าตารางเทียบราคาโดยตรง",
+                    parent=self)
+                return
+
+            cursor.execute("""
+                UPDATE cost_benchmarks
+                SET    "สถานะ" = %s
+                WHERE  "Sale Order No." = %s
+                       AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+            """, (new_status, so_number))
+            updated = cursor.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            traceback.print_exc()
+            messagebox.showerror("ผิดพลาด", "บันทึกสถานะไม่สำเร็จ", parent=self)
+            return
+        finally:
+            self.app.release_connection(conn)
+
+        # รีเฟรชแท็บ "เทียบราคา" และ "Dashboard เทียบราคา" ให้เห็นผลทันที ไม่ต้องออกเข้าใหม่
+        for attr, method in (("cost_benchmark_view", "_load_from_db"),
+                             ("dashboard_cost_view", "_load_data_from_db")):
+            widget = getattr(self.app, attr, None)
+            if widget is not None:
+                try:
+                    getattr(widget, method)()
+                except Exception:
+                    traceback.print_exc()
+
+        messagebox.showinfo("บันทึกสำเร็จ",
+                             f"อัปเดตสถานะ {updated} แถว สำหรับ SO {so_number}\n"
+                             f"มีผลกับตารางเทียบราคาและ Dashboard เทียบราคาด้วย",
+                             parent=self)
+        self._load()
+
+    def _update_so_temp(self, so_number, user_key, new_temp):
+        """อัปเดต Temp: sla_benchmark.temp เฉพาะแถวของ SO+PU คนนี้ (ไม่กระทบ PU คนอื่นที่เคยรับงาน
+        SO เดียวกัน) และอัปเดต cost_benchmarks.PRIORITY ด้วยแบบเดียวกับสถานะ W/L —
+        ทับได้ถ้าทุกแถวเดิมของ SO นั้นมีค่าเหมือนกันหมด (หรือยังว่าง) เท่านั้น"""
+        conn = self.app.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sla_benchmark SET temp = %s WHERE so_number = %s AND user_key = %s",
+                (new_temp, so_number, user_key)
+            )
+            sla_updated = cursor.rowcount
+
+            if sla_updated == 0:
+                # ยังไม่เคยมีแถว SLA ของ SO+PU นี้ (เช่น SO ที่ยังไม่เคยเข้า flow ปกติ)
+                # สร้างแถวใหม่ — ใช้ created_at ของ cost_benchmarks เป็น started_at แทน now()
+                # เพื่อไม่ให้ไปรีเซ็ตนาฬิกา SLA ของ SO นี้ผิดจากที่หน้าตารางเคย fallback แสดงไว้
+                cursor.execute("""
+                    SELECT MIN(created_at) FROM cost_benchmarks WHERE "Sale Order No." = %s
+                """, (so_number,))
+                row = cursor.fetchone()
+                started_at = row[0] if row and row[0] else None
+                cursor.execute("""
+                    INSERT INTO sla_benchmark (so_number, user_key, started_at, temp)
+                    VALUES (%s, %s, COALESCE(%s, now()), %s)
+                    ON CONFLICT (so_number, user_key) DO UPDATE SET temp = EXCLUDED.temp
+                """, (so_number, user_key, started_at, new_temp))
+                sla_updated = cursor.rowcount
+
+            cursor.execute("""
+                SELECT DISTINCT "PRIORITY" FROM cost_benchmarks
+                WHERE "Sale Order No." = %s AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+            """, (so_number,))
+            existing = {str(r[0]).strip() for r in cursor.fetchall() if r[0] and str(r[0]).strip()}
+            cb_updated = 0
+            if len(existing) <= 1:
+                cursor.execute("""
+                    UPDATE cost_benchmarks
+                    SET    "PRIORITY" = %s
+                    WHERE  "Sale Order No." = %s
+                           AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                """, (new_temp, so_number))
+                cb_updated = cursor.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            traceback.print_exc()
+            messagebox.showerror("ผิดพลาด", "บันทึก Temp ไม่สำเร็จ", parent=self)
+            return
+        finally:
+            self.app.release_connection(conn)
+
+        for attr, method in (("cost_benchmark_view", "_load_from_db"),
+                             ("dashboard_cost_view", "_load_data_from_db")):
+            widget = getattr(self.app, attr, None)
+            if widget is not None:
+                try:
+                    getattr(widget, method)()
+                except Exception:
+                    traceback.print_exc()
+
+        notes = []
+        if not cb_updated:
+            notes.append("ตารางเทียบราคามีหลายแถวที่ PRIORITY ต่างกันอยู่แล้ว จึงยังไม่ทับ "
+                         "— กรุณาแก้ทีละแถวในหน้าตารางเทียบราคาถ้าต้องการ")
+        if not sla_updated:
+            notes.append("SO นี้ยังไม่เคยเริ่มติดตาม SLA (ไม่มีข้อมูลใน sla_benchmark) "
+                         "จึงอัปเดตได้แค่ตารางเทียบราคา ส่วน Temp ในตาราง SLA จะยังคงว่างจนกว่าจะเริ่มมีการติดตามจริง")
+        note = ("\n\n" + "\n".join(f"- {n}" for n in notes)) if notes else ""
+        messagebox.showinfo("บันทึกสำเร็จ", f"อัปเดต Temp สำหรับ SO {so_number} เรียบร้อยแล้ว{note}",
+                             parent=self)
+        self._load()
 
     def _on_row_double_click_iid(self, iid):
         products_raw = self._products_map.get(iid, "")
@@ -4844,7 +5087,8 @@ class SLADashboard(CTkFrame):
             ws.row_dimensions[1].height = 28
 
             # ── Data rows ─────────────────────────────────────────
-            sla_col_idx = headers.index("ผล SLA") + 1  # 1-based
+            sla_col_idx  = headers.index("ผล SLA") + 1        # 1-based
+            sales_col_idx = headers.index("Sum of ราคาขาย") + 1  # 1-based
 
             for ri, row_data in enumerate(rows, start=2):
                 sla_val = str(row_data[sla_col_idx - 1]) if len(row_data) >= sla_col_idx else ""
@@ -4861,20 +5105,42 @@ class SLADashboard(CTkFrame):
 
                 fill = PatternFill("solid", fgColor=bg)
                 for ci, val in enumerate(row_data, start=1):
-                    cell = ws.cell(row=ri, column=ci, value=str(val) if val is not None else "")
+                    if ci == sales_col_idx:
+                        # แปลง "฿44,045.00" กลับเป็นตัวเลขจริง เพื่อให้ SUM ท้ายชีทคำนวณได้
+                        num_str = str(val or "").replace("฿", "").replace(",", "").strip()
+                        try:
+                            cell = ws.cell(row=ri, column=ci, value=float(num_str))
+                            cell.number_format = '"฿"#,##0.00'
+                        except ValueError:
+                            cell = ws.cell(row=ri, column=ci, value=0)
+                            cell.number_format = '"฿"#,##0.00'
+                    else:
+                        cell = ws.cell(row=ri, column=ci, value=str(val) if val is not None else "")
                     cell.fill      = fill
                     cell.font      = Font(color=fg)
                     cell.border    = border
                     cell.alignment = Alignment(vertical="center",
                                                wrap_text=(ci == len(headers)))
 
+            # ── แถวรวม (SUM) ท้ายตาราง ──────────────────────────
+            total_row = len(rows) + 2
+            sales_col_letter = get_column_letter(sales_col_idx)
+            label_cell = ws.cell(row=total_row, column=sales_col_idx - 1, value="รวมทั้งหมด")
+            label_cell.font = Font(bold=True)
+            label_cell.border = border
+            sum_cell = ws.cell(row=total_row, column=sales_col_idx,
+                                value=f"=SUM({sales_col_letter}2:{sales_col_letter}{total_row - 1})")
+            sum_cell.font = Font(bold=True)
+            sum_cell.number_format = '"฿"#,##0.00'
+            sum_cell.border = border
+            sum_cell.fill = PatternFill("solid", fgColor="F1F5F9")
+
             # ── Filter info ───────────────────────────────────────
             ws_info = wb.create_sheet("Filter")
             ws_info.append(["Export เมื่อ", _dt.now().strftime("%d/%m/%Y %H:%M:%S")])
             ws_info.append(["จำนวนแถว", len(rows)])
-            ws_info.append(["ปี",   self._year_var.get()])
-            ws_info.append(["เดือน", self._month_var.get()])
-            ws_info.append(["วัน",   self._day_var.get()])
+            ws_info.append(["ตั้งแต่", self._date_from_var.get()])
+            ws_info.append(["ถึง",     self._date_to_var.get()])
             ws_info.append(["PU",    self._user_var.get()])
             ws_info.append(["Sale",  self._sale_var.get()])
             ws_info.append(["Temp",  self._temp_var.get()])

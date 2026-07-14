@@ -17,6 +17,7 @@ from export_utils import DateRangeDialog
 from tkinter import ttk
 from daily_report_widget import DailyReportWidget
 from outstanding_dashboard_tab import OutstandingDashboardTab
+from customer_monitoring import CustomerMonitoringWidget
 
 class PaymentUpdateWindow(CTkToplevel):
     """หน้าต่าง Pop-up สำหรับอัปเดตข้อมูลการชำระเงินโดยเฉพาะ"""
@@ -1444,6 +1445,9 @@ class CommissionApp(CTkFrame):
         self.tab_report = self.main_tabview.add("📊 รายงานประจำวัน (Daily Report)")
         self.tab_outstanding = self.main_tabview.add("💸 ยอดค้างชำระ")
         self.tab_so_edit = self.main_tabview.add("✏️ แก้ไข SO")
+        self.tab_cmonitor = self.main_tabview.add("📈 Customer Monitoring")
+        if str(getattr(self, 'user_role', '')).lower() == 'sale support':
+            self.tab_sla = self.main_tabview.add("⏱ SLA")
 
         self.tab_form.grid_columnconfigure(0, weight=1)
         self.tab_form.grid_rowconfigure(0, weight=1)
@@ -1517,6 +1521,23 @@ class CommissionApp(CTkFrame):
             sale_name=self.sale_name,
         )
         self.so_edit_view.pack(fill="both", expand=True)
+
+        # Customer Monitoring — Sale เห็นแค่ของตัวเอง
+        self.tab_cmonitor.grid_columnconfigure(0, weight=1)
+        self.tab_cmonitor.grid_rowconfigure(0, weight=1)
+        cm_filter = None if current_role in ('sales manager', 'director', 'admin', 'sale support') else self.sale_key
+        self.cmonitor_view = CustomerMonitoringWidget(
+            self.tab_cmonitor,
+            app_container=self.app_container,
+            sale_key_filter=cm_filter,
+        )
+        self.cmonitor_view.pack(fill="both", expand=True)
+
+        if hasattr(self, 'tab_sla'):
+            self.tab_sla.grid_columnconfigure(0, weight=1)
+            self.tab_sla.grid_rowconfigure(0, weight=1)
+            from purchasing_screen import SLADashboard
+            SLADashboard(self.tab_sla, self.app_container).grid(row=0, column=0, sticky="nsew")
 
     def _open_my_tasks_window(self):
         if self.tasks_window is None or not self.tasks_window.winfo_exists():
