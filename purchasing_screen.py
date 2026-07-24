@@ -3731,8 +3731,8 @@ class SLADashboard(CTkFrame):
         CTkLabel(fbar, text="Temp:", font=CTkFont(size=12)).pack(
             side="left", padx=(0, 4), pady=8)
         self._temp_var = tk.StringVar(value="ทั้งหมด")
-        self._temp_cb = CTkComboBox(fbar, variable=self._temp_var, width=110,
-                                    values=["ทั้งหมด", "HOT", "WARM", "COLD"],
+        self._temp_cb = CTkComboBox(fbar, variable=self._temp_var, width=150,
+                                    values=["ทั้งหมด"] + self._TEMP_OPTIONS,
                                     font=CTkFont(size=12),
                                     command=lambda _: self._load())
         self._temp_cb.pack(side="left", pady=8, padx=(0, 16))
@@ -3813,6 +3813,7 @@ class SLADashboard(CTkFrame):
                      fg_color=bg).pack(padx=8, pady=3)
 
         self._products_map = {}   # iid → full product text
+        self._memo_map      = {}   # iid → sale memo text (ไม่โชว์เป็นคอลัมในตาราง แก้ใน popup เท่านั้น)
         self._extend_map   = {}   # iid → {"so_number", "extend_no", "extend_id", "status"}
 
         # ── Double click → popup รายการสินค้า ──────────────────────────────
@@ -3829,11 +3830,12 @@ class SLADashboard(CTkFrame):
             items = []
             for entry in products_raw.split(";;"):
                 parts = entry.split("|")
-                name  = parts[0].strip() if len(parts) > 0 else ""
-                qty   = parts[1].strip() if len(parts) > 1 else "-"
-                price = parts[2].strip() if len(parts) > 2 else "-"
+                cb_id = parts[0].strip() if len(parts) > 0 else ""
+                name  = parts[1].strip() if len(parts) > 1 else ""
+                qty   = parts[2].strip() if len(parts) > 2 else "-"
+                price = parts[3].strip() if len(parts) > 3 else "-"
                 if name:
-                    items.append((name, qty, price))
+                    items.append((cb_id, name, qty, price))
 
             vals      = self.tree.item(iid, "values")
             col_names = [c[0] for c in self.COLS]
@@ -3858,8 +3860,9 @@ class SLADashboard(CTkFrame):
             hdr.pack(fill="x")
             tk.Label(hdr, text=f"SO: {so_val}", font=("Tahoma", 12, "bold"),
                      fg="white", bg="#1E3A5F").pack(side="left", padx=14, pady=10)
-            tk.Label(hdr, text=f"ยอดรวม: {sales_val}", font=("Tahoma", 11),
-                     fg="#93C5FD", bg="#1E3A5F").pack(side="right", padx=14, pady=10)
+            total_lbl = tk.Label(hdr, text=f"ยอดรวม: {sales_val}", font=("Tahoma", 11),
+                                  fg="#93C5FD", bg="#1E3A5F")
+            total_lbl.pack(side="right", padx=14, pady=10)
 
             # Temp — แก้ไขได้ตรงนี้ (เขียนกลับไปที่ sla_benchmark + cost_benchmarks.PRIORITY)
             temp_row = tk.Frame(pop, bg="white")
@@ -3944,30 +3947,94 @@ class SLADashboard(CTkFrame):
 
             tk.Frame(pop, bg="#E5E7EB", height=1).pack(fill="x")
 
+            # Sale Memo — พิมพ์บันทึกอิสระผูกกับ SO นี้ (เก็บใน sla_memo, 1 SO = 1 memo ล่าสุด)
+            memo_val = self._memo_map.get(iid, "")
+            memo_row = tk.Frame(pop, bg="white")
+            memo_row.pack(fill="x", padx=14, pady=(6, 4))
+            tk.Label(memo_row, text="Sale Memo", font=("Tahoma", 10),
+                     fg="#6B7280", bg="white", width=10, anchor="w").pack(side="left", anchor="n")
+
+            memo_entry = tk.Text(memo_row, font=("Tahoma", 10), height=3, width=40,
+                                  wrap="word", relief="solid", borderwidth=1)
+            memo_entry.pack(side="left", padx=(10, 8), fill="x", expand=True)
+            memo_entry.insert("1.0", str(memo_val).strip() if memo_val and str(memo_val).strip() != "-" else "")
+
+            def _save_memo(so=so_val, entry=memo_entry):
+                text = entry.get("1.0", "end").strip()
+                self._update_so_memo(so, text)
+
+            memo_btn = tk.Button(memo_row, text="💾 บันทึก", font=("Tahoma", 10, "bold"),
+                                  fg="white", bg="#1D4ED8", activebackground="#1E40AF",
+                                  activeforeground="white", relief="flat", bd=0,
+                                  padx=14, pady=5, cursor="hand2",
+                                  command=_save_memo)
+            memo_btn.pack(side="left", anchor="n")
+            memo_btn.bind("<Enter>", lambda e: memo_btn.configure(bg="#1E40AF"))
+            memo_btn.bind("<Leave>", lambda e: memo_btn.configure(bg="#1D4ED8"))
+
+            tk.Frame(pop, bg="#E5E7EB", height=1).pack(fill="x")
+
             # Table frame
             tbl_frame = tk.Frame(pop, bg="white")
             tbl_frame.pack(fill="both", expand=True, padx=12, pady=(8, 0))
 
-            cols = ("รายการสินค้า", "จำนวน", "ราคา/เส้น")
+            cols = ("รายการสินค้า", "จำนวน", "ราคา/เส้น", "Select")
             tree2 = ttk2.Treeview(tbl_frame, columns=cols, show="headings",
                                   height=min(len(items), 12))
             tree2.heading("รายการสินค้า", text="รายการสินค้า", anchor="w")
             tree2.heading("จำนวน",        text="จำนวน",        anchor="center")
             tree2.heading("ราคา/เส้น",    text="ราคา/เส้น",    anchor="center")
-            tree2.column("รายการสินค้า", width=380, anchor="w")
+            tree2.heading("Select",       text="Select ✎",     anchor="center")
+            tree2.column("รายการสินค้า", width=340, anchor="w")
             tree2.column("จำนวน",        width=80,  anchor="center")
-            tree2.column("ราคา/เส้น",    width=110, anchor="center")
+            tree2.column("ราคา/เส้น",    width=100, anchor="center")
+            tree2.column("Select",       width=90,  anchor="center")
 
             style2 = ttk2.Style()
             style2.configure("Popup.Treeview", font=("Tahoma", 11), rowheight=26)
             style2.configure("Popup.Treeview.Heading", font=("Tahoma", 11, "bold"))
             tree2.configure(style="Popup.Treeview")
 
-            for i, (name, qty, price) in enumerate(items):
-                tree2.insert("", "end", values=(name, qty, price),
-                             tags=("odd" if i % 2 == 0 else "even",))
+            row_cb_ids = {}
+            for i, (cb_id, name, qty, price) in enumerate(items):
+                row_iid = tree2.insert("", "end", values=(name, qty, price, "✔"),
+                                        tags=("odd" if i % 2 == 0 else "even",))
+                row_cb_ids[row_iid] = cb_id
             tree2.tag_configure("odd",  background="#F8FAFC")
             tree2.tag_configure("even", background="#FFFFFF")
+
+            def _on_tree2_click(event):
+                row_iid = tree2.identify_row(event.y)
+                col_id  = tree2.identify_column(event.x)
+                if not row_iid or col_id != "#4":  # #4 = Select column
+                    return
+                cb_id = row_cb_ids.get(row_iid)
+                if not cb_id:
+                    return
+                menu = tk.Menu(pop, tearoff=0, font=("Tahoma", 10))
+                for opt in self._SELECT_OPTIONS:
+                    menu.add_command(
+                        label=opt,
+                        command=lambda o=opt, ri=row_iid, cid=cb_id: _on_select_picked(cid, o, ri))
+                try:
+                    menu.tk_popup(event.x_root, event.y_root)
+                finally:
+                    menu.grab_release()
+
+            def _on_select_picked(cb_id, new_select, row_iid):
+                new_total = self._update_row_select(cb_id, new_select, so_number=so_val)
+                if new_select == "✔":
+                    tree2.set(row_iid, "Select", "✔")
+                else:
+                    # ไม่ใช่ ✔ แล้ว = เอาออกจากรายการที่นับใน popup/Sum นี้
+                    tree2.delete(row_iid)
+                    row_cb_ids.pop(row_iid, None)
+                    remaining = len(tree2.get_children())
+                    count_lbl.configure(text=f"รายการทั้งหมด {remaining} รายการ")
+                if new_total is not None:
+                    total_lbl.configure(text=f"ยอดรวม: ฿{new_total:,.2f}" if new_total else "ยอดรวม: -")
+
+            tree2.bind("<Button-1>", _on_tree2_click)
 
             sb2 = ttk2.Scrollbar(tbl_frame, orient="vertical", command=tree2.yview)
             tree2.configure(yscrollcommand=sb2.set)
@@ -3977,8 +4044,9 @@ class SLADashboard(CTkFrame):
             # Footer
             foot = tk.Frame(pop, bg="white")
             foot.pack(fill="x", padx=12, pady=8)
-            tk.Label(foot, text=f"รายการทั้งหมด {len(items)} รายการ",
-                     font=("Tahoma", 10), fg="#6B7280", bg="white").pack(side="left")
+            count_lbl = tk.Label(foot, text=f"รายการทั้งหมด {len(items)} รายการ",
+                                  font=("Tahoma", 10), fg="#6B7280", bg="white")
+            count_lbl.pack(side="left")
             tk.Button(foot, text="ปิด", command=pop.destroy, font=("Tahoma", 11),
                       bg="#E5E7EB", relief="flat", padx=20, pady=4).pack(side="right")
 
@@ -4114,7 +4182,8 @@ class SLADashboard(CTkFrame):
                     s.temp,
                     COALESCE(s.started_at, cb.created_at_cb) AS started_at,
                     s.copied_at,
-                    s.duration_min
+                    s.duration_min,
+                    m.memo                                    AS sale_memo
                 FROM (
                     SELECT "Sale Order No."  AS so_number,
                            "รหัส Sale"       AS sale_key_cb,
@@ -4125,6 +4194,7 @@ class SLADashboard(CTkFrame):
                     WHERE {cb_where_sql}
                 ) cb
                 LEFT JOIN sla_benchmark s ON s.so_number = cb.so_number
+                LEFT JOIN sla_memo m ON m.so_number = cb.so_number
                 WHERE 1=1
             """
 
@@ -4162,8 +4232,9 @@ class SLADashboard(CTkFrame):
                 query += " AND COALESCE(s.user_key, cb.pu_cb) = %s"
                 params.append(user_sel)
             if temp_sel != "ทั้งหมด":
-                query += " AND s.temp = %s"
-                params.append(temp_sel)
+                # match ทั้งค่าตรงตัว (HOT) และตัวแปร (HOT-สั่งผลิต, HOT-ขอราคา ฯลฯ)
+                query += " AND (s.temp = %s OR s.temp LIKE %s)"
+                params.extend([temp_sel, f"{temp_sel}-%"])
 
             # SOs ที่มีข้อมูล SLA ขึ้นก่อน (เรียงตามเวลา) → ที่ยังไม่เริ่มขึ้นหลัง
             query += " ORDER BY s.started_at DESC NULLS LAST LIMIT 500"
@@ -4211,7 +4282,8 @@ class SLADashboard(CTkFrame):
 
                         # ── cost_benchmarks: order size + product names + sale key ──
                         cb_raw = pd.read_sql_query(f"""
-                            SELECT "Sale Order No."       AS so_number,
+                            SELECT id                     AS cb_id,
+                                   "Sale Order No."       AS so_number,
                                    "ต้นทุนรวม (รวมย้าย)"  AS cost_raw,
                                    "ราคาขาย รวม"          AS sale_raw,
                                    "รายการสินค้า"         AS product_name,
@@ -4222,7 +4294,7 @@ class SLADashboard(CTkFrame):
                                    "Order No."            AS order_no,
                                    "WIN RATE %%"          AS win_rate_cb
                             FROM   cost_benchmarks
-                            WHERE  "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                            WHERE  "Select" = '✔'
                             AND    "Sale Order No." IN ({ph})
                         """, conn, params=so_list)
 
@@ -4238,7 +4310,7 @@ class SLADashboard(CTkFrame):
                             cb_raw["cost_num"] = _to_num(cb_raw["cost_raw"])
                             cb_raw["sale_num"] = _to_num(cb_raw["sale_raw"])
 
-                            # รวม product + qty เป็น list of "ชื่อ|qty|price"
+                            # รวม product + qty เป็น list of "cb_id|ชื่อ|qty|price"
                             def _join_products(grp):
                                 seen = []
                                 seen_names = set()
@@ -4246,9 +4318,10 @@ class SLADashboard(CTkFrame):
                                     name  = str(row.get("product_name", "") or "").strip()
                                     qty   = str(row.get("qty", "") or "").strip()
                                     price = str(row.get("price_per_unit", "") or "").strip()
+                                    cb_id = str(row.get("cb_id", "") or "").strip()
                                     if name and name not in seen_names:
                                         seen_names.add(name)
-                                        seen.append(f"{name}|{qty}|{price}")
+                                        seen.append(f"{cb_id}|{name}|{qty}|{price}")
                                 return ";;".join(seen)
 
                             # sale_key: เอาค่าแรกที่ไม่ว่างของแต่ละ SO
@@ -4310,6 +4383,8 @@ class SLADashboard(CTkFrame):
                 total_sales    = float(r.get("total_sales", 0) or 0)
                 sales_str      = f"฿{total_sales:,.2f}" if total_sales else "-"
                 win_rate_val   = str(r.get("win_rate", "") or "").strip() or "-"
+                _memo_raw      = r.get("sale_memo")
+                memo_val       = str(_memo_raw).strip() if pd.notna(_memo_raw) else ""
                 _ss = r.get("so_status", "")
                 _ss_raw = str(_ss).strip() if _ss and str(_ss).strip().lower() not in ("nan", "none", "", "-") else ""
                 so_status = self._STATUS_LABEL_MAP.get(_ss_raw, _ss_raw) if _ss_raw else "Waiting - รอเซลล์ติดตาม"
@@ -4319,23 +4394,27 @@ class SLADashboard(CTkFrame):
                 sku_count   = int(r.get("sku_count",  0) or 0)
                 is_large    = total_cost >= 100_000 or sku_count > 5
 
-                # แยก temp base (HOT/WARM/COLD) และ สั่งผลิต flag
+                # แยก temp base (HOT/WARM/COLD), สั่งผลิต flag, และด่วนราคา flag
                 temp_raw   = str(temp or "").strip()
                 temp_parts = temp_raw.split("-")
                 temp_base  = temp_parts[0].strip().upper()   # HOT / WARM / COLD
                 is_mto     = "สั่งผลิต" in temp_raw          # Made-to-Order
+                # WARM-ด่วนราคา / COLD-ด่วนราคา: ของใช้ไม่ด่วน แต่ต้องตอบราคาเร็วเท่า HOT
+                is_price_urgent = "ด่วนราคา" in temp_raw
 
                 if is_mto:
                     base_target = 1440  # สั่งผลิตทุก temp = 24 ชม. (1,440 นาที)
                 else:
                     target_map  = self.SLA_TARGET_LARGE if is_large else self.SLA_TARGET_NORMAL
-                    base_target = target_map.get(temp_base)
+                    base_target = target_map.get("HOT") if is_price_urgent else target_map.get(temp_base)
 
                 order_size = "-"
                 if temp_base in self.SLA_TARGET_NORMAL:
                     order_size = "100K+/>5SKU" if is_large else "Normal"
                     if is_mto:
                         order_size += " (สั่งผลิต)"
+                    if is_price_urgent:
+                        order_size += " (ด่วนราคา)"
 
                 # ── Extend: effective target + สถานะ ─────────────────────────
                 extends      = r.get("extends") or []
@@ -4464,6 +4543,7 @@ class SLADashboard(CTkFrame):
                 self._export_rows.append(row_vals)   # เก็บ full product text สำหรับ export
                 if products_full:
                     self._products_map[iid] = products_full
+                self._memo_map[iid] = memo_val
                 if pending_ext:
                     reason_display = str(pending_ext.get("reason") or "-")
                     if pending_ext.get("reason") == "อื่นๆ" and pending_ext.get("reason_other"):
@@ -4515,7 +4595,11 @@ class SLADashboard(CTkFrame):
     }
 
     # ตรงกับ popup_cols["PRIORITY"] ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
-    _TEMP_OPTIONS = ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "ไม่แจ้ง"]
+    _TEMP_OPTIONS = ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "WARM-ด่วนราคา", "COLD-ด่วนราคา", "ไม่แจ้ง"]
+
+    # ตรงกับ popup_cols["Select"] ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
+    _SELECT_OPTIONS = ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
+                       "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"]
 
     # ตรงกับ status_opts ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
     _STATUS_OPTIONS = [
@@ -4733,6 +4817,77 @@ class SLADashboard(CTkFrame):
                              parent=self)
         self._load()
 
+    def _update_so_memo(self, so_number, memo_text):
+        """บันทึก Sale Memo — ผูกกับ SO ตรงๆ (1 SO = 1 memo, ทับข้อความล่าสุดเสมอ)
+        เก็บในตาราง sla_memo แยกต่างหาก ไม่ปนกับ cost_benchmarks/sla_benchmark"""
+        conn = self.app.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO sla_memo (so_number, memo, updated_by, updated_at)
+                VALUES (%s, %s, %s, now())
+                ON CONFLICT (so_number) DO UPDATE
+                SET memo = EXCLUDED.memo, updated_by = EXCLUDED.updated_by, updated_at = now()
+            """, (so_number, memo_text, getattr(self.app, "current_user_key", None)))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            traceback.print_exc()
+            messagebox.showerror("ผิดพลาด", "บันทึก Sale Memo ไม่สำเร็จ", parent=self)
+            return
+        finally:
+            self.app.release_connection(conn)
+
+        messagebox.showinfo("บันทึกสำเร็จ", f"บันทึก Sale Memo สำหรับ SO {so_number} เรียบร้อยแล้ว",
+                             parent=self)
+        self._load()
+
+    def _update_row_select(self, cb_id, new_select, so_number=None):
+        """แก้ 'Select' ของแถวสินค้าเดียว (cost_benchmarks.id) — ไม่ใช่ทั้ง SO
+        ถ้าเปลี่ยนออกจาก ✔ แถวนั้นจะหลุดจากยอด Sum/รายการที่นับใน popup นี้ทันที
+        คืนค่ายอดรวม (SUM ราคาขาย รวม ของแถวที่ยัง ✔) ของ SO นั้นหลังอัปเดต ให้ popup เอาไปอัปเดต
+        label ยอดรวมของตัวเองได้ทันที ไม่ต้องรอปิด-เปิดใหม่"""
+        conn = self.app.get_connection()
+        new_total = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE cost_benchmarks SET "Select" = %s WHERE id = %s',
+                (new_select, cb_id)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            traceback.print_exc()
+            messagebox.showerror("ผิดพลาด", "แก้ไข Select ไม่สำเร็จ", parent=self)
+            self.app.release_connection(conn)
+            return None
+
+        # คำนวณยอดรวมใหม่แยกต่างหาก — พลาดตรงนี้ไม่ควรทำให้การอัปเดต Select ที่สำเร็จแล้วหายไปด้วย
+        if so_number:
+            try:
+                cursor.execute("""
+                    SELECT COALESCE(SUM(CAST(REPLACE(REPLACE("ราคาขาย รวม"::text,'฿',''),',','') AS NUMERIC)), 0)
+                    FROM cost_benchmarks
+                    WHERE "Sale Order No." = %s AND "Select" = '✔'
+                """, (so_number,))
+                new_total = float(cursor.fetchone()[0])
+            except Exception:
+                conn.rollback()
+                traceback.print_exc()
+        self.app.release_connection(conn)
+
+        for attr, method in (("cost_benchmark_view", "_load_from_db"),
+                             ("dashboard_cost_view", "_load_data_from_db")):
+            widget = getattr(self.app, attr, None)
+            if widget is not None:
+                try:
+                    getattr(widget, method)()
+                except Exception:
+                    traceback.print_exc()
+        self._load()
+        return new_total
+
     def _on_row_double_click_iid(self, iid):
         products_raw = self._products_map.get(iid, "")
         if not products_raw:
@@ -4800,7 +4955,7 @@ class SLADashboard(CTkFrame):
                         SUM(CAST(REPLACE(REPLACE("ราคาขาย รวม"::text,'฿',''),',','') AS NUMERIC)) AS total_sales,
                         MAX("created_by")           AS pu_cb
                     FROM cost_benchmarks
-                    WHERE "Select" IN ('✔','เทียบเพื่อชุบ ✔')
+                    WHERE "Select" = '✔'
                     GROUP BY "Sale Order No."
                 ) cb ON cb.so_number = s.so_number
                 WHERE s.copied_at IS NULL
@@ -4826,7 +4981,7 @@ class SLADashboard(CTkFrame):
                            STRING_AGG("รายการสินค้า" || '|' || COALESCE("จำนวน"::text,'-') || '|' || COALESCE("ราคาขาย / เส้น"::text,'-'), ';;')
                     FROM cost_benchmarks
                     WHERE "Sale Order No." IN ({ph})
-                      AND "Select" IN ('✔','เทียบเพื่อชุบ ✔')
+                      AND "Select" = '✔'
                     GROUP BY "Sale Order No."
                 """, so_list)
                 for so, prod in cur.fetchall():
