@@ -798,7 +798,9 @@ class HRScreen(CTkFrame):
         # แปลง List so_ids เป็น String สำหรับ Query IN (...)
         so_ids_str = ', '.join(map(str, so_ids))
 
-        # 2. เขียน SQL Query — match by both product_name patterns AND product_code
+        # 2. เขียน SQL Query — match เฉพาะ product_code (รหัสค่าตัด/เจาะ/บริการ ขึ้นต้นด้วย EXP- เสมอ)
+        # (เดิมเคยจับคู่ด้วย product_name LIKE '%ตัด%'/'%เจาะ%'/'%บริการ%' ด้วย แต่พบว่าไปจับสินค้าจริง
+        #  ที่บังเอิญมีคำเหล่านี้อยู่ในสเปก เช่น "เพลท...เจาะรู25mm" ทำให้ถูกหักเป็น pass-through ผิดพลาด)
         # ใช้ GREATEST(items_sum, po.cutting_cost) per PO เพื่อ fallback กรณีไม่มี item แต่ cutting_cost field มีค่า
         sql = f"""
         WITH po_cutting AS (
@@ -807,14 +809,12 @@ class HRScreen(CTkFrame):
                 po.id AS po_id,
                 GREATEST(
                     COALESCE(SUM(CASE
-                        WHEN poi.product_name LIKE '%%ค่าตัด%%' OR poi.product_name LIKE '%%เจาะ%%'
-                             OR COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
+                        WHEN COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
                         THEN poi.total_price ELSE 0 END), 0),
                     COALESCE(MAX(po.cutting_cost), 0)
                 ) AS po_cutting_per_po,
                 COALESCE(SUM(CASE
-                    WHEN poi.product_name LIKE '%%ค่าบริการ%%'
-                         OR COALESCE(poi.product_code, '') IN ('EXP-0006', 'EXP-0049', 'EXP-0077', 'EXP-0174')
+                    WHEN COALESCE(poi.product_code, '') IN ('EXP-0006', 'EXP-0049', 'EXP-0077', 'EXP-0174')
                     THEN poi.total_price ELSE 0 END), 0) as po_service_per_po
             FROM commissions c
             JOIN purchase_orders po ON c.so_number = po.so_number
@@ -4579,12 +4579,13 @@ class HRScreen(CTkFrame):
                     GROUP BY so_number
                 ) po_costs ON c.so_number = po_costs.so_number
                 LEFT JOIN (
-                    -- EXP items ที่ชื่อขึ้นต้นด้วย ค่าตัด / ค่าเจาะ (VAT case: จาก product list)
+                    -- EXP items รหัสค่าตัด/เจาะ (VAT case: จาก product list) — match ด้วย product_code เท่านั้น
+                    -- (เดิม match ด้วย product_name ILIKE คำว่า ค่าตัด/ค่าเจาะ แต่ไปจับสินค้าจริงที่มีคำนี้ในสเปกโดยบังเอิญ)
                     SELECT po.so_number,
                            SUM(COALESCE(poi.total_price, 0)) as po_cutting_item_cost
                     FROM purchase_order_items poi
                     JOIN purchase_orders po ON po.id = poi.purchase_order_id
-                    WHERE (poi.product_name ILIKE '%%ค่าตัด%%' OR poi.product_name ILIKE '%%ค่าเจาะ%%')
+                    WHERE COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
                       AND po.status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
                     GROUP BY po.so_number
                 ) poi_cutting ON poi_cutting.so_number = c.so_number
@@ -4966,6 +4967,11 @@ class HRScreen(CTkFrame):
         """
         อ่านค่าจากหน้าจอและเรียก business_logic เพื่อคำนวณยอดสุทธิ
         """
+        # 🔄 รีเฟรช current_comm_df จาก DB ก่อนคำนวณทุกครั้ง — กันปัญหาข้อมูลค้าง
+        # (เดิมฟังก์ชันนี้ใช้ self.current_comm_df ที่โหลดไว้ตอนเลือก dropdown งวดครั้งก่อนเท่านั้น
+        #  ถ้า PO ถูกแก้ไขค่าขนส่ง/ต้นทุนหลังจากนั้น ตัวเลขจะไม่อัปเดตจนกว่าจะสลับ dropdown งวดใหม่)
+        self._calculate_commission_for_period()
+
         try:
             # --- 1. ระบุตัวตนพนักงานและแผน ---
             sale_key = self.selected_sale_for_process.get()

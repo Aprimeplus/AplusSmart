@@ -1,6 +1,6 @@
 import tkinter as tk
 from customtkinter import (CTkFrame, CTkLabel, CTkButton, CTkEntry,
-                           CTkFont, CTkScrollableFrame, CTkComboBox)
+                           CTkFont, CTkScrollableFrame, CTkComboBox, CTkCheckBox)
 import pandas as pd
 from tksheet import Sheet
 from datetime import datetime
@@ -46,12 +46,17 @@ THAI_MONTHS_SHORT = {
 
 _CANCELLED = ('Cancelled', 'Cancelled by PU')
 
+THAI_MONTHS_FULL = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+THAI_MONTH_NUM = {name: i + 1 for i, name in enumerate(THAI_MONTHS_FULL)}
+
 
 class CustomerMonitoringWidget(CTkFrame):
 
-    def __init__(self, master, app_container, **kwargs):
+    def __init__(self, master, app_container, sale_key_filter=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app_container
+        self._locked_sale_key = sale_key_filter   # ถ้า set = Sale mode (เห็นแค่ตัวเอง)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self._build_filter_panel()
@@ -94,10 +99,13 @@ class CustomerMonitoringWidget(CTkFrame):
             row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
 
         lbl("รหัสพนักงาน", r); r += 1
-        self._sale_var = tk.StringVar(value="ทั้งหมด")
+        _sale_init = self._locked_sale_key if self._locked_sale_key else "ทั้งหมด"
+        self._sale_var = tk.StringVar(value=_sale_init)
         self._sale_cb = CTkComboBox(
-            panel, variable=self._sale_var, values=["ทั้งหมด"],
-            height=28, font=CTkFont(size=11), state="readonly")
+            panel, variable=self._sale_var,
+            values=[_sale_init] if self._locked_sale_key else ["ทั้งหมด"],
+            height=28, font=CTkFont(size=11),
+            state="disabled" if self._locked_sale_key else "readonly")
         self._sale_cb.grid(row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
 
         lbl("ประเภทลูกค้า", r); r += 1
@@ -112,8 +120,25 @@ class CustomerMonitoringWidget(CTkFrame):
         self._year_var = tk.StringVar(value=str(datetime.now().year + 543))
         self._year_cb = CTkComboBox(
             panel, variable=self._year_var, values=["2568", "2569"],
-            height=28, font=CTkFont(size=11), state="readonly")
+            height=28, font=CTkFont(size=11), state="readonly",
+            command=lambda _: self._load())
         self._year_cb.grid(row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
+
+        self._comm_mode_var = tk.BooleanVar(value=False)
+        CTkCheckBox(
+            panel, text="กรองตามรอบคอม (สะสมยกมา)",
+            variable=self._comm_mode_var, font=CTkFont(size=11),
+            command=self._on_comm_mode_toggle,
+        ).grid(row=r, column=0, padx=10, pady=(4, 0), sticky="w"); r += 1
+
+        lbl("ถึงรอบเดือน", r); r += 1
+        now = datetime.now()
+        self._comm_month_var = tk.StringVar(value=THAI_MONTHS_FULL[now.month - 1])
+        self._comm_month_cb = CTkComboBox(
+            panel, variable=self._comm_month_var, values=THAI_MONTHS_FULL,
+            height=28, font=CTkFont(size=11), state="disabled",
+            command=lambda _: self._load())
+        self._comm_month_cb.grid(row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
 
         lbl("วันที่เริ่ม", r); r += 1
         self._from_var = tk.StringVar()
@@ -155,6 +180,14 @@ class CustomerMonitoringWidget(CTkFrame):
                   fg_color="#94A3B8", hover_color="#64748B",
                   command=self._clear).grid(
             row=r, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+    def _on_comm_mode_toggle(self):
+        on = self._comm_mode_var.get()
+        self._comm_month_cb.configure(state="readonly" if on else "disabled")
+        if _HAS_CAL:
+            self._cal_from.configure(state="disabled" if on else "normal")
+            self._cal_to.configure(state="disabled" if on else "normal")
+        self._load()
 
     # ── table area ───────────────────────────────────────────────────────────
 
@@ -256,8 +289,9 @@ class CustomerMonitoringWidget(CTkFrame):
                     "WHERE sale_key IS NOT NULL AND is_active=1 ORDER BY sale_key",
                     conn,
                 )
-                self._sale_cb.configure(
-                    values=["ทั้งหมด"] + df_k["sale_key"].tolist())
+                if not self._locked_sale_key:
+                    self._sale_cb.configure(
+                        values=["ทั้งหมด"] + df_k["sale_key"].tolist())
 
                 df_y = pd.read_sql_query(
                     "SELECT DISTINCT commission_year FROM commissions "
@@ -275,7 +309,8 @@ class CustomerMonitoringWidget(CTkFrame):
 
     def _clear(self):
         self._search_var.set("")
-        self._sale_var.set("ทั้งหมด")
+        if not self._locked_sale_key:
+            self._sale_var.set("ทั้งหมด")
         self._ctype_var.set("ทั้งหมด")
         self._year_var.set(str(datetime.now().year + 543))
         self._from_var.set("")
@@ -283,7 +318,9 @@ class CustomerMonitoringWidget(CTkFrame):
         if _HAS_CAL:
             self._cal_from.delete(0, "end")
             self._cal_to.delete(0, "end")
-        self._load()
+        self._comm_mode_var.set(False)
+        self._comm_month_var.set(THAI_MONTHS_FULL[datetime.now().month - 1])
+        self._on_comm_mode_toggle()
 
     def _load(self):
         try:
@@ -294,32 +331,40 @@ class CustomerMonitoringWidget(CTkFrame):
             year = datetime.now().year
 
         search   = self._search_var.get().strip()
-        sale_key = self._sale_var.get()
+        sale_key = self._locked_sale_key or self._sale_var.get()
         ctype    = self._ctype_var.get()
         d_from   = self._parse_date(self._from_var.get().strip())
         d_to     = self._parse_date(self._to_var.get().strip())
 
-        ph = ["commission_year = %s", "is_active = 1",
-              "status NOT IN ('Cancelled','Cancelled by PU')"]
-        params = [year]
+        comm_mode = self._comm_mode_var.get()
+
+        if comm_mode:
+            # กรองตามรอบคอมฯ แบบสะสมยกมาถึงเดือนที่เลือก (ไม่ผูกกับสถานะ HR Verified/payout)
+            month_num = THAI_MONTH_NUM.get(self._comm_month_var.get(), datetime.now().month)
+            ph = ["is_active = 1", "status NOT IN ('Cancelled','Cancelled by PU')",
+                  "(commission_year < %s OR (commission_year = %s AND commission_month <= %s))"]
+            params = [year, year, month_num]
+        else:
+            ph = ["commission_year = %s", "is_active = 1",
+                  "status NOT IN ('Cancelled','Cancelled by PU')"]
+            params = [year]
 
         if sale_key != "ทั้งหมด":
             ph.append("sale_key = %s"); params.append(sale_key)
-        if ctype != "ทั้งหมด":
-            ph.append("customer_type = %s"); params.append(ctype)
         if search:
             ph.append("(customer_id ILIKE %s OR customer_name ILIKE %s)")
             params += [f"%{search}%", f"%{search}%"]
-        if d_from:
-            ph.append("bill_date >= %s"); params.append(d_from)
-        if d_to:
-            ph.append("bill_date <= %s"); params.append(d_to)
+        if not comm_mode:
+            if d_from:
+                ph.append("bill_date >= %s"); params.append(d_from)
+            if d_to:
+                ph.append("bill_date <= %s"); params.append(d_to)
 
         sql = (
-            "SELECT customer_id, customer_name, sale_key, commission_month,"
+            "SELECT customer_id, customer_name, sale_key, commission_month, commission_year,"
             " SUM(sales_service_amount) AS amount"
             f" FROM commissions WHERE {' AND '.join(ph)}"
-            " GROUP BY customer_id, customer_name, sale_key, commission_month"
+            " GROUP BY customer_id, customer_name, sale_key, commission_month, commission_year"
         )
 
         try:
@@ -332,7 +377,20 @@ class CustomerMonitoringWidget(CTkFrame):
             print(f"CustomerMonitoring _load error: {e}")
             return
 
+        if ctype != "ทั้งหมด" and not df.empty:
+            df = df[df["customer_id"].apply(self._customer_type_from_id) == ctype]
+
         self._render(df, year_thai)
+
+    @staticmethod
+    def _customer_type_from_id(customer_id):
+        """เก่า/ใหม่ อิงตามตัวอักษรนำหน้ารหัสลูกค้า: A-F = เก่า, G ขึ้นไป = ใหม่"""
+        if not customer_id:
+            return None
+        prefix = customer_id.strip()[:1].upper()
+        if not prefix.isalpha():
+            return None
+        return "ลูกค้าเก่า" if prefix <= "F" else "ลูกค้าใหม่"
 
     @staticmethod
     def _parse_date(s):
@@ -381,6 +439,13 @@ class CustomerMonitoringWidget(CTkFrame):
                 return bg, fg
         return None, None
 
+    def _period_label(self, p):
+        """label คอลัมน์ช่วงเวลา — โหมดรอบคอม (สะสมข้ามปี) ใช้ (ปี, เดือน) ป้องกันข้อมูลปนกัน"""
+        if isinstance(p, tuple):
+            y, m = p
+            return f"{THAI_MONTHS_SHORT.get(int(m), str(m))}{str(int(y) + 543)[-2:]}"
+        return THAI_MONTHS_SHORT.get(int(p), str(p))
+
     def _render(self, df, year_thai):
         self._sheet.dehighlight_all()
 
@@ -391,33 +456,44 @@ class CustomerMonitoringWidget(CTkFrame):
             self._sheet.redraw()
             return
 
-        now = datetime.now()
-        current_year_thai = now.year + 543
-        max_month = now.month if year_thai == current_year_thai else 12
-        months = sorted(
-            m for m in df["commission_month"].dropna().unique().tolist()
-            if int(m) <= max_month
-        )
+        comm_mode = self._comm_mode_var.get()
+
+        if comm_mode:
+            # โหมดสะสมยกมา: ผูก (ปี, เดือน) เข้าด้วยกัน กันข้อมูลคนละปีมาปนกันที่คอลัมน์เดือนเดียวกัน
+            df = df.copy()
+            df["period"] = list(zip(
+                df["commission_year"].astype(int), df["commission_month"].astype(int)))
+            period_col = "period"
+            periods = sorted(df[period_col].dropna().unique().tolist())
+        else:
+            now = datetime.now()
+            current_year_thai = now.year + 543
+            max_month = now.month if year_thai == current_year_thai else 12
+            period_col = "commission_month"
+            periods = sorted(
+                m for m in df[period_col].dropna().unique().tolist()
+                if int(m) <= max_month
+            )
 
         pivot = df.pivot_table(
             index=["customer_id", "customer_name", "sale_key"],
-            columns="commission_month",
+            columns=period_col,
             values="amount",
             aggfunc="sum",
             fill_value=0,
         ).reset_index()
         pivot.columns.name = None
-        pivot["_total"] = pivot[months].sum(axis=1)
+        pivot["_total"] = pivot[periods].sum(axis=1)
         pivot = pivot.sort_values("_total", ascending=False).reset_index(drop=True)
 
         # เก็บไว้สำหรับ sort โดยไม่ต้อง query DB ใหม่
         self._pivot_base   = pivot.copy()
-        self._months_stored = months
+        self._months_stored = periods
         self._year_stored   = year_thai
         self._sort_col_idx  = None   # reset sort state เมื่อโหลดใหม่
         self._sort_asc      = True
 
-        self._draw_table(pivot, months, year_thai)
+        self._draw_table(pivot, periods, year_thai)
 
     # ── view toggle ──────────────────────────────────────────────────────────
 
@@ -449,16 +525,16 @@ class CustomerMonitoringWidget(CTkFrame):
                text="กรุณาติดตั้ง matplotlib ก่อน (pip install matplotlib)").pack()
             return
 
-        # clear previous chart
-        if self._chart_canvas_widget:
-            self._chart_canvas_widget.get_tk_widget().destroy()
-            self._chart_canvas_widget = None
+        # clear previous chart (destroy all children of container)
+        for _w in self._chart_container.winfo_children():
+            _w.destroy()
+        self._chart_canvas_widget = None
 
         top_n   = int(self._top_n_var.get())
         ctype   = self._chart_type_var.get()
         pivot   = self._pivot_base
         months  = self._months_stored
-        m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
+        m_names = [self._period_label(m) for m in months]
 
         _SALE_HEX = {
             "VOW-S": "#7C3AED", "VOW-P": "#7C3AED",
@@ -475,65 +551,135 @@ class CustomerMonitoringWidget(CTkFrame):
                 _fallback_map[key] = _FALLBACK[len(_fallback_map) % len(_FALLBACK)]
             return _fallback_map[key]
 
-        def _fmt_val(v):
-            """แสดงยอดเป็น K หรือ M"""
-            if v >= 1_000:
-                return f"{v/1_000:.1f}M"
-            return f"{v:,.0f}K"
+        def _fmt_m(v):
+            """v หน่วย ล้านบาท"""
+            if abs(v) >= 1:
+                return f"{v:,.2f}M"
+            return f"{v * 1000:,.0f}K"
+
+        import tkinter as _tk
+        import numpy as np
 
         if ctype == "ยอดรวมรายลูกค้า":
-            df_top  = pivot.nlargest(top_n, "_total")
+            # ── 3. รวม customer ซ้ำก่อน ──────────────────────────────────
+            month_cols = {m: "sum" for m in months if m in pivot.columns}
+            df_merged = (
+                pivot.groupby("customer_name", as_index=False)
+                     .agg({"_total": "sum", "sale_key": "first", **month_cols})
+            )
+            df_top  = df_merged.nlargest(top_n, "_total")
             labels  = df_top["customer_name"].tolist()
-            values  = (df_top["_total"] / 1_000).tolist()   # หน่วย พัน (K)
-            colors  = [_hex(k) for k in df_top["sale_key"].tolist()]
+            # ── 2. หน่วย ล้านบาท ─────────────────────────────────────────
+            values  = (df_top["_total"] / 1_000_000).tolist()
             n_bars  = len(labels)
 
-            fig_h = max(5, n_bars * 0.42)
-            fig = Figure(figsize=(10, fig_h), facecolor="white")
-            ax  = fig.add_subplot(111)
+            # ── 1. สี: Top3 เข้ม / ที่เหลือเทา ──────────────────────────
+            C_TOP1  = "#1E3A8A"   # navy — อันดับ 1
+            C_TOP23 = "#2563EB"   # blue — อันดับ 2-3
+            C_GRAY  = "#CBD5E1"   # slate-200 — อื่นๆ
+            colors = [
+                C_TOP1 if i == 0 else C_TOP23 if i < 3 else C_GRAY
+                for i in range(n_bars)
+            ]
 
+            # ── 4. KPI stats ──────────────────────────────────────────────
+            total_top  = df_top["_total"].sum() / 1_000_000
+            grand_tot  = pivot["_total"].sum() / 1_000_000
+            pct_top    = (total_top / grand_tot * 100) if grand_tot > 0 else 0
+
+            # ── scrollable wrapper ────────────────────────────────────────
+            outer = _tk.Frame(self._chart_container, bg="white")
+            outer.pack(fill="both", expand=True)
+            vbar = _tk.Scrollbar(outer, orient="vertical")
+            vbar.pack(side="right", fill="y")
+            tc = _tk.Canvas(outer, bg="white",
+                            yscrollcommand=vbar.set, highlightthickness=0)
+            tc.pack(side="left", fill="both", expand=True)
+            vbar.config(command=tc.yview)
+
+            outer.update_idletasks()
+            avail_w = tc.winfo_width() or 900
+            dpi     = 96
+            fig_w   = max(8, avail_w / dpi)
+            fig_h   = max(5, n_bars * 0.40) + 0.9   # +0.9 สำหรับ KPI strip
+
+            fig = Figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor="white")
+
+            # ── 4. KPI strip (figure text) ────────────────────────────────
+            kpi_box = dict(boxstyle="round,pad=0.35", facecolor="#EFF6FF",
+                           edgecolor="#BFDBFE", alpha=0.9)
+            fig.text(0.02, 0.975, f"ยอดรวม Top {top_n}   {total_top:,.2f} M บาท",
+                     fontsize=10, fontweight="bold", color="#1E40AF",
+                     va="top", ha="left", bbox=kpi_box)
+            fig.text(0.40, 0.975, f"สัดส่วน Top {top_n}   {pct_top:.1f}%  ของยอดรวมบริษัท",
+                     fontsize=10, fontweight="bold", color="#059669",
+                     va="top", ha="left", bbox=kpi_box)
+            fig.text(0.78, 0.975, f"ยอดรวมบริษัท   {grand_tot:,.2f} M บาท",
+                     fontsize=10, fontweight="bold", color="#64748B",
+                     va="top", ha="left", bbox=kpi_box)
+
+            ax = fig.add_subplot(111)
             bars = ax.barh(range(n_bars), values, color=colors, height=0.65)
             ax.set_yticks(range(n_bars))
             ax.set_yticklabels(labels, fontsize=9)
             ax.invert_yaxis()
 
-            # scale axis ที่ P90 เพื่อไม่ให้ outlier บีบ — bar ยาวกว่าจะ clip
-            import numpy as np
-            p90 = float(np.percentile(values, 90)) if len(values) > 3 else max(values)
-            x_lim = max(p90 * 1.35, sorted(values)[-2] * 1.2) if len(values) > 1 else values[0] * 1.2
+            # x limit = max value + margin (ไม่ clip)
+            x_lim = (max(values) * 1.15) if values else 1
             ax.set_xlim(0, x_lim)
-            ax.set_clip_on(True)
 
-            # value labels — วางในแท่งถ้า bar ยาวพอ ไม่งั้นวางนอก
-            for bar, v in zip(bars, values):
-                w = bar.get_width()
-                label_txt = _fmt_val(v)
-                if w > x_lim * 0.15:   # วางในแท่ง
-                    ax.text(min(w, x_lim) - x_lim * 0.01,
+            for bar, v, c in zip(bars, values, colors):
+                w   = bar.get_width()
+                txt = _fmt_m(v)
+                text_color = "white" if c in (C_TOP1, C_TOP23) else "#374151"
+                if w > x_lim * 0.15:
+                    ax.text(w - x_lim * 0.01,
                             bar.get_y() + bar.get_height() / 2,
-                            label_txt, va="center", ha="right",
-                            fontsize=8, color="white", fontweight="bold")
-                else:                   # วางนอกแท่ง
+                            txt, va="center", ha="right",
+                            fontsize=8, color=text_color, fontweight="bold")
+                else:
                     ax.text(w + x_lim * 0.01,
                             bar.get_y() + bar.get_height() / 2,
-                            label_txt, va="center", ha="left", fontsize=8)
+                            txt, va="center", ha="left",
+                            fontsize=8, color="#374151")
 
-            ax.set_xlabel("ยอดขาย (พัน บาท)", fontsize=10)
+            ax.set_xlabel("ยอดขาย (ล้าน บาท)", fontsize=10)
             ax.set_title(
                 f"Top {top_n} ลูกค้า — ยอดขายรวม ปี {self._year_stored}",
-                fontsize=12, fontweight="bold", loc="left", pad=10)
+                fontsize=12, fontweight="bold", loc="left", pad=8)
             ax.xaxis.set_major_formatter(
-                matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-            ax.grid(axis="x", alpha=0.25, linestyle="--")
+                matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.2f}"))
+            ax.grid(axis="x", alpha=0.20, linestyle="--")
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
+            fig.tight_layout(pad=0.5, rect=[0, 0.02, 1, 0.92])
 
-            # margin ซ้ายสำหรับชื่อ Thai
-            fig.subplots_adjust(left=0.38, right=0.97, top=0.93, bottom=0.07)
+            mpl_cv = FigureCanvasTkAgg(fig, master=tc)
+            mpl_cv.draw()
+            widget = mpl_cv.get_tk_widget()
+            tc.create_window(0, 0, anchor="nw", window=widget)
+
+            def _sync(event=None):
+                bb = tc.bbox("all")
+                if bb:
+                    tc.configure(scrollregion=bb)
+                cw = tc.winfo_width()
+                if cw > 1:
+                    widget.configure(width=cw)
+
+            widget.bind("<Configure>", _sync)
+            tc.bind("<Configure>", lambda e: _sync())
+
+            def _wheel(event):
+                tc.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            tc.bind("<MouseWheel>", _wheel)
+            widget.bind("<MouseWheel>", _wheel)
+
+            self._chart_canvas_widget = mpl_cv
 
         else:  # ยอดรายเดือน (รวม)
-            monthly_totals = [float(pivot[m].sum()) / 1_000 for m in months]
-            fig = Figure(figsize=(10, 5), facecolor="white")
+            monthly_totals = [float(pivot[m].sum()) / 1_000_000 for m in months]
+            fig = Figure(figsize=(10, 5), facecolor="white", dpi=96)
             ax  = fig.add_subplot(111)
 
             bar_colors = ["#2563EB"] * len(months)
@@ -543,22 +689,22 @@ class CustomerMonitoringWidget(CTkFrame):
             for bar, v in zip(bars2, monthly_totals):
                 ax.text(bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + y_max * 0.01,
-                        _fmt_val(v), ha="center", fontsize=9)
-            ax.set_ylabel("ยอดขาย (พัน บาท)", fontsize=10)
+                        _fmt_m(v), ha="center", fontsize=9)
+            ax.set_ylabel("ยอดขาย (ล้าน บาท)", fontsize=10)
             ax.set_title(
                 f"ยอดขายรายเดือน — ปี {self._year_stored}",
-                fontsize=12, fontweight="bold", loc="left", pad=10)
+                fontsize=12, fontweight="bold", loc="left", pad=8)
             ax.yaxis.set_major_formatter(
-                matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+                matplotlib.ticker.FuncFormatter(lambda x, _: f"{x:,.2f}"))
             ax.grid(axis="y", alpha=0.25, linestyle="--")
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
             fig.subplots_adjust(left=0.12, right=0.97, top=0.91, bottom=0.10)
 
-        canvas = FigureCanvasTkAgg(fig, master=self._chart_container)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        self._chart_canvas_widget = canvas
+            canvas = FigureCanvasTkAgg(fig, master=self._chart_container)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+            self._chart_canvas_widget = canvas
 
     # ── header sort ──────────────────────────────────────────────────────────
 
@@ -619,7 +765,7 @@ class CustomerMonitoringWidget(CTkFrame):
         """วาด sheet จาก pivot ที่ส่งมา (ใช้ได้ทั้งตอน render ครั้งแรกและตอน sort)"""
         self._sheet.dehighlight_all()
 
-        m_names = [THAI_MONTHS_SHORT.get(int(m), str(m)) for m in months]
+        m_names = [self._period_label(m) for m in months]
 
         # สร้าง header พร้อม sort indicator
         def _hdr(text, col_idx):

@@ -3798,6 +3798,13 @@ class SLADashboard(CTkFrame):
                                        text_color="#374151")
         self._summary_label.pack(side="left", padx=16, pady=6)
 
+        sales_chip = CTkFrame(sbar, fg_color="#DCFCE7", corner_radius=6)
+        sales_chip.pack(side="left", padx=(0, 16), pady=6)
+        self._summary_sales_label = CTkLabel(
+            sales_chip, text="💰 Sum of ราคาขาย: ฿0.00",
+            font=CTkFont(size=14, weight="bold"), text_color="#166534")
+        self._summary_sales_label.pack(padx=12, pady=4)
+
         # ── Legend สี SLA ─────────────────────────────────────────────────────
         legend_items = [
             ("[ รวดเร็ว ]",   "#DCFCE7", "#166534", "< 50% ของ Target"),
@@ -4012,7 +4019,7 @@ class SLADashboard(CTkFrame):
                 if not cb_id:
                     return
                 menu = tk.Menu(pop, tearoff=0, font=("Tahoma", 10))
-                for opt in self._SELECT_OPTIONS:
+                for opt in self._ROW_SELECT_QUICK_OPTIONS:
                     menu.add_command(
                         label=opt,
                         command=lambda o=opt, ri=row_iid, cid=cb_id: _on_select_picked(cid, o, ri))
@@ -4370,6 +4377,7 @@ class SLADashboard(CTkFrame):
                 self.app.release_connection(conn)
                 conn = None
 
+            sla_sales_sum = 0.0
             for _, r in df.iterrows():
                 started_dt = pd.to_datetime(r["started_at"]) if pd.notna(r["started_at"]) else None
                 copied_dt  = pd.to_datetime(r["copied_at"])  if pd.notna(r["copied_at"])  else None
@@ -4534,6 +4542,8 @@ class SLADashboard(CTkFrame):
                 if sale_max is not None and total_sales > sale_max:
                     continue
 
+                sla_sales_sum += total_sales
+
                 sale_key_short = sale_key.split("-")[0] if sale_key and "-" in sale_key else sale_key
                 row_vals = (r["so_number"], order_no, sale_key_short, r["user_key"], win_rate_val, temp,
                             started, copied, dur_str,
@@ -4569,8 +4579,11 @@ class SLADashboard(CTkFrame):
                               if self.tree.item(iid, "tags") and
                               self.tree.item(iid, "tags")[0] in ("fast", "medium", "slow"))
             pending_cnt = total - done_cnt
+            sla_sales_sum = locals().get("sla_sales_sum", 0.0)
             self._summary_label.configure(
                 text=f"รวมทั้งหมด  {total}  Order  |  ✅ เสร็จแล้ว  {done_cnt}  |  ⏳ รอ Copy  {pending_cnt}")
+            self._summary_sales_label.configure(
+                text=f"💰 Sum of ราคาขาย: ฿{sla_sales_sum:,.2f}")
             self.after_idle(self._paint_status_cells)
 
     # ── per-cell color สำหรับคอลัม "สถานะ" ─────────────────────────────────
@@ -4600,6 +4613,9 @@ class SLADashboard(CTkFrame):
     # ตรงกับ popup_cols["Select"] ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
     _SELECT_OPTIONS = ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
                        "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"]
+    # ตัวเลือกย่อ สำหรับเมนูแก้ Select แบบเร็วใน popup ของหน้า SLA เท่านั้น
+    # (คนละอันกับ _SELECT_OPTIONS เต็มที่ cost_benchmark.py ใช้ — ที่นี่ตัดเหลือแค่ที่ใช้บ่อย)
+    _ROW_SELECT_QUICK_OPTIONS = ["✔", "เทียบ"]
 
     # ตรงกับ status_opts ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
     _STATUS_OPTIONS = [
