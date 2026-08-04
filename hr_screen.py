@@ -4099,7 +4099,14 @@ class HRScreen(CTkFrame):
                 return
             uploaded_compare_df = pd.concat(valid_sources, ignore_index=True).drop_duplicates(subset=['so_number'], keep='last')
 
-            processed_so_query = "SELECT so_number FROM commissions WHERE status IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled')"
+            # ตัด SO ที่คิดค่าคอมไปแล้ว (payout_id ผูกกับรอบจ่ายจริง) ออกด้วยเสมอ
+            # ไม่ใช่เช็คแค่ status ในลิสต์ — เพราะ SO ที่จ่ายไปแล้วอาจถูกเปลี่ยนสถานะภายหลัง
+            # (เช่น "Rejected by SM") ซึ่งไม่อยู่ในลิสต์ 4 สถานะเดิม แต่ payout_id ยังผูกอยู่
+            processed_so_query = (
+                "SELECT so_number FROM commissions "
+                "WHERE status IN ('HR Verified', 'Paid', 'Deferred by HR', 'Cancelled') "
+                "OR payout_id IS NOT NULL"
+            )
             processed_so_df = pd.read_sql_query(processed_so_query, self.pg_engine)
             
             if not processed_so_df.empty:
@@ -4970,7 +4977,27 @@ class HRScreen(CTkFrame):
         # 🔄 รีเฟรช current_comm_df จาก DB ก่อนคำนวณทุกครั้ง — กันปัญหาข้อมูลค้าง
         # (เดิมฟังก์ชันนี้ใช้ self.current_comm_df ที่โหลดไว้ตอนเลือก dropdown งวดครั้งก่อนเท่านั้น
         #  ถ้า PO ถูกแก้ไขค่าขนส่ง/ต้นทุนหลังจากนั้น ตัวเลขจะไม่อัปเดตจนกว่าจะสลับ dropdown งวดใหม่)
+        # ⚠️ _calculate_commission_for_period() เรียก _create_hr_input_interface() ซึ่งทำลาย
+        # entry เดิมแล้วสร้างใหม่พร้อมค่า default (เช่น ยอดขายขั้นต่ำ = 500,000) ทับค่าที่ user
+        # เพิ่งแก้ไว้ (เช่นพิมพ์ 0) — เก็บค่าที่ user กรอกไว้ก่อน แล้วค่อยคืนกลับหลัง refresh
+        _entries_to_preserve = ['operating_fee_entry', 'min_sales_entry', 'incentive_entry', 'deduction_entry']
+        _saved_values = {name: getattr(self, name).get()
+                         for name in _entries_to_preserve
+                         if hasattr(self, name) and getattr(self, name).winfo_exists()}
+        _saved_notes = None
+        if hasattr(self, 'payout_notes_entry') and self.payout_notes_entry.winfo_exists():
+            _saved_notes = self.payout_notes_entry.get("1.0", "end-1c")
+
         self._calculate_commission_for_period()
+
+        for _name, _val in _saved_values.items():
+            _widget = getattr(self, _name, None)
+            if _widget is not None and _widget.winfo_exists():
+                _widget.delete(0, tk.END)
+                _widget.insert(0, _val)
+        if _saved_notes is not None and hasattr(self, 'payout_notes_entry') and self.payout_notes_entry.winfo_exists():
+            self.payout_notes_entry.delete("1.0", tk.END)
+            self.payout_notes_entry.insert("1.0", _saved_notes)
 
         try:
             # --- 1. ระบุตัวตนพนักงานและแผน ---

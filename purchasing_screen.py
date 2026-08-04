@@ -3805,19 +3805,24 @@ class SLADashboard(CTkFrame):
             font=CTkFont(size=14, weight="bold"), text_color="#166534")
         self._summary_sales_label.pack(padx=12, pady=4)
 
-        # ── Legend สี SLA ─────────────────────────────────────────────────────
+        # ── Legend สี SLA — โชว์ % ของแต่ละสถานะจากยอด order ทั้งหมดที่แสดงอยู่ ─────────
+        # (เดิมโชว์เกณฑ์ % ของ Target ที่ใช้ตัดสี เปลี่ยนเป็นโชว์สัดส่วนจริงของแต่ละสีแทน
+        #  ตามที่ PM อยากเห็นว่าตอนนี้เขียว/เหลือง/แดง/เทา กี่ % ของงานทั้งหมด)
         legend_items = [
-            ("[ รวดเร็ว ]",   "#DCFCE7", "#166534", "< 50% ของ Target"),
-            ("[ ปานกลาง ]",  "#FEF9C3", "#854D0E", "50–100% ของ Target"),
-            ("[ ช้า ]",        "#FECACA", "#991B1B", "> 100% ของ Target"),
-            ("[ ดำเนินการ ]", "#E2E8F0", "#374151", "ยังไม่ส่งราคา"),
+            ("fast",    "[ รวดเร็ว ]",   "#DCFCE7", "#166534"),
+            ("medium",  "[ ปานกลาง ]",  "#FEF9C3", "#854D0E"),
+            ("slow",    "[ ช้า ]",        "#FECACA", "#991B1B"),
+            ("pending", "[ ดำเนินการ ]", "#E2E8F0", "#374151"),
         ]
-        for label, bg, fg, desc in legend_items:
+        self._legend_labels = {}
+        for tag, label, bg, fg in legend_items:
             chip = CTkFrame(sbar, fg_color=bg, corner_radius=6)
             chip.pack(side="left", padx=(4, 0), pady=5)
-            CTkLabel(chip, text=f"{label}  {desc}",
-                     font=CTkFont(size=11), text_color=fg,
-                     fg_color=bg).pack(padx=8, pady=3)
+            lbl = CTkLabel(chip, text=f"{label}  0%",
+                           font=CTkFont(size=11), text_color=fg,
+                           fg_color=bg)
+            lbl.pack(padx=8, pady=3)
+            self._legend_labels[tag] = (lbl, label)
 
         self._products_map = {}   # iid → full product text
         self._memo_map      = {}   # iid → sale memo text (ไม่โชว์เป็นคอลัมในตาราง แก้ใน popup เท่านั้น)
@@ -4243,8 +4248,21 @@ class SLADashboard(CTkFrame):
                 query += " AND (s.temp = %s OR s.temp LIKE %s)"
                 params.extend([temp_sel, f"{temp_sel}-%"])
 
-            # SOs ที่มีข้อมูล SLA ขึ้นก่อน (เรียงตามเวลา) → ที่ยังไม่เริ่มขึ้นหลัง
-            query += " ORDER BY s.started_at DESC NULLS LAST LIMIT 500"
+            # 🔧 ทำ dedup ต่อ so_number ที่ระดับ SQL ก่อน LIMIT (เดิม LIMIT 500 ตัดที่ raw row
+            # ก่อน dedup ทำให้ filter ที่ตัด row ซ้ำได้เยอะกว่า กลับได้จำนวน SO ไม่ซ้ำมากกว่า filter
+            # "ทั้งหมด" ที่ raw row เต็มโควตา 500 ไปกับ SO ซ้ำซ้อนก่อน — ลำดับ dedup ตรงกับฝั่ง pandas
+            # ด้านล่าง: copied_at DESC (เอา record ที่ copy เสร็จจริงก่อน) แล้วค่อย started_at ASC)
+            query = f"""
+                SELECT DISTINCT ON (so_number) * FROM (
+                    {query}
+                ) _raw
+                ORDER BY so_number, copied_at DESC NULLS LAST, started_at ASC
+            """
+            query = f"""
+                SELECT * FROM ({query}) _deduped
+                ORDER BY started_at DESC NULLS LAST
+                LIMIT 2000
+            """
 
             conn = self.app.get_connection()
             try:
@@ -4479,7 +4497,12 @@ class SLADashboard(CTkFrame):
                     return total
 
                 def _sla_tag(pct, has_target, mto):
-                    if not has_target or not mto:
+                    # ⚠️ เดิมเป็น "if not has_target or not mto" — ทำให้ order ปกติทุกตัว
+                    # (is_mto=False คือไม่ใช่งานสั่งผลิต ซึ่งเป็นกรณีส่วนใหญ่) โดน bypass เป็น
+                    # "[ รวดเร็ว ]" ทันทีไม่ว่าจะใช้เวลาเกิน Target แค่ไหนก็ตาม — ตัด "or not mto"
+                    # ออก เพราะ target ที่คำนวณไว้ก่อนหน้านี้ (base_target=1440 ถ้า is_mto) รวม
+                    # ผลของ MTO ไปแล้ว ไม่ต้องเช็ค mto ซ้ำตรงนี้อีก
+                    if not has_target:
                         return "[ รวดเร็ว ]", "fast"
                     if pct <= 1.0:
                         return "[ รวดเร็ว ]", "fast"
@@ -4584,6 +4607,18 @@ class SLADashboard(CTkFrame):
                 text=f"รวมทั้งหมด  {total}  Order  |  ✅ เสร็จแล้ว  {done_cnt}  |  ⏳ รอ Copy  {pending_cnt}")
             self._summary_sales_label.configure(
                 text=f"💰 Sum of ราคาขาย: ฿{sla_sales_sum:,.2f}")
+
+            # อัพเดต % ของแต่ละสีในแถบ Legend ตามสัดส่วนจริงของ order ทั้งหมดที่แสดงอยู่
+            if hasattr(self, "_legend_labels"):
+                tag_counts = {"fast": 0, "medium": 0, "slow": 0, "pending": 0}
+                for iid in self.tree.get_children():
+                    tags = self.tree.item(iid, "tags")
+                    if tags and tags[0] in tag_counts:
+                        tag_counts[tags[0]] += 1
+                for tag, (lbl, label) in self._legend_labels.items():
+                    pct = (tag_counts[tag] / total * 100) if total else 0
+                    lbl.configure(text=f"{label}  {pct:.0f}%")
+
             self.after_idle(self._paint_status_cells)
 
     # ── per-cell color สำหรับคอลัม "สถานะ" ─────────────────────────────────
@@ -4952,31 +4987,42 @@ class SLADashboard(CTkFrame):
         try:
             conn = self.app.get_connection()
             cur = conn.cursor()
+            # 🔧 FULL OUTER JOIN — เดิมใช้ sla_benchmark เป็นตารางหลัก เลยไม่เห็น SO ที่ติ๊ก ✔
+            # ไว้แล้วแต่ยังไม่มีใครกด "เริ่มทำ" เลย (ไม่มีแถวใน sla_benchmark)
+            # ใช้ LEFT JOIN จาก cb ฝั่งเดียวก็ไม่ได้เหมือนกัน เพราะ SO ที่เริ่มทำไปแล้วหลายตัว
+            # ไม่มีแถว cost_benchmarks ที่ Select='✔' ตรงกันพอดี (เช่น SO เลขที่พิมพ์เอง) จะหายไป
+            # FULL OUTER JOIN เก็บครบทั้ง 2 ฝั่ง: (1) เริ่มทำแล้วแต่ยังไม่ copy — ไม่จำกัดช่วงเวลา
+            # (2) ติ๊ก ✔ ไว้แต่ยังไม่เคยเริ่มทำ — จำกัดแค่ 2 วันล่าสุด กันของเก่าท่วม popup
             cur.execute("""
                 SELECT
-                    s.so_number,
+                    COALESCE(cb.so_number, s.so_number)     AS so_number,
                     COALESCE(s.user_key, cb.pu_cb)          AS pu,
                     cb.temp_cb                               AS temp,
                     s.started_at,
                     cb.order_no                              AS order_no,
                     cb.sale_key_cb                           AS sale_key,
                     cb.total_sales                           AS total_sales
-                FROM sla_benchmark s
-                LEFT JOIN (
+                FROM (
                     SELECT
                         "Sale Order No."            AS so_number,
                         MAX("PRIORITY")             AS temp_cb,
                         MAX("รหัส Sale")            AS sale_key_cb,
                         MAX("Order No.")            AS order_no,
                         SUM(CAST(REPLACE(REPLACE("ราคาขาย รวม"::text,'฿',''),',','') AS NUMERIC)) AS total_sales,
-                        MAX("created_by")           AS pu_cb
+                        MAX("created_by")           AS pu_cb,
+                        MAX("created_at")           AS created_at_cb
                     FROM cost_benchmarks
                     WHERE "Select" = '✔'
+                      AND "Sale Order No." IS NOT NULL AND TRIM("Sale Order No.") != ''
                     GROUP BY "Sale Order No."
-                ) cb ON cb.so_number = s.so_number
+                ) cb
+                FULL OUTER JOIN sla_benchmark s ON s.so_number = cb.so_number
                 WHERE s.copied_at IS NULL
-                  AND s.started_at IS NOT NULL
-                ORDER BY s.started_at ASC
+                  AND (
+                        s.started_at IS NOT NULL
+                        OR (s.so_number IS NULL AND cb.created_at_cb >= (CURRENT_DATE - INTERVAL '1 day'))
+                      )
+                ORDER BY s.started_at ASC NULLS FIRST
             """)
             rows = cur.fetchall()
 
@@ -5061,6 +5107,7 @@ class SLADashboard(CTkFrame):
         from datetime import datetime as _dt2
         _now = _dt2.now()
         iid_to_so = {}
+        iid_to_pu = {}
         for r in rows:
             so, pu, temp, started_at, order_no, sale_key, total_sales = r
             started_str = started_at.strftime("%d/%m/%y %H:%M") if started_at else "-"
@@ -5085,6 +5132,7 @@ class SLADashboard(CTkFrame):
             ), tags=(tag,) if tag else ())
             if so:
                 iid_to_so[iid] = so
+                iid_to_pu[iid] = pu or "HR"
 
         def _on_pending_dblclick(event):
             iid = tree.identify_row(event.y)
@@ -5176,6 +5224,20 @@ class SLADashboard(CTkFrame):
                         SET copied_at = %s
                         WHERE so_number IN ({ph2}) AND copied_at IS NULL
                     """, [_now2] + so_list_close)
+                    # SO ที่ "ยังไม่เคยเริ่มทำ" ไม่มีแถวใน sla_benchmark เลย → UPDATE ข้างบนไม่โดน
+                    # ต้อง INSERT แถวใหม่ให้ (started_at/copied_at = ตอนนี้) ไม่งั้นจะโผล่ค้างซ้ำอีก
+                    cur2.execute(f"""
+                        SELECT so_number FROM sla_benchmark WHERE so_number IN ({ph2})
+                    """, so_list_close)
+                    _existing = {r[0] for r in cur2.fetchall()}
+                    _never_started = [so for so in so_list_close if so not in _existing]
+                    for so in _never_started:
+                        _pu = next((iid_to_pu[iid] for iid in sel
+                                    if iid_to_so.get(iid) == so), "HR") or "HR"
+                        cur2.execute("""
+                            INSERT INTO sla_benchmark (so_number, user_key, started_at, copied_at)
+                            VALUES (%s, %s, %s, %s)
+                        """, (so, _pu, _now2, _now2))
                     conn2.commit()
                 finally:
                     self.app.release_connection(conn2)

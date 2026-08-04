@@ -156,7 +156,7 @@ class DashboardCostScreen(CTkFrame):
             textvariable=self.filter_vars["date_from"]
         )
         self.cal_from.pack(side="left", fill="x", expand=True)
-        self.cal_from.delete(0, 'end')
+        self.cal_from.set_date(datetime.now())
         
         to_frame = CTkFrame(date_frame, fg_color="transparent")
         to_frame.pack(fill="x", pady=(0, 5))
@@ -181,7 +181,7 @@ class DashboardCostScreen(CTkFrame):
             textvariable=self.filter_vars["date_to"]
         )
         self.cal_to.pack(side="left", fill="x", expand=True)
-        self.cal_to.delete(0, 'end')
+        self.cal_to.set_date(datetime.now())
 
         self.cal_from.bind("<<DateEntrySelected>>", self._on_date_changed)
         self.cal_to.bind("<<DateEntrySelected>>", self._on_date_changed)
@@ -583,7 +583,15 @@ class DashboardCostScreen(CTkFrame):
         for item in matches[:100]:
             lb.insert(tk.END, item)
 
-        popup.geometry(f"{w}x{h * 22 + 4}+{x}+{y}")
+        # 🛠️ ขยายความกว้าง popup ตามข้อความที่ยาวที่สุด ไม่ให้ชื่อสินค้ายาวๆ โดนตัด
+        # หมายเหตุ: ไม่ใช้ winfo_screenwidth() มาจำกัดตำแหน่ง x เพราะเครื่องที่มีจอหลายจอ
+        # ฟังก์ชันนี้มักคืนความกว้างแค่จอหลัก ทำให้ popup เด้งไปโผล่อีกจอผิดตำแหน่งได้
+        import tkinter.font as tkfont
+        _f = tkfont.Font(font=(FONT_FAMILY, 11))
+        max_text_w = max((_f.measure(str(item)) for item in matches[:100]), default=0)
+        popup_w = max(w, min(max_text_w + 50, 650))  # +50 กันขอบ/scrollbar, จำกัดสูงสุด 650px
+
+        popup.geometry(f"{popup_w}x{h * 22 + 4}+{x}+{y}")
 
         def on_select(e=None):
             sel = lb.curselection()
@@ -1309,6 +1317,8 @@ class DashboardCostScreen(CTkFrame):
         # comp_avg_map = {(sku, qty, sel_type): avg_cost}
         SELECT_TYPES     = {"✔", "เทียบเพื่อชุบ ✔"}
         CHUB_TYPES       = {"เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔"}   # กลุ่มชุบทุก variant
+        # ราคาคู่แข่ง — เก็บไว้อ้างอิงเฉยๆ ไม่ใช่ใบเสนอราคาจริงของเรา ไม่เอามาถ่วง avg
+        COMPETITOR_TYPES = {"คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"}
         # {(sku, group): avg_cost}  group = "chub" | "normal"
         sku_avg_map  = {}
         comp_avg_map = {}
@@ -1319,6 +1329,7 @@ class DashboardCostScreen(CTkFrame):
                 df_valid["ต้นทุนรวม (รวมย้าย)"], errors='coerce')
             df_valid["จำนวน"] = pd.to_numeric(df_valid.get("จำนวน", 0), errors='coerce')
             df_cost = df_valid[df_valid["ต้นทุนรวม (รวมย้าย)"] > 0].copy()
+            df_cost = df_cost[~df_cost["Select"].astype(str).str.strip().isin(COMPETITOR_TYPES)]
             df_cost["_grp"] = df_cost["Select"].astype(str).str.strip().apply(
                 lambda s: "chub" if s in CHUB_TYPES else "normal")
 
