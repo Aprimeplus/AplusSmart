@@ -118,6 +118,14 @@ class LoadingWindow(CTkToplevel):
         "เกือบเสร็จแล้ว...",
     ]
 
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        # CTkToplevel schedules this 10ms after init; guard against destroy race condition
+        try:
+            if self.winfo_exists():
+                super()._revert_withdraw_after_windows_set_titlebar_color()
+        except Exception:
+            pass
+
     def __init__(self, master):
         super().__init__(master)
         self.title("Loading")

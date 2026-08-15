@@ -153,30 +153,33 @@ class DailyDashboard(CTkFrame):
             query = """
                 SELECT EXTRACT(DAY FROM bill_date) as day, SUM(sales_service_amount) as amount
                 FROM commissions
-                WHERE EXTRACT(MONTH FROM bill_date) = %s 
-                  AND EXTRACT(YEAR FROM bill_date) = %s 
+                WHERE EXTRACT(MONTH FROM bill_date) = %s
+                  AND EXTRACT(YEAR FROM bill_date) = %s
                   AND is_active = 1
+                  AND status NOT IN ('Cancelled', 'Cancelled by PU')
                 GROUP BY day ORDER BY day
             """
             sales_df = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year))
             
             # 2.2 ยอดสะสมเดือนก่อนหน้า (YTD Offset)
             prev_months_query = """
-                SELECT SUM(sales_service_amount) 
-                FROM commissions 
-                WHERE EXTRACT(YEAR FROM bill_date) = %s 
+                SELECT SUM(sales_service_amount)
+                FROM commissions
+                WHERE EXTRACT(YEAR FROM bill_date) = %s
                   AND EXTRACT(MONTH FROM bill_date) < %s
                   AND is_active = 1
+                  AND status NOT IN ('Cancelled', 'Cancelled by PU')
             """
             prev_res = pd.read_sql_query(prev_months_query, self.pg_engine, params=(year, month_idx))
             start_sales_offset = prev_res.iloc[0, 0] or 0.0 
 
             # 2.3 ยอดรวมทั้งปี
             y_query = """
-                SELECT SUM(sales_service_amount) 
-                FROM commissions 
-                WHERE EXTRACT(YEAR FROM bill_date) = %s 
+                SELECT SUM(sales_service_amount)
+                FROM commissions
+                WHERE EXTRACT(YEAR FROM bill_date) = %s
                   AND is_active = 1
+                  AND status NOT IN ('Cancelled', 'Cancelled by PU')
             """
             y_res = pd.read_sql_query(y_query, self.pg_engine, params=(year,))
             total_actual_year = y_res.iloc[0, 0] or 0

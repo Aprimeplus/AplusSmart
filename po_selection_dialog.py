@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from customtkinter import CTkToplevel, CTkFrame, CTkEntry, CTkButton
 import pandas as pd
+from project_screen import _center_and_style_popup
 
 class POSelectionDialog(CTkToplevel):
     def __init__(self, master, pg_engine, print_callback):
@@ -13,7 +14,7 @@ class POSelectionDialog(CTkToplevel):
         self.all_pos_df = None
 
         self.title("เลือกใบสั่งซื้อ (PO) ที่อนุมัติแล้วเพื่อพิมพ์")
-        self.geometry("800x600")
+        _center_and_style_popup(self, master, 800, 600)
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
@@ -112,7 +113,7 @@ class SOSelectionPrintDialog(CTkToplevel):
         self.all_sos_df = None
 
         self.title("เลือก Sales Order (SO) ที่ต้องการพิมพ์")
-        self.geometry("800x600")
+        _center_and_style_popup(self, master, 800, 600)
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 

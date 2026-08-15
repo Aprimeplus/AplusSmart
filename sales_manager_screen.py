@@ -27,6 +27,7 @@ from history_windows import SOPopupWindow, DeferralHistoryWindow, ManagerDeferAp
 from daily_report_widget import DailyReportWidget
 from hr_screen import SalesFilterDialog
 from customer_monitoring import CustomerMonitoringWidget
+from project_screen import ProjectScreen
 
 STATUS_THAI_MAP = {
     'Draft': 'ฉบับร่าง',
@@ -459,10 +460,13 @@ class SalesTargetWidget(CTkFrame):
                 FROM   commissions
                 GROUP  BY payout_id
             ) cm_agg ON cm_agg.payout_id = c.id
-            WHERE  su.status = 'Active'
+            WHERE  1=1
                    {sale_filter}
-            GROUP  BY su.sale_name, su.sale_key, su.sales_target, su.role
-            HAVING (su.role = 'Sale' OR COALESCE(SUM(c.total_sales), 0) > 0)
+            GROUP  BY su.sale_name, su.sale_key, su.sales_target, su.role, su.status
+            -- แสดงพนักงานที่ยัง Active ทุกคน (แม้ยังไม่มียอด) + พนักงานที่ปิดใช้งานไปแล้ว (Inactive)
+            -- เฉพาะกรณีที่มียอดขายจริงในช่วงที่เลือก (กันไม่ให้อดีตพนักงานที่ไม่มียอดโผล่มาเป็นแท่งว่างๆ)
+            HAVING (su.status = 'Active' AND su.role = 'Sale')
+                   OR COALESCE(SUM(c.total_sales), 0) > 0
             ORDER  BY su.sale_name ASC;
         """
         final_params = tuple([target_mult] + params)
@@ -503,6 +507,8 @@ class SalesTargetWidget(CTkFrame):
             SELECT COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
             FROM commissions sc
             WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
+              AND sc.is_active = 1
+              AND sc.status NOT IN ('Cancelled', 'Cancelled by PU')
               AND {sc_date_filter}
         """
         try:
@@ -809,6 +815,8 @@ class SalesTargetWidget(CTkFrame):
                    COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
             FROM commissions sc
             WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
+              AND sc.is_active = 1
+              AND sc.status NOT IN ('Cancelled', 'Cancelled by PU')
               AND {sc_date_filter}
             GROUP BY sc.commission_month, sc.commission_year
             ORDER BY sc.commission_year, sc.commission_month
@@ -1268,6 +1276,7 @@ class SalesManagerScreen(CTkFrame):
         self.target_tab = self.tab_view.add("📊 เป้าการขาย")
         self.monitoring_tab = self.tab_view.add("👥 Customer Monitoring")
         self.sla_tab = self.tab_view.add("⏱ SLA")
+        self.project_tab = self.tab_view.add("📁 โครงการ")
 
         # สร้างเนื้อหาในแต่ละ Tab
         self._create_approval_tab(self.approval_tab)
@@ -1278,6 +1287,7 @@ class SalesManagerScreen(CTkFrame):
         self._create_sales_target_tab(self.target_tab)
         self._create_customer_monitoring_tab(self.monitoring_tab)
         self._create_sla_tab(self.sla_tab)
+        self._create_project_tab(self.project_tab)
 
         # ตั้งค่าหน้าแรกที่เปิดขึ้นมา
         self.tab_view.set("🗳️ รายการรออนุมัติ (SM Approval)")
@@ -1309,6 +1319,16 @@ class SalesManagerScreen(CTkFrame):
         parent_tab.grid_rowconfigure(0, weight=1)
         from purchasing_screen import SLADashboard
         SLADashboard(parent_tab, self.app_container).grid(row=0, column=0, sticky="nsew")
+
+    def _create_project_tab(self, parent_tab):
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(0, weight=1)
+        ProjectScreen(
+            parent_tab,
+            self.app_container,
+            user_key=self.user_key,
+            user_role=self.user_role,
+        ).grid(row=0, column=0, sticky="nsew")
 
     def _create_customer_monitoring_tab(self, parent_tab):
         parent_tab.grid_columnconfigure(0, weight=1)
@@ -3249,7 +3269,7 @@ class SMExportDialog(CTkToplevel):
             WHERE c.is_active = 1
               AND c.commission_month = %s
               AND c.commission_year = %s
-              AND c.status NOT IN ('Cancelled', 'Original')
+              AND c.status NOT IN ('Cancelled', 'Cancelled by PU', 'Original')
         """
         params = [month_num, year_ad]
 

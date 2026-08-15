@@ -2367,7 +2367,16 @@ class CostBenchmarkScreen(CTkFrame):
                         ).pack(anchor="w", padx=8, pady=(0, 4))
 
             # ── วางตำแหน่ง popup ──────────────────────────────────────────────
-            pw, ph = 240, 400
+            # 🛠️ ความกว้างเดิม fix 240px ตัดชื่อรายการสินค้ายาวๆ — ขยายตามข้อความที่ยาวที่สุดแทน
+            # (เหมือน pattern ที่ใช้ใน dashboard_cost.py._show_search_popup)
+            try:
+                import tkinter.font as tkfont
+                _f = tkfont.Font(font=("Tahoma", 10))
+                max_text_w = max((_f.measure(str(v)) for v in all_values), default=0)
+                pw = max(240, min(max_text_w + 60, 560))  # +60 กันขอบ checkbox/scrollbar, จำกัดสูงสุด 560px
+            except Exception:
+                pw = 240
+            ph = 400
 
             # เมื่อ SetProcessDpiAwarenessContext ถูกเรียกแล้ว winfo_rooty() และ
             # geometry("+x+y") ใช้ physical pixels เหมือนกัน — คำนวณได้ตรง
@@ -5453,6 +5462,18 @@ class CostBenchmarkScreen(CTkFrame):
         except Exception as e:
             print(f"Restore widths error: {e}")
 
+    def _log_edit_debug(self, msg):
+        """Log ชั่วคราวสำหรับดักบั๊ก 'แก้แถวนึงแล้วแถวข้างล่างเปลี่ยนตาม' ที่ user เจอ —
+        เขียนไฟล์ text แยกต่างหาก ไม่กระทบการทำงานปกติแม้เขียนไม่สำเร็จ (wrap try/except ไว้)"""
+        try:
+            import os as _os
+            log_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                      "cost_benchmark_edit_debug.log")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S.%f}] {msg}\n")
+        except Exception:
+            pass
+
     def _on_end_edit_combined(self, event=None, is_frozen=False):
         self._is_editing = False  # reset ทันทีที่ edit จบ ไม่ว่า path ไหน
         # 🛠️ เรียก undo-scheduling ตรงนี้เลย แทนที่จะรอ "<<SheetModified>>" อย่างเดียว
@@ -5506,6 +5527,19 @@ class CostBenchmarkScreen(CTkFrame):
                 # อ่านค่าที่เพิ่งพิมพ์จาก event['value'] (ไม่ต้องอ่านจาก sheet ซึ่งอาจใช้ display index)
                 cell_val = str(event.get('value', '') if isinstance(event, dict) else
                                (target_sheet.get_cell_data(datarn, data_col) or "")).strip()
+
+                # 🔍 log ชั่วคราวดักบั๊ก "แก้แถวนึงแล้วแถวข้างล่างเปลี่ยนตาม" — ลบทิ้งได้เมื่อจับต้นตอเจอแล้ว
+                try:
+                    _col_off_log = self.frozen_col_count if self.sheet_frozen is not None else 0
+                    _full_idx = data_col if is_frozen else data_col + _col_off_log
+                    _col_name = self.columns[_full_idx] if 0 <= _full_idx < len(self.columns) else "?"
+                    self._log_edit_debug(
+                        f"EDIT is_frozen={is_frozen} evt_row={row} evt_col={col} "
+                        f"datarn={datarn} data_col={data_col} full_idx={_full_idx} "
+                        f"column='{_col_name}' value='{cell_val}'")
+                except Exception as _log_e:
+                    self._log_edit_debug(f"EDIT log error: {_log_e}")
+
                 if cell_val.startswith("=") and len(cell_val) > 1:
                     math_expr = cell_val[1:].replace(',', '')
                     import re
@@ -5775,6 +5809,9 @@ class CostBenchmarkScreen(CTkFrame):
         self.auto_calc_job_id = None
         rows = sorted(self._pending_calc_rows)
         self._pending_calc_rows.clear()
+        if len(rows) > 1:
+            # 🔍 log ชั่วคราว — ถ้า debounce มัดหลายแถวมาคำนวณพร้อมกันบ่อยๆ อาจเป็นเบาะแสของบั๊ก
+            self._log_edit_debug(f"BATCH_CALC rows={rows}")
         for r in rows:
             self._auto_calculate_sheet(r)
         self.sheet.redraw()
@@ -5964,6 +6001,15 @@ class CostBenchmarkScreen(CTkFrame):
         set_val("ราคาขาย รวม", sell_total)
         set_val("Vat. รวม", sell_total * 0.07)
         set_val("ราคาขาย รวม + Vat.", sell_total * 1.07)
+
+        # 🔍 log ชั่วคราว — เห็นชัดว่า row_idx นี้เขียนคอลัมน์ไหนไปบ้าง (ตัวเลข) ตอน auto-calculate
+        if writes:
+            try:
+                _changed = {(self.columns[i] if 0 <= i < len(self.columns) else i): v
+                            for i, v in writes.items()}
+                self._log_edit_debug(f"CALC_WRITE row_idx={row_idx} writes={_changed}")
+            except Exception:
+                pass
 
         # ── flush writes → MT.data โดยตรง (ถูก row แม้ filter ใช้งาน) ──────────
         for real_idx, new_val in writes.items():

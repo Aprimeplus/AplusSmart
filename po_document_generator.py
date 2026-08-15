@@ -3,6 +3,7 @@ import sys
 import traceback
 from datetime import datetime
 from tkinter import filedialog, messagebox
+import customtkinter as ctk
 import utils
 # ReportLab Core
 from reportlab.platypus import (
@@ -27,6 +28,92 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def _ask_save_or_print(default_filename):
+    """ถามผู้ใช้ก่อนว่าจะ 'พิมพ์เลย' (ไม่ต้องเลือกที่บันทึก — สร้างไฟล์ไว้ที่ temp แล้วส่งเข้าคิวพิมพ์
+    ผ่าน Windows print verb ทันที) หรือ 'บันทึกไฟล์ลงเครื่อง' แบบเดิม (เปิด Save As dialog)
+    คืนค่า (save_path, print_directly) — save_path เป็น None ถ้ายกเลิก
+    ใช้ CTkToplevel ปุ่มภาษาไทยเอง แทน messagebox.askyesnocancel เพราะปุ่ม Yes/No/Cancel
+    ภาษาอังกฤษของ tkinter ทำให้ผู้ใช้งงว่าปุ่มไหนหมายถึงอะไร ต้องอ่านข้อความเทียบเอง"""
+    result = {"choice": None}
+
+    import tkinter as tk
+    root = tk._default_root
+
+    dlg = ctk.CTkToplevel()
+    dlg.title("พิมพ์เอกสาร")
+    dlg.resizable(False, False)
+    dlg.withdraw()
+    try:
+        dlg.after(200, lambda: dlg.iconbitmap(resource_path("app_icon.ico")))
+    except Exception:
+        pass
+    dlg.attributes("-topmost", True)
+    dlg.grab_set()
+
+    ctk.CTkLabel(dlg, text="ต้องการพิมพ์เอกสารนี้เลยหรือไม่?",
+                 font=ctk.CTkFont(size=15, weight="bold")).pack(padx=24, pady=(24, 4))
+    ctk.CTkLabel(dlg, text="เลือกได้ว่าจะพิมพ์เลย หรือบันทึกไฟล์ไว้ก่อน",
+                 font=ctk.CTkFont(size=12), text_color="#94A3B8").pack(padx=24, pady=(0, 16))
+
+    def _choose(val):
+        result["choice"] = val
+        dlg.destroy()
+
+    btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+    btn_frame.pack(fill="x", padx=24, pady=(0, 24))
+    ctk.CTkButton(btn_frame, text="🖨️  พิมพ์เลย (ไม่ต้องเลือกที่บันทึก)",
+                  command=lambda: _choose("print")).pack(fill="x", pady=(0, 8), ipady=4)
+    ctk.CTkButton(btn_frame, text="💾  บันทึกไฟล์ลงเครื่อง", fg_color="#2563EB", hover_color="#1D4ED8",
+                  command=lambda: _choose("save")).pack(fill="x", pady=(0, 8), ipady=4)
+    ctk.CTkButton(btn_frame, text="ยกเลิก", fg_color="#94A3B8", hover_color="#64748B",
+                  command=lambda: _choose("cancel")).pack(fill="x")
+
+    dlg.update_idletasks()
+    w, h = 380, dlg.winfo_reqheight()
+    if root is not None:
+        rx = root.winfo_x() + (root.winfo_width() - w) // 2
+        ry = root.winfo_y() + (root.winfo_height() - h) // 2
+    else:
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        rx, ry = (sw - w) // 2, (sh - h) // 2
+    dlg.geometry(f"{w}x{h}+{rx}+{ry}")
+    dlg.deiconify()
+
+    dlg.wait_window()
+    choice = result["choice"]
+
+    if choice in (None, "cancel"):
+        return None, False
+    if choice == "print":
+        import tempfile
+        save_path = os.path.join(tempfile.gettempdir(), default_filename)
+        return save_path, True
+    # save -> บันทึกไฟล์ลงเครื่องแบบเดิม
+    documents_path = os.path.join(os.path.expanduser('~'), 'Documents')
+    if not os.path.exists(documents_path):
+        documents_path = os.path.join(os.path.expanduser('~'), 'Desktop')
+    save_path = filedialog.asksaveasfilename(
+        defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")],
+        initialfile=default_filename, initialdir=documents_path)
+    return (save_path or None), False
+
+
+def _finish_print_or_save(save_path, print_directly):
+    """เรียกหลัง doc.build(story) เสร็จแล้ว — ถ้าเลือก 'พิมพ์เลย' ส่งไฟล์เข้าคิวพิมพ์ของ Windows ทันที
+    ถ้าส่งพิมพ์อัตโนมัติไม่สำเร็จ (เช่น ไม่มี default PDF viewer) จะแจ้ง path ไฟล์ไว้ให้เปิดเองแทน"""
+    if not print_directly:
+        messagebox.showinfo("สำเร็จ", f"สร้างเอกสารเรียบร้อย:\n{save_path}")
+        return
+    try:
+        os.startfile(save_path, "print")
+        messagebox.showinfo("สำเร็จ", "ส่งเอกสารเข้าคิวพิมพ์แล้ว")
+    except Exception as e:
+        messagebox.showerror(
+            "ส่งพิมพ์อัตโนมัติไม่สำเร็จ",
+            f"ไม่สามารถส่งเข้าคิวพิมพ์อัตโนมัติได้: {e}\n\nไฟล์ถูกสร้างไว้แล้วที่:\n{save_path}\n"
+            "เปิดไฟล์นี้แล้วสั่งพิมพ์เองได้")
 
 def register_thai_fonts():
     """ ลงทะเบียนฟอนต์ไทยและสร้าง Mapping เพื่อให้ใช้งานตัวหนา <b> ได้ถูกต้อง """
@@ -531,11 +618,8 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
 
 def generate_multi_po_pdf(so_header_data, all_po_data):
     register_thai_fonts()
-    documents_path = os.path.join(os.path.expanduser('~'), 'Documents')
-    if not os.path.exists(documents_path): documents_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-
     default_filename = f"ALL_POs_for_SO_{so_header_data.get('so_number', '')}.pdf"
-    save_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")], initialfile=default_filename, initialdir=documents_path)
+    save_path, print_directly = _ask_save_or_print(default_filename)
     if not save_path: return
 
     doc = BaseDocTemplate(save_path, pagesize=A4, leftMargin=1.0*cm, rightMargin=1.0*cm, topMargin=1.2*cm, bottomMargin=1.2*cm)
@@ -565,7 +649,7 @@ def generate_multi_po_pdf(so_header_data, all_po_data):
             story.append(FrameBreak())
             story.extend(_build_right_column(po_data['header'], po_data['items'], po_data.get('payments', []), styles, P, PB, format_num, width=frame_width))
         doc.build(story)
-        messagebox.showinfo("สำเร็จ", f"สร้างเอกสารรวมเรียบร้อย:\n{save_path}")
+        _finish_print_or_save(save_path, print_directly)
     except Exception as e:
         messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดในการสร้าง PDF:\n{str(e)}")
         print(traceback.format_exc())
@@ -617,10 +701,7 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
     register_thai_fonts()
     
     so_number = so_header_data.get('so_number', 'Unknown')
-    save_path = filedialog.asksaveasfilename(
-        defaultextension=".pdf",
-        initialfile=f"Transport_Fee_{so_number}.pdf"
-    )
+    save_path, print_directly = _ask_save_or_print(f"Transport_Fee_{so_number}.pdf")
     if not save_path:
         return
 
@@ -835,7 +916,7 @@ def generate_transport_fee_pdf(so_header_data, transport_data_list):
 
     try:
         doc.build(story)
-        messagebox.showinfo("สำเร็จ", f"บันทึกใบสรุปค่าขนส่งเรียบร้อยแล้วที่:\n{save_path}")
+        _finish_print_or_save(save_path, print_directly)
     except Exception as e:
         messagebox.showerror("Error", f"สร้าง PDF ไม่สำเร็จ: {e}")
         print(traceback.format_exc())

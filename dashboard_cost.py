@@ -1312,14 +1312,16 @@ class DashboardCostScreen(CTkFrame):
         pct_cols   = self.pct_cols
         num_cols   = self.num_cols
 
-        # 🟢 pre-compute Price competitiveness per (SKU, จำนวน, Select type)
-        # avg  = ค่าเฉลี่ยของทุก ✔ / เทียบเพื่อชุบ ✔ row ที่ (SKU, จำนวน, type) เดียวกัน
-        # comp_avg_map = {(sku, qty, sel_type): avg_cost}
+        # 🟢 pre-compute Price competitiveness per (Order No., SKU, Select type)
+        # avg  = ค่าเฉลี่ยของทุก ✔ / เทียบเพื่อชุบ ✔ row ที่ (Order No., SKU, type) เดียวกัน
+        # 🛠️ ต้องผูกกับ "Order No." ด้วยเสมอ ไม่งั้นตอนดูแบบ "All" (ไม่ filter) สินค้าชื่อเดียวกัน
+        # จากคนละใบขอราคากันคนละช่วงเวลาจะถูกเอามาเฉลี่ย/เทียบราคากันเป็นก้อนเดียว ทำให้ avg./%
+        # เพี้ยนไป — ต้อง filter เหลือ Order เดียวถึงจะเห็นตัวเลขถูก (บั๊กที่ user เจอ)
         SELECT_TYPES     = {"✔", "เทียบเพื่อชุบ ✔"}
         CHUB_TYPES       = {"เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔"}   # กลุ่มชุบทุก variant
         # ราคาคู่แข่ง — เก็บไว้อ้างอิงเฉยๆ ไม่ใช่ใบเสนอราคาจริงของเรา ไม่เอามาถ่วง avg
         COMPETITOR_TYPES = {"คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"}
-        # {(sku, group): avg_cost}  group = "chub" | "normal"
+        # {(order_no, sku, group): avg_cost}  group = "chub" | "normal"
         sku_avg_map  = {}
         comp_avg_map = {}
         if ("รายการสินค้า" in df.columns and "ต้นทุนรวม (รวมย้าย)" in df.columns
@@ -1332,24 +1334,27 @@ class DashboardCostScreen(CTkFrame):
             df_cost = df_cost[~df_cost["Select"].astype(str).str.strip().isin(COMPETITOR_TYPES)]
             df_cost["_grp"] = df_cost["Select"].astype(str).str.strip().apply(
                 lambda s: "chub" if s in CHUB_TYPES else "normal")
+            df_cost["_order"] = (df_cost["Order No."].astype(str).str.strip()
+                                  if "Order No." in df_cost.columns else "")
 
-            # avg แยกตาม (SKU, กลุ่ม) — ไม่ปน chub กับ normal
-            grp_avg   = df_cost.groupby(["รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
-            grp_count = df_cost.groupby(["รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
-            for (sku, grp), avg in grp_avg.items():
-                sku_avg_map[(sku, grp)] = (avg, int(grp_count.get((sku, grp), 1)))
+            # avg แยกตาม (Order No., SKU, กลุ่ม) — ไม่ปน order อื่นหรือ chub/normal ข้ามกัน
+            grp_avg   = df_cost.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
+            grp_count = df_cost.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
+            for (order_no, sku, grp), avg in grp_avg.items():
+                sku_avg_map[(order_no, sku, grp)] = (avg, int(grp_count.get((order_no, sku, grp), 1)))
 
             # comp_avg_map ไม่ใช้งานแล้ว (เก็บไว้เผื่อ)
             comp_avg_map = {}
 
-        # pre-compute: (SKU, grp) → row index ที่ถูก ✔ (ใช้แสดง avg. cost/per order)
-        _sku_selected_idx = {}   # key = (sku, grp)
+        # pre-compute: (Order No., SKU, grp) → row index ที่ถูก ✔ (ใช้แสดง avg. cost/per order)
+        _sku_selected_idx = {}   # key = (order_no, sku, grp)
         for _idx, _r in df.iterrows():
             _sel = str(_r.get("Select", "")).strip()
             if _sel in SELECT_TYPES:
                 _sku = str(_r.get("รายการสินค้า", "")).strip()
                 _grp = "chub" if _sel in CHUB_TYPES else "normal"
-                _key = (_sku, _grp)
+                _order = str(_r.get("Order No.", "")).strip()
+                _key = (_order, _sku, _grp)
                 if _sku and _key not in _sku_selected_idx:
                     _sku_selected_idx[_key] = _idx
 
@@ -1371,13 +1376,14 @@ class DashboardCostScreen(CTkFrame):
                         row_data.append("")
                     continue
 
-                # 🟢 avg. cost/per order — แสดงที่ row ที่ถูก ✔ ของ (SKU, group) นั้น
+                # 🟢 avg. cost/per order — แสดงที่ row ที่ถูก ✔ ของ (Order No., SKU, group) นั้น
                 if dcol == "avg. cost/per\norder":
                     try:
                         sku     = str(row.get("รายการสินค้า", "")).strip()
                         sel_val = str(row.get("Select", "")).strip()
                         grp     = "chub" if sel_val in CHUB_TYPES else "normal"
-                        map_key = (sku, grp)
+                        order_no = str(row.get("Order No.", "")).strip()
+                        map_key = (order_no, sku, grp)
                         entry   = sku_avg_map.get(map_key)
                         sel_idx = _sku_selected_idx.get(map_key)
                         # แสดงเฉพาะ row ที่ถูก ✔ (ถ้าไม่มี ✔ → แสดง row แรกของกลุ่ม)
@@ -1397,7 +1403,7 @@ class DashboardCostScreen(CTkFrame):
 
                 # 🟢 Price competitiveness = (sel_cost - avg) / avg × 100
                 # แสดงเฉพาะ row ที่เป็น ✔ หรือ เทียบเพื่อชุบ ✔
-                # group key = (SKU, จำนวน, select type) — แยก ✔ vs เทียบเพื่อชุบ ✔
+                # group key = (Order No., SKU, select type) — แยก order/✔ vs เทียบเพื่อชุบ ✔ ไม่ให้ปนกัน
                 if dcol == "Price\nCompetitive\nness":
                     try:
                         sel_type = str(row.get("Select", "")).strip()
@@ -1408,7 +1414,8 @@ class DashboardCostScreen(CTkFrame):
                             qty      = pd.to_numeric(row.get("จำนวน", 0), errors='coerce')
                             cost     = pd.to_numeric(row.get("ต้นทุนรวม (รวมย้าย)", 0), errors='coerce')
                             grp      = "chub" if sel_type in CHUB_TYPES else "normal"
-                            entry    = sku_avg_map.get((sku, grp))
+                            order_no = str(row.get("Order No.", "")).strip()
+                            entry    = sku_avg_map.get((order_no, sku, grp))
                             if entry and cost and not pd.isna(cost):
                                 avg, cnt = entry
                                 if avg != 0 and cnt > 1:
@@ -1629,7 +1636,8 @@ class DashboardCostScreen(CTkFrame):
                         if not _sku or pd.isna(_cost) or _cost <= 0:
                             continue
                         _grp   = "chub" if _sel in CHUB_TYPES else "normal"
-                        _entry = sku_avg_map.get((_sku, _grp))
+                        _order_no = str(_row.get("Order No.", "")).strip()
+                        _entry = sku_avg_map.get((_order_no, _sku, _grp))
                         if _entry is None:
                             continue
                         _avg, _cnt = _entry

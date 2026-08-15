@@ -1,7 +1,57 @@
 import pandas as pd
 import numpy as np
 
-def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_fee=None, 
+
+def calculate_reserve_release_ratio(project_gp_pct):
+    """
+    งานโครงการ (Multi-Lot Project) — 3b GP True-Up ตอนปิดโปรเจกต์ (POL-KPI-PROJECT-001 หน้า 10):
+    ตัดสินว่า Commission Reserve ที่กันไว้ (50% ต่อ Lot) จะจ่ายคืนกี่ % ตาม GP จริงรวมทั้งโปรเจกต์
+        GP >= 15%        -> จ่ายเต็ม 100%
+        GP 7.50% - 14.99% -> จ่ายตามสัดส่วน = GP จริง / 15%  (เช่น GP=8% -> 8/15 = 53.33%, ตรงกับ
+                             ตัวอย่างในเอกสารเป๊ะ — ไม่ใช่ linear interpolation ระหว่าง 7.5-15%)
+        GP < 7.50% หรือติดลบ -> ริบทั้งหมด (0%)
+    คืนค่าเป็นสัดส่วน 0.0-1.0
+    """
+    if project_gp_pct >= 15:
+        return 1.0
+    if project_gp_pct >= 7.5:
+        return min(1.0, project_gp_pct / 15.0)
+    return 0.0
+
+
+def apply_project_lot_reserve_split(calculated_commission, comm_df):
+    """
+    งานโครงการ (Multi-Lot Project) — นโยบาย POL-KPI-PROJECT-001:
+    ยอดคอมมิชชั่นที่มาจาก SO ที่เป็น Lot ของโครงการ (คอลัมน์ comm_df['is_project_lot'] == True,
+    ซึ่งผู้เรียก (hr_screen.py) ต้องกรองมาแล้วว่าเป็น Lot ที่ครบ 3 เงื่อนไขเท่านั้น — Lot ที่ยังไม่ครบ
+    ต้องถูกตัดออกจาก comm_df ไปก่อนเรียกฟังก์ชันนี้ เพราะยังไม่นับ KPI/Commission เลยตามนโยบาย)
+    ต้องแบ่งจ่ายทันที 50% ที่เหลือกันไว้เป็น Commission Reserve รอ GP True-Up ตอนโปรเจกต์ปิด
+    ส่วนคอมมิชชั่นจากยอดขายปกติจ่ายเต็ม 100% เหมือนเดิม ใช้สูตรเดียวกันทั้ง Plan A และ Plan B
+    ตามตัวอย่างคำนวณในเอกสารนโยบาย (หน้า 9-10):
+        Commission_Project = calculated_commission × (LotSales / TotalSales)
+        Pay_Now  = (calculated_commission - Commission_Project) + Commission_Project × 0.50
+        Reserve  = Commission_Project × 0.50
+    คืนค่า (pay_now, reserve, has_project_lot) — ถ้าไม่มี Lot เลยในงวดนี้ pay_now = calculated_commission, reserve = 0
+    """
+    if 'is_project_lot' not in comm_df.columns or comm_df.empty:
+        return calculated_commission, 0.0, False
+
+    total_sales = comm_df['sales_service_amount'].sum()
+    lot_sales = comm_df.loc[comm_df['is_project_lot'] == True, 'sales_service_amount'].sum()
+
+    if total_sales <= 0 or lot_sales <= 0:
+        return calculated_commission, 0.0, False
+
+    commission_project = calculated_commission * (lot_sales / total_sales)
+    commission_normal = calculated_commission - commission_project
+
+    pay_now = commission_normal + (commission_project * 0.5)
+    reserve = commission_project * 0.5
+
+    return pay_now, reserve, True
+
+
+def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_fee=None,
                                  additional_deductions=None, incentives=None, 
                                  min_sales_target=500000):
     """
@@ -130,7 +180,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             initial_commission = 0.0
             calculated_commission = 0.0
 
-        gross_commission = calculated_commission + total_incentives
+        # งานโครงการ (Multi-Lot Project) — ต้องแบ่ง Pay Now/Reserve ก่อนคิดภาษี/ยอดโอนสุทธิ
+        # เพราะยอดที่โอนจริงงวดนี้ต้องเป็นแค่ Pay Now เท่านั้น ส่วน Reserve ยังไม่จ่าย รอ GP True-Up
+        lot_pay_now, lot_reserve, has_project_lot = apply_project_lot_reserve_split(calculated_commission, comm_df)
+        payout_base_commission = lot_pay_now if has_project_lot else calculated_commission
+
+        gross_commission = payout_base_commission + total_incentives
         pre_tax_commission = gross_commission - total_additional_deductions
         withholding_tax = pre_tax_commission * 0.03
         net_commission = pre_tax_commission - withholding_tax
@@ -173,20 +228,24 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         debug_info.append({"รายการ": "---", "ค่า": "---"})
         debug_info.append({"รายการ": "## 4. สรุปยอดสุทธิ", "ค่า": ""})
-        debug_info.append({"รายการ": "คอมมิชชั่นที่คำนวณได้รวม", "ค่า": f"{calculated_commission:,.2f}"})
-        
+        debug_info.append({"รายการ": "คอมมิชชั่นที่คำนวณได้รวม (ก่อนแบ่ง Lot)", "ค่า": f"{calculated_commission:,.2f}"})
+
+        if has_project_lot:
+            debug_info.append({"รายการ": "🏗️ จ่ายทันที (Pay Now) — งวดนี้", "ค่า": f"{lot_pay_now:,.2f}"})
+            debug_info.append({"รายการ": "🏗️ กันสำรอง (Reserve) — รอ GP True-Up", "ค่า": f"{lot_reserve:,.2f}"})
+
         for k, v in incentives.items():
             debug_info.append({"รายการ": f"(+) {k}", "ค่า": f"{v:,.2f}"})
-            
+
         debug_info.append({"รายการ": "ยอดคอมมิชชั่นขั้นต้น (Gross)", "ค่า": f"{gross_commission:,.2f}"})
-        
+
         for k, v in additional_deductions.items():
             debug_info.append({"รายการ": f"(-) {k}", "ค่า": f"{v:,.2f}"})
-            
+
         debug_info.append({"รายการ": "ยอดก่อนหักภาษี", "ค่า": f"{pre_tax_commission:,.2f}"})
         debug_info.append({"รายการ": "(-) ภาษีหัก ณ ที่จ่าย (3%)", "ค่า": f"{withholding_tax:,.2f}"})
         debug_info.append({"รายการ": "ยอดโอนสุทธิ (Net)", "ค่า": f"{net_commission:,.2f}"})
-        
+
         debug_df_output = pd.DataFrame(debug_info)
 
         so_breakdown_df = comm_df[[
@@ -221,18 +280,25 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             val_normal_sales, val_below_sales, initial_commission,
             total_brokerage_fee, OPERATING_FEE, calculated_commission
         ]
-        
+
+        if has_project_lot:
+            summary_desc.extend(["🏗️ จ่ายทันที (Pay Now) — งวดนี้", "🏗️ กันสำรอง (Reserve) — รอ GP True-Up"])
+            summary_val.extend([lot_pay_now, lot_reserve])
+
         for k, v in incentives.items(): summary_desc.append(f"(+) {k}"); summary_val.append(v)
         summary_desc.append("ยอดคอมมิชชั่นขั้นต้น (Gross)"); summary_val.append(gross_commission)
         for k, v in additional_deductions.items(): summary_desc.append(f"(-) {k}"); summary_val.append(v)
-        
+
         summary_desc.extend(["ยอดคอมมิชชั่นก่อนหักภาษี", "(-) หัก ณ ที่จ่าย 3%", "ยอดสรุปคอมหลังหัก ณ ที่จ่าย"])
         summary_val.extend([pre_tax_commission, withholding_tax, net_commission])
-        
+
         return {
             'type': 'summary_plan_a',
             'summary': pd.DataFrame({'description': summary_desc, 'value': summary_val}),
             'final_commission': calculated_commission,
+            'commission_pay_now': lot_pay_now,
+            'commission_reserve': lot_reserve,
+            'has_project_lot': has_project_lot,
             'so_breakdown_df': so_breakdown_df,
             'debug_df': debug_df_output 
         }
@@ -316,7 +382,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         commission_base_normal = commission_base
 
-        gross_commission = calculated_commission + total_incentives
+        # งานโครงการ (Multi-Lot Project) — ต้องแบ่ง Pay Now/Reserve ก่อนคิดภาษี/ยอดโอนสุทธิ
+        # เพราะยอดที่โอนจริงงวดนี้ต้องเป็นแค่ Pay Now เท่านั้น ส่วน Reserve ยังไม่จ่าย รอ GP True-Up
+        lot_pay_now, lot_reserve, has_project_lot = apply_project_lot_reserve_split(calculated_commission, comm_df)
+        payout_base_commission = lot_pay_now if has_project_lot else calculated_commission
+
+        gross_commission = payout_base_commission + total_incentives
         pre_tax_commission = gross_commission - total_additional_deductions
         withholding_tax = pre_tax_commission * 0.03
         net_commission = pre_tax_commission - withholding_tax
@@ -365,35 +436,43 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         debug_info.append({"รายการ": "---", "ค่า": "---"})
         debug_info.append({"รายการ": "## 4. สรุปยอดสุทธิ", "ค่า": ""})
-        debug_info.append({"รายการ": "คอมมิชชั่นที่คำนวณได้รวม", "ค่า": f"{calculated_commission:,.2f}"})
-        
+        debug_info.append({"รายการ": "คอมมิชชั่นที่คำนวณได้รวม (ก่อนแบ่ง Lot)", "ค่า": f"{calculated_commission:,.2f}"})
+
+        if has_project_lot:
+            debug_info.append({"รายการ": "🏗️ จ่ายทันที (Pay Now) — งวดนี้", "ค่า": f"{lot_pay_now:,.2f}"})
+            debug_info.append({"รายการ": "🏗️ กันสำรอง (Reserve) — รอ GP True-Up", "ค่า": f"{lot_reserve:,.2f}"})
+
         for k, v in incentives.items():
             debug_info.append({"รายการ": f"(+) {k}", "ค่า": f"{v:,.2f}"})
-            
+
         debug_info.append({"รายการ": "ยอดคอมมิชชั่นขั้นต้น (Gross)", "ค่า": f"{gross_commission:,.2f}"})
-        
+
         for k, v in additional_deductions.items():
             debug_info.append({"รายการ": f"(-) {k}", "ค่า": f"{v:,.2f}"})
-            
+
         debug_info.append({"รายการ": "ยอดก่อนหักภาษี", "ค่า": f"{pre_tax_commission:,.2f}"})
         debug_info.append({"รายการ": "(-) ภาษีหัก ณ ที่จ่าย (3%)", "ค่า": f"{withholding_tax:,.2f}"})
         debug_info.append({"รายการ": "ยอดโอนสุทธิ (Net)", "ค่า": f"{net_commission:,.2f}"})
-        
+
         debug_df_output = pd.DataFrame(debug_info)
 
         summary_desc = [
-            "ยอดขายรวม", "ยอดขาย Normal (Margin >= 10%)", "(-) หัก ค่าดำเนินการ (Operating Fee)", 
+            "ยอดขายรวม", "ยอดขาย Normal (Margin >= 10%)", "(-) หัก ค่าดำเนินการ (Operating Fee)",
             "ฐานคำนวณคอมฯ Normal", "ยอดรวมค่าคอมที่คำนวณได้"
         ]
         summary_val = [
-            total_monthly_sales, total_standard_sales, OPERATING_FEE, 
+            total_monthly_sales, total_standard_sales, OPERATING_FEE,
             commission_base_normal, calculated_commission
         ]
-        
+
+        if has_project_lot:
+            summary_desc.extend(["🏗️ จ่ายทันที (Pay Now) — งวดนี้", "🏗️ กันสำรอง (Reserve) — รอ GP True-Up"])
+            summary_val.extend([lot_pay_now, lot_reserve])
+
         for k, v in incentives.items(): summary_desc.append(f"(+) {k}"); summary_val.append(v)
         summary_desc.append("ยอดคอมมิชชั่นขั้นต้น (Gross)"); summary_val.append(gross_commission)
         for k, v in additional_deductions.items(): summary_desc.append(f"(-) {k}"); summary_val.append(v)
-        
+
         summary_desc.extend(["ยอดคอมมิชชั่นก่อนหักภาษี", "(-) หัก ณ ที่จ่าย 3%", "ยอดสรุปคอมหลังหัก ณ ที่จ่าย"])
         summary_val.extend([pre_tax_commission, withholding_tax, net_commission])
 
@@ -428,13 +507,16 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'profit': 'กำไรสุทธิ',
             'margin': 'Margin (%)'
         }, inplace=True)
-        
+
         return {
-            'type': 'summary_other', 
+            'type': 'summary_other',
             'data': pd.DataFrame({'description': summary_desc, 'value': summary_val}),
             'final_commission': calculated_commission,
+            'commission_pay_now': lot_pay_now,
+            'commission_reserve': lot_reserve,
+            'has_project_lot': has_project_lot,
             'so_breakdown_df': so_breakdown_df,
-            'debug_df': debug_df_output 
+            'debug_df': debug_df_output
         }
 
     # ==================================================================================
@@ -480,7 +562,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         else:
             calculated_commission = 0.0
 
-        gross_commission = calculated_commission + total_incentives
+        # งานโครงการ (Multi-Lot Project) — ต้องแบ่ง Pay Now/Reserve ก่อนคิดภาษี/ยอดโอนสุทธิ
+        # เพราะยอดที่โอนจริงงวดนี้ต้องเป็นแค่ Pay Now เท่านั้น ส่วน Reserve ยังไม่จ่าย รอ GP True-Up
+        lot_pay_now, lot_reserve, has_project_lot = apply_project_lot_reserve_split(calculated_commission, comm_df)
+        payout_base_commission = lot_pay_now if has_project_lot else calculated_commission
+
+        gross_commission = payout_base_commission + total_incentives
         pre_tax_commission = gross_commission - total_additional_deductions
         withholding_tax = pre_tax_commission * 0.03
         net_commission = pre_tax_commission - withholding_tax
@@ -527,23 +614,31 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         debug_details.append({"รายการ": "---", "ค่า": "---"})
         debug_details.append({"รายการ": "## 3. สรุปยอดสุทธิ", "ค่า": ""})
-        debug_details.append({"รายการ": "คอมมิชชั่นที่คำนวณได้รวม", "ค่า": f"{calculated_commission:,.2f}"})
-        
+        debug_details.append({"รายการ": "คอมมิชชั่นที่คำนวณได้รวม (ก่อนแบ่ง Lot)", "ค่า": f"{calculated_commission:,.2f}"})
+
+        if has_project_lot:
+            debug_details.append({"รายการ": "🏗️ จ่ายทันที (Pay Now) — งวดนี้", "ค่า": f"{lot_pay_now:,.2f}"})
+            debug_details.append({"รายการ": "🏗️ กันสำรอง (Reserve) — รอ GP True-Up", "ค่า": f"{lot_reserve:,.2f}"})
+
         for k, v in incentives.items():
             debug_details.append({"รายการ": f"(+) {k}", "ค่า": f"{v:,.2f}"})
-            
+
         debug_details.append({"รายการ": "ยอดคอมมิชชั่นขั้นต้น (Gross)", "ค่า": f"{gross_commission:,.2f}"})
-        
+
         for k, v in additional_deductions.items():
             debug_details.append({"รายการ": f"(-) {k}", "ค่า": f"{v:,.2f}"})
-            
+
         debug_details.append({"รายการ": "ยอดก่อนหักภาษี", "ค่า": f"{pre_tax_commission:,.2f}"})
         debug_details.append({"รายการ": "(-) ภาษีหัก ณ ที่จ่าย (3%)", "ค่า": f"{withholding_tax:,.2f}"})
         debug_details.append({"รายการ": "ยอดโอนสุทธิ (Net)", "ค่า": f"{net_commission:,.2f}"})
 
         summary_desc = ["ยอดขาย Tier 1", "ยอดขาย Tier 2", "ยอดขาย Tier 3", "ยอดรวมคอมที่คำนวณได้"]
         summary_val = [tier1_sales, tier2_sales, tier3_sales, calculated_commission]
-        
+
+        if has_project_lot:
+            summary_desc.extend(["🏗️ จ่ายทันที (Pay Now) — งวดนี้", "🏗️ กันสำรอง (Reserve) — รอ GP True-Up"])
+            summary_val.extend([lot_pay_now, lot_reserve])
+
         summary_desc.append("ยอดคอมมิชชั่นขั้นต้น (Gross Commission)"); summary_val.append(gross_commission)
         
         for k, v in additional_deductions.items():
@@ -587,9 +682,12 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         }, inplace=True)
         
         return {
-            'type': 'summary_other', 
+            'type': 'summary_other',
             'data': pd.DataFrame({'description': summary_desc, 'value': summary_val}),
             'final_commission': calculated_commission,
+            'commission_pay_now': lot_pay_now,
+            'commission_reserve': lot_reserve,
+            'has_project_lot': has_project_lot,
             'debug_df': pd.DataFrame(debug_details),
             'so_breakdown_df': so_breakdown_df
         }

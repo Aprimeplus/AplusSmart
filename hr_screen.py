@@ -21,6 +21,7 @@ import os
 import shutil
 from tkinter import font as tkfont
 from outstanding_dashboard_tab import OutstandingDashboardTab
+from project_screen import _center_and_style_popup
 # --- START: แก้ไขการ Import และลงทะเบียนฟอนต์ ---
 import matplotlib
 matplotlib.use('TkAgg')
@@ -461,13 +462,20 @@ class PayoutConfirmDialog(CTkToplevel):
                    "พฤศจิกายน", "ธันวาคม"]
 
     def __init__(self, master, period_text, val_gross, val_wht, val_net,
-                 comm_df, selected_year, selected_month):
+                 comm_df, selected_year, selected_month,
+                 has_project_lot=False, lot_pay_now=None, lot_reserve=None,
+                 reserve_release_net=None, reserve_release_count=0):
         super().__init__(master)
         self.result = False
         self.title("ยืนยันการจ่ายคอมมิชชั่น")
         self.resizable(False, True)
         self.grab_set()
         self.transient(master)
+        self._has_project_lot = has_project_lot
+        self._lot_pay_now = lot_pay_now
+        self._lot_reserve = lot_reserve
+        self._reserve_release_net = reserve_release_net
+        self._reserve_release_count = reserve_release_count
 
         # ---- แยก SO งวดปัจจุบัน vs ตกหล่น ----
         self._current_rows = []
@@ -495,7 +503,7 @@ class PayoutConfirmDialog(CTkToplevel):
         W = 560
         self._build_ui(period_text, val_gross, val_wht, val_net)
         self.update_idletasks()
-        H = min(self.winfo_reqheight() + 20, 680)
+        H = min(self.winfo_reqheight() + 20, 860)
         self._center(master, W, H)
         self.geometry(f"{W}x{H}")
 
@@ -535,13 +543,43 @@ class PayoutConfirmDialog(CTkToplevel):
         fin_row(fin_box, 3, "✅  ยอดโอนสุทธิ (Net)",
                 f"{val_net:,.2f} บาท", color="#16A34A", bold=True)
 
+        # ── งานโครงการ (Multi-Lot Project) — Reserve 50/50 ────────────────
+        if self._has_project_lot and self._lot_reserve is not None:
+            lot_box = CTkFrame(body, fg_color="#FFFBEB", corner_radius=10,
+                                border_width=1, border_color="#FDE68A")
+            lot_box.pack(fill="x", pady=(0, 10))
+            lot_box.grid_columnconfigure(1, weight=1)
+            CTkLabel(lot_box, text="🏗️  รอบนี้มีงานโครงการ (Lot) — แบ่งจ่าย 50/50",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#92400E").grid(row=0, column=0, columnspan=2, sticky="w",
+                                                 padx=14, pady=(10, 4))
+            fin_row(lot_box, 1, "จ่ายทันที (รวมในยอด Net ด้านบนแล้ว)",
+                    f"{self._lot_pay_now:,.2f} บาท", color="#166534")
+            fin_row(lot_box, 2, "กันสำรอง (Reserve) — รอ GP True-Up ตอนปิดโปรเจกต์",
+                    f"{self._lot_reserve:,.2f} บาท", color="#B45309", bold=True)
+            CTkLabel(lot_box, text="", height=1).grid(row=3, column=0, pady=(0, 4))
+
+        # ── งานโครงการ — Reserve ที่ปลดล็อคจากโปรเจกต์ที่ปิดแล้ว (GP True-Up) ────
+        if self._reserve_release_net is not None:
+            release_box = CTkFrame(body, fg_color="#ECFDF5", corner_radius=10,
+                                    border_width=1, border_color="#6EE7B7")
+            release_box.pack(fill="x", pady=(0, 10))
+            release_box.grid_columnconfigure(1, weight=1)
+            CTkLabel(release_box, text=f"🔓  Reserve ที่ปลดล็อคจากโปรเจกต์ที่ปิดแล้ว ({self._reserve_release_count} รายการ)",
+                     font=CTkFont(size=12, weight="bold"),
+                     text_color="#065F46").grid(row=0, column=0, columnspan=2, sticky="w",
+                                                 padx=14, pady=(10, 4))
+            fin_row(release_box, 1, "สุทธิ (รวมในยอด Net ด้านบนแล้ว)",
+                    f"{self._reserve_release_net:,.2f} บาท", color="#065F46", bold=True)
+            CTkLabel(release_box, text="", height=1).grid(row=2, column=0, pady=(0, 4))
+
         # ── รายการ SO ───────────────────────────────────────────────────
         total = len(self._current_rows) + len(self._old_rows)
         CTkLabel(body,
                  text=f"📦  รายการ SO ทั้งหมด ({total} รายการ)",
                  font=CTkFont(size=13, weight="bold")).pack(anchor="w", pady=(4, 4))
 
-        so_scroll = CTkScrollableFrame(body, height=230, fg_color="#F8F9FA", corner_radius=8)
+        so_scroll = CTkScrollableFrame(body, height=340, fg_color="#F8F9FA", corner_radius=8)
         so_scroll.pack(fill="x")
 
         # งวดปัจจุบัน
@@ -765,10 +803,12 @@ class HRScreen(CTkFrame):
         self.compare_commission_tab = self.commission_tabs.add("1. ตรวจสอบ (Verify)")
         self.process_commission_tab = self.commission_tabs.add("2. คำนวณ & จ่าย")
         self.payout_history_tab = self.commission_tabs.add("3. ประวัติการจ่าย")
+        self.reserve_tab = self.commission_tabs.add("4. Reserve งานโครงการ")
 
         self._create_compare_commission_tab(self.compare_commission_tab)
         self._create_process_commission_tab(self.process_commission_tab)
         self._create_payout_history_tab(self.payout_history_tab)
+        self._create_reserve_tab(self.reserve_tab)
         
         # ------------------------------------------------------------------
         
@@ -776,7 +816,8 @@ class HRScreen(CTkFrame):
         self.after(100, self._initial_load)
         self._sales_mode_loaded = False 
         self._pu_mode_loaded = False 
-        self._payout_history_loaded = False 
+        self._payout_history_loaded = False
+        self._reserve_tab_loaded = False
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
 
     def _get_special_service_amounts(self, so_ids):
@@ -1430,15 +1471,18 @@ class HRScreen(CTkFrame):
                 self._initial_load_process_commission(); self._process_commission_loaded = True
             elif selected_sub_tab == "3. ประวัติการจ่าย" and not self._payout_history_loaded:
                 self._load_payout_history(); self._payout_history_loaded = True
-            
+            elif selected_sub_tab == "4. Reserve งานโครงการ" and not self._reserve_tab_loaded:
+                self._load_reserve_summary(); self._reserve_tab_loaded = True
+
             # Refresh
-            if selected_sub_tab == "2. คำนวณ & จ่าย": 
+            if selected_sub_tab == "2. คำนวณ & จ่าย":
                 # 🔥 [จุดแก้ที่ 1] บังคับให้ Dropdown ชื่อเซลส์ เปลี่ยนเป็นคนที่เพิ่งตรวจเสร็จ
                 if hasattr(self, 'last_verified_sale') and self.last_verified_sale in self.active_sales_keys:
                     self.selected_sale_for_process.set(self.last_verified_sale)
                 self._on_sale_selected_for_process()
-                
+
             elif selected_sub_tab == "3. ประวัติการจ่าย": self._load_payout_history()
+            elif selected_sub_tab == "4. Reserve งานโครงการ": self._load_reserve_summary()
 
     def _show_calculation_details(self):
         """แสดงรายละเอียดการคำนวณในหน้าต่างใหม่ (ฉบับกันตาย เปิดได้ 100%)"""
@@ -1634,6 +1678,281 @@ class HRScreen(CTkFrame):
         self.payout_history_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
         self.payout_history_frame.grid_columnconfigure(0, weight=1)
         self.payout_history_frame.grid_rowconfigure(0, weight=1)
+
+    def _create_reserve_tab(self, parent_tab):
+        """หน้าจอสรุป Commission Reserve ของงานโครงการ (Multi-Lot) — ให้ HR/Director ดูว่ามี
+        Reserve ค้างอยู่เท่าไหร่ ต่อโปรเจกต์ไหน ต่อเซลส์คนไหน (ยังไม่มี GP True-Up เฟส 3
+        ตอนนี้ทุกก้อนจะเป็นสถานะ Pending หมด แต่โครงสร้างรองรับ Paid/Forfeited ในอนาคต)"""
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(2, weight=1)
+
+        top_bar = CTkFrame(parent_tab, fg_color="transparent")
+        top_bar.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        CTkLabel(top_bar, text="🏗️ สรุปยอด Reserve งานโครงการ (Multi-Lot Project)",
+                 font=CTkFont(size=15, weight="bold")).pack(side="left")
+        CTkButton(top_bar, text="🔄 รีเฟรช", width=100,
+                  command=self._load_reserve_summary).pack(side="right")
+
+        self.reserve_cards_frame = CTkFrame(parent_tab, fg_color="transparent")
+        self.reserve_cards_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+        self.reserve_cards_frame.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="card")
+
+        self.reserve_tables_frame = CTkFrame(parent_tab, fg_color="transparent")
+        self.reserve_tables_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        self.reserve_tables_frame.grid_columnconfigure(0, weight=1)
+        self.reserve_tables_frame.grid_rowconfigure(0, weight=1)
+
+    def _reserve_summary_card(self, parent, col, title, value_text, color, caption=None):
+        card = CTkFrame(parent, fg_color=color, corner_radius=10)
+        card.grid(row=0, column=col, padx=6, sticky="nsew")
+        CTkLabel(card, text=title, font=CTkFont(size=12), text_color="white").pack(anchor="w", padx=14, pady=(12, 0))
+        CTkLabel(card, text=value_text, font=CTkFont(size=20, weight="bold"),
+                 text_color="white").pack(anchor="w", padx=14, pady=(0, 2 if caption else 12))
+        if caption:
+            CTkLabel(card, text=caption, font=CTkFont(size=10), text_color="#E5E7EB",
+                     wraplength=200, justify="left").pack(anchor="w", padx=14, pady=(0, 12))
+
+    def _load_reserve_summary(self):
+        """ดึงข้อมูล Reserve ทั้งหมดจาก commissions (join project_lots/projects/sales_users) มาสรุป"""
+        for widget in self.reserve_cards_frame.winfo_children(): widget.destroy()
+        for widget in self.reserve_tables_frame.winfo_children(): widget.destroy()
+
+        try:
+            query = """
+                SELECT c.so_number, c.sale_key, su.sale_name,
+                       p.id AS project_id, p.project_code, p.project_name, p.status AS project_status,
+                       pl.lot_number, pl.lot_name,
+                       COALESCE(c.commission_now_amount, 0) AS commission_now_amount,
+                       COALESCE(c.commission_reserve_amount, 0) AS commission_reserve_amount,
+                       COALESCE(c.reserve_status, 'Pending') AS reserve_status,
+                       c.reserve_decided_at, c.reserve_payout_id,
+                       COALESCE(rrq.release_amount, 0) AS released_amount,
+                       rrq.status AS release_queue_status
+                FROM commissions c
+                JOIN project_lots pl ON pl.so_number = c.so_number
+                JOIN projects p ON p.id = pl.project_id
+                LEFT JOIN sales_users su ON su.sale_key = c.sale_key
+                LEFT JOIN reserve_release_queue rrq ON rrq.commission_id = c.id
+                WHERE c.is_active = 1
+                  AND c.commission_reserve_amount IS NOT NULL
+                ORDER BY c.reserve_decided_at DESC NULLS LAST
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+        except Exception as e:
+            CTkLabel(self.reserve_tables_frame, text=f"โหลดข้อมูลไม่สำเร็จ: {e}",
+                      text_color="red").pack(pady=20)
+            traceback.print_exc()
+            return
+
+        _not_ready_caption = "(ยังไม่เปิดใช้งาน — รอฟีเจอร์ปิดโปรเจกต์)"
+
+        if df.empty:
+            self._reserve_summary_card(self.reserve_cards_frame, 0, "Reserve รวมทั้งหมด (Pending)", "0.00 บาท", "#B45309")
+            self._reserve_summary_card(self.reserve_cards_frame, 1, "จ่ายแล้ว (True-Up)", "0.00 บาท", "#16A34A", _not_ready_caption)
+            self._reserve_summary_card(self.reserve_cards_frame, 2, "ริบแล้ว (True-Up)", "0.00 บาท", "#DC2626", _not_ready_caption)
+            self._reserve_summary_card(self.reserve_cards_frame, 3, "จำนวนรายการ", "0", "#2563EB")
+            CTkLabel(self.reserve_tables_frame, text="ยังไม่มี SO ที่บันทึก Reserve ไว้",
+                      text_color="gray").pack(pady=20)
+            return
+
+        pending_mask = df['reserve_status'] == 'Pending'
+        # Paid/PartiallyPaid ทั้งคู่นับเป็น "จ่ายแล้ว" แต่ใช้ยอดที่ปล่อยจริง (released_amount จาก
+        # reserve_release_queue) ไม่ใช่ commission_reserve_amount เต็มก้อน เพราะ PartiallyPaid จ่ายไม่เต็ม
+        paid_mask = df['reserve_status'].isin(['Paid', 'PartiallyPaid'])
+        forfeited_mask = df['reserve_status'] == 'Forfeited'
+        total_pending = df.loc[pending_mask, 'commission_reserve_amount'].sum()
+        total_paid = df.loc[paid_mask, 'released_amount'].sum()
+        # ริบแล้ว = ทั้ง Forfeited เต็มก้อน + ส่วนที่ริบของ PartiallyPaid (reserve - released)
+        total_forfeited = (df.loc[forfeited_mask, 'commission_reserve_amount'].sum()
+                            + (df.loc[df['reserve_status'] == 'PartiallyPaid', 'commission_reserve_amount']
+                               - df.loc[df['reserve_status'] == 'PartiallyPaid', 'released_amount']).sum())
+
+        self._reserve_summary_card(self.reserve_cards_frame, 0, "Reserve รวมที่ยังค้าง (Pending)",
+                                    f"{total_pending:,.2f} บาท", "#B45309")
+        self._reserve_summary_card(self.reserve_cards_frame, 1, "จ่ายแล้ว (True-Up)",
+                                    f"{total_paid:,.2f} บาท", "#16A34A",
+                                    None if paid_mask.any() else _not_ready_caption)
+        self._reserve_summary_card(self.reserve_cards_frame, 2, "ริบแล้ว (True-Up)",
+                                    f"{total_forfeited:,.2f} บาท", "#DC2626",
+                                    None if forfeited_mask.any() else _not_ready_caption)
+        self._reserve_summary_card(self.reserve_cards_frame, 3, "จำนวนรายการ Lot ที่มี Reserve",
+                                    f"{len(df):,}", "#2563EB")
+
+        try:
+            sub_tabs = CTkTabview(self.reserve_tables_frame, corner_radius=10)
+            sub_tabs.grid(row=0, column=0, sticky="nsew")
+            by_project_tab = sub_tabs.add("แยกตามโปรเจกต์")
+            by_sale_tab = sub_tabs.add("แยกตามเซลส์")
+            detail_tab = sub_tabs.add("รายละเอียดทุก SO")
+
+            # --- แยกตามโปรเจกต์ ---
+            proj_group = df.groupby(['project_code', 'project_name', 'project_status'], as_index=False).agg(
+                จำนวน_Lot=('so_number', 'count'),
+                Reserve_รวม=('commission_reserve_amount', 'sum'),
+            )
+
+            def _open_project_detail(project_code):
+                sub = df[df['project_code'] == project_code]
+                proj_name = sub['project_name'].iloc[0] if not sub.empty else ""
+                self._show_reserve_detail_popup(
+                    f"📁 {project_code} — {proj_name}",
+                    f"รายการ SO ที่มี Reserve ในโครงการนี้ ({len(sub)} รายการ)",
+                    sub)
+
+            self._build_reserve_treeview(
+                by_project_tab, proj_group,
+                header_map={'project_code': 'รหัสโครงการ', 'project_name': 'ชื่อโครงการ',
+                            'project_status': 'สถานะโครงการ', 'จำนวน_Lot': 'จำนวน Lot',
+                            'Reserve_รวม': 'Reserve รวม (บาท)'},
+                money_cols=['Reserve_รวม'],
+                key_col='project_code', on_row_double_click=_open_project_detail)
+
+            # --- แยกตามเซลส์ ---
+            sale_group = df.groupby(['sale_key', 'sale_name'], as_index=False).agg(
+                จำนวน_Lot=('so_number', 'count'),
+                Reserve_รวม=('commission_reserve_amount', 'sum'),
+            )
+
+            def _open_sale_detail(sale_key):
+                sub = df[df['sale_key'] == sale_key]
+                sale_name = sub['sale_name'].iloc[0] if not sub.empty else sale_key
+                self._show_reserve_detail_popup(
+                    f"👤 {sale_key} — {sale_name}",
+                    f"รายการ SO ที่มี Reserve ของเซลส์คนนี้ ({len(sub)} รายการ)",
+                    sub)
+
+            self._build_reserve_treeview(
+                by_sale_tab, sale_group,
+                header_map={'sale_key': 'รหัสเซลส์', 'sale_name': 'ชื่อเซลส์',
+                            'จำนวน_Lot': 'จำนวน Lot', 'Reserve_รวม': 'Reserve รวม (บาท)'},
+                money_cols=['Reserve_รวม'],
+                key_col='sale_key', on_row_double_click=_open_sale_detail)
+
+            # --- รายละเอียดทุก SO ---
+            def _open_so_detail(so_number):
+                sub = df[df['so_number'] == so_number]
+                self._show_reserve_detail_popup(f"📦 {so_number}", "รายละเอียด Reserve ของ SO นี้", sub)
+
+            detail_df = df[self._RESERVE_DETAIL_COLS].copy()
+            self._build_reserve_treeview(
+                detail_tab, detail_df,
+                header_map=self._RESERVE_DETAIL_HEADER_MAP,
+                money_cols=self._RESERVE_DETAIL_MONEY_COLS,
+                key_col='so_number', on_row_double_click=_open_so_detail)
+        except Exception as e:
+            CTkLabel(self.reserve_tables_frame, text=f"สร้างตารางไม่สำเร็จ: {e}",
+                      text_color="red").pack(pady=20)
+            traceback.print_exc()
+
+    def _build_reserve_treeview(self, parent, df, header_map=None, money_cols=None,
+                                 on_row_double_click=None, key_col=None):
+        """header_map: {raw_col: ป้ายภาษาไทยที่จะแสดง} (ถ้าไม่ส่ง จะใช้ชื่อคอลัมน์ดิบเป็นหัวตาราง)
+        money_cols: list คอลัมน์ดิบที่ต้อง format เป็นทศนิยม 2 ตำแหน่ง
+        on_row_double_click(key_value): เรียกตอน double-click แถว โดย key_value คือค่าคอลัมน์ key_col
+        (คอลัมน์ดิบ — ใช้หา row ต้นฉบับกลับไปกรองข้อมูลเปิด popup รายละเอียด)"""
+        header_map = header_map or {}
+        money_cols = set(money_cols or [])
+
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(0, weight=1)
+
+        tree_frame = CTkFrame(parent, fg_color="transparent")
+        tree_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Reserve.Treeview.Heading", font=self.header_font_table, background="#B45309", foreground="white")
+        style.configure("Reserve.Treeview", rowheight=28, font=self.entry_font)
+
+        columns = list(df.columns)
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", style="Reserve.Treeview", height=12)
+        v_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
+
+        for col in columns:
+            label = header_map.get(col, col)
+            anchor = 'e' if col in money_cols else 'w'
+            tree.heading(col, text=label)
+            # กว้างตามความยาวเนื้อหาจริง (หัวตาราง vs ค่าที่ยาวที่สุดในคอลัมน์นั้น) กันตัดคำ
+            longest = max([len(str(label))] + [len(str(v)) for v in df[col].astype(str).tolist()])
+            width = max(90, min(260, longest * 9 + 24))
+            tree.column(col, width=width, minwidth=70, anchor=anchor, stretch=True)
+
+        row_keys = {}
+        for _, row in df.iterrows():
+            values = []
+            for col in columns:
+                v = row[col]
+                if col in money_cols:
+                    values.append(f"{float(v):,.2f}" if pd.notna(v) else "-")
+                elif pd.isna(v):
+                    values.append("-")
+                else:
+                    values.append(str(v))
+            iid = tree.insert("", "end", values=values)
+            if key_col is not None and key_col in row.index:
+                row_keys[iid] = row[key_col]
+
+        if on_row_double_click is not None and key_col is not None:
+            CTkLabel(parent, text="💡 ดับเบิลคลิกที่แถวเพื่อดูรายละเอียด", font=CTkFont(size=11),
+                      text_color="gray50").grid(row=1, column=0, sticky="w", padx=5, pady=(2, 0))
+
+            def _on_double(event):
+                item = tree.identify_row(event.y)
+                if not item or item not in row_keys:
+                    return
+                on_row_double_click(row_keys[item])
+
+            tree.bind("<Double-1>", _on_double)
+
+    # คอลัมน์ดิบ + ป้ายแสดงผล ของตาราง "รายละเอียดทุก SO" — ใช้ร่วมกันทั้งแท็บหลักและ popup
+    _RESERVE_DETAIL_HEADER_MAP = {
+        'so_number': 'SO', 'sale_name': 'เซลส์', 'project_code': 'โครงการ',
+        'lot_number': 'Lot #', 'lot_name': 'ชื่อ Lot',
+        'commission_now_amount': 'จ่ายทันที (บาท)', 'commission_reserve_amount': 'Reserve (บาท)',
+        'reserve_status': 'สถานะ', 'reserve_decided_at': 'วันที่บันทึก'
+    }
+    _RESERVE_DETAIL_MONEY_COLS = ['commission_now_amount', 'commission_reserve_amount']
+    _RESERVE_DETAIL_COLS = ['so_number', 'sale_name', 'project_code', 'lot_number', 'lot_name',
+                             'commission_now_amount', 'commission_reserve_amount', 'reserve_status',
+                             'reserve_decided_at']
+
+    def _show_reserve_detail_popup(self, title, subtitle, detail_rows_df):
+        """Popup อ่านอย่างเดียว โชว์รายการ SO ที่มี Reserve ตรงกับ project/เซลส์ที่ถูกดับเบิลคลิก
+        (detail_rows_df ต้องเป็น subset ของ df ดิบ ที่มีคอลัมน์ตาม _RESERVE_DETAIL_COLS)"""
+        win = CTkToplevel(self.winfo_toplevel())
+        win.title(title)
+        win.grab_set()
+        win.transient(self.winfo_toplevel())
+
+        CTkLabel(win, text=title, font=CTkFont(size=16, weight="bold")).pack(anchor="w", padx=16, pady=(14, 0))
+        if subtitle:
+            CTkLabel(win, text=subtitle, font=CTkFont(size=12), text_color="gray50").pack(anchor="w", padx=16, pady=(0, 8))
+
+        table_frame = CTkFrame(win, fg_color="transparent")
+        table_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        display_df = detail_rows_df[self._RESERVE_DETAIL_COLS].copy()
+        self._build_reserve_treeview(table_frame, display_df,
+                                      header_map=self._RESERVE_DETAIL_HEADER_MAP,
+                                      money_cols=self._RESERVE_DETAIL_MONEY_COLS)
+
+        total_reserve = pd.to_numeric(detail_rows_df['commission_reserve_amount'], errors='coerce').fillna(0).sum()
+        CTkLabel(win, text=f"รวม Reserve: {total_reserve:,.2f} บาท",
+                 font=CTkFont(size=13, weight="bold"), text_color="#B45309").pack(anchor="e", padx=16, pady=(0, 8))
+
+        CTkButton(win, text="ปิด", width=100, command=win.destroy).pack(pady=(0, 14))
+
+        win.update_idletasks()
+        n_cols = len(self._RESERVE_DETAIL_COLS)
+        W = min(1300, max(760, n_cols * 150))
+        H = min(560, 220 + 30 * (len(detail_rows_df) + 2))
+        _center_and_style_popup(win, self, W, H)
 
     def _load_payout_history(self):
         """(เวอร์ชันแก้ไข) โหลดประวัติการจ่ายเงิน พร้อมดึงยอดขาย Normal/BelowT"""
@@ -2368,6 +2687,8 @@ class HRScreen(CTkFrame):
                     COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
                 FROM commissions sc
                 WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
+                  AND sc.is_active = 1
+                  AND sc.status NOT IN ('Cancelled', 'Cancelled by PU')
                   AND {sc_date_filter}
             """
             sc_params = date_params  # ใช้เฉพาะ date params (ไม่รวม sale filter)
@@ -4655,6 +4976,38 @@ class HRScreen(CTkFrame):
                         if col in self.current_comm_df.columns:
                             self.current_comm_df[col] = self.current_comm_df[col].fillna(0)
 
+            # --- งานโครงการ (Multi-Lot Project) — POL-KPI-PROJECT-001 ---
+            # SO ที่เป็น Lot แต่ยังไม่ครบ 3 เงื่อนไข (ส่งครบ/วางบิลแล้ว/เก็บเงินครบ) ต้องตัดออกจาก
+            # การคำนวณทั้งหมดไปเลย (ยังไม่นับ KPI/Commission ตามนโยบาย) ส่วน Lot ที่ครบแล้วติดธง
+            # is_project_lot=True ไว้ให้ business_logic.py เอาไปคำนวณ 50/50 (จ่ายทันที/Reserve)
+            if not self.current_comm_df.empty:
+                so_list_for_lot_check = self.current_comm_df['so_number'].dropna().tolist()
+                lot_status_df = pd.DataFrame(columns=['so_number', 'kpi_qualified_flag'])
+                if so_list_for_lot_check:
+                    try:
+                        # self.pg_engine เป็น SQLAlchemy engine — IN-list แบบ params=list ใช้กับ
+                        # engine นี้ไม่ได้ (ต้องเป็น tuple/dict) จึง escape แล้ว interpolate ตรงๆ
+                        # เหมือนแพทเทิร์นเดิมที่ใช้กับ so_ids_str ใน _get_special_service_amounts
+                        so_list_sql = ", ".join(
+                            "'" + s.replace("'", "''") + "'" for s in so_list_for_lot_check)
+                        lot_status_df = pd.read_sql_query(f"""
+                            SELECT so_number, kpi_qualified_flag
+                            FROM project_lots
+                            WHERE so_number IN ({so_list_sql})
+                        """, self.pg_engine)
+                    except Exception as _e:
+                        print(f"Error loading project_lots status: {_e}")
+
+                if not lot_status_df.empty:
+                    lot_map = dict(zip(lot_status_df['so_number'], lot_status_df['kpi_qualified_flag']))
+                    self.current_comm_df['is_project_lot'] = self.current_comm_df['so_number'].isin(lot_map.keys())
+                    _qualified = self.current_comm_df['so_number'].map(lot_map).fillna(False).astype(bool)
+                    _drop_mask = self.current_comm_df['is_project_lot'] & (~_qualified)
+                    if _drop_mask.any():
+                        self.current_comm_df = self.current_comm_df[~_drop_mask].reset_index(drop=True)
+                else:
+                    self.current_comm_df['is_project_lot'] = False
+
             # ยอดขายรวม — ใช้ sales_service_amount เหมือน CalculationDetailViewer (col_mapping ลำดับแรก)
             # fallback → final_sales_amount ถ้าไม่มี
             _sales_col = ('sales_service_amount'
@@ -4970,6 +5323,108 @@ class HRScreen(CTkFrame):
             return {"ค่าใช้จ่าย/ดำเนินการ": val} if val > 0 else {}
         except: return {}
 
+    def _build_lot_breakdown_table(self, container, final_result):
+        """ตารางย่อยแยกราย SO ว่า SO ไหนเป็น Lot ได้ส่วนแบ่งคอมฯ โครงการเท่าไหร่ จ่ายทันที/กันสำรองเท่าไหร่"""
+        if not hasattr(self, 'current_comm_df') or self.current_comm_df is None or self.current_comm_df.empty:
+            return
+        if 'is_project_lot' not in self.current_comm_df.columns:
+            return
+
+        lot_rows = self.current_comm_df[self.current_comm_df['is_project_lot'] == True]
+        if lot_rows.empty:
+            return
+
+        lot_sales_total = pd.to_numeric(lot_rows['sales_service_amount'], errors='coerce').fillna(0).sum()
+        total_reserve = float(final_result.get('commission_reserve', 0.0))
+        total_commission_project = total_reserve * 2
+        if lot_sales_total <= 0:
+            return
+
+        CTkLabel(
+            container, text="รายละเอียดคอมฯ โครงการ แยกตาม SO",
+            font=CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=10, pady=(0, 2))
+
+        columns_to_show = ["so_number", "sales_amount", "commission_project", "pay_now", "reserve"]
+        header_map = {
+            "so_number": "SO (Lot)", "sales_amount": "ยอดขาย Lot",
+            "commission_project": "ส่วนแบ่งคอมฯ โครงการ", "pay_now": "จ่ายทันที (50%)",
+            "reserve": "กันสำรอง (50%)",
+        }
+
+        tree_frame = CTkFrame(container, fg_color="transparent")
+        tree_frame.pack(fill="x", padx=10, pady=(0, 8))
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("LotBreakdown.Treeview.Heading", font=self.header_font_table, background="#B45309", foreground="white")
+        style.configure("LotBreakdown.Treeview", rowheight=28, font=self.entry_font)
+
+        tree = ttk.Treeview(tree_frame, columns=columns_to_show, show="headings",
+                             style="LotBreakdown.Treeview", height=min(len(lot_rows), 8))
+        tree.pack(fill="x", expand=True)
+
+        for col_id in columns_to_show:
+            anchor = 'w' if col_id == "so_number" else 'e'
+            tree.heading(col_id, text=header_map[col_id])
+            tree.column(col_id, width=180 if col_id == "so_number" else 150, anchor=anchor)
+
+        for _, row in lot_rows.iterrows():
+            row_sales = float(pd.to_numeric(row.get('sales_service_amount', 0), errors='coerce') or 0)
+            row_share = row_sales / lot_sales_total
+            row_project = total_commission_project * row_share
+            row_now = row_project * 0.5
+            row_reserve = row_project * 0.5
+            tree.insert("", "end", values=(
+                row.get('so_number', ''),
+                f"{row_sales:,.2f}",
+                f"{row_project:,.2f}",
+                f"{row_now:,.2f}",
+                f"{row_reserve:,.2f}",
+            ))
+
+    def _load_pending_reserve_release(self, container):
+        """3b GP True-Up — ดึงยอด Reserve ที่โปรเจกต์ปิดแล้วตัดสินใจ 'จ่ายคืน' (release_amount) ของเซลส์
+        คนนี้ที่ยังไม่เคยถูกนำไปรวมจ่ายในรอบไหนเลย (status='Pending' ใน reserve_release_queue) มาบวกเข้า
+        ยอดโอนสุทธิของรอบนี้ — หัก ณ ที่จ่าย 3% เหมือนคอมฯ ปกติ เพราะถือเป็นรายได้ ณ วันที่จ่ายจริง"""
+        self.pending_reserve_release_df = pd.DataFrame()
+        self.pending_reserve_release_total = 0.0
+        self.pending_reserve_release_net = 0.0
+        self.pending_reserve_release_wht = 0.0
+
+        sale_key = self.selected_sale_for_process.get()
+        try:
+            rq_df = pd.read_sql_query("""
+                SELECT id, so_number, release_amount, project_gp_pct
+                FROM reserve_release_queue
+                WHERE sale_key = %s AND status = 'Pending'
+                ORDER BY decided_at
+            """, self.pg_engine, params=(sale_key,))
+        except Exception as e:
+            CTkLabel(container, text=f"โหลดยอด Reserve ที่ปลดล็อคไม่สำเร็จ: {e}",
+                      text_color="red").pack(anchor="w", padx=10, pady=(4, 0))
+            return
+
+        if rq_df.empty:
+            return
+
+        self.pending_reserve_release_df = rq_df
+        total_release = float(rq_df['release_amount'].sum())
+        wht = total_release * 0.03
+        net = total_release - wht
+        self.pending_reserve_release_total = total_release
+        self.pending_reserve_release_net = net
+        self.pending_reserve_release_wht = wht
+
+        CTkLabel(
+            container,
+            text=(f"🔓 Reserve ที่ปลดล็อคจากโปรเจกต์ที่ปิดแล้ว (GP True-Up): {total_release:,.2f} บาท "
+                  f"— หัก ณ ที่จ่าย 3% ({wht:,.2f}) → สุทธิ {net:,.2f} บาท "
+                  f"({len(rq_df)} รายการ, รวมเข้ายอดโอนสุทธิรอบนี้แล้ว)"),
+            font=CTkFont(size=12, weight="bold"), text_color="#0F766E",
+            wraplength=900, justify="left"
+        ).pack(anchor="w", padx=10, pady=(4, 8))
+
     def _perform_final_calculation(self):
         """
         อ่านค่าจากหน้าจอและเรียก business_logic เพื่อคำนวณยอดสุทธิ
@@ -5058,7 +5513,22 @@ class HRScreen(CTkFrame):
 
             if summary_df is not None:
                 self._create_commission_summary_table(summary_df, container=self.final_summary_frame)
-                
+
+                # งานโครงการ (Multi-Lot Project) — โชว์ Reserve คร่าวๆ ตั้งแต่หน้าสรุป ก่อนกดยืนยันจ่าย
+                if final_result.get('has_project_lot'):
+                    _pay_now = final_result.get('commission_pay_now', 0.0)
+                    _reserve = final_result.get('commission_reserve', 0.0)
+                    CTkLabel(
+                        self.final_summary_frame,
+                        text=(f"🏗️ รอบนี้มีงานโครงการ (Lot) — จ่ายทันที {_pay_now:,.2f} บาท / "
+                              f"กันสำรอง (Reserve) {_reserve:,.2f} บาท รอปิดโปรเจกต์"),
+                        font=CTkFont(size=12, weight="bold"), text_color="#B45309"
+                    ).pack(anchor="w", padx=10, pady=(4, 8))
+                    self._build_lot_breakdown_table(self.final_summary_frame, final_result)
+
+                # งานโครงการ — Reserve ที่ปลดล็อคจากโปรเจกต์ที่ปิดไปแล้ว (GP True-Up) รอนำมารวมจ่ายรอบนี้
+                self._load_pending_reserve_release(self.final_summary_frame)
+
                 # เปิดปุ่ม Detail ให้กดได้ เพราะมีข้อมูลแล้ว
                 self.detail_button.configure(state="normal")
 
@@ -5110,7 +5580,16 @@ class HRScreen(CTkFrame):
             val_gross = get_val("Gross|ขั้นต้น")
             val_wht = get_val("หัก ณ ที่จ่าย|3%")
             val_net = get_val("ยอดสรุปคอมหลังหัก|สุทธิ|Net")
-            
+
+            # งานโครงการ — บวกยอด Reserve ที่ปลดล็อคจากโปรเจกต์ที่ปิดแล้ว (GP True-Up) เข้ายอดจ่ายจริงรอบนี้
+            reserve_release_total = getattr(self, 'pending_reserve_release_total', 0.0)
+            reserve_release_wht = getattr(self, 'pending_reserve_release_wht', 0.0)
+            reserve_release_net = getattr(self, 'pending_reserve_release_net', 0.0)
+            if reserve_release_total > 0:
+                val_gross += reserve_release_total
+                val_wht += reserve_release_wht
+                val_net += reserve_release_net
+
             # นับจำนวน SO
             count_current = 0
             count_old = 0
@@ -5137,6 +5616,11 @@ class HRScreen(CTkFrame):
                 comm_df=comm_df_for_dialog,
                 selected_year=self.selected_year,
                 selected_month=self.selected_month,
+                has_project_lot=self.latest_commission_result.get('has_project_lot', False),
+                lot_pay_now=self.latest_commission_result.get('commission_pay_now'),
+                lot_reserve=self.latest_commission_result.get('commission_reserve'),
+                reserve_release_net=reserve_release_net if reserve_release_total > 0 else None,
+                reserve_release_count=len(getattr(self, 'pending_reserve_release_df', [])),
             )
             self.wait_window(dlg)
             if not dlg.result:
@@ -5240,7 +5724,51 @@ class HRScreen(CTkFrame):
                                 SET status = 'Paid', payout_id = %s
                                 WHERE id IN %s
                             """, (payout_id, so_ids_tuple))
-                
+
+                    # --- งานโครงการ (Multi-Lot Project) — บันทึก commission_now_amount/Reserve ---
+                    # เฉพาะ SO ที่เป็น Lot ที่ครบเงื่อนไข (is_project_lot=True) ในรอบจ่ายนี้เท่านั้น
+                    # แบ่งยอด commission_project รวมของทั้งรอบ ไปตามสัดส่วนยอดขายของแต่ละ SO
+                    # (ยอดปกติไม่ต้องบันทึก Reserve เพราะจ่ายเต็ม 100% เหมือนเดิมอยู่แล้ว)
+                    if (self.latest_commission_result.get('has_project_lot')
+                            and hasattr(self, 'current_comm_df') and not self.current_comm_df.empty
+                            and 'is_project_lot' in self.current_comm_df.columns):
+                        lot_rows = self.current_comm_df[self.current_comm_df['is_project_lot'] == True]
+                        if not lot_rows.empty:
+                            # float(...) กันไว้ชั้นนอกสุด — pandas/numpy คืนค่าเป็น numpy.float64 ซึ่ง
+                            # numpy 2.0 เปลี่ยน repr() เป็น "np.float64(...)" ทำให้ psycopg2 (inline ค่าด้วย
+                            # repr แทน bind param) ส่ง SQL ผิดรูป ("schema np does not exist")
+                            # ต้อง cast เป็น python float ธรรมดาก่อนส่งเข้า cursor.execute เสมอ
+                            lot_sales_total = float(pd.to_numeric(
+                                lot_rows['sales_service_amount'], errors='coerce').fillna(0).sum())
+                            total_reserve = float(self.latest_commission_result.get('commission_reserve', 0.0))
+                            total_commission_project = total_reserve * 2  # reserve คือครึ่งหนึ่งของ commission_project เสมอ
+                            if lot_sales_total > 0:
+                                for _, lot_row in lot_rows.iterrows():
+                                    row_share = float(lot_row['sales_service_amount']) / lot_sales_total
+                                    row_commission_project = total_commission_project * row_share
+                                    row_now = float(row_commission_project * 0.5)
+                                    row_reserve = float(row_commission_project * 0.5)
+                                    cursor.execute("""
+                                        UPDATE commissions
+                                        SET commission_now_amount = %s,
+                                            commission_reserve_amount = %s,
+                                            reserve_status = 'Pending',
+                                            reserve_payout_id = %s,
+                                            reserve_decided_at = NOW(),
+                                            reserve_decided_by = %s
+                                        WHERE id = %s
+                                    """, (row_now, row_reserve, payout_id, self.user_key, int(lot_row['id'])))
+
+                    # --- งานโครงการ — ปิด Reserve ที่ปลดล็อคแล้ว (GP True-Up) ว่า 'Applied' ในรอบจ่ายนี้ ---
+                    release_df = getattr(self, 'pending_reserve_release_df', None)
+                    if release_df is not None and not release_df.empty:
+                        release_ids = tuple(int(i) for i in release_df['id'].tolist())
+                        cursor.execute("""
+                            UPDATE reserve_release_queue
+                            SET status = 'Applied', applied_payout_id = %s
+                            WHERE id IN %s
+                        """, (payout_id, release_ids))
+
                     audit_msg = json.dumps({'payout_id': payout_id, 'net_amount': val_net})
                     cursor.execute("""
                         INSERT INTO audit_log (action, table_name, record_id, user_info, new_value, timestamp) 

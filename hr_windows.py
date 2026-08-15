@@ -17,6 +17,7 @@ from utils import RejectionReasonDialog
 from sqlalchemy import create_engine
 from history_windows import SOPopupWindow
 from history_windows import print_transport_pdf_wrapper
+from project_screen import _center_and_style_popup
 
 
 
@@ -1524,7 +1525,7 @@ class PayoutDetailWindow(CTkToplevel):
             self.theme = {"primary": "#3B82F6", "header": "#1E40AF"}
 
         self.title("รายละเอียดการจ่ายค่าคอมมิชชั่น")
-        self.geometry("1000x900")
+        _center_and_style_popup(self, master, 1000, 900)
         
         # จัด Layout หลัก: แถว 0 คือเมนู, แถว 1 คือเนื้อหา
         self.grid_columnconfigure(0, weight=1)
@@ -2762,7 +2763,7 @@ class CalculationDetailViewer(CTkToplevel):
         self.title(f"รายละเอียดการคำนวณ - {plan_name}")
         self.plan_name = plan_name
         self.comm_df = comm_df
-        self.geometry("1100x700")
+        _center_and_style_popup(self, master, 1100, 700)
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)

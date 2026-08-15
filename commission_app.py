@@ -18,6 +18,7 @@ from tkinter import ttk
 from daily_report_widget import DailyReportWidget
 from outstanding_dashboard_tab import OutstandingDashboardTab
 from customer_monitoring import CustomerMonitoringWidget
+from project_screen import ProjectScreen, _center_and_style_popup
 
 class PaymentUpdateWindow(CTkToplevel):
     """หน้าต่าง Pop-up สำหรับอัปเดตข้อมูลการชำระเงินโดยเฉพาะ"""
@@ -917,7 +918,7 @@ class SubmitSODialog(CTkToplevel):
         self.checkbox_list = []
 
         self.title("เลือกรายการ SO ที่จะนำส่ง")
-        self.geometry("500x500")
+        _center_and_style_popup(self, master, 500, 500)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -1442,6 +1443,7 @@ class CommissionApp(CTkFrame):
 
         # สร้าง 2 แท็บ
         self.tab_form = self.main_tabview.add("📝 สร้าง/แก้ไข Sales Order")
+        self.tab_project = self.main_tabview.add("📁 โครงการ")
         self.tab_report = self.main_tabview.add("📊 รายงานประจำวัน (Daily Report)")
         self.tab_outstanding = self.main_tabview.add("💸 ยอดค้างชำระ")
         self.tab_so_edit = self.main_tabview.add("✏️ แก้ไข SO")
@@ -1532,6 +1534,17 @@ class CommissionApp(CTkFrame):
             sale_key_filter=cm_filter,
         )
         self.cmonitor_view.pack(fill="both", expand=True)
+
+        # โครงการ (Multi-Lot Project) — ทุก role เห็นทุกโครงการเหมือนกัน (Phase 1)
+        self.tab_project.grid_columnconfigure(0, weight=1)
+        self.tab_project.grid_rowconfigure(0, weight=1)
+        self.project_view = ProjectScreen(
+            self.tab_project,
+            self.app_container,
+            user_key=self.sale_key,
+            user_role=self.user_role,
+        )
+        self.project_view.pack(fill="both", expand=True)
 
         if hasattr(self, 'tab_sla'):
             self.tab_sla.grid_columnconfigure(0, weight=1)
@@ -1807,8 +1820,14 @@ class CommissionApp(CTkFrame):
 
                 # 3. บันทึกข้อมูล SO ลงฐานข้อมูล
                 self._perform_db_insert(form_data)
-            
+
             conn.commit()
+
+            # ผูก SO นี้เป็น Lot ของโครงการ (เฉพาะตอนสร้าง SO ใหม่ ไม่ใช่ตอนแก้ไข)
+            if self.is_project_lot_var.get() and not self.editing_record_id:
+                self._create_project_lot_record(
+                    form_data.get('so_number'), form_data.get('sales_service_amount', 0))
+
             messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
             self._clear_form(confirm=False)
             self._update_tasks_badge()
@@ -1878,6 +1897,14 @@ class CommissionApp(CTkFrame):
         self.so_vs_payment_result_var = tk.StringVar(value="-")
 
         self.so_number_var = tk.StringVar(value="SO")
+
+        # --- งานโครงการ (Multi-Lot Project) ---
+        self.is_project_lot_var = tk.BooleanVar(value=False)
+        self.project_select_var = tk.StringVar(value="")
+        self.lot_name_var = tk.StringVar(value="")
+        self.lot_product_type_var = tk.StringVar(value="")
+        self._project_code_to_id = {}
+        self._project_next_lot_number = {}
 
         self.difference_amount_var = tk.StringVar(value="0.00")
         self.balance_due_var = tk.StringVar(value="0.00")
@@ -2262,6 +2289,41 @@ class CommissionApp(CTkFrame):
         self.so_number_entry = CTkEntry(credit_so_frame, textvariable=self.so_number_var)
         self.so_number_entry.grid(row=0, column=3, sticky="ew")
 
+        # --- งานโครงการ (Multi-Lot Project) ---
+        self.project_lot_checkbox = CTkCheckBox(
+            credit_so_frame, text="เป็นงานโครงการ (Lot)  — ติ๊กถ้า SO นี้เป็นงวดหนึ่งของโครงการแบ่งส่ง",
+            variable=self.is_project_lot_var, command=self._on_project_lot_toggle)
+        self.project_lot_checkbox.grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+        CTkLabel(credit_so_frame, text="โครงการ:", font=CTkFont(size=14)).grid(
+            row=2, column=0, padx=(0, 10), pady=(4, 0), sticky="w")
+        self.project_select_menu = CTkOptionMenu(
+            credit_so_frame, variable=self.project_select_var, values=["— ยังไม่มีโครงการ —"],
+            command=self._on_project_selected, **self.dropdown_style, state="disabled")
+        self.project_select_menu.grid(row=2, column=1, sticky="ew", pady=(4, 0))
+
+        CTkLabel(credit_so_frame, text="ชื่อ Lot:", font=CTkFont(size=14)).grid(
+            row=2, column=2, padx=(20, 10), pady=(4, 0), sticky="w")
+        self.lot_name_entry = CTkEntry(
+            credit_so_frame, textvariable=self.lot_name_var,
+            placeholder_text="เช่น งวดที่ 1 — วางฐานราก (ไม่กรอกก็ได้)", state="disabled")
+        self.lot_name_entry.grid(row=2, column=3, sticky="ew", pady=(4, 0))
+
+        # ประเภทสินค้าของ Lot — เก็บไว้เป็นข้อมูลอ้างอิงเท่านั้น ไม่มีผลต่อการคำนวณมัดจำ/คอมมิชชั่นใดๆ
+        CTkLabel(credit_so_frame, text="ประเภทสินค้า:", font=CTkFont(size=14)).grid(
+            row=3, column=0, padx=(0, 10), pady=(4, 0), sticky="w")
+        self.lot_product_type_menu = CTkOptionMenu(
+            credit_so_frame, variable=self.lot_product_type_var,
+            values=["- ไม่ระบุ -", "สินค้าสต็อค", "สินค้าเทรด", "สินค้าสั่งผลิต", "ผสม (เทรด+สต็อค+สั่งผลิต)"],
+            **self.dropdown_style, state="disabled")
+        self.lot_product_type_menu.grid(row=3, column=1, sticky="ew", pady=(4, 0))
+
+        self.project_lot_hint_label = CTkLabel(
+            credit_so_frame, text="", font=CTkFont(size=12), text_color="#059669")
+        self.project_lot_hint_label.grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        # ยอดมัดจำโดยประมาณ — ย้ายไปโชว์แถวๆ "รายละเอียดการโอนชำระ" แทน (ดู _populate_payment_details_frame)
+        # เพราะยอดขาย/ค่าตัด/ค่าจัดส่งที่ใช้คิดมัดจำ เซลส์กรอกทีหลังตรงนั้น เห็นคู่กับยอดที่ต้องชำระเลยง่ายกว่า
+
         self.order_pur_entry = CTkEntry(frame, textvariable=self.order_pur_var, placeholder_text="ระบุ Order Pur (บังคับใส่)")
         self._add_form_row(frame, "Order Pur: *", self.order_pur_entry, 6)
 
@@ -2282,6 +2344,188 @@ class CommissionApp(CTkFrame):
             self.old_customer_frame.grid_remove()
             self.new_customer_frame.grid()
             self.credit_term_var.set("เงินสด")
+
+    # --- งานโครงการ (Multi-Lot Project) ---
+    _NEW_PROJECT_OPTION = "+ สร้างโครงการใหม่..."
+
+    def _load_project_options(self, select_label=None):
+        """ดึงรายชื่อโครงการที่ยังเปิดอยู่ (status='Open') มาใส่ dropdown"""
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            df = pd.read_sql_query(
+                "SELECT id, project_code, project_name, deposit_pct, deposit_method FROM projects "
+                "WHERE status = 'Open' ORDER BY created_at DESC",
+                conn)
+        except Exception as e:
+            print(f"Error loading project options: {e}")
+            df = pd.DataFrame()
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+        self._project_code_to_id = {}
+        self._project_code_to_deposit_pct = {}
+        self._project_code_to_deposit_method = {}
+        options = []
+        for _, r in df.iterrows():
+            label = f"{r['project_code']} · {r['project_name']}"
+            options.append(label)
+            self._project_code_to_id[label] = int(r['id'])
+            dep = r.get('deposit_pct')
+            self._project_code_to_deposit_pct[label] = float(dep) if pd.notna(dep) else None
+            self._project_code_to_deposit_method[label] = r.get('deposit_method') or "spread"
+
+        options.append(self._NEW_PROJECT_OPTION)
+        self.project_select_menu.configure(values=options)
+        if select_label and select_label in self._project_code_to_id:
+            self.project_select_var.set(select_label)
+        else:
+            self.project_select_var.set(options[0])
+
+    def _on_project_lot_toggle(self):
+        if self.is_project_lot_var.get():
+            self._load_project_options()
+            self.project_select_menu.configure(state="normal")
+            self.lot_name_entry.configure(state="normal")
+            self.lot_product_type_menu.configure(state="normal")
+            self.lot_product_type_var.set("- ไม่ระบุ -")
+            self._on_project_selected(self.project_select_var.get())
+            # ไม่ต้องผูก event เพิ่มเอง — _update_final_calculations() ที่ผูกกับทุกช่องอยู่แล้ว
+            # จะเรียก _update_deposit_hint() ให้ทุกครั้งที่มันคำนวณ so_grand_total_var ใหม่
+        else:
+            self.project_select_menu.configure(state="disabled")
+            self.lot_name_entry.configure(state="disabled")
+            self.lot_product_type_menu.configure(state="disabled")
+            self.lot_name_var.set("")
+            self.lot_product_type_var.set("")
+            self.project_lot_hint_label.configure(text="")
+            self.project_lot_deposit_label.configure(text="")
+
+    def _on_project_selected(self, selected_label):
+        if selected_label == self._NEW_PROJECT_OPTION:
+            from project_screen import _NewProjectDialog
+            _NewProjectDialog(self, self._create_project_inline)
+            return
+
+        project_id = self._project_code_to_id.get(selected_label)
+        if project_id is None:
+            self.project_lot_hint_label.configure(text="")
+            self.project_lot_deposit_label.configure(text="")
+            return
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COALESCE(MAX(lot_number), 0) + 1 FROM project_lots WHERE project_id = %s",
+                    (project_id,))
+                next_lot = cursor.fetchone()[0]
+        except Exception as e:
+            print(f"Error computing next lot number: {e}")
+            next_lot = "?"
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+        self.project_lot_hint_label.configure(text=f"SO นี้จะถูกบันทึกเป็น Lot {next_lot} ของโครงการ")
+
+        self._current_project_deposit_pct = getattr(self, '_project_code_to_deposit_pct', {}).get(selected_label)
+        self._current_project_deposit_method = getattr(
+            self, '_project_code_to_deposit_method', {}).get(selected_label, "spread")
+        self._update_deposit_hint()
+
+    def _update_deposit_hint(self, grand_total=None):
+        """โชว์ยอดมัดจำโดยประมาณสดๆ = 'ยอดที่ต้องชำระ' (so_grand_total_var ที่คำนวณจากทุกรายการ
+        VAT ในฟอร์มอยู่แล้ว: สินค้า/บริการ + ค่าตัด/เจาะ + ค่าบริการอื่นๆ + ค่าจัดส่ง + ค่าธรรมเนียมบัตร +
+        ค่าย้าย รวม VAT หัก wht) x %มัดจำของโครงการที่เลือก — เรียกจาก _update_final_calculations()
+        ทุกครั้งที่มันคำนวณ so_grand_total_var ใหม่ จึงอัปเดตสดตามฟอร์มเสมอไม่ต้องผูก event เพิ่ม
+
+        วิธี 'หักที่ Lot สุดท้าย' โชว์ตัวเลขเจาะจงไม่ได้ — ตอนสร้าง SO/Lot นี้ยังไม่รู้ว่า Lot นี้จะเป็น
+        Lot สุดท้ายจริงหรือเปล่า (อาจมีคนเพิ่ม Lot ต่อทีหลังอีกก็ได้) ยอดจริงคำนวณที่หน้า Project detail
+        เท่านั้น ซึ่งดูจาก Lot ทั้งหมด ณ ตอนนั้น — จึงโชว์แค่ข้อความเตือนกลางๆ แทน"""
+        if not hasattr(self, 'project_lot_deposit_label'):
+            return
+        deposit_pct = getattr(self, '_current_project_deposit_pct', None)
+        deposit_method = getattr(self, '_current_project_deposit_method', 'spread')
+        if deposit_pct is not None and deposit_method == "last_lot":
+            self.project_lot_deposit_label.configure(
+                text="ℹ️ โครงการนี้หักมัดจำที่ Lot สุดท้ายเท่านั้น — ยอดมัดจำจริงของ Lot นี้จะคำนวณให้"
+                     "อัตโนมัติที่หน้า \"จัดการโครงการ\" หลังบันทึก SO แล้ว")
+            return
+        if deposit_pct is None:
+            self.project_lot_deposit_label.configure(text="")
+            return
+        if grand_total is None:
+            try:
+                grand_total = utils.convert_to_float(self.so_grand_total_var.get())
+            except Exception:
+                grand_total = 0.0
+        deposit_amount = grand_total * (deposit_pct / 100)
+        if deposit_amount > 0:
+            self.project_lot_deposit_label.configure(
+                text=f"💰 ยอดมัดจำโดยประมาณ: {deposit_amount:,.2f} บาท ({deposit_pct:.0f}% ของยอดที่ต้องชำระ)")
+        else:
+            self.project_lot_deposit_label.configure(text="")
+
+    def _create_project_inline(self, code, name, customer, value, deposit_pct=None, deposit_method="spread"):
+        """สร้างโครงการใหม่จากปุ่ม '+ สร้างโครงการใหม่...' ใน dropdown ของฟอร์ม SO โดยตรง"""
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO projects (project_code, project_name, customer_name, total_project_value, deposit_pct, deposit_method, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (code, name, customer, value, deposit_pct, deposit_method, self.sale_key))
+            conn.commit()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Database Error", f"สร้างโครงการไม่สำเร็จ: {e}", parent=self)
+            return
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+        new_label = f"{code} · {name}"
+        self._load_project_options(select_label=new_label)
+        self._on_project_selected(self.project_select_var.get())
+
+    def _create_project_lot_record(self, so_number, sales_amount):
+        """เรียกหลังบันทึก SO สำเร็จ ถ้าติ๊ก 'เป็นงานโครงการ' ไว้ — สร้างแถวใน project_lots ผูกกับ SO นี้"""
+        selected_label = self.project_select_var.get()
+        project_id = self._project_code_to_id.get(selected_label)
+        if project_id is None:
+            return
+        lot_name = self.lot_name_var.get().strip()
+        product_type = self.lot_product_type_var.get().strip()
+        if product_type in ("", "- ไม่ระบุ -"):
+            product_type = None
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COALESCE(MAX(lot_number), 0) + 1 FROM project_lots WHERE project_id = %s",
+                    (project_id,))
+                next_lot = cursor.fetchone()[0]
+                if not lot_name:
+                    lot_name = f"Lot {next_lot}"
+                cursor.execute("""
+                    INSERT INTO project_lots (project_id, lot_number, lot_name, so_number, lot_value, product_type, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (project_id, next_lot, lot_name, so_number, sales_amount, product_type, self.sale_key))
+            conn.commit()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showwarning(
+                "บันทึก SO สำเร็จ แต่ผูกกับ Lot ไม่สำเร็จ",
+                f"SO ถูกบันทึกเรียบร้อยแล้ว แต่เกิดข้อผิดพลาดตอนผูกกับโครงการ: {e}\n"
+                "กรุณาผูก Lot นี้ด้วยตนเองที่หน้าจัดการโครงการ", parent=self)
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
 
     # <<< START: CODE REPLACEMENT >>>
     def _populate_other_expenses_frame(self, parent):
@@ -2572,6 +2816,11 @@ class CommissionApp(CTkFrame):
         self.balance_due_entry = CTkEntry(frame, textvariable=self.balance_due_var, state="readonly", fg_color="gray85", font=CTkFont(weight="bold"))
         self._add_form_row(frame, "ค้างชำระ:", self.balance_due_entry, 4)
 
+        # ยอดมัดจำโดยประมาณของงานโครงการ (Lot) — โชว์แค่ตอนติ๊ก "เป็นงานโครงการ" และเลือกโครงการที่มี % มัดจำ
+        self.project_lot_deposit_label = CTkLabel(
+            frame, text="", font=CTkFont(size=13, weight="bold"), text_color="#7C3AED")
+        self.project_lot_deposit_label.grid(row=5, column=0, columnspan=3, sticky="w", padx=(10, 15), pady=(4, 0))
+
     def _populate_so_summary_frame(self, parent):
         frame = self._create_section_frame(parent, "SO ยอดขายสินค้า/ค่าจัดส่ง รวมภาษีมูลค่าเพิ่ม"); frame.pack(fill="x", pady=(0, 10))
         frame.grid_columnconfigure(1, weight=1)
@@ -2676,6 +2925,7 @@ class CommissionApp(CTkFrame):
 
         final_amount_due = (total_vatable_revenue * 1.07) - wht
         self.so_grand_total_var.set(f"{final_amount_due:,.2f}")
+        self._update_deposit_hint(final_amount_due)
 
         payment1 = utils.convert_to_float(self.payment1_amount_entry.get())
         payment2 = utils.convert_to_float(self.payment2_amount_entry.get())
@@ -3041,6 +3291,24 @@ class CommissionApp(CTkFrame):
         self.so_number_var.set("SO")
         self.customer_type_var.set("ลูกค้าเก่า")
         self.credit_term_var.set("เงินสด")
+
+        # ล้างสถานะ "เป็นงานโครงการ (Lot)" กันผูก SO ใบถัดไปเข้า Lot เดิมโดยไม่ตั้งใจ
+        self.is_project_lot_var.set(False)
+        self.project_select_var.set("")
+        self.lot_name_var.set("")
+        self.lot_product_type_var.set("")
+        if hasattr(self, "project_select_menu"):
+            self.project_select_menu.configure(state="disabled")
+        if hasattr(self, "lot_name_entry"):
+            self.lot_name_entry.configure(state="disabled")
+        if hasattr(self, "lot_product_type_menu"):
+            self.lot_product_type_menu.configure(state="disabled")
+        if hasattr(self, "project_lot_hint_label"):
+            self.project_lot_hint_label.configure(text="")
+        if hasattr(self, "project_lot_deposit_label"):
+            self.project_lot_deposit_label.configure(text="")
+        self._current_project_deposit_pct = None
+        self._current_project_deposit_method = "spread"
 
         self.commission_month_var.set(self.thai_months[today.month - 1])
         self.commission_year_var.set(str(today.year + 543))

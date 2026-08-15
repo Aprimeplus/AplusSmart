@@ -32,7 +32,10 @@ from daily_report_widget import DailyReportWidget
 #  Sale Revenue Report widget (ported from HRScreen, standalone)
 # ─────────────────────────────────────────────────────────────────────────────
 class SaleRevenueWidget(CTkFrame):
-    EXCLUDE_SALE_KEYS = {'s', 'd', 'p', 'mp', 'ms', 'hr', 'sm', 'Sale Center', 'Pimhathai'}
+    # 'Sale Center' ไม่ถูกตัดออกอีกต่อไป — ตอนนี้ _get_data() รวมยอด Sale Center/CHARITA-CT
+    # เป็นแถวเดียว ('Sale Center') แล้วต่อท้าย df ให้เอง จึงต้องกันไม่ให้ 'CHARITA-CT' โผล่ซ้ำ
+    # เป็นอีกแท่งแยกจากยอดที่ถูกรวมไปแล้ว
+    EXCLUDE_SALE_KEYS = {'s', 'd', 'p', 'mp', 'ms', 'hr', 'sm', 'CHARITA-CT', 'Pimhathai'}
     PERSON_MERGE = {
         'VOW-P': ('ภาณุพงศ์ / ฐรินทร์ญา', 'ภาณุพงศ์'),
         'VOW-S': ('ภาณุพงศ์ / ฐรินทร์ญา', 'ฐรินทร์ญา'),
@@ -355,9 +358,11 @@ class SaleRevenueWidget(CTkFrame):
                 FROM   commissions
                 GROUP  BY payout_id
             ) cm_agg ON cm_agg.payout_id = c.id
-            WHERE su.status = 'Active'
-            GROUP BY su.sale_name, su.sale_key, su.sales_target, su.role
-            HAVING (su.role = 'Sale' OR COALESCE(SUM(c.total_sales), 0) > 0)
+            GROUP BY su.sale_name, su.sale_key, su.sales_target, su.role, su.status
+            -- แสดงพนักงานที่ยัง Active ทุกคน (แม้ยังไม่มียอด) + พนักงานที่ปิดใช้งานไปแล้ว (Inactive)
+            -- เฉพาะกรณีที่มียอดขายจริงในช่วงที่เลือก (กันไม่ให้อดีตพนักงานที่ไม่มียอดโผล่มาเป็นแท่งว่างๆ)
+            HAVING (su.status = 'Active' AND su.role = 'Sale')
+                   OR COALESCE(SUM(c.total_sales), 0) > 0
             ORDER BY su.sale_name ASC;
         """
         final_params = [target_multiplier] + params
@@ -388,6 +393,32 @@ class SaleRevenueWidget(CTkFrame):
         df['avg_margin'] = df.apply(
             lambda r: (r['total_gp'] / r['total_sales_amt'] * 100) if r['total_sales_amt'] > 0 else 0,
             axis=1)
+
+        # ── Sale Center: ดึงจาก commissions โดยตรง (ไม่มีค่าคอม จึงไม่ผ่าน commission_payout_logs) ──
+        sc_date_filter = date_filter.replace("c.", "sc.")
+        sc_query = f"""
+            SELECT COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
+            FROM commissions sc
+            WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
+              AND sc.is_active = 1
+              AND sc.status NOT IN ('Cancelled', 'Cancelled by PU')
+              AND {sc_date_filter}
+        """
+        try:
+            sc_df = pd.read_sql_query(sc_query, self.pg_engine, params=tuple(params))
+            sc_total = float(sc_df['total_sales'].iloc[0]) if not sc_df.empty else 0.0
+        except Exception:
+            sc_total = 0.0
+
+        if sc_total > 0:
+            sc_row = pd.DataFrame([{
+                'sale_name': 'Sale Center', 'sale_key': 'Sale Center',
+                'sales_target': 0.0, 'total_sales': sc_total,
+                'total_outstanding': 0.0, 'total_gp': 0.0, 'total_sales_amt': 0.0,
+                'sales_normal': sc_total, 'sales_below': 0.0, 'avg_margin': 0.0,
+            }])
+            df = pd.concat([df, sc_row], ignore_index=True)
+
         return df
 
     # ── Shared preprocessing ──────────────────────────────────────────────────
@@ -675,7 +706,7 @@ class SaleRevenueWidget(CTkFrame):
             JOIN   commission_payout_logs c
                    ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
                   AND {date_sql}
-            WHERE  su.status = 'Active' AND su.role = 'Sale'
+            WHERE  su.role = 'Sale'
             GROUP  BY su.sale_name, su.sale_key, c.commission_month, c.commission_year
             ORDER  BY c.commission_year, c.commission_month, su.sale_name
         """
@@ -697,6 +728,28 @@ class SaleRevenueWidget(CTkFrame):
             hist_df['total_sales'] = hist_df['total_sales'].fillna(0)
             if not hist_df.empty:
                 df = pd.concat([df, hist_df], ignore_index=True)
+        except Exception:
+            traceback.print_exc()
+
+        # ── Sale Center: ดึงจาก commissions โดยตรง แยกตามเดือน (ไม่มีค่าคอม จึงไม่มีใน payout_logs) ──
+        try:
+            sc_date_filter = date_sql.replace("c.", "sc.")
+            sc_query = f"""
+                SELECT sc.commission_month AS month, sc.commission_year AS year,
+                       COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
+                FROM commissions sc
+                WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
+                  AND sc.is_active = 1
+                  AND sc.status NOT IN ('Cancelled', 'Cancelled by PU')
+                  AND {sc_date_filter}
+                GROUP BY sc.commission_month, sc.commission_year
+            """
+            sc_df = pd.read_sql_query(sc_query, self.pg_engine, params=tuple(params))
+            sc_df = sc_df[sc_df['total_sales'] > 0]
+            if not sc_df.empty:
+                sc_df['sale_name'] = 'Sale Center'
+                sc_df['sale_key'] = 'Sale Center'
+                df = pd.concat([df, sc_df], ignore_index=True)
         except Exception:
             traceback.print_exc()
 
@@ -989,58 +1042,10 @@ class SaleRevenueWidget(CTkFrame):
             total_diff_str,
         ))
 
-        # ── CT (Sale Center) ─────────────────────────────────────────────────
-        ct_sales = 0.0
-        try:
-            today = datetime.now()
-            # ใช้ custom_target_start/end เสมอ (set โดย _on_search ซึ่งแปลง พ.ศ.→ ค.ศ. แล้ว)
-            # fallback เป็นเดือนปัจจุบัน
-            if self.custom_target_start and self.custom_target_end:
-                ct_date_sql = ("MAKE_DATE(commission_year, commission_month, 1) "
-                               "BETWEEN %s::date AND %s::date")
-                ct_params = [self.custom_target_start.strftime("%Y-%m-%d"),
-                             self.custom_target_end.strftime("%Y-%m-%d")]
-            else:
-                ct_date_sql = "commission_month = %s AND commission_year = %s"
-                ct_params = [today.month, today.year]
-
-            ct_q = f"""
-                SELECT COALESCE(SUM(sales_service_amount), 0) AS ct_total
-                FROM commissions
-                WHERE sale_key = 'Sale Center'
-                  AND {ct_date_sql}
-            """
-            ct_df = pd.read_sql_query(ct_q, self.pg_engine, params=tuple(ct_params))
-            ct_sales = float(ct_df['ct_total'].iloc[0]) if not ct_df.empty else 0.0
-        except Exception as e:
-            print(f"[CT query error] {e}")
-
-        if ct_sales > 0:
-            tree.insert('', 'end', tags=('ct_row',), values=(
-                'Sale Center (CT)',
-                '—', '—', '—',
-                f"{ct_sales:,.0f}",
-                f"{ct_sales:,.0f}",
-                '—', '—', '—',
-            ))
-
-        # ── รวมทีม Total (Sale + CT) ─────────────────────────────────────────
-        grand_s    = total_s + ct_sales
-        grand_pct  = (grand_s / total_t * 100) if total_t > 0 else 0.0
-        grand_diff = grand_s - total_t
-        grand_diff_str = f"+{grand_diff:,.0f}" if grand_diff >= 0 else f"{grand_diff:,.0f}"
-        grand_normal = total_normal + ct_sales
-        tree.insert('', 'end', tags=('grand_total',), values=(
-            'รวมทีม Total',
-            '15%',
-            team_margin_str,
-            f"{total_t:,.0f}",
-            f"{grand_s:,.0f}",
-            f"{grand_normal:,.0f}" if grand_normal > 0 else '—',
-            f"{total_below:,.0f}"  if total_below  > 0 else '—',
-            f"{grand_pct:.1f}%",
-            grand_diff_str,
-        ))
+        # หมายเหตุ: เดิมมีบล็อกคำนวณ "Sale Center (CT)" แยกต่างหากตรงนี้ แล้วบวกเข้า
+        # 'รวมทีม Total' อีกที — ตอนนี้ Sale Center ถูกรวมเข้า data_df ตั้งแต่ _get_data()
+        # แล้ว (โผล่เป็นแถวหนึ่งใน rows ข้างบนอยู่แล้ว) ทำให้ total_s ครบถ้วนตั้งแต่แรก
+        # ถ้ายังบวก ct_sales ซ้ำอีกจะกลายเป็นนับ Sale Center ซ้ำสองรอบ จึงตัดบล็อกนี้ออก
 
         tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
