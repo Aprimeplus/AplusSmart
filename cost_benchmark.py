@@ -827,6 +827,17 @@ class CostBenchmarkScreen(CTkFrame):
         self.auto_save_job_id = None
         self.auto_calc_job_id = None
         self._pending_calc_rows  = set()
+        # ถอยหลายช่อง (Ctrl+Z กดซ้ำได้เรื่อยๆ) — เก็บเป็น stack ของการแก้ไขทีละช่อง จับจาก begin_edit_cell
+        # ที่ tksheet ยิงแน่นอนทุกครั้งที่เริ่มแก้ (ต่างจาก <<SheetModified>> ที่ระบบ undo แบบเดิม
+        # (_push_undo/_history) ใช้อยู่ ซึ่งบางทีไม่ยิง ทำให้ Ctrl+Z แบบเดิมกดแล้วบางทีไม่มีอะไรเกิดขึ้น
+        # หรือย้อนเกินไปหลายช่อง) — กด Ctrl+Z แต่ละครั้ง pop ออกมาทีละช่อง ย้อนจากล่าสุดไปเรื่อยๆ
+        self._edit_undo_stack = []
+        self._EDIT_UNDO_STACK_MAX = 200
+        # 🛠️ ตัวชี้ไปยัง entry ล่าสุดที่ดันเข้า stack ตอน begin_edit_cell แต่ยัง "ไม่ commit" (ยังไม่กด
+        # Enter/Tab/คลิกออกจากช่อง) — ถ้า user กด Ctrl+Z ระหว่างพิมพ์อยู่ (ยังไม่ commit) entry นี้เป็นแค่
+        # "ค่าก่อนแก้ของช่องปัจจุบันเอง" ไม่ใช่ของช่องก่อนหน้าจริงๆ ต้องทิ้งเงียบๆ ก่อนค่อยย้อนช่องก่อนหน้า
+        # ไม่งั้นกด Ctrl+Z ครั้งแรกจะเหมือนไม่มีอะไรเกิดขึ้น (เพราะดันไปคืนค่าเดิมให้ช่องเดิมที่ยังไม่เปลี่ยน)
+        self._pending_undo_entry = None
         self.current_user = getattr(self.app_container, 'current_user_key', 'PU_Default')
 
         # SLA tracking — เก็บเวลาเริ่มต้นของแต่ละ row (datarn → datetime)
@@ -2187,7 +2198,11 @@ class CostBenchmarkScreen(CTkFrame):
                 self._active_filter_popup.safe_destroy()
                 self._active_filter_popup = None
                 return
-            self._show_header_filter_popup(col_name, display_col, event, is_frozen=False)
+            # 🛠️ ต้องส่ง "data_col" ของ self.sheet เอง (real_col - col_offset) ไม่ใช่ display_col —
+            # display_col คือลำดับคอลัมน์ที่ "มองเห็น" (ข้ามคอลัมน์ที่ซ่อนไปแล้ว) ซึ่งจะเพี้ยนจาก
+            # data_col จริงทันทีที่มีคอลัมน์ไหนถูกซ่อนอยู่ก่อนหน้าคอลัมน์ที่คลิก — ทำให้ popup filter
+            # ไปดึงค่าจากคอลัมน์ผิด (เช่น รายการสินค้า สลับกับ ชื่อ Supplier)
+            self._show_header_filter_popup(col_name, real_col - col_offset, event, is_frozen=False)
         except Exception: pass
 
     def _on_frozen_header_click(self, event=None):
@@ -2198,16 +2213,22 @@ class CostBenchmarkScreen(CTkFrame):
 
             display_col = self._get_col_from_header_click(event, self.sheet_frozen, 0)
             if display_col is None: return
-            if display_col >= len(self.columns): return
-            
-            col_name = self.columns[display_col]
+
+            # Map display index → real column index (accounts for hidden columns) — เหมือนฝั่ง
+            # main sheet ทุกประการ กันเคสมีคอลัมน์ถูกซ่อนอยู่ในโซน frozen ด้วย
+            hidden_set = set(getattr(self, "hidden_cols_list", []))
+            visible_real = [c for c in range(0, self.frozen_col_count) if c not in hidden_set]
+            if display_col >= len(visible_real): return
+            real_col = visible_real[display_col]
+            if real_col >= len(self.columns): return
+            col_name = self.columns[real_col]
             if col_name not in self._filter_col_names: return
 
             if self._active_filter_popup and not getattr(self._active_filter_popup, '_destroyed', True):
                 self._active_filter_popup.safe_destroy()
                 self._active_filter_popup = None
                 return
-            self._show_header_filter_popup(col_name, display_col, event, is_frozen=True)
+            self._show_header_filter_popup(col_name, real_col, event, is_frozen=True)
         except Exception: pass
 
     def _show_header_filter_popup(self, col_name, display_col, event, is_frozen=False):
@@ -2710,6 +2731,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             modified_rows = set()
             sel_cells = self.sheet.get_selected_cells()
+            paste_batch = []  # เก็บค่าก่อนเขียนทับของทุกช่องที่ paste — ให้ Ctrl+Z ครั้งเดียวคืนทั้งก้อน
 
             # 🚀 ฟีเจอร์ใหม่: ถ้าก๊อปปี้มาแค่ 1 ช่อง แต่ระบายเลือกไว้หลายช่อง ให้เติมลงทุกช่อง (Fill Paste)
             if len(clip_grid) == 1 and len(clip_grid[0]) == 1 and len(sel_cells) > 1:
@@ -2719,15 +2741,18 @@ class CostBenchmarkScreen(CTkFrame):
                     real_col = main_visible[c_disp]
                     col_name = self.columns[real_col]
                     if col_name in truly_auto: continue
-                    
+
                     data_col = real_col - col_offset
+                    old_value = self.sheet.get_cell_data(r, data_col)
+                    paste_batch.append({"is_frozen": False, "datarn": r, "data_col": data_col,
+                                         "old_value": old_value, "col_name": col_name})
                     self.sheet.set_cell_data(r, data_col, val_to_paste, redraw=False)
                     modified_rows.add(r)
             else:
                 # 📌 การวางข้อมูลแบบปกติ (เริ่มจากช่องบนซ้ายสุด)
                 sel = self.sheet.get_currently_selected()
                 if not sel: return "break"
-                
+
                 start_row = int(sel[0])
                 start_col_display = int(sel[1])
 
@@ -2740,18 +2765,26 @@ class CostBenchmarkScreen(CTkFrame):
                     while ci < len(cells):
                         disp_idx = start_col_display + disp_offset
                         if disp_idx >= len(main_visible): break
-                        
+
                         real_col = main_visible[disp_idx]
                         col_name = self.columns[real_col]
                         if col_name in truly_auto:
                             disp_offset += 1
                             continue
-                            
+
                         data_col = real_col - col_offset
+                        old_value = self.sheet.get_cell_data(row_idx, data_col)
+                        paste_batch.append({"is_frozen": False, "datarn": row_idx, "data_col": data_col,
+                                             "old_value": old_value, "col_name": col_name})
                         self.sheet.set_cell_data(row_idx, data_col, cells[ci].strip(), redraw=False)
                         modified_rows.add(row_idx)
                         ci += 1
                         disp_offset += 1
+
+            if paste_batch:
+                self._edit_undo_stack.append({"is_batch": True, "cells": paste_batch})
+                if len(self._edit_undo_stack) > self._EDIT_UNDO_STACK_MAX:
+                    self._edit_undo_stack.pop(0)
 
             # คำนวณและ redraw ทุก row ที่เปลี่ยน
             def _calc_after_paste(rows=sorted(modified_rows)):
@@ -2803,6 +2836,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             modified_rows = set()
             sel_cells = self.sheet_frozen.get_selected_cells()
+            paste_batch = []  # เก็บค่าก่อนเขียนทับของทุกช่องที่ paste — ให้ Ctrl+Z ครั้งเดียวคืนทั้งก้อน
 
             # 🚀 ฟีเจอร์ใหม่: ถ้าก๊อปปี้มาแค่ 1 ช่อง แต่ระบายเลือกไว้หลายช่อง ให้เติมลงทุกช่อง (Fill Paste)
             if len(clip_grid) == 1 and len(clip_grid[0]) == 1 and len(sel_cells) > 1:
@@ -2812,38 +2846,49 @@ class CostBenchmarkScreen(CTkFrame):
                     real_col = frozen_visible[c_disp]
                     col_name = self.columns[real_col]
                     if col_name in truly_auto: continue
-                    
+
                     data_col = real_col
+                    old_value = self.sheet_frozen.get_cell_data(r, data_col)
+                    paste_batch.append({"is_frozen": True, "datarn": r, "data_col": data_col,
+                                         "old_value": old_value, "col_name": col_name})
                     self.sheet_frozen.set_cell_data(r, data_col, val_to_paste, redraw=False)
                     modified_rows.add(r)
             else:
                 sel = self.sheet_frozen.get_currently_selected()
                 if not sel: return "break"
-                
+
                 start_row = int(sel[0])
                 start_display_col = int(sel[1])
 
                 for ri, cells in enumerate(clip_grid):
                     row_idx = start_row + ri
                     if row_idx >= self.sheet_frozen.get_total_rows(): break
-                    
+
                     disp_offset = 0
                     ci = 0
                     while ci < len(cells):
                         disp_idx = start_display_col + disp_offset
                         if disp_idx >= len(frozen_visible): break
-                        
+
                         real_col = frozen_visible[disp_idx]
                         col_name = self.columns[real_col]
                         if col_name in truly_auto:
                             disp_offset += 1
                             continue
-                            
+
                         data_col = real_col
+                        old_value = self.sheet_frozen.get_cell_data(row_idx, data_col)
+                        paste_batch.append({"is_frozen": True, "datarn": row_idx, "data_col": data_col,
+                                             "old_value": old_value, "col_name": col_name})
                         self.sheet_frozen.set_cell_data(row_idx, data_col, cells[ci].strip(), redraw=False)
                         modified_rows.add(row_idx)
                         ci += 1
                         disp_offset += 1
+
+            if paste_batch:
+                self._edit_undo_stack.append({"is_batch": True, "cells": paste_batch})
+                if len(self._edit_undo_stack) > self._EDIT_UNDO_STACK_MAX:
+                    self._edit_undo_stack.pop(0)
 
             def _calc_after_paste_frozen(rows=sorted(modified_rows)):
                 for row_idx in rows:
@@ -2967,6 +3012,24 @@ class CostBenchmarkScreen(CTkFrame):
                 _w.bind("<Control-y>", self._redo)
                 _w.bind("<Control-Y>", self._redo)
             except Exception: pass
+
+        # 🔥 แก้บักใหญ่: ที่ผ่านมา Ctrl+Z ระหว่างที่ editor ของเซลล์เปิดค้างพิมพ์อยู่ (ยังไม่กด Enter)
+        # ไม่เคยเรียก _undo() เลยสักครั้ง เพราะ editor ที่ tksheet สร้างขึ้นมาตอนเริ่มพิมพ์เป็นคนละ widget
+        # กับ MT/RI/CH/TL ที่ผูก <Control-z> ไว้ข้างบน — bindtags ของ Tkinter ไม่ไล่ผ่าน parent เหมือนกับ
+        # เคสของ RI/CH/TL ที่คอมเมนต์ไว้ด้านบน (คนละ widget คนละ bindtags) ต้องใช้ API เฉพาะของ tksheet
+        # (bind_key_text_editor) ผูกเข้ากับ editor widget ตรงๆ ถึงจะทำงานตอนกำลังพิมพ์ค้างอยู่จริง
+        try:
+            self.sheet.bind_key_text_editor("<Control-z>", self._undo)
+            self.sheet.bind_key_text_editor("<Control-Z>", self._undo)
+            self.sheet.bind_key_text_editor("<Control-y>", self._redo)
+            self.sheet.bind_key_text_editor("<Control-Y>", self._redo)
+            # 🔥 คีย์บอร์ดไทย: ปุ่ม Z ตำแหน่งจริงจะไม่ส่งสัญลักษณ์ "z" ออกมาเลยตอนสลับเป็นภาษาไทย
+            # (ส่งเป็นอักษรไทยแทน) ทำให้ <Control-z>/<Control-Z> ข้างบนไม่ยิงเลย ต้องผูกตัวเช็ค
+            # physical keycode (_on_ctrl_keypress_thai ที่มีอยู่แล้ว ใช้กับ MT ด้านนอกอยู่แล้ว) เข้ากับ
+            # editor widget ด้วย ถึงจะรองรับตอนพิมพ์ค้างอยู่ในโหมดคีย์บอร์ดไทยจริง
+            self.sheet.bind_key_text_editor("<Control-KeyPress>", self._on_ctrl_keypress_thai)
+        except Exception as _e:
+            print(f"[DEBUG] bind_key_text_editor(main) error: {_e}")
 
         # Safety-net: dialog-level binding เผื่อ focus ไม่อยู่บน sheet ใดเลย
         self.bind("<Control-v>", self._mt_paste_router)
@@ -3197,7 +3260,30 @@ class CostBenchmarkScreen(CTkFrame):
                 return typed
             real_col = visible_main[int(col)]
             col_name = self.columns[real_col]
-            print(f"[DEBUG begin_edit] disp_col={col} hidden={hidden_set} real_col={real_col} col_name={col_name}")
+            print(f"[DEBUG begin_edit] row={row} disp_col={col} hidden={hidden_set} real_col={real_col} col_name={col_name}")
+
+            # 🔍 เก็บค่าก่อนแก้ไว้เผื่อ Ctrl+Z ถอยช่องนี้กลับ — เก็บทุกคอลัมน์ (ไม่ใช่แค่ popup_cols ด้านล่าง)
+            try:
+                _dr_undo = self.sheet.MT.displayed_rows
+                # 🛠️ displayed_rows สั้นกว่าจำนวนแถวที่โชว์จริง (แถวว่างที่เกินข้อมูลจริงไม่อยู่ใน list นี้)
+                # แก้ IndexError ตอนแก้แถวว่างท้ายตาราง — fallback ไปใช้ display row ตรงๆ แทน
+                if _dr_undo is not None and not isinstance(_dr_undo, str) and int(row) < len(_dr_undo):
+                    _datarn_undo = _dr_undo[int(row)]
+                else:
+                    _datarn_undo = int(row)
+                _data_col_undo = real_col - col_offset
+                _entry = {
+                    "is_frozen": False, "datarn": _datarn_undo, "data_col": _data_col_undo,
+                    "old_value": self.sheet.get_cell_data(_datarn_undo, _data_col_undo), "col_name": col_name,
+                }
+                self._edit_undo_stack.append(_entry)
+                self._pending_undo_entry = _entry  # ยังไม่ commit — เผื่อ Ctrl+Z มาถึงก่อนกด Enter
+                if len(self._edit_undo_stack) > self._EDIT_UNDO_STACK_MAX:
+                    self._edit_undo_stack.pop(0)
+                print(f"[DEBUG undo-capture] OK datarn={_datarn_undo} data_col={_data_col_undo} "
+                      f"old_value={_entry['old_value']!r} stack_len={len(self._edit_undo_stack)}")
+            except Exception as e:
+                print(f"[DEBUG undo-capture] ERROR: {type(e).__name__}: {e}")
 
             popup_cols = {
                 "รายการสินค้า": self.product_list,
@@ -3313,6 +3399,24 @@ class CostBenchmarkScreen(CTkFrame):
                 return typed
             real_col = visible_frozen[int(col)]
             col_name = self.columns[real_col]
+
+            # 🔍 เก็บค่าก่อนแก้ไว้เผื่อ Ctrl+Z ถอยช่องนี้กลับ — เก็บทุกคอลัมน์ (ไม่ใช่แค่ popup_cols_frozen ด้านล่าง)
+            try:
+                _dr_undo = self.sheet_frozen.MT.displayed_rows
+                if _dr_undo is not None and not isinstance(_dr_undo, str) and int(row) < len(_dr_undo):
+                    _datarn_undo = _dr_undo[int(row)]
+                else:
+                    _datarn_undo = int(row)
+                _entry = {
+                    "is_frozen": True, "datarn": _datarn_undo, "data_col": real_col,
+                    "old_value": self.sheet_frozen.get_cell_data(_datarn_undo, real_col), "col_name": col_name,
+                }
+                self._edit_undo_stack.append(_entry)
+                self._pending_undo_entry = _entry  # ยังไม่ commit — เผื่อ Ctrl+Z มาถึงก่อนกด Enter
+                if len(self._edit_undo_stack) > self._EDIT_UNDO_STACK_MAX:
+                    self._edit_undo_stack.pop(0)
+            except Exception as e:
+                print(f"[DEBUG undo-capture frozen] ERROR: {type(e).__name__}: {e}")
 
             popup_cols_frozen = {
                 "รายการสินค้า": self.product_list,
@@ -3749,6 +3853,18 @@ class CostBenchmarkScreen(CTkFrame):
                 _w.bind("<Control-Y>", self._redo)
             except Exception: pass
 
+        # 🔥 เหมือนฝั่ง main — ผูก Ctrl+Z/Y เข้ากับ editor widget ของ frozen sheet ตรงๆ ด้วย
+        # ไม่งั้นพิมพ์ค้างอยู่ในคอลัมน์ฝั่ง frozen (ซ้ายมือ) แล้วกด Ctrl+Z จะไม่ทำงานเหมือนกัน
+        try:
+            self.sheet_frozen.bind_key_text_editor("<Control-z>", self._undo)
+            self.sheet_frozen.bind_key_text_editor("<Control-Z>", self._undo)
+            self.sheet_frozen.bind_key_text_editor("<Control-y>", self._redo)
+            self.sheet_frozen.bind_key_text_editor("<Control-Y>", self._redo)
+            # 🔥 เหมือนฝั่ง main — รองรับคีย์บอร์ดไทยด้วย physical keycode
+            self.sheet_frozen.bind_key_text_editor("<Control-KeyPress>", self._on_ctrl_keypress_thai)
+        except Exception as _e:
+            print(f"[DEBUG] bind_key_text_editor(frozen) error: {_e}")
+
         # ✅ navigation mode arrow บน frozen MT (รองรับข้ามฝั่ง frozen→main)
         try:
             def _make_nav_frozen(direction):
@@ -3866,34 +3982,148 @@ class CostBenchmarkScreen(CTkFrame):
             print(f"_push_undo error: {e}")
 
     def _undo(self, event=None):
-        # 🚀 ป้องกันการ Undo ตาราง ถ้ายูสเซอร์กำลังพิมพ์อยู่ในช่อง (Focus อยู่ที่ Entry/Text)
+        """ถอยกลับทีละช่อง กดซ้ำได้เรื่อยๆ ย้อนจากช่องที่แก้ล่าสุดถอยหลังไปเรื่อยๆ (pop จาก stack)
+        — แทนที่ระบบ undo เดิมที่เก็บ snapshot ทั้งตารางไว้ 50 ขั้น (พึ่ง <<SheetModified>> ซึ่ง tksheet
+        ยิงไม่สม่ำเสมอ ทำให้กด Ctrl+Z แล้วบางทีไม่มีอะไรเกิดขึ้น หรือย้อนข้ามไปหลายช่องพร้อมกันโดยไม่ตั้งใจ)
+        ระบบใหม่จับค่าจาก begin_edit_cell ที่ยิงแน่นอนทุกครั้งที่เริ่มแก้เซลล์ เลยรู้ค่าก่อนแก้ของทุกช่อง
+        แน่ชัด 100% — แต่ละครั้งที่แก้ 1 ช่องจะถูกดันเข้า stack แยกกัน กด Ctrl+Z คือ pop ช่องล่าสุดออกมา
+        คืนค่า ถ้ากดต่อไปเรื่อยๆ จะถอยไปเรื่อยๆ จนกว่า stack จะว่าง (ไม่ใช่แค่ครั้งเดียวเหมือนเดิมแล้ว)"""
+        # 🛠️ ของเดิมเช็คแค่ "focus อยู่ที่ Entry/Text ไหม" แล้ว block ทันที — แต่ editor ของเซลล์ตาราง
+        # เองก็เป็น Entry/Text เหมือนกัน ทำให้ถ้า focus ยังค้างอยู่ที่ editor ของเซลล์ (ไม่ใช่ช่องพิมพ์
+        # อื่นในแอป เช่นช่องค้นหา) Ctrl+Z จะถูกบล็อกทั้งที่ user กดถูกจังหวะแล้ว — เปลี่ยนมาเช็คว่า
+        # widget ที่ focus อยู่เป็นลูกของตาราง (self.sheet/self.sheet_frozen) เองหรือเปล่าแทน
+        # ถ้าใช่ (คือ editor ของเซลล์) ให้ cancel_edit() แล้วไป undo ต่อได้เลย ถ้าเป็นช่องพิมพ์อื่น
+        # ในแอป (เช่นช่องค้นหา Supplier) ถึงจะปล่อยให้ Ctrl+Z ทำงานปกติของช่องนั้นแทน ไม่มายุ่งตาราง
+        self._undo_call_count = getattr(self, '_undo_call_count', 0) + 1
+        _call_n = self._undo_call_count
+        print(f"[DEBUG _undo] #{_call_n} ENTER pending_id={id(self._pending_undo_entry) if self._pending_undo_entry else None} "
+              f"stack_len={len(self._edit_undo_stack)} "
+              f"top={self._edit_undo_stack[-1] if self._edit_undo_stack else None} "
+              f"top_id={id(self._edit_undo_stack[-1]) if self._edit_undo_stack else None} "
+              f"event={event!r}")
         try:
             focused = self.focus_get()
+            print(f"[DEBUG _undo] #{_call_n} focused={focused!r} class={focused.winfo_class() if focused else None}")
             if focused and focused.winfo_class() in ('Entry', 'Text', 'TEntry'):
-                return "break"
-        except Exception: pass
+                focused_path = str(focused)
+                is_sheet_editor = (focused_path.startswith(str(self.sheet)) or
+                                    (getattr(self, 'sheet_frozen', None) and
+                                     focused_path.startswith(str(self.sheet_frozen))))
+                if not is_sheet_editor:
+                    print(f"[DEBUG _undo] #{_call_n} BAIL not is_sheet_editor")
+                    return "break"
+        except Exception as _e:
+            print(f"[DEBUG _undo] #{_call_n} focus check error: {_e}")
 
-        if not hasattr(self, '_history') or self._history_idx <= 0:
+        # 🛠️ ถ้า user กด Ctrl+Z ระหว่างพิมพ์อยู่ (ยังไม่เคย commit ด้วย Enter/Tab/คลิกออก) รายการบนสุด
+        # ของ stack คือ "ค่าก่อนแก้ของช่องที่กำลังพิมพ์อยู่นี้เอง" ไม่ใช่ของช่องก่อนหน้าจริงๆ — ถ้าปล่อยให้
+        # pop ตามปกติจะเหมือนกด Ctrl+Z ครั้งแรกไม่มีอะไรเกิดขึ้น (คืนค่าเดิมให้ช่องที่ยังไม่เคยเปลี่ยนจริง)
+        # ต้องทิ้งรายการค้างนี้แบบเงียบๆ ก่อน แล้วค่อยย้อนช่องก่อนหน้าจริงให้เลยในการกดครั้งเดียว
+        # 🔥 แก้บักใหญ่ตัวที่ 2: ต้องเช็ค/ทิ้ง entry นี้ "ก่อน" เรียก close_text_editor() เสมอ ไม่ใช่หลัง
+        # เพราะ close_text_editor() ไปกระตุ้น _on_end_edit_combined() (เหมือนเป็นการ commit/end edit
+        # ปกติ) ซึ่งเคลียร์ self._pending_undo_entry เป็น None ไปก่อนแล้ว — พอมาเช็คทีหลังเลยเจอ None
+        # ตลอด ไม่เคยทิ้ง entry นี้ได้เลยสักครั้ง กลายเป็น entry ค้างขยะอยู่ใน stack ตลอดไป (นี่คือสาเหตุ
+        # ที่ "6" ที่พิมพ์ค้างไม่เคยถูกล้าง แม้กด Ctrl+Z ไปเรื่อยๆ จนช่องอื่นหายหมดแล้วก็ตาม)
+        # 🔥 แก้บักใหญ่ตัวที่ 5 (ตัวจริงสุดท้าย): ทิ้งแค่ entry ออกจาก stack เฉยๆ ไม่พอ — ต้องเขียนค่าเดิม
+        # (old_value ก่อนเริ่มพิมพ์) กลับลงเซลล์ด้วยเสมอ เพราะมี real-time preview อีกจุดหนึ่งในระบบ
+        # (_editor_keyrelease ที่คอย peek ค่าที่พิมพ์ล่าสุดใน editor แล้วเขียนลง MT.data ตรงๆ ทุกครั้งที่
+        # กดคีย์ เพื่อให้คอลัมน์คำนวณอื่นๆ อัปเดตสดระหว่างพิมพ์) แปลว่าค่าที่พิมพ์ค้างอยู่ (เช่น "8")
+        # ถูกเขียนลง "ข้อมูลจริง" ของตารางไปแล้วตั้งแต่ตอนพิมพ์ ไม่ใช่แค่โชว์ผ่าน editor overlay เฉยๆ
+        # แค่ปิด/ซ่อน editor เลยไม่ช่วยอะไร (ข้อมูลจริงยังเป็น "8" อยู่) ต้องเขียนทับด้วยค่าเดิมตรงๆ เหมือน
+        # การ pop ปกติทุกประการ (นี่คือสาเหตุที่ log ยืนยันว่า focus/stack/discard ถูกหมดทุกจุดแล้ว
+        # แต่ "8" ก็ยังไม่หายไปจากจอสักที)
+        # 🔥 UX: ทิ้งของค้าง (cancel การพิมพ์) กับ "ย้อนรายการก่อนหน้าจริง" ต้องนับเป็นคนละครั้งกัน
+        # ไม่ใช่รวบทำพร้อมกันในการกดครั้งเดียว (แบบนี้จะรู้สึกว่า "ข้าม" ไปหนึ่งขั้นแปลกๆ) — กดครั้งแรก
+        # แค่ยกเลิกของที่พิมพ์ค้างอย่างเดียว กดครั้งถัดไปค่อยย้อนของก่อนหน้าจริงทีละอันตามปกติ
+        if (self._pending_undo_entry is not None and self._edit_undo_stack
+                and self._edit_undo_stack[-1] is self._pending_undo_entry):
+            _phantom = self._edit_undo_stack.pop()
+            self._pending_undo_entry = None
+            try:
+                _target_sheet = self.sheet_frozen if _phantom["is_frozen"] else self.sheet
+                if _target_sheet is not None:
+                    _target_sheet.set_cell_data(_phantom["datarn"], _phantom["data_col"], _phantom["old_value"], redraw=True)
+                    self._schedule_calc(_phantom["datarn"])
+            except Exception as _e:
+                print(f"[DEBUG _undo] #{_call_n} restore phantom cell data ERROR: {_e}")
+            for _mt in (getattr(self.sheet, 'MT', None), getattr(getattr(self, 'sheet_frozen', None), 'MT', None)):
+                try:
+                    if _mt is not None and getattr(_mt, 'text_editor', None) and _mt.text_editor.open:
+                        _mt.hide_text_editor_and_dropdown()
+                        _mt.focus_set()
+                except Exception as _e:
+                    print(f"[DEBUG _undo] #{_call_n} hide_text_editor_and_dropdown (phantom path) EXCEPTION: {_e}")
+            print(f"[DEBUG _undo] #{_call_n} DISCARDED phantom entry + wrote back old_value={_phantom.get('old_value')!r} — STOP HERE (1 press = 1 action)")
             if hasattr(self, 'save_status_label'):
-                self.save_status_label.configure(text="⚠️ ย้อนกลับไม่ได้แล้ว", text_color="#F59E0B")
+                self.save_status_label.configure(
+                    text=f"↩ ยกเลิกช่อง \"{_phantom.get('col_name')}\" ที่พิมพ์ค้างอยู่ (เหลืออีก {len(self._edit_undo_stack)} ขั้นย้อนกลับ)",
+                    text_color="#6366F1")
             return "break"
-        try:
-            self._history_idx -= 1
-            frozen_data, main_data = self._history[self._history_idx]
-            
-            # ถอด Event ออกชั่วคราว ป้องกัน loop พังตอนกำลังกู้คืนข้อมูล
-            self.sheet.unbind("<<SheetModified>>")
-            if getattr(self, 'sheet_frozen', None):
-                self.sheet_frozen.unbind("<<SheetModified>>")
-                
-            self._restore_snapshot(frozen_data, main_data)
-            
-            self.sheet.bind("<<SheetModified>>", self._on_sheet_modified)
-            if getattr(self, 'sheet_frozen', None):
-                self.sheet_frozen.bind("<<SheetModified>>", self._on_sheet_modified)
+        else:
+            print(f"[DEBUG _undo] #{_call_n} NO phantom discarded "
+                  f"(pending={self._pending_undo_entry!r}, top_matches="
+                  f"{bool(self._edit_undo_stack and self._edit_undo_stack[-1] is self._pending_undo_entry)})")
+        self._pending_undo_entry = None
 
+        # แก้บักใหญ่: Sheet.cancel_edit() ไม่มีอยู่จริงใน tksheet ที่ติดตั้งอยู่ (7.5.19) — โดน
+        # try/except กลืน AttributeError เงียบๆ มาตลอด แปลว่า "ยกเลิกการพิมพ์ที่ค้างอยู่" ไม่เคยทำงาน
+        # เลยสักครั้ง (editor ของเซลล์ที่กำลังพิมพ์ค้างจะไม่ปิด ถึงจะกด Ctrl+Z ไปกี่ครั้งก็ตาม)
+        # 🔥 แก้บักใหญ่ตัวที่ 3: close_text_editor(set_data=False) เอง (ที่ใช้แทน cancel_edit ไปก่อน
+        # หน้านี้) ก็มีจุดเปราะบางซ่อนอยู่ในไลบรารี — ข้างในเช็ค self.focus_get() ก่อนเสมอ ถ้าตอนนั้น
+        # โฟกัสเพี้ยนไปชั่วขณะ (คืนค่า None ได้ในบางจังหวะของการกดคีย์บอร์ดจริงบนเครื่อง แม้แต่จังหวะสั้นๆ)
+        # จะ return "break" เงียบๆ ไม่ปิด editor เลยแม้แต่น้อย ไม่ error ให้เห็นด้วย (เจอจาก log จริง:
+        # เขียน "ถอย/DISCARDED" ครบทุกขั้นตอนใน stack แต่ตัวที่พิมพ์ค้างในจอไม่ยอมหาย) — เปลี่ยนไปเรียก
+        # hide_text_editor_and_dropdown() ตรงๆ แทน (method จริงที่ close_text_editor เรียกใช้ข้างในอยู่
+        # แล้วตอนสุดท้าย) ซึ่งไม่ต้องพึ่ง focus_get() เลย ปิดได้เสมอไม่ว่าโฟกัสตอนนั้นจะเป็นยังไง
+        for _mt in (getattr(self.sheet, 'MT', None), getattr(getattr(self, 'sheet_frozen', None), 'MT', None)):
+            try:
+                if _mt is not None and getattr(_mt, 'text_editor', None) and _mt.text_editor.open:
+                    _mt.hide_text_editor_and_dropdown()
+                    _mt.focus_set()
+            except Exception as _e:
+                print(f"[DEBUG _undo] #{_call_n} hide_text_editor_and_dropdown EXCEPTION: {type(_e).__name__}: {_e}")
+
+        stack = getattr(self, '_edit_undo_stack', None)
+        if not stack:
             if hasattr(self, 'save_status_label'):
-                self.save_status_label.configure(text=f"↩ ย้อนกลับ ({self._history_idx} ขั้นตอน)", text_color="#6366F1")
+                self.save_status_label.configure(text="⚠️ ไม่มีการแก้ไขให้ย้อนกลับแล้ว", text_color="#F59E0B")
+            return "break"
+        info = stack.pop()
+        print(f"[DEBUG _undo] #{_call_n} POPPED info={info}")
+        try:
+            if info.get("is_batch"):
+                # การ paste ทีเดียวหลายช่อง — คืนค่าทุกช่องในก้อนนี้พร้อมกัน (Ctrl+Z ครั้งเดียวคืนทั้งก้อน)
+                touched = set()
+                for cell in info["cells"]:
+                    target_sheet = self.sheet_frozen if cell["is_frozen"] else self.sheet
+                    if target_sheet is None:
+                        continue
+                    target_sheet.set_cell_data(cell["datarn"], cell["data_col"], cell["old_value"], redraw=False)
+                    touched.add((cell["is_frozen"], cell["datarn"]))
+                for is_frozen, datarn in touched:
+                    self._schedule_calc(datarn)
+                self.sheet.redraw()
+                if getattr(self, 'sheet_frozen', None):
+                    self.sheet_frozen.redraw()
+                if hasattr(self, 'save_status_label'):
+                    self.save_status_label.configure(
+                        text=f"↩ ย้อนกลับการวางข้อมูล {len(info['cells'])} ช่องแล้ว "
+                             f"(เหลืออีก {len(stack)} ขั้นย้อนกลับ)",
+                        text_color="#6366F1")
+            else:
+                target_sheet = self.sheet_frozen if info["is_frozen"] else self.sheet
+                if target_sheet is None:
+                    return "break"
+                target_sheet.set_cell_data(info["datarn"], info["data_col"], info["old_value"], redraw=True)
+                # คำนวณสูตรที่ผูกกับแถวนี้ใหม่ ให้คอลัมน์คำนวณอื่นๆ (ทุนรวม, ราคาขาย ฯลฯ) sync กลับไปด้วย
+                self._schedule_calc(info["datarn"])
+                if hasattr(self, 'save_status_label'):
+                    self.save_status_label.configure(
+                        text=f"↩ ย้อนกลับช่อง \"{info['col_name']}\" แล้ว (เหลืออีก {len(stack)} ขั้นย้อนกลับ)",
+                        text_color="#6366F1")
+            if self.auto_save_job_id is not None:
+                self.after_cancel(self.auto_save_job_id)
+            self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
         except Exception as e:
             print(f"_undo error: {e}")
         return "break"
@@ -4026,7 +4256,7 @@ class CostBenchmarkScreen(CTkFrame):
 
             col_name = self.columns[real_col]
             status_opts = [
-                "WIN", "STOCK", "ยกเลิก",
+                "WIN", "STOCK", "ยกเลิก", "Waiting - รอเซลล์ติดตาม",
                 "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-LOC แพ้พิกัด/ค่าขนส่ง",
@@ -4501,7 +4731,7 @@ class CostBenchmarkScreen(CTkFrame):
             col_name = self.columns[real_col]
             print(f"[DEBUG click] disp_col={col} hidden={hidden_set} real_col={real_col} col_name={col_name}")
             status_opts = [
-                "WIN", "STOCK", "ยกเลิก",
+                "WIN", "STOCK", "ยกเลิก", "Waiting - รอเซลล์ติดตาม",
                 "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
                 "L-LOC แพ้พิกัด/ค่าขนส่ง",
@@ -5475,7 +5705,11 @@ class CostBenchmarkScreen(CTkFrame):
             pass
 
     def _on_end_edit_combined(self, event=None, is_frozen=False):
+        print(f"[DEBUG end_edit] is_frozen={is_frozen} event={event!r} pending_before={id(self._pending_undo_entry) if getattr(self, '_pending_undo_entry', None) else None}")
         self._is_editing = False  # reset ทันทีที่ edit จบ ไม่ว่า path ไหน
+        # edit นี้ commit จริงแล้ว (ผ่าน Enter/Tab/คลิกออก) — entry ที่ค้างไว้ตอน begin_edit_cell
+        # กลายเป็นรายการย้อนกลับที่ใช้ได้จริงแล้ว ไม่ใช่ "ของค้าง" ที่ต้องทิ้งอีกต่อไป
+        self._pending_undo_entry = None
         # 🛠️ เรียก undo-scheduling ตรงนี้เลย แทนที่จะรอ "<<SheetModified>>" อย่างเดียว
         # เพราะ event นี้ของ tksheet ไม่ยิงสม่ำเสมอทุกครั้งที่แก้เซลล์เดี่ยวๆ (พบว่าพิมพ์แก้หลายช่อง
         # แล้ว event ไม่ยิงเลยจนกว่าจะมี bulk operation อื่นมากระตุ้น — undo history เลยไม่ถูกบันทึก)

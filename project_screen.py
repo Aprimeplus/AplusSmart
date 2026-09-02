@@ -19,6 +19,11 @@ def _resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def _max_lot_count_for_value(total_project_value):
+    """เพดานจำนวน Lot สูงสุดตามมูลค่าโครงการรวม: < 1,000,000 บาท = 4 Lot, >= 1,000,000 บาท = 6 Lot"""
+    return 6 if (total_project_value or 0) >= 1_000_000 else 4
+
+
 def _center_and_style_popup(win, master, w, h):
     """จัด popup ให้อยู่กลางหน้าต่างหลัก + ใส่ icon ของแอป (เหมือน main_app.py)"""
     win.update_idletasks()
@@ -43,7 +48,7 @@ class _NewProjectDialog(CTkToplevel):
         self.existing = existing
         is_edit = existing is not None
         self.title("แก้ไขโครงการ" if is_edit else "สร้างโครงการใหม่")
-        _center_and_style_popup(self, master, 420, 610)
+        _center_and_style_popup(self, master, 420, 690)
         self.grab_set()
 
         entry_font = CTkFont(size=13)
@@ -66,6 +71,13 @@ class _NewProjectDialog(CTkToplevel):
         CTkLabel(self, text="มูลค่าโครงการรวม (บาท) *", font=entry_font, anchor="w").pack(fill="x", **pad)
         self.value_entry = CTkEntry(self, placeholder_text="0.00")
         self.value_entry.pack(fill="x", padx=16, pady=(2, 0))
+
+        CTkLabel(self, text="จำนวน Lot ทั้งหมด (แผน) *", font=entry_font, anchor="w").pack(fill="x", **pad)
+        self.lot_count_entry = CTkEntry(self, placeholder_text="เช่น 4")
+        self.lot_count_entry.pack(fill="x", padx=16, pady=(2, 0))
+        self.lot_count_hint_label = CTkLabel(
+            self, text="", font=CTkFont(size=12), text_color="#475569", anchor="w")
+        self.lot_count_hint_label.pack(fill="x", padx=16, pady=(2, 0))
 
         CTkLabel(self, text="ยอดมัดจำ", font=entry_font, anchor="w").pack(fill="x", **pad)
         deposit_row = CTkFrame(self, fg_color="transparent")
@@ -99,6 +111,8 @@ class _NewProjectDialog(CTkToplevel):
 
         self.value_entry.bind("<KeyRelease>", self._update_deposit_preview)
         self.deposit_entry.bind("<KeyRelease>", self._update_deposit_preview)
+        self.value_entry.bind("<KeyRelease>", self._update_lot_count_hint, add="+")
+        self.lot_count_entry.bind("<KeyRelease>", self._update_lot_count_hint)
 
         btn_frame = CTkFrame(self, fg_color="transparent")
         btn_frame.pack(fill="x", padx=16, pady=20)
@@ -114,30 +128,74 @@ class _NewProjectDialog(CTkToplevel):
             if existing.get("customer_name"):
                 self.customer_entry.insert(0, existing["customer_name"])
             self.value_entry.insert(0, f"{float(existing.get('total_project_value') or 0):.2f}")
+            _plc = existing.get("planned_lot_count")
+            if _plc is not None and pd.notna(_plc):
+                self.lot_count_entry.insert(0, str(int(_plc)))
             dep = existing.get("deposit_pct")
             if dep is not None:
                 self.deposit_entry.insert(0, f"{float(dep):.2f}")
             if existing.get("deposit_method") == "last_lot":
                 self.deposit_method_var.set("หักที่ Lot สุดท้าย")
             self._update_deposit_preview()
+        self._update_lot_count_hint()
 
     @staticmethod
     def _load_customer_list(master):
-        """ดึงรายชื่อลูกค้าจากตาราง customers มาให้ช่อง 'ลูกค้า' ค้นหาแบบ autocomplete"""
+        """ดึงรายชื่อลูกค้าจากตาราง customers มาให้ช่อง 'ลูกค้า' ค้นหาแบบ autocomplete —
+        ใส่ 'รหัสลูกค้า' เข้าไปในข้อความที่ใช้ค้นหา (display) ด้วย เพื่อให้พิมพ์รหัสลูกค้าแล้วเจอชื่อได้
+        (AutoCompleteEntry ค้นหาจากข้อความใน display เท่านั้น) แต่ตอนเลือกแล้วจะตัดรหัสออก
+        เหลือแค่ชื่อลูกค้าล้วนๆ ใส่ในช่องจริง — ดู _on_customer_selected"""
         pg_engine = getattr(master, "pg_engine", None)
         if pg_engine is None:
             return []
         try:
             df = pd.read_sql_query(
-                "SELECT customer_name FROM customers WHERE customer_name IS NOT NULL AND customer_name != '' "
+                "SELECT customer_code, customer_name FROM customers "
+                "WHERE customer_name IS NOT NULL AND customer_name != '' "
                 "ORDER BY customer_name", pg_engine)
-            return [{"name": n, "display": n} for n in df["customer_name"].tolist()]
+            result = []
+            for _, r in df.iterrows():
+                code = str(r["customer_code"] or "").strip()
+                name = str(r["customer_name"] or "").strip()
+                display = f"{code} - {name}" if code else name
+                result.append({"name": name, "code": code, "display": display})
+            return result
         except Exception as e:
             print(f"Error loading customer list: {e}")
             return []
 
     def _on_customer_selected(self, selected_object):
-        pass
+        """พอเลือกจาก dropdown แล้ว ตัดรหัสลูกค้าที่ต่อท้ายไว้เพื่อการค้นหาออก เหลือแค่ชื่อลูกค้าล้วนๆ
+        ในช่อง — กันไม่ให้ 'รหัส - ชื่อ' หลุดไปบันทึกเป็นชื่อลูกค้าจริงของโครงการ"""
+        name = (selected_object or {}).get("name", "")
+        self.customer_entry.delete(0, "end")
+        self.customer_entry.insert(0, name)
+
+    def _update_lot_count_hint(self, event=None):
+        """แสดงเพดานจำนวน Lot สูงสุดสดๆ ตามมูลค่าโครงการที่กรอก + เตือนถ้ากรอกเกินเพดาน"""
+        try:
+            value = float(self.value_entry.get().strip().replace(",", "") or 0)
+        except ValueError:
+            value = 0.0
+        max_lot = _max_lot_count_for_value(value)
+        lot_count_raw = self.lot_count_entry.get().strip()
+        base_text = (f"เพดานสูงสุด {max_lot} Lot "
+                     f"({'≥' if value >= 1_000_000 else '<'} 1,000,000 บาท)")
+        if lot_count_raw:
+            try:
+                lot_count = int(float(lot_count_raw))
+                if lot_count > max_lot:
+                    self.lot_count_hint_label.configure(
+                        text=f"⚠ {base_text} — กรอกเกินเพดานอยู่ตอนนี้ ({lot_count} Lot)",
+                        text_color="#DC2626")
+                    return
+                elif lot_count <= 0:
+                    self.lot_count_hint_label.configure(
+                        text=f"⚠ {base_text} — ต้องมากกว่า 0", text_color="#DC2626")
+                    return
+            except ValueError:
+                pass
+        self.lot_count_hint_label.configure(text=base_text, text_color="#475569")
 
     def _update_deposit_preview(self, event=None):
         """โชว์ค่าเทียบหน่วยตรงข้ามสดๆ — พิมพ์ % ก็เห็นว่าเป็นกี่บาท พิมพ์บาทก็เห็นว่าเป็นกี่ %"""
@@ -189,6 +247,25 @@ class _NewProjectDialog(CTkToplevel):
         if value <= 0:
             messagebox.showwarning("ข้อมูลผิดพลาด", "มูลค่าโครงการต้องมากกว่า 0", parent=self)
             return
+        lot_count_raw = self.lot_count_entry.get().strip()
+        if not lot_count_raw:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณากรอกจำนวน Lot ทั้งหมด", parent=self)
+            return
+        try:
+            planned_lot_count = int(float(lot_count_raw))
+        except ValueError:
+            messagebox.showwarning("ข้อมูลผิดพลาด", "จำนวน Lot ต้องเป็นตัวเลข", parent=self)
+            return
+        max_lot = _max_lot_count_for_value(value)
+        if planned_lot_count <= 0:
+            messagebox.showwarning("ข้อมูลผิดพลาด", "จำนวน Lot ต้องมากกว่า 0", parent=self)
+            return
+        if planned_lot_count > max_lot:
+            messagebox.showwarning(
+                "ข้อมูลผิดพลาด",
+                f"มูลค่าโครงการ {value:,.2f} บาท อนุญาตสูงสุด {max_lot} Lot "
+                f"แต่กรอกไว้ {planned_lot_count} Lot", parent=self)
+            return
         try:
             deposit_raw_num = float(deposit_raw) if deposit_raw else None
         except ValueError:
@@ -213,20 +290,23 @@ class _NewProjectDialog(CTkToplevel):
         deposit_method = "last_lot" if self.deposit_method_var.get() == "หักที่ Lot สุดท้าย" else "spread"
         self.destroy()
         if self.existing is not None:
-            self.on_submit(self.existing["id"], name, customer, value, deposit_pct, deposit_method)
+            self.on_submit(self.existing["id"], name, customer, value, deposit_pct, deposit_method,
+                            planned_lot_count)
         else:
-            self.on_submit(code, name, customer, value, deposit_pct, deposit_method)
+            self.on_submit(code, name, customer, value, deposit_pct, deposit_method, planned_lot_count)
 
 
 class ProjectScreen(ctk.CTkFrame):
     """หน้าจัดการโครงการ (Multi-Lot Project) — Phase 1: โครงสร้างข้อมูล + ติดตามสถานะ"""
 
-    def __init__(self, master, app_container, user_key=None, user_role=None, **kwargs):
+    def __init__(self, master, app_container, user_key=None, user_role=None,
+                 sale_key_filter=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app_container
         self.pg_engine = app_container.pg_engine
         self.user_key = user_key or "system"
         self.user_role = (user_role or "").strip()
+        self._locked_sale_key = sale_key_filter   # ถ้า set = Sale mode (เห็นแค่โครงการของตัวเอง)
         self.current_project_id = None
 
         self.header_font = CTkFont(size=16, weight="bold")
@@ -242,8 +322,9 @@ class ProjectScreen(ctk.CTkFrame):
         self.title_label.pack(side="left")
         self.new_project_btn = CTkButton(header, text="+ สร้างโครงการใหม่", command=self._open_new_project_dialog)
         self.new_project_btn.pack(side="right")
-        CTkButton(header, text="🔄 รีเฟรช", width=90, fg_color="#6B7280", hover_color="#4B5563",
-                  command=self._show_list).pack(side="right", padx=(0, 8))
+        self.refresh_btn = CTkButton(header, text="🔄 รีเฟรช", width=90, fg_color="#6B7280", hover_color="#4B5563",
+                                      command=self._show_list)
+        self.refresh_btn.pack(side="right", padx=(0, 8))
 
         self.body = CTkFrame(self, fg_color="transparent")
         self.body.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
@@ -262,6 +343,10 @@ class ProjectScreen(ctk.CTkFrame):
 
     def _show_list(self):
         self.current_project_id = None
+        # โชว์ปุ่ม "รีเฟรช"/"สร้างโครงการใหม่" ที่หัวจอกลับมา (ถูกซ่อนไว้ตอนอยู่หน้ารายละเอียดโครงการ)
+        # ต้อง pack ตามลำดับเดิม (new_project ก่อน แล้วค่อย refresh) ไม่งั้นตำแหน่งซ้าย-ขวาจะสลับกัน
+        self.new_project_btn.pack(side="right")
+        self.refresh_btn.pack(side="right", padx=(0, 8))
         for w in self.body.winfo_children():
             w.destroy()
         # ล้าง row weight ที่ _show_detail() เคยตั้งไว้ (row 2, 3 เป็นต้น) ทิ้งก่อนเสมอ — ไม่งั้น
@@ -282,10 +367,24 @@ class ProjectScreen(ctk.CTkFrame):
                            COUNT(l.id) FILTER (WHERE l.kpi_qualified_flag) AS lot_done
                     FROM projects p
                     LEFT JOIN project_lots l ON l.project_id = p.id
+                """
+                params = None
+                if self._locked_sale_key:
+                    # Sale เห็นแค่โครงการที่ตัวเองสร้าง หรือมี Lot ที่ผูกกับ SO ของตัวเอง
+                    query += """
+                    WHERE p.created_by = %(sk)s
+                       OR EXISTS (
+                            SELECT 1 FROM project_lots pl
+                            JOIN commissions c ON c.so_number = pl.so_number AND c.is_active = 1
+                            WHERE pl.project_id = p.id AND c.sale_key = %(sk)s
+                       )
+                    """
+                    params = {"sk": self._locked_sale_key}
+                query += """
                     GROUP BY p.id
                     ORDER BY p.created_at DESC
                 """
-                df = pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn, params=params)
             finally:
                 self.app.release_connection(conn)
         except Exception as e:
@@ -369,15 +468,18 @@ class ProjectScreen(ctk.CTkFrame):
     def _open_new_project_dialog(self):
         _NewProjectDialog(self, self._create_project)
 
-    def _create_project(self, code, name, customer, value, deposit_pct=None, deposit_method="spread"):
+    def _create_project(self, code, name, customer, value, deposit_pct=None, deposit_method="spread",
+                         planned_lot_count=None):
         try:
             conn = self.app.get_connection()
             try:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO projects (project_code, project_name, customer_name, total_project_value, deposit_pct, deposit_method, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (code, name, customer, value, deposit_pct, deposit_method, self.user_key))
+                        INSERT INTO projects (project_code, project_name, customer_name, total_project_value,
+                                               deposit_pct, deposit_method, planned_lot_count, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (code, name, customer, value, deposit_pct, deposit_method, planned_lot_count,
+                          self.user_key))
                 conn.commit()
             finally:
                 self.app.release_connection(conn)
@@ -397,19 +499,22 @@ class ProjectScreen(ctk.CTkFrame):
             "total_project_value": proj["total_project_value"],
             "deposit_pct": proj["deposit_pct"] if "deposit_pct" in proj.index else None,
             "deposit_method": proj["deposit_method"] if "deposit_method" in proj.index else "spread",
+            "planned_lot_count": proj["planned_lot_count"] if "planned_lot_count" in proj.index else None,
         }
         _NewProjectDialog(self, self._update_project, existing=existing)
 
-    def _update_project(self, project_id, name, customer, value, deposit_pct=None, deposit_method="spread"):
+    def _update_project(self, project_id, name, customer, value, deposit_pct=None, deposit_method="spread",
+                         planned_lot_count=None):
         try:
             conn = self.app.get_connection()
             try:
                 with conn.cursor() as cur:
                     cur.execute("""
                         UPDATE projects
-                        SET project_name = %s, customer_name = %s, total_project_value = %s, deposit_pct = %s, deposit_method = %s
+                        SET project_name = %s, customer_name = %s, total_project_value = %s, deposit_pct = %s,
+                            deposit_method = %s, planned_lot_count = %s
                         WHERE id = %s
-                    """, (name, customer, value, deposit_pct, deposit_method, project_id))
+                    """, (name, customer, value, deposit_pct, deposit_method, planned_lot_count, project_id))
                 conn.commit()
             finally:
                 self.app.release_connection(conn)
@@ -482,6 +587,10 @@ class ProjectScreen(ctk.CTkFrame):
 
     def _show_detail(self, project_id):
         self.current_project_id = project_id
+        # ซ่อนปุ่ม "รีเฟรช"/"สร้างโครงการใหม่" ที่หัวจอตอนอยู่หน้ารายละเอียด — ไม่งั้นมันไปเบียดซ้อนกับ
+        # ปุ่ม "แก้ไขโครงการ" ของหน้านี้ที่อยู่มุมขวาบนเหมือนกัน ดูรก/ทับกัน (แสดงกลับตอน _show_list())
+        self.new_project_btn.pack_forget()
+        self.refresh_btn.pack_forget()
         for w in self.body.winfo_children():
             w.destroy()
 
@@ -497,6 +606,17 @@ class ProjectScreen(ctk.CTkFrame):
                 # ค่าย้าย) คูณ VAT 7% แล้วหัก wht — ดึงสดจาก commissions เสมอ ไม่ได้บันทึกซ้ำไว้ที่ project_lots
                 lots_df = pd.read_sql_query("""
                     SELECT pl.*,
+                           COALESCE(c.sales_service_amount, 0) AS product_amount,
+                           COALESCE(c.shipping_cost, 0)        AS shipping_amount,
+                           (
+                               (CASE WHEN c.sales_service_vat_option = 'VAT' THEN COALESCE(c.sales_service_amount, 0) ELSE 0 END
+                              + CASE WHEN c.cutting_drilling_fee_vat_option = 'VAT' THEN COALESCE(c.cutting_drilling_fee, 0) ELSE 0 END
+                              + CASE WHEN c.other_service_fee_vat_option = 'VAT' THEN COALESCE(c.other_service_fee, 0) ELSE 0 END
+                              + CASE WHEN c.shipping_vat_option = 'VAT' THEN COALESCE(c.shipping_cost, 0) ELSE 0 END
+                              + CASE WHEN c.credit_card_fee_vat_option = 'VAT' THEN COALESCE(c.credit_card_fee, 0) ELSE 0 END
+                              + CASE WHEN c.relocation_cost_vat_option = 'VAT' THEN COALESCE(c.relocation_cost, 0) ELSE 0 END
+                               ) * 0.07
+                           ) AS vat_total,
                            GREATEST(0, (
                                (CASE WHEN c.sales_service_vat_option = 'VAT' THEN COALESCE(c.sales_service_amount, 0) ELSE 0 END
                               + CASE WHEN c.cutting_drilling_fee_vat_option = 'VAT' THEN COALESCE(c.cutting_drilling_fee, 0) ELSE 0 END
@@ -568,8 +688,14 @@ class ProjectScreen(ctk.CTkFrame):
 
         info = CTkFrame(self.body, fg_color="#F8FAFC", corner_radius=8, border_width=1, border_color="#E2E8F0")
         info.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        CTkLabel(info, text=f"{proj['project_code']} · {proj['project_name']}",
-                 font=info_title_font).grid(row=0, column=0, columnspan=4, sticky="w", padx=18, pady=(16, 4))
+        info.grid_columnconfigure(0, weight=1)
+
+        header_row = CTkFrame(info, fg_color="transparent")
+        header_row.grid(row=0, column=0, columnspan=4, sticky="ew", padx=18, pady=(16, 4))
+        CTkLabel(header_row, text=f"{proj['project_code']} · {proj['project_name']}",
+                 font=info_title_font).pack(side="left")
+        self._project_status_badge_label = CTkLabel(header_row, text="", font=info_sub_font)
+        self._project_status_badge_label.pack(side="right")
         CTkLabel(info, text=f"ลูกค้า: {proj['customer_name'] or '-'}", font=info_sub_font,
                  text_color="#64748B").grid(row=1, column=0, sticky="w", padx=18, pady=(0, 14))
 
@@ -580,56 +706,145 @@ class ProjectScreen(ctk.CTkFrame):
         exceeded = has_target and lot_sum > total_value
         pct = min(100, (lot_sum / total_value * 100)) if has_target else 0
 
-        value_text = f"{total_value:,.2f} บาท" if has_target else "— ไม่ได้กำหนด (อิงจาก Lot อัตโนมัติ)"
-        CTkLabel(info, text=f"มูลค่าโครงการรวม: {value_text}", font=info_value_font).grid(
-            row=2, column=0, sticky="w", padx=18, pady=(0, 8))
-        lot_sum_text = f"รวม Lot: {lot_sum:,.2f} บาท" + (f" ({pct:.0f}%)" if has_target else "")
-        CTkLabel(info, text=lot_sum_text, font=info_value_font,
-                 text_color="#B45309" if exceeded else "#0F766E").grid(
-            row=2, column=1, sticky="w", padx=18, pady=(0, 8))
+        # สถานะโครงการโดยรวม (badge มุมขวาบน) — นับ Lot ที่ "ส่งครบ" แล้วเทียบกับแผน
+        planned_for_badge = proj["planned_lot_count"] if "planned_lot_count" in proj.index else None
+        planned_for_badge = (int(planned_for_badge) if planned_for_badge is not None and pd.notna(planned_for_badge)
+                              else (len(active_lots_df) if not active_lots_df.empty else 0))
+        delivered_count = int(active_lots_df["delivered_flag"].sum()) if not active_lots_df.empty else 0
+        if proj["status"] != "Open":
+            badge_text, badge_color = f"🔒 {proj['status']}", "#475569"
+        elif planned_for_badge and delivered_count >= planned_for_badge:
+            badge_text, badge_color = "✅ เสร็จสมบูรณ์", "#16A34A"
+        elif delivered_count > 0:
+            badge_text, badge_color = f"🟢 กำลังดำเนินงาน (ส่งของแล้ว {delivered_count}/{planned_for_badge} Lot)", "#16A34A"
+        else:
+            badge_text, badge_color = f"⏳ ยังไม่เริ่มส่งของ (0/{planned_for_badge} Lot)", "#94A3B8"
+        self._project_status_badge_label.configure(text=badge_text, text_color=badge_color)
 
         # ยอดมัดจำ — คิดแยกเป็นก้อนต่อ Lot จากยอดที่ต้องชำระจริงของ SO นั้น (grand_total_due ที่คำนวณ
         # มาแล้วเหมือนช่อง "ยอดที่ต้องชำระ" ในฟอร์ม SO — รวม VAT ของทุกรายการที่ติ๊ก VAT หัก wht แล้ว)
         # แล้วรวมยอดขึ้นมา ไม่ได้หารเฉลี่ยจากมูลค่าโครงการรวมลงไป เพื่อไม่ต้องแบ่งใหม่ทุกครั้งที่มี Lot เพิ่ม
         deposit_pct_val = proj["deposit_pct"] if "deposit_pct" in proj.index else None
         deposit_method = (proj["deposit_method"] if "deposit_method" in proj.index else "spread") or "spread"
+        planned_lot_count = proj["planned_lot_count"] if "planned_lot_count" in proj.index else None
+        planned_lot_count = int(planned_lot_count) if planned_lot_count is not None and pd.notna(planned_lot_count) else None
         grand_total_sum = float(active_lots_df["grand_total_due"].sum()) if not active_lots_df.empty else 0.0
         # deposit_method = 'last_lot': ไล่หักมัดจำย้อนจาก Lot สุดท้ายขึ้นไปหน้าเรื่อยๆ จนกว่ามัดจำจะหมด
         # (ไม่ใช่หักได้แค่ Lot เดียว) — กันกรณี Lot สุดท้ายมูลค่าน้อยกว่ามัดจำทั้งก้อน เช่น มัดจำ 100,000
         # แต่ Lot สุดท้ายมูลค่าแค่ 50,000 ต้องหักส่วนที่เหลือ (50,000) ไหลย้อนไปหัก Lot ก่อนหน้าต่อ
-        lot_deposit_map = {}
-        if not active_lots_df.empty and deposit_pct_val is not None and pd.notna(deposit_pct_val):
-            remaining_deposit = grand_total_sum * (float(deposit_pct_val) / 100)
-            for _, lr in active_lots_df.sort_values("lot_number", ascending=False).iterrows():
-                lot_due = float(lr.get("grand_total_due", 0) or 0)
-                ded = min(remaining_deposit, lot_due)
-                lot_deposit_map[int(lr["id"])] = ded
-                remaining_deposit -= ded
+        #
+        # ถ้ารู้ planned_lot_count (จำนวน Lot ที่วางแผนไว้ตอนสร้างโครงการ) ให้ยึดเลขนั้นเป็น "Lot สุดท้ายจริง"
+        # แทนที่จะเดาจาก Lot ที่มีอยู่ตอนนี้ — กันกรณีสร้าง Lot ไปแล้วแค่บางส่วน (เช่น วางแผน 4 Lot แต่สร้าง
+        # ไปแค่ 3 Lot) ซึ่งถ้าเดาจาก Lot ปัจจุบันจะหักมัดจำผิด Lot ไปก่อน (Lot 3 ที่จริงยังไม่ใช่ Lot สุดท้าย)
+        # ยอดมัดจำ — คำนวณเฉยๆ ตรงนี้ก่อน (ยังไม่ render) เพราะการ์ดสรุป 4 ใบต้องใช้ total_deposit/
+        # proj_dep_received ด้วย — ส่วนกล่องมัดจำ (checkbox/ปุ่ม) ไป render อยู่ใต้การ์ดสรุปแทน (ตาม
+        # ตำแหน่งที่ PM ให้ไว้ในแบบ: การ์ดสรุป 4 ใบอยู่บน กล่องมัดจำอยู่ล่าง)
         if deposit_pct_val is not None and pd.notna(deposit_pct_val):
             deposit_ratio = float(deposit_pct_val) / 100
-            total_deposit = grand_total_sum * deposit_ratio
+            is_estimate = active_lots_df.empty or grand_total_sum <= 0
+            # ยังไม่มี Lot จริงเลย — โชว์ยอดมัดจำประมาณการจาก "มูลค่าโครงการรวม" ที่กรอกไว้ตอนสร้างโครงการ
+            # ไปก่อน แทนที่จะโชว์ 0.00 บาท เพราะลูกค้าโอนมัดจำก้อนแรกตั้งแต่ก่อน Lot 1 จะถูกสร้างด้วยซ้ำ
+            total_deposit = (total_value * deposit_ratio) if is_estimate else (grand_total_sum * deposit_ratio)
+            has_any_manual_dep = False
+            if deposit_method == "spread" and not active_lots_df.empty:
+                # ยอดมัดจำรวมจริง = ยอดกรอกเอง (ถ้ามี) แทนยอดคำนวณ % สำหรับ Lot นั้นๆ
+                actual_total = 0.0
+                for _, lr in active_lots_df.iterrows():
+                    man_dep = lr.get('manual_deposit_amount')
+                    if man_dep is not None and pd.notna(man_dep):
+                        actual_total += float(man_dep)
+                        has_any_manual_dep = True
+                    else:
+                        actual_total += float(lr.get('grand_total_due', 0) or 0) * deposit_ratio
+                total_deposit = actual_total
+                is_estimate = False
             method_text = ("หักที่ Lot สุดท้าย — Hold ตลอดโปรเจกต์" if deposit_method == "last_lot"
                             else "หักกระจายทุก Lot")
-            CTkLabel(info, text=f"ยอดมัดจำ ({float(deposit_pct_val):.0f}% ของยอดที่ต้องชำระ, {method_text}): "
-                                 f"{total_deposit:,.2f} บาท",
-                     font=info_value_font, text_color="#7C3AED").grid(
-                row=3, column=0, columnspan=2, sticky="w", padx=18, pady=(0, 8))
-            next_row = 4
-            if deposit_method == "last_lot":
-                # มัดจำเก็บเป็นก้อนเดียวตอนทำสัญญา (ไม่ได้ทยอยรับทีละ Lot) จึงเป็น flag ระดับโครงการ
-                # แทนที่จะเป็น checkbox แยกต่อ Lot แบบวิธี "กระจายทุก Lot"
-                proj_dep_received = bool(proj.get("deposit_received_flag") or False)
-                dep_recv_row = CTkFrame(info, fg_color="transparent")
-                dep_recv_row.grid(row=next_row, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 8))
-                dep_recv_var = ctk.BooleanVar(value=proj_dep_received)
-                CTkCheckBox(dep_recv_row, text="ได้รับมัดจำจากลูกค้าแล้ว (ทั้งก้อน)", variable=dep_recv_var,
-                            text_color="#7C3AED",
-                            command=lambda: self._toggle_project_deposit_received(
-                                project_id, dep_recv_var.get())).pack(side="left")
-                next_row += 1
+            manual_note = " (*มี Lot ที่กรอกยอดมัดจำเองแทนค่าคำนวณ)" if has_any_manual_dep else ""
+            estimate_note = " (ประมาณการจากมูลค่าโครงการรวม — ยังไม่มี Lot จริง)" if is_estimate else ""
+            proj_dep_received = bool(proj.get("deposit_received_flag") or False)
         else:
             deposit_ratio = None
-            next_row = 3
+            total_deposit = 0.0
+            proj_dep_received = False
+
+        # ── การ์ดสรุปยอด 4 ใบ (มูลค่ารวม / ชำระแล้ว / คงเหลือค้างชำระ / คิดคอมมิชชั่นสะสม) ──────
+        next_row = 3
+        paid_lots_df = active_lots_df[active_lots_df["payment_collected_flag"] == True] \
+            if not active_lots_df.empty else active_lots_df
+        paid_lots_sum = float(paid_lots_df["grand_total_due"].sum()) if not paid_lots_df.empty else 0.0
+        commission_sum = float(paid_lots_df["product_amount"].sum()) if not paid_lots_df.empty else 0.0
+        total_paid = paid_lots_sum + (total_deposit if proj_dep_received else 0.0)
+        remaining_due = max(0.0, total_value - total_paid) if has_target else 0.0
+        paid_pct = min(100, (total_paid / total_value * 100)) if has_target and total_value > 0 else 0
+
+        kpi_row = CTkFrame(info, fg_color="transparent")
+        kpi_row.grid(row=next_row, column=0, columnspan=4, sticky="ew", padx=12, pady=(6, 14))
+        for i in range(4):
+            kpi_row.grid_columnconfigure(i, weight=1)
+
+        def _kpi_card(col, title, value_text, value_color, note=None, progress=None, bg_color="white"):
+            card = CTkFrame(kpi_row, fg_color=bg_color, corner_radius=10, border_width=1, border_color="#E2E8F0")
+            card.grid(row=0, column=col, sticky="new", padx=6)
+            CTkLabel(card, text=title, font=CTkFont(size=13), text_color="#64748B").pack(
+                anchor="w", padx=16, pady=(12, 2))
+            CTkLabel(card, text=value_text, font=CTkFont(size=26, weight="bold"),
+                     text_color=value_color).pack(anchor="w", padx=16)
+            # จองพื้นที่แถบ progress ไว้เท่ากันทุกการ์ด แม้การ์ดที่ไม่มี progress ก็ตาม — ไม่งั้นการ์ดที่มี
+            # progress bar (ยอดชำระแล้ว) จะสูงกว่าการ์ดอื่นๆ เพราะ pack เนื้อหาตามจริงของแต่ละใบ (sticky="new")
+            if progress is not None:
+                bar = ctk.CTkProgressBar(card, height=8, progress_color=value_color)
+                bar.set(progress / 100)
+                bar.pack(fill="x", padx=16, pady=(6, 0))
+                CTkLabel(card, text=f"{progress:.1f}%", font=CTkFont(size=11),
+                         text_color="#94A3B8").pack(anchor="e", padx=16, pady=(0, 12))
+            else:
+                CTkFrame(card, fg_color="transparent", height=8).pack(fill="x", padx=16, pady=(6, 0))
+                # หมายเหตุ (ถ้ามี) มาแทนที่ตำแหน่งเดียวกับเลข % ของการ์ดที่มี progress — ให้อยู่บรรทัด
+                # เดียวกันพอดี ไม่ใช่แยกไปอีกบรรทัดข้างล่าง
+                CTkLabel(card, text=note or " ", font=CTkFont(size=11), text_color="#94A3B8").pack(
+                    anchor="w", padx=16, pady=(0, 12))
+
+        _kpi_card(0, "มูลค่าโครงการรวม (NET ทั้งบิล)", f"{total_value:,.2f} บาท", "#1E293B",
+                   note="*รวม ค่าสินค้า + ค่าส่ง + VAT 7%", bg_color="white")
+        _kpi_card(1, "ยอดชำระแล้ว", f"{total_paid:,.2f} บาท", "#16A34A", progress=paid_pct,
+                   bg_color="#F0FDF4")
+        _kpi_card(2, "ยอดคงเหลือค้างชำระ", f"{remaining_due:,.2f} บาท", "#D97706",
+                   bg_color="#FFFBEB")
+        _kpi_card(3, "ยอดคิดคอมมิชชั่น สะสม", f"{commission_sum:,.2f} บาท", "#2563EB",
+                   note="*ตัด VAT & ค่าธรรมเนียมแล้ว", bg_color="#EFF6FF")
+        next_row += 1
+
+        # ── กล่องมัดจำ (checkbox "ได้รับมัดจำแล้ว" + ปุ่ม "เงินมัดจำพร้อมใช้งาน") ──────────────
+        if deposit_pct_val is not None and pd.notna(deposit_pct_val):
+            CTkLabel(info, text=f"ยอดมัดจำ ({float(deposit_pct_val):.0f}% ของยอดที่ต้องชำระ, {method_text}): "
+                                 f"{total_deposit:,.2f} บาท{manual_note}{estimate_note}",
+                     font=info_value_font, text_color="#7C3AED").grid(
+                row=next_row, column=0, columnspan=2, sticky="w", padx=18, pady=(0, 8))
+            next_row += 1
+            # มติที่ประชุม: ไม่ว่ามัดจำจะเป็นวิธี "กระจายทุก Lot" หรือ "หักที่ Lot สุดท้าย" ก็ตาม ลูกค้าจะโอน
+            # มัดจำมาเป็นก้อนเดียวตั้งแต่แรก ก่อน Lot 1 จะส่งของเสมอ (ดูสลิปตัวอย่างจริง SO6908ID011) จึงใช้
+            # flag ระดับโครงการตัวเดียวติดตาม "ได้รับมัดจำแล้ว" สำหรับทั้ง 2 วิธี — ไม่ผูกกับ deposit_method
+            dep_recv_row = CTkFrame(info, fg_color="transparent")
+            dep_recv_row.grid(row=next_row, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 8))
+            dep_recv_var = ctk.BooleanVar(value=proj_dep_received)
+            CTkCheckBox(dep_recv_row, text="ได้รับมัดจำจากลูกค้าแล้ว (ทั้งก้อน)", variable=dep_recv_var,
+                        text_color="#7C3AED",
+                        command=lambda: self._toggle_project_deposit_received(
+                            project_id, dep_recv_var.get())).pack(side="left")
+            if not proj_dep_received:
+                CTkLabel(dep_recv_row, text="  ⚠ ต้องได้รับมัดจำก่อนส่งของ Lot แรกเสมอ",
+                         font=self.small_font, text_color="#B45309").pack(side="left")
+            elif deposit_method == "last_lot":
+                CTkButton(dep_recv_row, text="เงินมัดจำพร้อมใช้งาน", width=140, height=24,
+                          fg_color="#EDE9FE", hover_color="#DDD6FE", text_color="#6D28D9",
+                          font=CTkFont(size=11),
+                          command=lambda: messagebox.showinfo(
+                              "เงินมัดจำ",
+                              f"ได้รับมัดจำแล้ว {total_deposit:,.2f} บาท ({float(deposit_pct_val):.0f}% "
+                              "ของยอดทั้งโครงการ)\nสถานะ: Hold ตลอดโปรเจกต์ — ระบบจะนำไปหักคืนให้อัตโนมัติ "
+                              "ที่ Lot สุดท้ายตามแผน", parent=self)).pack(side="right", padx=(8, 0))
+            next_row += 1
 
         if exceeded:
             CTkLabel(info, text="⚠ รวม Lot เกินมูลค่าโครงการ", font=info_sub_font,
@@ -640,9 +855,12 @@ class ProjectScreen(ctk.CTkFrame):
         lots_header = CTkFrame(self.body, fg_color="transparent")
         lots_header.grid(row=2, column=0, sticky="ew")
         lots_header.grid_columnconfigure(0, weight=1)
-        CTkLabel(lots_header, text="รายการ Lot", font=CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
-        CTkLabel(lots_header, text="เพิ่ม Lot ใหม่ได้จากหน้า \"สร้าง/แก้ไข Sales Order\" — ติ๊ก \"เป็นงานโครงการ (Lot)\"",
-                 font=self.small_font, text_color="#94A3B8").grid(row=0, column=1, sticky="e")
+        CTkLabel(lots_header, text="📋 ตารางรายการ Lot (SO ย่อยสำหรับส่งสินค้า)",
+                 font=CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
+        CTkLabel(lots_header,
+                 text="แสดงการถอดค่าสินค้าเพื่อคิดคอมมิชชั่น ควบคู่กับยอดเงินรับชำระจริง — "
+                      "ดับเบิลคลิกเพื่ออัปเดตสถานะ · เพิ่ม Lot ใหม่จากหน้า \"สร้าง/แก้ไข Sales Order\"",
+                 font=self.small_font, text_color="#94A3B8").grid(row=1, column=0, sticky="w")
 
         lots_frame = CTkFrame(self.body, fg_color="transparent")
         lots_frame.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
@@ -650,26 +868,19 @@ class ProjectScreen(ctk.CTkFrame):
         lots_frame.grid_columnconfigure(0, weight=1)
         lots_frame.grid_rowconfigure(0, weight=1)
 
-        show_deposit_col = deposit_ratio is not None
-        # checkbox "รับมัดจำแล้ว" ต่อ Lot แสดงเฉพาะวิธี "กระจายทุก Lot" — วิธี "หักที่ Lot สุดท้าย" ย้ายไป
-        # flag ระดับโครงการที่แผงข้อมูลด้านบนแทน (มัดจำเก็บเป็นก้อนเดียว ไม่ได้ทยอยรับทีละ Lot)
-        show_deposit_received_col = show_deposit_col and deposit_method == "spread"
-        deposit_cols = (["deposit", "deposit_received"] if show_deposit_received_col
-                        else ["deposit"] if show_deposit_col else [])
-        columns = ["lot", "name", "product_type", "so", "value"] + deposit_cols + \
-                  ["delivered", "invoiced", "paid", "status"]
+        columns = ["lot", "name", "product_type", "so", "product_amount", "shipping_amount",
+                   "vat_total", "net_total", "pay_status"]
         headers = {
-            "lot": "Lot", "name": "ชื่อ Lot", "product_type": "ประเภทสินค้า", "so": "SO", "value": "มูลค่า",
-            "deposit": "ยอดมัดจำ", "deposit_received": "รับมัดจำแล้ว",
-            "delivered": "ส่งครบ", "invoiced": "วางบิลแล้ว", "paid": "เก็บเงินครบ (อัตโนมัติ)", "status": "สถานะ",
+            "lot": "LOT", "name": "ชื่อ LOT / รายละเอียด", "product_type": "ประเภท", "so": "SO ย่อย",
+            "product_amount": "มูลค่าสินค้า (ถอด VAT/ค่าส่ง)", "shipping_amount": "ค่าขนส่ง",
+            "vat_total": "VAT 7%", "net_total": "ยอดสุทธิ (โอนจริง)", "pay_status": "สถานะชำระเงิน",
         }
         tree = ttk.Treeview(lots_frame, columns=columns, show="headings", selectmode="browse")
         for c in columns:
-            tree.heading(c, text=headers[c])
-            width = {"lot": 50, "name": 170, "product_type": 110, "so": 140, "value": 100, "deposit": 100,
-                     "deposit_received": 100,
-                     "delivered": 70, "invoiced": 90, "paid": 90, "status": 110}[c]
-            tree.column(c, width=width, anchor="center" if c not in ("name", "so") else "w")
+            tree.heading(c, text=headers[c], anchor="center")
+            width = {"lot": 50, "name": 170, "product_type": 100, "so": 140, "product_amount": 170,
+                     "shipping_amount": 90, "vat_total": 90, "net_total": 130, "pay_status": 110}[c]
+            tree.column(c, width=width, anchor="center")
         tree.grid(row=0, column=0, sticky="nsew")
         vsb2 = ttk.Scrollbar(lots_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb2.set)
@@ -681,43 +892,31 @@ class ProjectScreen(ctk.CTkFrame):
         self._lot_id_map = {}
         for _, r in lots_df.iterrows():
             cancelled = r["status"] == "Cancelled"
-            done = bool(r["kpi_qualified_flag"])
-            partial = (r["delivered_flag"] or r["invoice_recorded_flag"] or r["payment_collected_flag"]) and not done
+            paid = bool(r["payment_collected_flag"])
+            partial = (r["delivered_flag"] or r["invoice_recorded_flag"]) and not paid
             if cancelled:
                 tag = "cancelled"
-                status_text = "ยกเลิก (SO ถูกยกเลิก)"
+                pay_status_text = "ยกเลิก (SO ถูกยกเลิก)"
             else:
-                tag = "done" if done else ("partial" if partial else "")
-                status_text = "ครบเงื่อนไข" if done else ("กำลังดำเนินการ" if partial else "ยังไม่เริ่ม")
-            lot_value = float(r['lot_value'] or 0)
+                tag = "done" if paid else ("partial" if partial else "")
+                pay_status_text = "● ชำระแล้ว" if paid else ("กำลังดำเนินการ" if partial else "ยังไม่เริ่ม")
+            product_amount = float(r.get('product_amount', 0) or 0)
+            shipping_amount = float(r.get('shipping_amount', 0) or 0)
+            vat_total = float(r.get('vat_total', 0) or 0)
             grand_total_due = float(r.get('grand_total_due', 0) or 0)
-            row_values = [f"L{int(r['lot_number'])}", r["lot_name"] or "-", r.get("product_type") or "-",
-                          r["so_number"] or "-", f"{lot_value:,.2f}"]
-            if show_deposit_col:
-                if cancelled:
-                    deposit_text = "-"
-                elif deposit_method == "last_lot":
-                    deposit_text = f"{lot_deposit_map.get(int(r['id']), 0.0):,.2f}"
-                else:
-                    deposit_text = f"{grand_total_due * deposit_ratio:,.2f}"
-                row_values.append(deposit_text)
-                if show_deposit_received_col:
-                    deposit_received_text = "-" if cancelled else ("✔" if r.get("deposit_received_flag") else "-")
-                    row_values.append(deposit_received_text)
-            row_values += [
-                "✔" if r["delivered_flag"] else "-",
-                "✔" if r["invoice_recorded_flag"] else "-",
-                "✔" if r["payment_collected_flag"] else "-",
-                status_text,
+            row_values = [
+                f"L{int(r['lot_number'])}", r["lot_name"] or "-", r.get("product_type") or "-",
+                r["so_number"] or "-",
+                f"{product_amount:,.2f}", f"{shipping_amount:,.2f}",
+                f"{vat_total:,.2f}", f"{grand_total_due:,.2f}",
+                pay_status_text,
             ]
             iid = tree.insert("", "end", values=tuple(row_values), tags=(tag,) if tag else ())
             self._lot_id_map[iid] = int(r["id"])
 
         self._lot_tree = tree
         tree.bind("<Double-1>", self._on_lot_double_click)
-        CTkLabel(self.body,
-                 text="ดับเบิลคลิกที่ Lot เพื่ออัปเดต \"ส่งครบ\" / \"วางบิลแล้ว\" / \"รับมัดจำแล้ว\" — "
-                      "ส่วน \"เก็บเงินครบ\" ระบบเช็คให้อัตโนมัติจากยอดชำระ",
+        CTkLabel(self.body, text="คอลัมน์ \"ยอดสุทธิ (โอนจริง)\" = ยอดคิดคอมมิชชั่นควบคู่ยอดชำระจริง",
                  font=self.small_font, text_color="#94A3B8").grid(row=4, column=0, sticky="w", pady=(6, 0))
 
     def _open_close_project_dialog(self, project_id):
@@ -895,7 +1094,8 @@ class ProjectScreen(ctk.CTkFrame):
             conn = self.app.get_connection()
             try:
                 df = pd.read_sql_query("""
-                    SELECT pl.*, p.deposit_pct AS project_deposit_pct, p.deposit_method AS project_deposit_method
+                    SELECT pl.*, p.deposit_pct AS project_deposit_pct, p.deposit_method AS project_deposit_method,
+                           p.deposit_received_flag AS project_deposit_received
                     FROM project_lots pl
                     JOIN projects p ON p.id = pl.project_id
                     WHERE pl.id = %s
@@ -952,6 +1152,16 @@ class ProjectScreen(ctk.CTkFrame):
             delivered = delivered_var.get()
             invoiced = invoiced_var.get()
             deposit_received = deposit_received_var.get() if has_deposit else bool(lot.get("deposit_received_flag") or False)
+
+            # มติที่ประชุม: ต้องได้รับมัดจำ (ก้อนเดียว ระดับโครงการ) ก่อนถึงจะส่งของ Lot แรกได้ — ไม่ว่าจะเป็น
+            # มัดจำวิธีไหนก็ตาม กันไว้ตรงนี้เพื่อไม่ให้เผลอติ๊ก "ส่งของครบ" ของ Lot 1 ก่อนเก็บมัดจำจริง
+            if (delivered and int(lot["lot_number"]) == 1
+                    and not bool(lot.get("project_deposit_received") or False)):
+                messagebox.showwarning(
+                    "ยังไม่ได้รับมัดจำ",
+                    "โครงการนี้ยังไม่ได้ติ๊ก \"ได้รับมัดจำจากลูกค้าแล้ว\" ที่หน้ารายละเอียดโครงการ\n"
+                    "ต้องได้รับมัดจำก่อนถึงจะบันทึกว่า Lot แรกส่งของครบได้", parent=dlg)
+                return
             try:
                 conn = self.app.get_connection()
                 try:

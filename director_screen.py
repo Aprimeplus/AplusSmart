@@ -110,37 +110,54 @@ class DirectorScreen(CTkFrame):
         module_container = CTkFrame(self.content_frame, fg_color="transparent")
         module_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
 
-        # --- โหลด Class ตามที่เลือก ---
-        if module_name == "sales":
-            screen = SalesManagerScreen(
-                master=module_container,
-                app_container=self.app_container,
-                user_key=self.user_key,
-                user_name=self.user_name,
-                user_role=self.user_role
-            )
-        elif module_name == "purchase":
-            screen = PurchasingManagerScreen(
-                master=module_container, 
-                app_container=self.app_container, 
-                user_key=self.user_key, 
-                user_role=self.user_role
-            )
-        elif module_name == "hr":
-            screen = HRScreen(
-                master=module_container,
-                app_container=self.app_container,
-                user_key=self.user_key,
-                user_name=self.user_name,
-                user_role=self.user_role
-            )
-        elif module_name == "report":
-            screen = ManagementReportScreen(
-                master=module_container,
-                app_container=self.app_container,
-                user_key=self.user_key,
-                user_name=self.user_name,
-                user_role=self.user_role
-            )
+        # โชว์ "กำลังโหลด..." ให้เห็นก่อนทันที แล้วค่อยสร้างหน้าจอจริง (ซึ่งมัก query ฐานข้อมูลหนักๆ
+        # จนบล็อก UI ชั่วขณะ) ในติ๊กถัดไป — ไม่ได้ทำให้โหลดเร็วขึ้น แต่กัน "เหมือนค้าง" เพราะอย่างน้อย
+        # user เห็นว่าระบบตอบสนองแล้ว ไม่ใช่จอนิ่งเงียบๆ ระหว่างรอ
+        loading_label = CTkLabel(module_container, text="⏳ กำลังโหลด...",
+                                  font=CTkFont(size=15), text_color="#6B7280")
+        loading_label.pack(expand=True)
+        self.update_idletasks()
 
-        screen.pack(fill="both", expand=True)
+        def _build_module_screen():
+            if not loading_label.winfo_exists():
+                return  # user กดสลับหน้าหนีไปแล้วก่อนโหลดเสร็จ
+            loading_label.destroy()
+
+            # --- โหลด Class ตามที่เลือก ---
+            if module_name == "sales":
+                screen = SalesManagerScreen(
+                    master=module_container,
+                    app_container=self.app_container,
+                    user_key=self.user_key,
+                    user_name=self.user_name,
+                    user_role=self.user_role
+                )
+            elif module_name == "purchase":
+                screen = PurchasingManagerScreen(
+                    master=module_container,
+                    app_container=self.app_container,
+                    user_key=self.user_key,
+                    user_role=self.user_role
+                )
+            elif module_name == "hr":
+                screen = HRScreen(
+                    master=module_container,
+                    app_container=self.app_container,
+                    user_key=self.user_key,
+                    user_name=self.user_name,
+                    user_role=self.user_role
+                )
+            elif module_name == "report":
+                screen = ManagementReportScreen(
+                    master=module_container,
+                    app_container=self.app_container,
+                    user_key=self.user_key,
+                    user_name=self.user_name,
+                    user_role=self.user_role
+                )
+            else:
+                return
+
+            screen.pack(fill="both", expand=True)
+
+        self.after(30, _build_module_screen)

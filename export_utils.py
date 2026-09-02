@@ -317,35 +317,43 @@ def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
         
         # คำนวณกำไร (Profit) สูตร: (ยอดขายสินค้า - (ต้นทุน * ตัวคูณ)) + ส่วนต่าง
         profit = (sales_product_only - (final_cost * multiplier)) + diff_amt
+        # ต้นทุนรวมที่ใช้เทียบ (หลังคูณตัวคูณแล้ว) — ใช้เป็นตัวหารของ Mark up %
+        total_cost_used = final_cost * multiplier
 
-        # คำนวณ Margin %
+        # คำนวณ Gross Margin % — [ตาม PM] เปลี่ยนชื่อจาก "Margin" เป็น "Gross Margin" (สูตรเดิมไม่เปลี่ยน)
         # สูตร: (Profit / ยอดขายสินค้า) * 100
         df['calculated_margin'] = (profit / sales_product_only.replace(0, np.nan)) * 100
-        df['calculated_margin'] = df['calculated_margin'].fillna(0.0) 
-        
+        df['calculated_margin'] = df['calculated_margin'].fillna(0.0)
+
+        # [ตาม PM] เพิ่ม Mark up % = (Profit / ต้นทุนรวม) * 100 — คนละสูตรกับ Gross Margin (ตัวหารเป็นต้นทุน ไม่ใช่ยอดขาย)
+        df['calculated_markup'] = (profit / total_cost_used.replace(0, np.nan)) * 100
+        df['calculated_markup'] = df['calculated_markup'].fillna(0.0)
+
         # กำหนดสถานะ (Status)
         df['status'] = df['calculated_margin'].apply(lambda x: 'Normal' if x >= 10.0 else 'Below Tier')
-        
+
         # 4. จัดเตรียมคอลัมน์สำหรับ Export
         header_map = {}
         if hasattr(app_container, 'HEADER_MAP'):
              header_map = app_container.HEADER_MAP
-        
+
         # Rename ให้สวยงาม
         df.rename(columns={
             'so_number': header_map.get('so_number', 'SO Number'),
             'sales_service_amount': 'ยอดขายสินค้า (Base)',
             'final_sales_amount': 'ยอดขายรวมสุทธิ (Final)',
-            'calculated_margin': 'Margin ที่คำนวณ (%)',
+            'calculated_margin': 'Gross Margin ที่คำนวณ (%)',
+            'calculated_markup': 'Mark up ที่คำนวณ (%)',
             'status': 'สถานะ (Status)'
         }, inplace=True)
 
         # เลือกเฉพาะคอลัมน์ที่จำเป็น
         export_cols = [
-            header_map.get('so_number', 'SO Number'), 
-            'สถานะ (Status)', 
-            'ยอดขายสินค้า (Base)', 
-            'Margin ที่คำนวณ (%)',
+            header_map.get('so_number', 'SO Number'),
+            'สถานะ (Status)',
+            'ยอดขายสินค้า (Base)',
+            'Gross Margin ที่คำนวณ (%)',
+            'Mark up ที่คำนวณ (%)',
             'ยอดขายรวมสุทธิ (Final)'
         ]
         

@@ -152,7 +152,7 @@ def revert_so_status_tool():
             print("  [3] ออกจากโปรแกรม (Exit)")
             
             choice = input("> เลือกเมนู [1, 2, 3]: ").strip()
-
+ 
             if choice == '1':
                 print("\n-- กำลังจัดการ SO ที่ 'HR Verified' --")
                 process_reversion(conn, 'HR Verified')

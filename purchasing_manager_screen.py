@@ -26,6 +26,7 @@ from history_windows import PurchaseDetailWindow, PurchaseHistoryWindow , Cancel
 from purchasing_screen import PurchasingScreen # <-- Import หน้าจอของ PU เข้ามา
 from reject_history import RejectionHistoryWindow
 from super_supplier_list import SuperSupplierTab   # <-- Demo Tab
+from markup_guide_screen import MarkupGuideTab     # <-- Markup Guide (T1-T5 ต่อ SKU)
 
 
 class RejectionReasonDialog(CTkToplevel):
@@ -369,6 +370,14 @@ class PurchasingManagerScreen(CTkFrame):
         self.sla_tab = self.tab_view.add("⏱ SLA")
         self.sla_tab.grid_columnconfigure(0, weight=1)
         self.sla_tab.grid_rowconfigure(0, weight=1)
+
+        # --- Markup Guide Tab (T1-T5 ต่อ SKU) — ผู้จัดการฝ่ายจัดซื้อแก้ไขได้ ---
+        self.markup_guide_tab = self.tab_view.add("Markup Guide")
+        self.markup_guide_tab.grid_columnconfigure(0, weight=1)
+        self.markup_guide_tab.grid_rowconfigure(0, weight=1)
+        MarkupGuideTab(self.markup_guide_tab, app_container=self.app_container,
+                        user_role=self.user_role, user_key=self.user_key).grid(
+            row=0, column=0, sticky="nsew")
 
         self.manager_view_tab.grid_columnconfigure(0, weight=1)
         self.manager_view_tab.grid_rowconfigure(0, minsize=280)  # chart row ต้องสูงพอ
@@ -896,6 +905,8 @@ class PurchasingManagerScreen(CTkFrame):
 
     def _do_load_data(self):
         self._load_data_job = None
+        if not self.winfo_exists():
+            return
         self._update_manager_dashboard()
         self._load_pending_pos()
 
@@ -1645,8 +1656,15 @@ class PurchasingManagerScreen(CTkFrame):
             self.approve_all_button.configure(state="normal" if total_pending_count > 0 else "disabled")
 
     def _on_destroy(self, event):
-        if hasattr(event, 'widget') and event.widget is self: self._stop_polling()
-        
+        if hasattr(event, 'widget') and event.widget is self:
+            self._stop_polling()
+            if hasattr(self, "_load_data_job") and self._load_data_job:
+                try:
+                    self.after_cancel(self._load_data_job)
+                except Exception:
+                    pass
+                self._load_data_job = None
+
     def _start_polling(self):
         self._stop_polling()
         self.polling_job_id = self.after(300000, self._perform_polling)
@@ -2735,6 +2753,8 @@ class PurchasingManagerScreen(CTkFrame):
 
     def _do_load_data(self):
         self._load_data_job = None
+        if not self.winfo_exists():
+            return
         self._update_manager_dashboard()
         self._load_pending_pos()
 

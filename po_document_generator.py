@@ -242,12 +242,41 @@ def _build_left_column(header_data, styles, P, PB, format_num, width):
     is_ship_vat = (shipping_opt == 'VAT')
     shipping_vat = shipping_fee * 0.07 if is_ship_vat else 0.0
     
+    # 3b. ค่าย้าย
+    relocation_fee = utils.convert_to_float(header_data.get('relocation_cost', 0))
+    relocation_opt = str(header_data.get('relocation_cost_vat_option', 'CASH')).upper()
+    is_relocation_vat = (relocation_opt == 'VAT')
+
+    if relocation_fee > 0:
+        chk_reloc_yes = box_checked if is_relocation_vat else box_unchecked
+        chk_reloc_no  = box_unchecked if is_relocation_vat else box_checked
+    else:
+        chk_reloc_yes = box_unchecked
+        chk_reloc_no  = box_unchecked
+
     # 4. อื่นๆ
     wht_3 = utils.convert_to_float(header_data.get('wht_3_percent', 0))
     transfer_fee = utils.convert_to_float(header_data.get('transfer_fee', 0))
     coupons = utils.convert_to_float(header_data.get('coupons', 0))
     marketing_fee = utils.convert_to_float(header_data.get('marketing_fee', 0))
-    grand_total = utils.convert_to_float(header_data.get('so_grand_total', 0))
+    brokerage_fee = utils.convert_to_float(header_data.get('brokerage_fee', 0))
+
+    # ยอดขายรวมทั้งสิ้น: header_data ที่ส่งมาไม่มีคีย์ 'so_grand_total' ติดมาด้วย (เดิมเลย
+    # ได้ 0 ตลอด) ต้องคำนวณเองจากยอดที่คิด VAT ทั้งหมด (สินค้า/ค่าตัด/ค่าบริการอื่น/ค่าจัดส่ง/
+    # ค่าย้าย ที่ติ๊ก VAT) x 1.07 แล้วหักภาษีถูกหัก ณ ที่จ่าย — สูตรเดียวกับ so_grand_total_var
+    # ในหน้าสร้าง SO (commission_app.py: _update_final_calculations)
+    other_service_fee = utils.convert_to_float(header_data.get('other_service_fee', 0))
+    other_service_opt = str(header_data.get('other_service_fee_vat_option', 'CASH')).upper()
+    card_fee = utils.convert_to_float(header_data.get('credit_card_fee', 0))
+    card_fee_opt = str(header_data.get('credit_card_fee_vat_option', 'CASH')).upper()
+
+    vatable_items = [
+        (sales_before_vat, sales_vat_opt), (cutting_fee, cutting_opt),
+        (other_service_fee, other_service_opt), (shipping_fee, shipping_opt),
+        (card_fee, card_fee_opt), (relocation_fee, relocation_opt),
+    ]
+    total_vatable_revenue = sum(amt for amt, opt in vatable_items if opt == 'VAT')
+    grand_total = (total_vatable_revenue * 1.07) - wht_3
 
     selling_data = [
         [PB('ยอดขายสินค้าก่อน VAT', 'Small_TH'), PS(format_num(sales_before_vat), 'Small_Right_TH'), PS(f'{chk_sales_yes} Vat 7%', 'Tiny_TH'), PS(f'{chk_sales_no} ไม่เอาVat', 'Tiny_TH')],
@@ -255,10 +284,18 @@ def _build_left_column(header_data, styles, P, PB, format_num, width):
         [PB('Vat 7% ค่าสินค้า', 'Small_TH'), PS(format_num(sales_vat), 'Small_Right_TH'), PB('ภาษีถูกหัก ณ ที่จ่าย', 'Small_TH'), PS(format_num(wht_3), 'Small_Right_TH')],
         [PB('ค่าจัดส่งก่อน Vat', 'Small_TH'), PS(format_num(shipping_fee), 'Small_Right_TH'), PB('ค่าธรรมเนียมโอน', 'Small_TH'), PS(format_num(transfer_fee), 'Small_Right_TH')],
         [PB('Vat 7% ค่าจัดส่ง', 'Small_TH'), PS(format_num(shipping_vat), 'Small_Right_TH'), PB('ส่วนลด', 'Small_TH'), PS(format_num(coupons), 'Small_Right_TH')],
-        [PB('ยอดขายรวมทั้งสิ้น', 'Small_TH'), PS(format_num(grand_total), 'Small_Right_TH'), PB('ค่าการตลาด', 'Small_TH'), PS(format_num(marketing_fee), 'Small_Right_TH')],
+        [PB('ค่าย้าย', 'Small_TH'), PS(format_num(relocation_fee), 'Small_Right_TH'), PS(f'{chk_reloc_yes} Vat 7%', 'Tiny_TH'), PS(f'{chk_reloc_no} ไม่เอาVat', 'Tiny_TH')],
+        [PS('', 'Small_TH'), PS('', 'Small_TH'), PB('ค่าการตลาด', 'Small_TH'), PS(format_num(marketing_fee), 'Small_Right_TH')],
+        [PB('ยอดขายรวมทั้งสิ้น', 'Small_TH'), PS(format_num(grand_total), 'Small_Right_TH'), PB('ค่านายหน้า', 'Small_TH'), PS(format_num(brokerage_fee), 'Small_Right_TH')],
     ]
-    selling_table = Table(selling_data, colWidths=[width*0.29, width*0.16, width*0.29, width*0.26], rowHeights=[0.5*cm]*6)
-    selling_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 3), ('RIGHTPADDING', (0,0), (-1,-1), 3)]))
+    # หมายเหตุ: ค่านายหน้าเป็นรายการหักประเภทเดียวกับภาษี ณ ที่จ่าย/ค่าธรรมเนียมโอน/ส่วนลด/ค่าการตลาด
+    # (ไม่ใช่รายได้ที่ต้องคิด VAT เหมือนสินค้า/ค่าตัด/ค่าจัดส่ง/ค่าย้าย) จึงจัดให้อยู่คอลัมน์ขวา
+    # เดียวกับรายการเหล่านั้นแทนที่จะแยกเป็นบรรทัดของตัวเองฝั่งซ้าย
+    selling_table = Table(selling_data, colWidths=[width*0.29, width*0.16, width*0.29, width*0.26], rowHeights=[0.5*cm]*8)
+    selling_table.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('LEFTPADDING', (0,0), (-1,-1), 3), ('RIGHTPADDING', (0,0), (-1,-1), 3),
+    ]))
     story.append(selling_table)
     
     story.append(Table([[PB('ยอดชำระค่าสินค้า/บริการ', style='Small_Center_TH')]], colWidths=[width], rowHeights=[0.5*cm], style=title_style))

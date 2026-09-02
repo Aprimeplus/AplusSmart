@@ -91,6 +91,19 @@ class SalesTargetWidget(CTkFrame):
         self._build_ui()
         # bind <Map> เพื่อ draw ครั้งแรกเมื่อ tab ถูกเปิด
         self.bind('<Map>', self._on_first_map)
+        self.bind('<Destroy>', self._on_destroy)
+
+    def _on_destroy(self, event=None):
+        """กัน after() debounce ที่ค้างคิวอยู่ไปเรียก widget ที่ถูก destroy() ไปแล้วตอนสลับหน้า —
+        ไม่งั้น TclError ที่เกิดขึ้นตอนนั้นอาจทำให้แอปค้าง"""
+        if event is not None and event.widget is not self:
+            return
+        if self._frame_ready_job:
+            try:
+                self.after_cancel(self._frame_ready_job)
+            except Exception:
+                pass
+            self._frame_ready_job = None
 
     def _on_first_map(self, event=None):
         """ทำงานครั้งเดียวตอน tab ถูกเปิด — bind Configure บน _chart_frame แบบถาวร
@@ -105,6 +118,8 @@ class SalesTargetWidget(CTkFrame):
     def _on_chart_frame_configure(self, event):
         """เรียกทุกครั้งที่ _chart_frame เปลี่ยนขนาด (initial layout + window resize)
         debounce 200ms รอให้ layout settle แล้วค่อย redraw"""
+        if not self.winfo_exists():
+            return
         if event.width < 200 or event.height < 100:
             return
         # Layer 1: suppress ระหว่าง _update_dashboard รัน (ป้องกัน update_idletasks loop)
@@ -121,6 +136,8 @@ class SalesTargetWidget(CTkFrame):
     def _on_chart_resize(self, fw, fh):
         """Fired after debounce — initial draw หรือ window-resize redraw"""
         self._frame_ready_job = None
+        if not self.winfo_exists():
+            return
         if self.sales_view_mode not in ('chart', 'monthly'):
             return  # ไม่ต้อง resize ถ้าอยู่ใน table mode
         if self.sales_target_chart_canvas is None:
@@ -1277,6 +1294,7 @@ class SalesManagerScreen(CTkFrame):
         self.monitoring_tab = self.tab_view.add("👥 Customer Monitoring")
         self.sla_tab = self.tab_view.add("⏱ SLA")
         self.project_tab = self.tab_view.add("📁 โครงการ")
+        self.proxy_tab = self.tab_view.add("🧾 สร้าง SO แทนเซลส์")
 
         # สร้างเนื้อหาในแต่ละ Tab
         self._create_approval_tab(self.approval_tab)
@@ -1288,6 +1306,7 @@ class SalesManagerScreen(CTkFrame):
         self._create_customer_monitoring_tab(self.monitoring_tab)
         self._create_sla_tab(self.sla_tab)
         self._create_project_tab(self.project_tab)
+        self._create_proxy_tab(self.proxy_tab)
 
         # ตั้งค่าหน้าแรกที่เปิดขึ้นมา
         self.tab_view.set("🗳️ รายการรออนุมัติ (SM Approval)")
@@ -1329,6 +1348,24 @@ class SalesManagerScreen(CTkFrame):
             user_key=self.user_key,
             user_role=self.user_role,
         ).grid(row=0, column=0, sticky="nsew")
+
+    def _create_proxy_tab(self, parent_tab):
+        """ให้ Sale Manager เลือก 'ทำงานในนามของ' เซลส์คนไหนก็ได้ แล้วสร้าง/บันทึก SO แทนได้เลย —
+        ใช้ SalesProxyScreen ตัวเดียวกับที่ HR ใช้ในแท็บ 'คีย์แทน (Data Entry) > แทนเซลส์'"""
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(0, weight=1)
+        try:
+            from sales_proxy_screen import SalesProxyScreen
+            SalesProxyScreen(
+                master=parent_tab,
+                app_container=self.app_container,
+                proxy_user_key=self.user_key,
+                proxy_user_name=self.user_name,
+                user_role=self.user_role,
+                role_to_proxy="Sale",
+            ).grid(row=0, column=0, sticky="nsew")
+        except Exception as e:
+            CTkLabel(parent_tab, text=f"โหลดหน้าสร้าง SO แทนเซลส์ไม่สำเร็จ: {e}").grid(row=0, column=0)
 
     def _create_customer_monitoring_tab(self, parent_tab):
         parent_tab.grid_columnconfigure(0, weight=1)
@@ -1501,6 +1538,8 @@ class SalesManagerScreen(CTkFrame):
 
     def _check_pending_approvals(self):
         """เช็ค DB ว่ามี SO ใหม่ หรือต้องทวงงานหรือไม่"""
+        if not self.winfo_exists():
+            return
         try:
             query = """
                 SELECT id, so_number, customer_name 
@@ -1878,6 +1917,10 @@ class SalesManagerScreen(CTkFrame):
 
     def _load_approval_data(self):
         """ดึงรายการรออนุมัติ + คำขอแก้ไขรอบเดือนค่าคอม รวมในแท็บเดียวกัน"""
+        # กัน error ตอนถูกเรียกจาก self.after(...) ของระบบ noti พื้นหลัง หลังจาก user สลับออกจาก
+        # หน้านี้ไปแล้ว (widget ถูก destroy() ไปแล้ว แต่ job ที่ตั้งเวลาไว้ยังไม่ถูกยกเลิก)
+        if not self.winfo_exists() or not self.approval_results_frame.winfo_exists():
+            return
         for widget in self.approval_results_frame.winfo_children():
             widget.destroy()
 

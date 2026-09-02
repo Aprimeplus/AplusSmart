@@ -42,6 +42,8 @@ CLR = {
     "gray_lt":  "#F3F4F6",
     "white":    "#FFFFFF",
     "border":   "#E5E7EB",
+    "purple":    "#7C3AED",
+    "purple_lt": "#F5F3FF",
 }
 
 TIER_STYLE = {
@@ -450,6 +452,72 @@ def db_get_audit_log() -> list:
             } for r in rows]
     except Exception as e:
         print(f"[SSL] db_get_audit_log error: {e}")
+        return []
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_get_sn_to_sw_conversion_count(year: int, month: int) -> int:
+    """นับจำนวน Supplier ที่ถูก Convert จาก SN -> SW (รหัสทางการ) ในเดือน/ปีที่ระบุ — ใช้ query
+    ตรงต่อ audit_log เฉพาะช่วงเดือนนั้นเลย (ไม่ใช้ค่าที่โหลดมาโชว์ตารางอยู่แล้ว ซึ่งจำกัดแค่ 200 แถวล่าสุด
+    และเป็นยอดสะสมทั้งหมด ไม่ใช่ยอดต่อเดือน) — ทุก action='SSL:convert' ที่บันทึกไว้คือเหตุการณ์ Convert
+    SN -> SW จริง (ดู _do_convert ใน ConvertToSWPopup: รหัสใหม่ต้องเป็นรูปแบบ SW + เลข 6 หลักเสมอ)"""
+    conn, use_pool = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            # audit_log.timestamp เก็บเป็น TEXT (ไม่ใช่ timestamp type จริง) ต้อง cast ก่อนเทียบ —
+            # ปลอดภัยเพราะแถว action LIKE 'SSL:%' ทุกแถวมี timestamp เป็น NOW() เสมอ ไม่มี NULL/รูปแบบแปลก
+            cur.execute("""
+                SELECT COUNT(*) FROM audit_log
+                WHERE action = 'SSL:convert'
+                  AND timestamp::timestamptz >= make_date(%s, %s, 1)::timestamptz
+                  AND timestamp::timestamptz < (make_date(%s, %s, 1) + INTERVAL '1 month')::timestamptz
+            """, (year, month, year, month))
+            return cur.fetchone()[0] or 0
+    except Exception as e:
+        print(f"[SSL] db_get_sn_to_sw_conversion_count error: {e}")
+        return 0
+    finally:
+        _release_conn(conn, use_pool)
+
+
+def db_get_sn_to_sw_conversions(year: int, month: int) -> list:
+    """ดึงรายการ Supplier ที่ถูก Convert SN -> SW ในเดือน/ปีที่ระบุ (สำหรับ popup รายละเอียด)
+    รหัส SW ใหม่และ Tier ใหม่อ่านจาก audit_log.changes (JSON ที่บันทึกไว้ตอน convert) ส่วนรหัส SN
+    เดิมอ่านจาก suppliers.note ซึ่ง _do_convert ต่อท้ายไว้เป็น "... | Converted from {old_id}" เสมอ —
+    ถ้า note ถูกแก้ทับภายหลังจนไม่เจอ pattern นี้ จะแสดง "-" แทน"""
+    conn, use_pool = _get_conn()
+    try:
+        import re
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT al.timestamp, al.user_info, al.changes,
+                       s.supplier_name, s.category, s.note
+                FROM audit_log al
+                JOIN suppliers s ON s.id = al.record_id
+                WHERE al.action = 'SSL:convert'
+                  AND al.timestamp::timestamptz >= make_date(%s, %s, 1)::timestamptz
+                  AND al.timestamp::timestamptz < (make_date(%s, %s, 1) + INTERVAL '1 month')::timestamptz
+                ORDER BY al.timestamp::timestamptz DESC
+            """, (year, month, year, month))
+            rows = cur.fetchall()
+        result = []
+        for ts, user_info, changes, name, category, note in rows:
+            new_id = "-"
+            try:
+                new_id = json.loads(changes or "{}").get("supplier_id", "-")
+            except Exception:
+                pass
+            m = re.search(r"Converted from (\S+)", note or "")
+            old_id = m.group(1) if m else "-"
+            result.append({
+                "timestamp": str(ts)[:16],
+                "name": name, "category": category,
+                "old_id": old_id, "new_id": new_id, "user": user_info,
+            })
+        return result
+    except Exception as e:
+        print(f"[SSL] db_get_sn_to_sw_conversions error: {e}")
         return []
     finally:
         _release_conn(conn, use_pool)
@@ -1271,7 +1339,20 @@ class SupplierDetailPopup(CTkToplevel):
                  text_color=CLR["white"]).grid(row=0, column=0, padx=20, pady=(14, 2), sticky="w")
         CTkLabel(hdr, text=supplier["supplier_id"],
                  font=F(size=12), text_color="#93C5FD").grid(
-            row=1, column=0, padx=20, pady=(0, 12), sticky="w")
+            row=1, column=0, padx=20, pady=(0, 2), sticky="w")
+
+        # วันที่เพิ่ม Supplier เข้าระบบ — ใช้ค่า sn_created ที่มีเก็บอยู่แล้ว (คอลัมน์เดียวกับที่ใช้ใน
+        # รายงาน "SN aging" อยู่แล้ว) แค่ยังไม่เคยโชว์ในหน้า Supplier Profile นี้เลย
+        # แปลงเป็น พ.ศ. ให้ตรงธรรมเนียมวันที่ของแอป (sn_created เก็บเป็น ค.ศ. รูปแบบ YYYY-MM-DD)
+        raw_sn_created = supplier.get("sn_created", "") or ""
+        try:
+            _d = datetime.strptime(raw_sn_created[:10], "%Y-%m-%d")
+            sn_created_val = f"{_d.day:02d}/{_d.month:02d}/{_d.year + 543}"
+        except Exception:
+            sn_created_val = "-"
+        CTkLabel(hdr, text=f"เพิ่มเข้าระบบเมื่อ: {sn_created_val}",
+                 font=F(size=11), text_color="#93C5FD").grid(
+            row=2, column=0, padx=20, pady=(0, 12), sticky="w")
 
         # Tier badge — column 1, ไม่ใช้ rowspan แล้ว
         lock_prefix = "🔒 " if supplier.get("is_locked") else ""
@@ -2343,6 +2424,99 @@ class AuditLogPopup(CTkToplevel):
 
         self.transient(master)
         self.grab_set()
+
+
+# =============================================================================
+#  SN -> SW CONVERSION LIST  POPUP
+# =============================================================================
+class SnToSwConversionsPopup(CTkToplevel):
+    """popup แสดงรายชื่อ Supplier ที่ถูก Convert SN -> SW ในเดือนที่เลือก พร้อม filter เดือน/ปี —
+    เปิดจากการคลิกที่การ์ด KPI "เปลี่ยน SN→SW เดือนนี้" แทนที่จะโชว์แค่ตัวเลขเฉยๆ"""
+
+    def __init__(self, master, year: int, month: int):
+        super().__init__(master)
+        self.title("รายการ Convert SN → SW")
+        _place_popup(self, 1040, 580)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        F = CTkFont
+
+        hdr = CTkFrame(self, fg_color=CLR["navy"], corner_radius=0)
+        hdr.grid(row=0, column=0, sticky="ew")
+        CTkLabel(hdr, text="รายการ Convert SN → SW",
+                 font=F(size=14, weight="bold"),
+                 text_color=CLR["white"]).pack(padx=16, pady=10, anchor="w")
+
+        # ── Filter เดือน/ปี ──────────────────────────────────────────────────
+        filt = CTkFrame(self, fg_color=CLR["gray_lt"], corner_radius=0)
+        filt.grid(row=1, column=0, sticky="ew")
+        thai_months = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                       "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+        self._month_var = tk.StringVar(value=thai_months[month - 1])
+        self._year_var  = tk.StringVar(value=str(year))
+        CTkLabel(filt, text="เดือน:", font=F(size=12)).pack(side="left", padx=(12, 4), pady=8)
+        CTkOptionMenu(filt, variable=self._month_var, values=thai_months, width=130,
+                      command=lambda _: self._reload()).pack(side="left", padx=(0, 12))
+        CTkLabel(filt, text="ปี:", font=F(size=12)).pack(side="left", padx=(0, 4))
+        years = [str(y) for y in range(year - 3, year + 2)]
+        CTkOptionMenu(filt, variable=self._year_var, values=years, width=90,
+                      command=lambda _: self._reload()).pack(side="left")
+        self._count_lbl = CTkLabel(filt, text="", font=F(size=12, weight="bold"),
+                                    text_color=CLR["purple"])
+        self._count_lbl.pack(side="right", padx=12)
+
+        # ── Table ────────────────────────────────────────────────────────────
+        tf = CTkFrame(self, fg_color=CLR["white"], corner_radius=0)
+        tf.grid(row=2, column=0, sticky="nsew")
+        tf.grid_columnconfigure(0, weight=1)
+        tf.grid_rowconfigure(0, weight=1)
+
+        cols = ["timestamp", "name", "category", "old_id", "new_id", "user"]
+        col_cfg = {
+            "timestamp": ("วันที่-เวลา",   160, "center"),
+            "name":      ("ชื่อ Supplier", 260, "w"),
+            "category":  ("หมวดสินค้า",    140, "center"),
+            "old_id":    ("รหัสเดิม (SN)", 140, "center"),
+            "new_id":    ("รหัสใหม่ (SW)", 140, "center"),
+            "user":      ("ผู้ทำรายการ",   140, "center"),
+        }
+        self._tree = ttk.Treeview(tf, columns=cols, show="headings", style="SSL.Treeview")
+        for col in cols:
+            lbl, w, anchor = col_cfg[col]
+            self._tree.heading(col, text=lbl)
+            self._tree.column(col, width=w, anchor=anchor)
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        bf = CTkFrame(self, fg_color=CLR["gray_lt"], corner_radius=0)
+        bf.grid(row=3, column=0, sticky="ew")
+        CTkButton(bf, text="ปิด", width=90, fg_color="gray50",
+                  hover_color="gray40", command=self.destroy).pack(
+            side="right", padx=12, pady=8)
+
+        self._thai_months = thai_months
+        self._reload()
+
+        self.transient(master)
+        self.grab_set()
+
+    def _reload(self):
+        for item in self._tree.get_children():
+            self._tree.delete(item)
+        year  = int(self._year_var.get())
+        month = self._thai_months.index(self._month_var.get()) + 1
+        rows = db_get_sn_to_sw_conversions(year, month)
+        if not rows:
+            self._count_lbl.configure(text="ไม่มีรายการในเดือนนี้")
+        else:
+            self._count_lbl.configure(text=f"พบ {len(rows)} รายการ")
+        for r in rows:
+            self._tree.insert("", "end", values=(
+                r["timestamp"], r["name"], r["category"],
+                r["old_id"], r["new_id"], r["user"],
+            ))
 
 
 # =============================================================================
@@ -3795,6 +3969,7 @@ class SuperSupplierTab(CTkFrame):
             ("sn",          "SN (รอ Convert)",     CLR["amber"], CLR["amber_lt"]),
             ("blacklist",   "Blacklist",            CLR["red"],   CLR["red_lt"]),
             ("conv_rate",   "Conversion Rate",      CLR["teal"],  CLR["teal_lt"]),
+            ("conv_month",  "เปลี่ยน SN→SW เดือนนี้ (คลิกดูรายการ)", CLR["purple"], CLR["purple_lt"]),
         ]
         for col, (key, title, fg, bg) in enumerate(specs):
             t = CTkFrame(kf, fg_color=bg, corner_radius=8,
@@ -3803,9 +3978,17 @@ class SuperSupplierTab(CTkFrame):
             lbl = CTkLabel(t, text="-", font=CTkFont(size=22, weight="bold"),
                            text_color=fg)
             lbl.pack(pady=(8, 0))
-            CTkLabel(t, text=title, font=CTkFont(size=11),
-                     text_color=CLR["gray"]).pack(pady=(0, 8))
+            title_lbl = CTkLabel(t, text=title, font=CTkFont(size=11),
+                                  text_color=CLR["gray"])
+            title_lbl.pack(pady=(0, 8))
             self._kpi_vals[key] = lbl
+
+            # การ์ด "เปลี่ยน SN→SW เดือนนี้" คลิกได้ — เด้ง popup แสดงรายชื่อ Supplier ที่ Convert
+            # จริงในเดือนนี้ แทนที่จะเห็นแค่ตัวเลขเฉยๆ ตามที่ user ขอ ("popup ให้ดูเอง + filter")
+            if key == "conv_month":
+                for w in (t, lbl, title_lbl):
+                    w.configure(cursor="hand2")
+                    w.bind("<Button-1>", lambda e: self._open_conv_month_popup())
 
     # ── Table ─────────────────────────────────────────────────────────────────
     def _build_table(self):
@@ -4091,6 +4274,10 @@ class SuperSupplierTab(CTkFrame):
             self._kpi_vals["blacklist"].configure(text=str(len(all_df[all_df["tier"] == "Blacklist"])) if not all_df.empty else "0")
             self._kpi_vals["conv_rate"].configure(text=conv_pct)
 
+            now = datetime.now()
+            conv_this_month = db_get_sn_to_sw_conversion_count(now.year, now.month)
+            self._kpi_vals["conv_month"].configure(text=str(conv_this_month))
+
         threading.Thread(target=_load, daemon=True).start()
 
     _sort_state = {}
@@ -4162,6 +4349,10 @@ class SuperSupplierTab(CTkFrame):
 
     def _open_notifications(self):
         NotificationCenterPopup(self, on_read=self._update_bell)
+
+    def _open_conv_month_popup(self):
+        now = datetime.now()
+        SnToSwConversionsPopup(self, now.year, now.month)
 
     def _update_bell(self):
         unread = sum(1 for n in MOCK_NOTIFICATIONS if not n.get("read", False))

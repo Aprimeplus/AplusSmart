@@ -357,7 +357,13 @@ class AppContainer(CTk):
         try:
             db_params = {"host": "Server-APrime", "dbname": "aplus_com_test", "user": "app_user", "password": "cailfornia123"}
             self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, **db_params)
-            self.pg_engine = create_engine(f'postgresql+psycopg2://{db_params["user"]}:{db_params["password"]}@{db_params["host"]}:5432/{db_params["dbname"]}?client_encoding=utf8')
+            # pool_pre_ping=True: เช็ค connection ก่อนใช้ทุกครั้ง ถ้า server ปิด connection ทิ้งไปแล้ว
+            # (เช่น idle timeout ของ network/firewall) จะ reconnect ให้อัตโนมัติ แทนที่จะโยน
+            # "server closed the connection unexpectedly" ให้ user เจอตรงๆ แบบที่เคยเกิดขึ้น
+            # pool_recycle=280: รีไซเคิล connection ที่แช่ไว้นานเกิน ~4.6 นาที กันโดน idle-timeout ตัดก่อน
+            self.pg_engine = create_engine(
+                f'postgresql+psycopg2://{db_params["user"]}:{db_params["password"]}@{db_params["host"]}:5432/{db_params["dbname"]}?client_encoding=utf8',
+                pool_pre_ping=True, pool_recycle=280)
             conn = self.get_connection()
             print("Database connection pool created successfully.")
             self.release_connection(conn)
@@ -579,8 +585,25 @@ class AppContainer(CTk):
             pass
 
     def get_connection(self):
-        if self.db_pool: return self.db_pool.getconn()
-        return None
+        """ดึง connection จาก pool — เช็คก่อนว่ายังใช้ได้จริงไหม (pre-ping) เพราะ psycopg2's
+        SimpleConnectionPool ไม่เช็คให้เอง ถ้า server/firewall ปิด connection ทิ้งไปแล้วตอน idle
+        (เช่น error 'server closed the connection unexpectedly' ที่ user เจอตอนกด 'นำส่งข้อมูล')
+        connection เก่าที่แช่ไว้ใน pool จะยังดูเหมือนใช้ได้จนกว่าจะลอง query จริงแล้วพัง — เช็คแล้วขอใหม่
+        แทนถ้าเจอว่าเสีย ดีกว่าปล่อยให้ user เจอ error ตรงๆ"""
+        if not self.db_pool:
+            return None
+        conn = self.db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            conn.rollback()  # ปิด transaction ที่เปิดจาก SELECT 1 เอง ไม่ให้ค้างติดไปกับ connection ที่คืนออกไป
+        except Exception:
+            try:
+                self.db_pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            conn = self.db_pool.getconn()
+        return conn
 
     def release_connection(self, conn):
         if self.db_pool and conn: self.db_pool.putconn(conn)

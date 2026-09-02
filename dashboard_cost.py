@@ -347,22 +347,27 @@ class DashboardCostScreen(CTkFrame):
                     _ev = _ev[_ev["ต้นทุนรวม (รวมย้าย)"] > 0].copy()
                     _ev["_grp"] = _ev["Select"].astype(str).str.strip().apply(
                         lambda s: "chub" if s in _EXP_CHUB_TYPES else "normal")
+                    _ev["_order"] = (_ev["Order No."].astype(str).str.strip()
+                                      if "Order No." in _ev.columns else "")
 
-                    # avg แยกตาม (SKU, กลุ่ม) + นับจำนวน supplier
+                    # avg แยกตาม (Order No., SKU, กลุ่ม) + นับจำนวน supplier — ต้องผูก Order No.
+                    # ด้วยเสมอ ไม่งั้นสินค้าชื่อเดียวกันจากคนละใบขอราคากันจะถูกเฉลี่ยรวมกันผิดๆ
+                    # (บั๊กเดียวกับที่แก้ใน _update_table แต่ export ใช้โค้ดแยกชุดกัน)
                     _exp_avg_map = {}
-                    _grp_avg   = _ev.groupby(["รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
-                    _grp_count = _ev.groupby(["รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
-                    for (sku, grp), avg in _grp_avg.items():
-                        _exp_avg_map[(sku, grp)] = (avg, int(_grp_count.get((sku, grp), 1)))
+                    _grp_avg   = _ev.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
+                    _grp_count = _ev.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
+                    for (order_no, sku, grp), avg in _grp_avg.items():
+                        _exp_avg_map[(order_no, sku, grp)] = (avg, int(_grp_count.get((order_no, sku, grp), 1)))
 
-                    # row ที่ถูก ✔ ต่อ (SKU, grp) — ใช้แสดง avg. cost/per order
+                    # row ที่ถูก ✔ ต่อ (Order No., SKU, grp) — ใช้แสดง avg. cost/per order
                     _exp_sel_idx = {}
                     for _ei, _er in export_df.iterrows():
                         _esel = str(_er.get("Select", "")).strip()
                         if _esel in _EXP_SEL_TYPES:
                             _esku = str(_er.get("รายการสินค้า", "")).strip()
                             _egrp = "chub" if _esel in _EXP_CHUB_TYPES else "normal"
-                            _ekey = (_esku, _egrp)
+                            _eorder = str(_er.get("Order No.", "")).strip()
+                            _ekey = (_eorder, _esku, _egrp)
                             if _esku and _ekey not in _exp_sel_idx:
                                 _exp_sel_idx[_ekey] = _ei
 
@@ -374,7 +379,8 @@ class DashboardCostScreen(CTkFrame):
                         sel_type = str(erow.get("Select", "")).strip()
                         cost     = pd.to_numeric(erow.get("ต้นทุนรวม (รวมย้าย)", 0), errors='coerce')
                         grp      = "chub" if sel_type in _EXP_CHUB_TYPES else "normal"
-                        map_key  = (sku, grp)
+                        order_no = str(erow.get("Order No.", "")).strip()
+                        map_key  = (order_no, sku, grp)
                         entry    = _exp_avg_map.get(map_key)
 
                         # avg. cost/per order — แสดงที่ row ✔ ของกลุ่ม
@@ -1227,8 +1233,11 @@ class DashboardCostScreen(CTkFrame):
             val = self.filter_vars[key].get()
             if val != "All" and val != "" and col in df.columns:
                 # 🟢 เพิ่ม supplier ให้ค้นหาข้อความบางส่วนได้ด้วย
-                if key in ["order_no", "sale_order_no", "product_name", "supplier"]: 
-                    df = df[df[col].astype(str).str.contains(val, case=False, na=False)]
+                # 🛠️ regex=False กันชื่อ supplier ที่มีวงเล็บ เช่น "... จำกัด (มหาชน)" ถูกตีความเป็น
+                # regex group แล้วหาไม่เจอทั้งที่พิมพ์ชื่อถูกเป๊ะ (ตัว "(" ")" ถูกกลืนหายไปจาก pattern
+                # ทำให้ต้องการให้ข้อความก่อน-หลังวงเล็บติดกันสนิท ซึ่งของจริงไม่ติดกันเพราะมีวงเล็บคั่นอยู่)
+                if key in ["order_no", "sale_order_no", "product_name", "supplier"]:
+                    df = df[df[col].astype(str).str.contains(val, case=False, na=False, regex=False)]
                 else:
                     df = df[df[col].astype(str) == str(val)]
 

@@ -2834,7 +2834,14 @@ class SOPopupWindow(CTkToplevel):
                 self.so_shared_vars[var_name] = tk.StringVar(value="0.00" if "result" not in var_name else "-")
 
         self.title(f"ข้อมูล Sales Order (SO: {sales_data.get('so_number', 'N/A')})")
-        self.geometry("700x750")
+        width, height = 700, 750
+        try:
+            self.master.update_idletasks()
+            px = self.master.winfo_rootx() + (self.master.winfo_width() - width) // 2
+            py = self.master.winfo_rooty() + (self.master.winfo_height() - height) // 2
+            self.geometry(f"{width}x{height}+{max(px, 0)}+{max(py, 0)}")
+        except Exception:
+            self.geometry(f"{width}x{height}")
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 

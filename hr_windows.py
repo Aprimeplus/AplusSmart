@@ -2658,15 +2658,20 @@ class PayoutCalculationViewer(CTkToplevel):
         if df_display['profit'].sum() == 0 and df_display['sales'].sum() > 0:
              df_display['profit'] = df_display['sales'] - df_display['cost']
         
-        # คำนวณ Margin % ใหม่เพื่อให้สอดคล้องกับตัวเลข
+        # คำนวณ Margin % ใหม่เพื่อให้สอดคล้องกับตัวเลข — [ตาม PM] เปลี่ยนชื่อเรียกเป็น "Gross Margin %"
+        # สูตรเดิมทุกอย่าง แค่เปลี่ยนชื่อคอลัมน์ให้ตรงกับนิยามที่ถูกต้อง (กำไร/ยอดขาย)
         df_display['margin'] = df_display.apply(
             lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
         )
+        # [ตาม PM] เพิ่มคอลัมน์ "Mark up %" = กำไร/ต้นทุนรวม×100 (คนละสูตรกับ Margin ซึ่งใช้ยอดขายเป็นตัวหาร)
+        df_display['markup'] = df_display.apply(
+            lambda x: (x['profit'] / x['cost'] * 100) if x['cost'] != 0 else 0, axis=1
+        )
 
-        final_columns = ['so_number', 'sales', 'cost', 'profit', 'margin', 'status']
+        final_columns = ['so_number', 'sales', 'cost', 'profit', 'margin', 'markup', 'status']
         header_labels = {
             'so_number': 'เลขที่ SO', 'sales': 'ยอดขาย', 'cost': cost_header,
-            'profit': 'กำไร', 'margin': 'Margin %', 'status': 'สถานะ'
+            'profit': 'กำไร', 'margin': 'Gross Margin %', 'markup': 'Mark up %', 'status': 'สถานะ'
         }
 
         # --- สร้าง Treeview ---
@@ -2712,17 +2717,19 @@ class PayoutCalculationViewer(CTkToplevel):
             values.append(f"{row['cost']:,.2f}")
             values.append(f"{row['profit']:,.2f}")
             values.append(f"{row['margin']:,.2f}%")
+            values.append(f"{row['markup']:,.2f}%")
             values.append(status_val)
-            
+
             tree.insert("", "end", values=tuple(values), tags=(tag,))
 
         total_so_count = len(df_display)
         sum_sales = df_display['sales'].sum()
         sum_cost = df_display['cost'].sum()
         sum_profit = df_display['profit'].sum()
-        
+
         # คำนวณ Average Margin (%) ระวังกรณีผลรวมยอดขายเป็น 0
         avg_margin = (sum_profit / sum_sales * 100) if sum_sales > 0 else 0.0
+        avg_markup = (sum_profit / sum_cost * 100) if sum_cost > 0 else 0.0
 
         # เพิ่ม Tag สำหรับแถว Total ให้เป็นสีเทาตัวหนาเด่นๆ
         tree.tag_configure('Total_Row', background='#CBD5E1', font=("Tahoma", 11, "bold"))
@@ -2733,7 +2740,8 @@ class PayoutCalculationViewer(CTkToplevel):
             f"{sum_sales:,.2f}",                    # ช่องยอดขาย
             f"{sum_cost:,.2f}",                     # ช่องต้นทุน
             f"{sum_profit:,.2f}",                   # ช่องกำไร
-            f"{avg_margin:,.2f}%",                  # ช่อง Avg Margin
+            f"{avg_margin:,.2f}%",                  # ช่อง Avg Gross Margin
+            f"{avg_markup:,.2f}%",                  # ช่อง Avg Mark up
             ""                                      # ช่องสถานะ
         ), tags=('Total_Row',))
         # Scrollbar
@@ -2977,9 +2985,14 @@ class CalculationDetailViewer(CTkToplevel):
         if df_display['profit'].sum() == 0 and df_display['sales'].sum() > 0:
              df_display['profit'] = df_display['sales'] - df_display['cost']
         
-        # แต่ Margin % คำนวณใหม่ได้ (Profit / Sales)
+        # แต่ Margin % คำนวณใหม่ได้ (Profit / Sales) — [ตาม PM] เปลี่ยนชื่อเรียกเป็น "Gross Margin %"
+        # สูตรเดิมทุกอย่าง แค่เปลี่ยนชื่อคอลัมน์ให้ตรงกับนิยามที่ถูกต้อง (กำไร/ยอดขาย)
         df_display['margin'] = df_display.apply(
             lambda x: (x['profit'] / x['sales'] * 100) if x['sales'] != 0 else 0, axis=1
+        )
+        # [ตาม PM] เพิ่มคอลัมน์ "Mark up %" = กำไร/ต้นทุนรวม×100 (คนละสูตรกับ Margin ซึ่งใช้ยอดขายเป็นตัวหาร)
+        df_display['markup'] = df_display.apply(
+            lambda x: (x['profit'] / x['cost'] * 100) if x['cost'] != 0 else 0, axis=1
         )
 
         # เฉพาะ Director เท่านั้นที่เห็น column "ตัวคูณ"
@@ -2987,7 +3000,7 @@ class CalculationDetailViewer(CTkToplevel):
         final_columns = ['so_number', 'sales', 'cost']
         if _is_director:
             final_columns.append('multiplier_display')
-        final_columns += ['profit', 'margin', 'status']
+        final_columns += ['profit', 'margin', 'markup', 'status']
 
         header_labels = {
             'so_number':          'เลขที่ SO',
@@ -2995,7 +3008,8 @@ class CalculationDetailViewer(CTkToplevel):
             'cost':               cost_header,
             'multiplier_display': 'ตัวคูณ',
             'profit':             'กำไร',
-            'margin':             'Margin %',
+            'margin':             'Gross Margin %',
+            'markup':             'Mark up %',
             'status':             'สถานะ',
         }
 
@@ -3017,7 +3031,7 @@ class CalculationDetailViewer(CTkToplevel):
 
         col_widths = {
             'so_number': 150, 'sales': 120, 'cost': 130,
-            'multiplier_display': 80, 'profit': 110, 'margin': 100, 'status': 160,
+            'multiplier_display': 80, 'profit': 110, 'margin': 100, 'markup': 100, 'status': 160,
         }
         for col in final_columns:
             anchor = 'center' if col in ['so_number', 'status', 'multiplier_display'] else 'e'
@@ -3044,6 +3058,7 @@ class CalculationDetailViewer(CTkToplevel):
             values += [
                 f"{row['profit']:,.2f}",
                 f"{row['margin']:,.2f}%",
+                f"{row['markup']:,.2f}%",
                 status_val,
             ]
             # ใช้ so_number เป็น iid เพื่อให้ค้นหาแถวได้ตอน edit
@@ -3054,13 +3069,14 @@ class CalculationDetailViewer(CTkToplevel):
         sum_cost   = df_display['cost'].sum()
         sum_profit = df_display['profit'].sum()
         avg_margin = (sum_profit / sum_sales * 100) if sum_sales > 0 else 0.0
+        avg_markup = (sum_profit / sum_cost * 100) if sum_cost > 0 else 0.0
 
         tree.tag_configure('Total_Row', background='#CBD5E1', font=("Tahoma", 11, "bold"))
         # แถว Total — จำนวน columns ต้องตรงกับ final_columns
         total_vals = [f"รวมทั้งหมด ({total_so_count} รายการ)", f"{sum_sales:,.2f}", f"{sum_cost:,.2f}"]
         if _is_director:
             total_vals.append("")          # ช่องตัวคูณ (ไม่แสดงรวม)
-        total_vals += [f"{sum_profit:,.2f}", f"{avg_margin:,.2f}%", ""]
+        total_vals += [f"{sum_profit:,.2f}", f"{avg_margin:,.2f}%", f"{avg_markup:,.2f}%", ""]
         tree.insert("", "end", values=tuple(total_vals), tags=('Total_Row',))
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)

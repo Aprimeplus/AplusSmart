@@ -121,10 +121,25 @@ class DailyDashboard(CTkFrame):
         self.monthly_canvas = None
         self.yearly_canvas = None
         self._map_after_id = None
-        self.after(500, self._update_chart)
+        self._init_after_id = self.after(500, self._update_chart)
 
         # ✅ วาดกราฟใหม่ทุกครั้งที่ Tab นี้ถูกเปิดขึ้นมา (ได้ขนาดจริง + ข้อมูลล่าสุด)
         self.bind("<Map>", self._on_map)
+        self.bind("<Destroy>", self._on_destroy)
+
+    def _on_destroy(self, event=None):
+        """กัน after() ที่ค้างคิวอยู่ (initial draw / map debounce) ไปเรียก widget ที่ถูก
+        destroy() ไปแล้วตอนสลับหน้า — ไม่งั้น TclError ที่เกิดขึ้นตอนนั้นอาจทำให้แอปค้าง"""
+        if event is not None and event.widget is not self:
+            return
+        for attr in ("_map_after_id", "_init_after_id"):
+            job = getattr(self, attr, None)
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
 
     def _on_map(self, event=None):
         """เรียกวาดกราฟใหม่เมื่อ tab ถูกแสดง — debounce 200ms"""
@@ -134,6 +149,8 @@ class DailyDashboard(CTkFrame):
 
     def _do_map_update(self):
         self._map_after_id = None
+        if not self.winfo_exists():
+            return
         self._update_chart()
 
     def _open_settings(self):
@@ -141,6 +158,8 @@ class DailyDashboard(CTkFrame):
         TargetSettingsDialog(self, self.app_container, year, on_save_callback=self._update_chart)
 
     def _update_chart(self, event=None):
+        if not self.winfo_exists():
+            return
         # 1. เตรียมข้อมูลเดือนและปีที่เลือก
         month_name = self.dash_month_var.get()
         month_idx = self.thai_months.index(month_name) + 1

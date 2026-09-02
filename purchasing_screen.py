@@ -44,6 +44,7 @@ from dashboard_cost import DashboardCostScreen
 from pdf_utils import export_approved_pos_to_pdf
 from po_selection_dialog import POSelectionDialog
 from super_supplier_list import SuggestedSupplierPopup, SuperSupplierTab
+from markup_guide_screen import MarkupGuideTab
 import utils
 
 # 🟢 พจนานุกรมแปลสถานะเป็นภาษาไทย (เอาไว้แสดงผลบนหน้าจอ UI)
@@ -1286,6 +1287,7 @@ class PurchasingScreen(CTkFrame):
         self.master = master
         self.app_container = app_container
         self.user_key, self.user_name = user_key, user_name
+        self.user_role = user_role
         self.theme = self.app_container.THEME["purchasing"]
         self.sale_theme = self.app_container.THEME["sale"]
         self.async_helper = SimpleAsyncHelper(self)
@@ -1386,6 +1388,14 @@ class PurchasingScreen(CTkFrame):
         ssl_tab.grid_columnconfigure(0, weight=1)
         ssl_tab.grid_rowconfigure(0, weight=1)
         SuperSupplierTab(master=ssl_tab, app_container=self.app_container).grid(row=0, column=0, sticky="nsew")
+
+        # Markup Guide — ฝั่งจัดซื้อทั่วไปดูได้อย่างเดียว แก้ไขได้เฉพาะผู้จัดการฝ่ายจัดซื้อ
+        self.tab_view.add("Markup Guide")
+        markup_guide_tab = self.tab_view.tab("Markup Guide")
+        markup_guide_tab.grid_columnconfigure(0, weight=1)
+        markup_guide_tab.grid_rowconfigure(0, weight=1)
+        MarkupGuideTab(markup_guide_tab, app_container=self.app_container,
+                        user_role=self.user_role, user_key=self.user_key).grid(row=0, column=0, sticky="nsew")
 
         self._load_supplier_data()
         self._load_product_master_data()
@@ -3056,7 +3066,7 @@ class PurchasingScreen(CTkFrame):
         
         header_data = {
             'so_number': self.so_entry.get().split('|')[0].strip() if '|' in self.so_entry.get() else self.so_entry.get().strip(),
-            'po_number': self.po_number_input_var.get(),
+            'po_number': self.po_number_input_var.get().strip(),
             'rr_number': self.rr_number_var.get(),
             'department': self.department_entry.get().strip(),
             'pur_order': self.pur_order_entry.get().strip(),
@@ -3200,6 +3210,13 @@ class PurchasingScreen(CTkFrame):
             conn = self.app_container.get_connection()
             try:
                 with conn.cursor() as cursor:
+                    # ล็อกระดับ transaction คีย์ด้วย so_number กันไม่ให้การบันทึก PO 2 ครั้งพร้อมกัน
+                    # (เช่น กดปุ่ม 2 หน้าต่าง/2 คนพร้อมกัน) แซงกันจนตรวจสอบ PO ซ้ำไม่เจอ (race condition)
+                    # ที่เคยทำให้เกิดแถวซ้ำ เช่น PO6903TG108A มี 2 id พร้อมกัน
+                    lock_key = (header.get("so_number") or "").strip()
+                    if lock_key:
+                        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
+
                     if not self.editing_po_id:
                         cursor.execute("""
                             SELECT id FROM purchase_orders
@@ -4338,14 +4355,14 @@ class SLADashboard(CTkFrame):
                             # รวม product + qty เป็น list of "cb_id|ชื่อ|qty|price"
                             def _join_products(grp):
                                 seen = []
-                                seen_names = set()
+                                seen_ids = set()
                                 for _, row in grp.iterrows():
                                     name  = str(row.get("product_name", "") or "").strip()
                                     qty   = str(row.get("qty", "") or "").strip()
                                     price = str(row.get("price_per_unit", "") or "").strip()
                                     cb_id = str(row.get("cb_id", "") or "").strip()
-                                    if name and name not in seen_names:
-                                        seen_names.add(name)
+                                    if name and cb_id and cb_id not in seen_ids:
+                                        seen_ids.add(cb_id)
                                         seen.append(f"{cb_id}|{name}|{qty}|{price}")
                                 return ";;".join(seen)
 
@@ -4654,7 +4671,7 @@ class SLADashboard(CTkFrame):
 
     # ตรงกับ status_opts ใน cost_benchmark.py ทุกตัวอักษร — ต้องแก้คู่กันถ้าจะเปลี่ยน
     _STATUS_OPTIONS = [
-        "WIN", "STOCK", "ยกเลิก",
+        "WIN", "STOCK", "ยกเลิก", "Waiting - รอเซลล์ติดตาม",
         "L-PRC-1 มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
         "L-PRC-2 ไม่มีราคา ราคาแพ้คู่แข่ง เสปคเดียวกัน",
         "L-LOC แพ้พิกัด/ค่าขนส่ง",

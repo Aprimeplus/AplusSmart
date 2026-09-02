@@ -21,7 +21,7 @@ import os
 import shutil
 from tkinter import font as tkfont
 from outstanding_dashboard_tab import OutstandingDashboardTab
-from project_screen import _center_and_style_popup
+from project_screen import _center_and_style_popup, ProjectScreen
 # --- START: แก้ไขการ Import และลงทะเบียนฟอนต์ ---
 import matplotlib
 matplotlib.use('TkAgg')
@@ -777,6 +777,10 @@ class HRScreen(CTkFrame):
         self.audit_log_tab = self.management_tabs.add("บันทึกระบบ (Log)")
         self.cancelled_so_tab = self.management_tabs.add("จัดการ SO ยกเลิก")
         self._create_cancelled_so_tab(self.cancelled_so_tab)
+        self.pending_po_tab = self.management_tabs.add("PO รออนุมัติ")
+        self._create_pending_po_tab(self.pending_po_tab)
+        self.defer_tracking_tab = self.management_tabs.add("ติดตามการเลื่อน SO")
+        self._create_defer_tracking_tab(self.defer_tracking_tab)
 
         self._create_manage_users_tab(self.manage_users_tab)
         self._create_edit_data_tab(self.edit_data_tab)
@@ -804,6 +808,7 @@ class HRScreen(CTkFrame):
         self.process_commission_tab = self.commission_tabs.add("2. คำนวณ & จ่าย")
         self.payout_history_tab = self.commission_tabs.add("3. ประวัติการจ่าย")
         self.reserve_tab = self.commission_tabs.add("4. Reserve งานโครงการ")
+        self.project_mgmt_tab = self.commission_tabs.add("5. จัดการโครงการ")
 
         self._create_compare_commission_tab(self.compare_commission_tab)
         self._create_process_commission_tab(self.process_commission_tab)
@@ -818,6 +823,7 @@ class HRScreen(CTkFrame):
         self._pu_mode_loaded = False 
         self._payout_history_loaded = False
         self._reserve_tab_loaded = False
+        self._project_mgmt_loaded = False
         self._dashboard_loaded, self._sales_target_loaded, self._users_loaded, self._compare_commission_loaded, self._process_commission_loaded, self._audit_log_loaded = False, False, False, False, False, False
 
     def _get_special_service_amounts(self, so_ids):
@@ -1431,7 +1437,11 @@ class HRScreen(CTkFrame):
                 self._populate_audit_log_table(); self._audit_log_loaded = True
             elif selected_sub_tab == "จัดการ SO ยกเลิก":
                 self._load_cancelled_so_history()
-            
+            elif selected_sub_tab == "PO รออนุมัติ":
+                self._load_pending_po_list()
+            elif selected_sub_tab == "ติดตามการเลื่อน SO":
+                self._load_defer_tracking_list()
+
             if selected_sub_tab == "ผู้ใช้งาน": self._populate_users_table()
             elif selected_sub_tab == "บันทึกระบบ (Log)": self._populate_audit_log_table()
             elif selected_sub_tab == "จัดการ SO ยกเลิก": self._load_cancelled_so_history()
@@ -1473,6 +1483,12 @@ class HRScreen(CTkFrame):
                 self._load_payout_history(); self._payout_history_loaded = True
             elif selected_sub_tab == "4. Reserve งานโครงการ" and not self._reserve_tab_loaded:
                 self._load_reserve_summary(); self._reserve_tab_loaded = True
+            elif selected_sub_tab == "5. จัดการโครงการ" and not self._project_mgmt_loaded:
+                # HR เห็นได้ทุกโครงการเหมือน Director/Admin (ไม่ใส่ sale_key_filter) — และมีสิทธิ์
+                # ปิดโปรเจกต์ (GP True-Up) ได้อยู่แล้วตามโค้ดเดิมของ ProjectScreen (can_close เช็ค role hr)
+                ProjectScreen(self.project_mgmt_tab, self.app_container,
+                              user_key=self.user_key, user_role=self.user_role).pack(fill="both", expand=True)
+                self._project_mgmt_loaded = True
 
             # Refresh
             if selected_sub_tab == "2. คำนวณ & จ่าย":
@@ -3934,6 +3950,342 @@ class HRScreen(CTkFrame):
         try: return pd.read_sql("SELECT sale_key FROM sales_users WHERE role = 'Sale' AND status = 'Active' ORDER BY sale_key", self.pg_engine)["sale_key"].tolist()
         except Exception as e: print(f"Error getting sale keys: {e}"); messagebox.showerror("Database Error", f"ไม่สามารถดึงข้อมูลรหัสพนักงานขายได้: {e}", parent=self); return []
 
+    # ==================================================================================
+    #  PO รออนุมัติ (สำหรับ HR ดูอย่างเดียว — ไม่มีปุ่มอนุมัติ/ปฏิเสธ ต่างจากหน้าจัดซื้อ)
+    # ==================================================================================
+    def _create_pending_po_tab(self, parent_tab):
+        """หน้าดูรายการ PO ที่รออนุมัติทั้งหมด (ทุกขั้นตอน) พร้อม filter ตามเซลส์เจ้าของ SO —
+        ใช้ query แบบเดียวกับ PurchasingManagerScreen._load_pending_pos แต่ตัดเงื่อนไข role ออก
+        เพื่อให้ HR เห็นได้ทุกขั้นอนุมัติ (ทั้งรอ ผจก.จัดซื้อ และรอกรรมการ) ในที่เดียว"""
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1)
+
+        action_bar = CTkFrame(parent_tab, height=60, fg_color=("gray90", "gray16"), corner_radius=6)
+        action_bar.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="ew")
+        action_bar.grid_columnconfigure(4, weight=1)
+
+        CTkLabel(action_bar, text="เลือกเซลส์ (เจ้าของ SO):", font=self.label_font_bold).grid(
+            row=0, column=0, padx=(20, 5), pady=10, sticky="w")
+        self.pending_po_sale_var = tk.StringVar(value="ทั้งหมด")
+        self.pending_po_sale_menu = CTkOptionMenu(
+            action_bar, variable=self.pending_po_sale_var,
+            values=["ทั้งหมด"] + self.sales_keys_list,
+            command=lambda _: self._render_pending_po_list())
+        self.pending_po_sale_menu.grid(row=0, column=1, padx=5, pady=10, sticky="w")
+
+        CTkLabel(action_bar, text="ค้นหา:", font=self.label_font_bold).grid(
+            row=0, column=2, padx=(20, 5), pady=10, sticky="w")
+        self.pending_po_search_var = tk.StringVar()
+        self.pending_po_search_var.trace_add("write", lambda *_: self._render_pending_po_list())
+        pending_po_search_entry = CTkEntry(
+            action_bar, textvariable=self.pending_po_search_var, width=220,
+            placeholder_text="PO / SO / ชื่อเซลส์ / Supplier...")
+        pending_po_search_entry.grid(row=0, column=3, padx=5, pady=10, sticky="w")
+
+        self.pending_po_count_label = CTkLabel(action_bar, text="", font=self.label_font_bold, text_color="#D97706")
+        self.pending_po_count_label.grid(row=0, column=4, padx=10, pady=10, sticky="w")
+
+        CTkButton(action_bar, text="⟳ รีเฟรช", command=self._load_pending_po_list,
+                  width=90, height=34, fg_color="transparent", border_width=1,
+                  text_color=("gray10", "gray90")).grid(row=0, column=5, padx=20, pady=10, sticky="e")
+
+        table_container = CTkFrame(parent_tab, fg_color="transparent")
+        table_container.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
+        table_container.grid_columnconfigure(0, weight=1)
+        table_container.grid_rowconfigure(0, weight=1)
+
+        cols = ("po_number", "so_number", "so_owner", "supplier_name", "grand_total",
+                "wait_before_po", "approval_status", "pending_days", "timestamp")
+        headers = {
+            "po_number": "PO Number", "so_number": "SO Number", "so_owner": "เจ้าของ SO (เซลส์)",
+            "supplier_name": "Supplier", "grand_total": "ยอดรวม",
+            "wait_before_po": "SO ค้างก่อนทำ PO", "approval_status": "สถานะอนุมัติ",
+            "pending_days": "ค้างรออนุมัติมา", "timestamp": "วันที่สร้าง PO",
+        }
+        tree = ttk.Treeview(table_container, columns=cols, show="headings", selectmode="browse")
+        for c in cols:
+            tree.heading(c, text=headers[c], anchor="center")
+            width = {"po_number": 140, "so_number": 140, "so_owner": 160, "supplier_name": 200,
+                     "grand_total": 100, "wait_before_po": 150, "approval_status": 150,
+                     "pending_days": 120, "timestamp": 140}[c]
+            tree.column(c, width=width, anchor="center" if c not in ("supplier_name",) else "w")
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb = ttk.Scrollbar(table_container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        vsb.grid(row=0, column=1, sticky="ns")
+        self.pending_po_tree = tree
+
+        # สีแถวตามเจ้าของ SO — ให้ดูปราดเดียวรู้ว่าใครเป็นเจ้าของโดยไม่ต้องอ่านชื่อทีละแถว
+        tree.tag_configure("sale_bunnycee", background="#FEF9C3")   # กนกพร — เหลือง
+        tree.tag_configure("sale_vow", background="#EDE9FE")        # พี่วิว (VOW-S/VOW-P) — ม่วง
+        tree.tag_configure("sale_piyawan", background="#DCFCE7")    # น้องแอ้ม ปิยะวรรณ — เขียว
+        tree.tag_configure("sale_ilada", background="#DBEAFE")      # พี่ไอ ILADA — ฟ้า
+
+    def _load_pending_po_list(self):
+        """ดึง PO ที่ status='Pending Approval' ทุกขั้นตอน (ไม่จำกัดแค่ขั้นเดียวเหมือนหน้าจัดซื้อ)
+        เพื่อให้ HR เห็นภาพรวมทั้งหมดได้ในที่เดียว — เก็บผลไว้ใน cache แล้วค่อยให้ _render_pending_po_list
+        เป็นคน filter ตามเซลส์/คำค้นหาอีกที (จะได้ไม่ต้อง query DB ใหม่ทุกครั้งที่พิมพ์ค้นหา)"""
+        if not hasattr(self, "pending_po_tree") or not self.pending_po_tree.winfo_exists():
+            return
+        try:
+            query = """
+                SELECT po.po_number, po.so_number, u.sale_name AS so_owner, u.sale_key,
+                       po.supplier_name, po.grand_total, po.approval_status, po.timestamp,
+                       c.timestamp AS so_timestamp
+                FROM purchase_orders po
+                LEFT JOIN commissions c ON po.so_number = c.so_number AND c.is_active = 1
+                LEFT JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE po.status = 'Pending Approval'
+                ORDER BY po.timestamp ASC
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+        except Exception as e:
+            messagebox.showerror("Database Error", f"โหลดรายการ PO รออนุมัติไม่สำเร็จ: {e}", parent=self)
+            df = pd.DataFrame()
+        self._pending_po_full_df = df
+        self._render_pending_po_list()
+
+    def _render_pending_po_list(self):
+        """วาดตารางใหม่จาก cache (self._pending_po_full_df) โดย filter ตามเซลส์ที่เลือก +
+        คำค้นหา (PO/SO/ชื่อเซลส์/Supplier แบบ contains ไม่สนตัวพิมพ์เล็กใหญ่)"""
+        if not hasattr(self, "pending_po_tree") or not self.pending_po_tree.winfo_exists():
+            return
+        df = getattr(self, "_pending_po_full_df", pd.DataFrame()).copy()
+
+        sale_filter = getattr(self, "pending_po_sale_var", None)
+        sale_key = sale_filter.get() if sale_filter else "ทั้งหมด"
+        if sale_key and sale_key != "ทั้งหมด" and not df.empty:
+            df = df[df["sale_key"] == sale_key]
+
+        search_var = getattr(self, "pending_po_search_var", None)
+        search_text = (search_var.get() if search_var else "").strip().lower()
+        if search_text and not df.empty:
+            search_cols = ["po_number", "so_number", "so_owner", "supplier_name"]
+            mask = False
+            for col in search_cols:
+                mask = mask | df[col].fillna("").astype(str).str.lower().str.contains(search_text, regex=False)
+            df = df[mask]
+
+        def _fmt_duration(delta):
+            """แปลง timedelta เป็นข้อความอ่านง่าย — วันถ้าเกิน 1 วัน ไม่งั้นเป็นชั่วโมง"""
+            if delta is None or pd.isna(delta):
+                return "-"
+            total_hours = delta.total_seconds() / 3600
+            if total_hours < 0:
+                return "-"
+            if total_hours < 24:
+                return f"{total_hours:.1f} ชม."
+            return f"{total_hours / 24:.1f} วัน"
+
+        # แปลรหัสสถานะภายในเป็นข้อความไทยอ่านง่าย — ยังบอกขั้นตอนไว้ด้วย เผื่อ HR อยากรู้ว่าติดรออยู่
+        # ขั้นไหน (ผจก.จัดซื้อ หรือกรรมการ) ไม่ใช่แค่ "รออนุมัติ" เฉยๆ
+        approval_status_labels = {
+            "Pending Mgr 1": "รออนุมัติ (ผจก.จัดซื้อ)",
+            "Pending Mgr 2": "รออนุมัติ (ผจก.จัดซื้อ คนที่ 2)",
+            "Pending Director": "รออนุมัติ (กรรมการ)",
+        }
+        for row in self.pending_po_tree.get_children():
+            self.pending_po_tree.delete(row)
+        for _, r in df.iterrows():
+            # po.timestamp เก็บเป็น TEXT ในฐานข้อมูล ไม่ใช่ timestamp จริง — pandas เลยได้ str กลับมา
+            # ไม่ใช่ datetime object ต้อง parse ก่อนเสมอ ไม่งั้น .strftime() error
+            ts_parsed = pd.to_datetime(r.get("timestamp"), errors="coerce")
+            so_ts_parsed = pd.to_datetime(r.get("so_timestamp"), errors="coerce")
+            ts_text = ts_parsed.strftime("%d/%m/%Y %H:%M") if pd.notna(ts_parsed) else "-"
+            raw_status = r.get("approval_status") or "-"
+            status_text = approval_status_labels.get(raw_status, raw_status)
+
+            # คอลัมน์ 1: SO เปิดมานานแค่ไหนก่อนจัดซื้อจะสร้าง PO ให้ (เปิด SO → สร้าง PO)
+            wait_before_po = (_fmt_duration(ts_parsed - so_ts_parsed)
+                               if pd.notna(ts_parsed) and pd.notna(so_ts_parsed) else "-")
+            # คอลัมน์ 2: PO นี้ค้างรออนุมัติมาแล้วกี่วัน (นับจากวันที่สร้าง PO ถึงตอนนี้)
+            pending_days = _fmt_duration(pd.Timestamp.now() - ts_parsed) if pd.notna(ts_parsed) else "-"
+
+            sale_key_row = str(r.get("sale_key") or "").strip()
+            if sale_key_row == "BUNNYCEE":
+                row_tag = "sale_bunnycee"
+            elif sale_key_row in ("VOW-S", "VOW-P"):
+                row_tag = "sale_vow"
+            elif sale_key_row == "PIYAWAN":
+                row_tag = "sale_piyawan"
+            elif sale_key_row == "ILADA":
+                row_tag = "sale_ilada"
+            else:
+                row_tag = ""
+
+            self.pending_po_tree.insert("", "end", values=(
+                r.get("po_number") or "-", r.get("so_number") or "-", r.get("so_owner") or "-",
+                r.get("supplier_name") or "-", f"{float(r.get('grand_total') or 0):,.2f}",
+                wait_before_po, status_text, pending_days, ts_text,
+            ), tags=(row_tag,) if row_tag else ())
+        if hasattr(self, "pending_po_count_label"):
+            self.pending_po_count_label.configure(text=f"พบ {len(df)} รายการ")
+
+    def _create_defer_tracking_tab(self, parent_tab):
+        """หน้าติดตาม SO ที่ถูกเลื่อน (Defer) ทั้งหมด — ตอบคำถามที่ hr ถามซ้ำๆ ว่า
+        'มีหน้าไว้ดู/ติดตาม SO ที่ HR เลื่อนไหม' เดิมไม่มีเลย ต้องเปิดดูทีละ SO
+        ไฮไลต์แถวที่ต้องติดตามเป็นพิเศษ: ยังไม่มีใครตัดสินใจ หรือตัดสินใจ 'ไม่อนุมัติ' แล้ว
+        แต่ SO ยังไม่ถูกยกเลิกจริง (เคสแบบ SO6907TG028 ที่ค้างเด้งไปมาระหว่าง HR/ผจก.)"""
+        parent_tab.grid_columnconfigure(0, weight=1)
+        parent_tab.grid_rowconfigure(1, weight=1)
+
+        action_bar = CTkFrame(parent_tab, height=60, fg_color=("gray90", "gray16"), corner_radius=6)
+        action_bar.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="ew")
+        action_bar.grid_columnconfigure(4, weight=1)
+
+        CTkLabel(action_bar, text="เลือกเซลส์:", font=self.label_font_bold).grid(
+            row=0, column=0, padx=(20, 5), pady=10, sticky="w")
+        self.defer_sale_var = tk.StringVar(value="ทั้งหมด")
+        self.defer_sale_menu = CTkOptionMenu(
+            action_bar, variable=self.defer_sale_var,
+            values=["ทั้งหมด"] + self.sales_keys_list,
+            command=lambda _: self._render_defer_tracking_list())
+        self.defer_sale_menu.grid(row=0, column=1, padx=5, pady=10, sticky="w")
+
+        CTkLabel(action_bar, text="ค้นหา:", font=self.label_font_bold).grid(
+            row=0, column=2, padx=(20, 5), pady=10, sticky="w")
+        self.defer_search_var = tk.StringVar()
+        self.defer_search_var.trace_add("write", lambda *_: self._render_defer_tracking_list())
+        CTkEntry(action_bar, textvariable=self.defer_search_var, width=220,
+                 placeholder_text="SO / ลูกค้า / ชื่อเซลส์...").grid(row=0, column=3, padx=5, pady=10, sticky="w")
+
+        self.defer_count_label = CTkLabel(action_bar, text="", font=self.label_font_bold, text_color="#D97706")
+        self.defer_count_label.grid(row=0, column=4, padx=10, pady=10, sticky="w")
+
+        CTkButton(action_bar, text="⟳ รีเฟรช", command=self._load_defer_tracking_list,
+                  width=90, height=34, fg_color="transparent", border_width=1,
+                  text_color=("gray10", "gray90")).grid(row=0, column=5, padx=20, pady=10, sticky="e")
+
+        table_container = CTkFrame(parent_tab, fg_color="transparent")
+        table_container.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
+        table_container.grid_columnconfigure(0, weight=1)
+        table_container.grid_rowconfigure(0, weight=1)
+
+        cols = ("so_number", "customer_name", "sale_owner", "defer_type", "defer_remarks",
+                "requested_by", "decision", "decision_reason", "approved_by", "current_status", "follow_up")
+        headers = {
+            "so_number": "SO Number", "customer_name": "ลูกค้า", "sale_owner": "เซลส์เจ้าของ",
+            "defer_type": "ประเภทที่เลื่อน", "defer_remarks": "หมายเหตุตอนขอเลื่อน",
+            "requested_by": "ผู้ขอเลื่อน", "decision": "ผลการตัดสินใจ", "decision_reason": "เหตุผล",
+            "approved_by": "ผู้ตัดสินใจ", "current_status": "สถานะปัจจุบัน", "follow_up": "สถานะติดตาม",
+        }
+        # ขยายคอลัมน์ที่มีข้อความยาว (ลูกค้า/ประเภท/หมายเหตุ/เหตุผล/สถานะ) ให้กว้างขึ้น
+        # ตั้ง minwidth กันไม่ให้ถูกบีบจนตัวหนังสือถูกตัด แต่เปิด stretch ไว้ให้ขยายเติมพื้นที่ว่าง
+        # ที่เหลือของตาราง (ไม่งั้นจะเหลือช่องว่างโล่งๆ ด้านขวาเวลาหน้าจอกว้างกว่าความกว้างรวมคอลัมน์)
+        # และมี scrollbar แนวนอนสำรองไว้เผื่อหน้าจอแคบกว่าความกว้างขั้นต่ำรวม
+        widths = {"so_number": 130, "customer_name": 220, "sale_owner": 100, "defer_type": 180,
+                  "defer_remarks": 220, "requested_by": 90, "decision": 100, "decision_reason": 240,
+                  "approved_by": 90, "current_status": 160, "follow_up": 100}
+
+        # ใช้ style แยกของแท็บนี้เอง (ไม่แตะ "Treeview" กลาง ที่หน้าอื่นในแอปใช้ร่วมกันอยู่)
+        # ตัวหนังสือเล็กลงนิดหน่อยให้ดูโปร่ง ไม่แน่นจนอ่านยาก
+        style = ttk.Style(self)
+        style.configure("DeferTracking.Treeview", rowheight=22, font=("Roboto", 9))
+        style.configure("DeferTracking.Treeview.Heading", font=("Roboto", 10, "bold"))
+
+        tree = ttk.Treeview(table_container, columns=cols, show="headings", selectmode="browse",
+                             style="DeferTracking.Treeview")
+        for c in cols:
+            tree.heading(c, text=headers[c], anchor="center")
+            tree.column(c, width=widths[c], minwidth=widths[c], stretch=True,
+                        anchor="center" if c not in ("customer_name", "defer_remarks", "decision_reason") else "w")
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb = ttk.Scrollbar(table_container, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(table_container, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        self.defer_tracking_tree = tree
+
+        # ไฮไลต์แถวที่ต้องติดตามเป็นพิเศษ (สีแดงอ่อน) ให้เด่นกว่าแถวปกติ
+        tree.tag_configure("needs_followup", background="#FECACA")
+
+    def _load_defer_tracking_list(self):
+        """ดึง SO ทุกตัวที่เคยถูกเลื่อน (defer_type IS NOT NULL) เก็บลง cache แล้วให้
+        _render_defer_tracking_list เป็นคนกรองตามเซลส์/คำค้นหาอีกที (เหมือนแท็บ PO รออนุมัติ)"""
+        if not hasattr(self, "defer_tracking_tree") or not self.defer_tracking_tree.winfo_exists():
+            return
+        try:
+            query = """
+                SELECT c.so_number, c.customer_name, c.sale_key, u.sale_name AS sale_owner,
+                       c.defer_type, c.defer_remarks, c.defer_requested_by,
+                       c.defer_decision, c.defer_decision_reason, c.defer_approved_by,
+                       c.status
+                FROM commissions c
+                LEFT JOIN sales_users u ON c.sale_key = u.sale_key
+                WHERE c.defer_type IS NOT NULL AND c.is_active = 1
+                ORDER BY c.timestamp DESC
+            """
+            df = pd.read_sql_query(query, self.pg_engine)
+        except Exception as e:
+            messagebox.showerror("Database Error", f"โหลดรายการ SO ที่ถูกเลื่อนไม่สำเร็จ: {e}", parent=self)
+            df = pd.DataFrame()
+        self._defer_tracking_full_df = df
+        self._render_defer_tracking_list()
+
+    def _render_defer_tracking_list(self):
+        if not hasattr(self, "defer_tracking_tree") or not self.defer_tracking_tree.winfo_exists():
+            return
+        df = getattr(self, "_defer_tracking_full_df", pd.DataFrame()).copy()
+
+        sale_filter = getattr(self, "defer_sale_var", None)
+        sale_key = sale_filter.get() if sale_filter else "ทั้งหมด"
+        if sale_key and sale_key != "ทั้งหมด" and not df.empty:
+            df = df[df["sale_key"] == sale_key]
+
+        search_var = getattr(self, "defer_search_var", None)
+        search_text = (search_var.get() if search_var else "").strip().lower()
+        if search_text and not df.empty:
+            mask = False
+            for col in ("so_number", "customer_name", "sale_owner", "sale_key"):
+                mask = mask | df[col].fillna("").astype(str).str.lower().str.contains(search_text, regex=False)
+            df = df[mask]
+
+        # แปลรหัสสถานะภายใน (อังกฤษ) เป็นข้อความไทยให้ user อ่านง่าย ไม่งง
+        status_labels = {
+            "Pending PU": "รอจัดซื้อรับงาน",
+            "PO In Progress": "จัดซื้อกำลังดำเนินการ",
+            "PO Sent": "ส่ง PO แล้ว",
+            "HR Verified": "HR ตรวจสอบแล้ว",
+            "Paid": "จ่ายค่าคอมแล้ว",
+            "Deferred": "เลื่อนแล้ว (อนุมัติ)",
+            "Defer Requested": "ขอเลื่อน (รอตรวจสอบ)",
+            "Pending HR Approval": "รอ HR ตรวจสอบ",
+            "Pending Sale Manager Approval": "รอผู้จัดการเซลส์อนุมัติ",
+            "Rejected by SM": "ผู้จัดการไม่อนุมัติ",
+            "Cancelled": "ยกเลิกแล้ว",
+            "Cancelled by PU": "ยกเลิกโดยจัดซื้อ",
+            "Edited": "แก้ไขแล้ว",
+        }
+
+        for row in self.defer_tracking_tree.get_children():
+            self.defer_tracking_tree.delete(row)
+
+        for _, r in df.iterrows():
+            decision = r.get("defer_decision") or "ยังไม่ตัดสินใจ"
+            status = r.get("status") or "-"
+            status_text = status_labels.get(status, status)
+            # ต้องติดตาม: ยังไม่มีใครตัดสินใจเลย หรือตัดสินใจ "ไม่อนุมัติ" แล้วแต่ SO ยังไม่ถูกยกเลิกจริง
+            # (เทียบกับ status ดิบภาษาอังกฤษเสมอ ไม่ใช่ข้อความไทยที่แปลไว้แสดงผล)
+            needs_followup = (not r.get("defer_decision")) or (
+                r.get("defer_decision") == "ไม่อนุมัติ" and status != "Cancelled")
+            # แถวที่ต้องติดตามมีพื้นหลังสีแดงอ่อนกำกับอยู่แล้ว คอลัมน์นี้เลยใส่ข้อความเฉพาะ
+            # แถวที่ต้องติดตามพอ ส่วนแถวปกติเว้นว่างไว้ ไม่ต้องพูดซ้ำว่า "ปกติ" ให้ดูรก
+            follow_up_text = "ต้องติดตาม" if needs_followup else "-"
+
+            self.defer_tracking_tree.insert("", "end", values=(
+                r.get("so_number") or "-", r.get("customer_name") or "-", r.get("sale_key") or "-",
+                r.get("defer_type") or "-", r.get("defer_remarks") or "-",
+                r.get("defer_requested_by") or "-", decision, r.get("defer_decision_reason") or "-",
+                r.get("defer_approved_by") or "-", status_text, follow_up_text,
+            ), tags=("needs_followup",) if needs_followup else ())
+
+        if hasattr(self, "defer_count_label"):
+            n_followup = sum(1 for _, r in df.iterrows()
+                              if (not r.get("defer_decision")) or
+                                 (r.get("defer_decision") == "ไม่อนุมัติ" and (r.get("status") or "-") != "Cancelled"))
+            self.defer_count_label.configure(text=f"พบ {len(df)} รายการ (ต้องติดตาม {n_followup})")
+
     def _create_compare_commission_tab(self, parent_tab):
         parent_tab.grid_columnconfigure(0, weight=1)
         parent_tab.grid_rowconfigure(2, weight=1)
@@ -4347,7 +4699,31 @@ class HRScreen(CTkFrame):
                     template="(%s::int, %s::float, %s::float, %s::float, %s::float)", page_size=100)
                 updated_rows = cursor.rowcount
             conn.commit()
-            
+
+            # 🔥 [ป้องกันปัญหาที่เจอซ้ำ] SO งานโครงการ (Multi-Lot) ที่เพิ่งผ่าน HR Verified
+            # ยังต้องติ๊ก "วางบิลแล้ว" (invoice_recorded_flag) เองที่หน้าจัดการโครงการ ไม่งั้นจะถูกตัด
+            # ออกจากการคำนวณคอมฯ เงียบๆ (ดู POL-KPI-PROJECT-001) — เจอมาแล้ว 3 ครั้งที่ลืมติ๊ก
+            # กว่าจะรู้ตัวก็ตอนคำนวณคอมฯ ไปแล้ว จึงให้ "HR Verified" (ซึ่งคือคนยืนยันข้อมูลแล้วจริงๆ)
+            # เป็นสัญญาณเพียงพอที่จะถือว่า "วางบิลแล้ว" ไปเลยในตัว ไม่ต้องให้ติ๊กซ้ำอีกรอบ
+            try:
+                with conn.cursor() as cur_lot:
+                    cur_lot.execute("""
+                        UPDATE project_lots l
+                        SET invoice_recorded_flag = TRUE,
+                            kpi_qualified_flag = (l.delivered_flag AND COALESCE(c.difference_amount, 1) = 0),
+                            status = CASE
+                                WHEN l.delivered_flag AND COALESCE(c.difference_amount, 1) = 0 THEN 'Collected'
+                                WHEN l.delivered_flag THEN 'Delivered'
+                                ELSE l.status
+                            END
+                        FROM commissions c
+                        WHERE c.so_number = l.so_number AND c.is_active = 1
+                          AND l.so_number IN %s
+                    """, (tuple(so_numbers_to_verify),))
+                conn.commit()
+            except Exception as _e:
+                print(f"Error auto-updating project_lots invoice flag after HR Verified: {_e}")
+
             # 🔥 [เพิ่มตรงนี้] สร้างตัวแปรเก็บรอบที่เพิ่งตรวจสอบเสร็จ
             month_name = self.thai_months[int(selected_month) - 1]
             year_buddhist = int(selected_year) + 543
@@ -4440,15 +4816,31 @@ class HRScreen(CTkFrame):
             
             # --- [Logic 1] คำนวณ Grand Total (ยอดบิล) สำรองไว้ กรณีใน DB เป็น 0 ---
             # รวม: สินค้า + บริการ + ขนส่ง + ค่าย้าย + บัตรเครดิต
-            cols_to_sum = ['sales_service_amount', 'cutting_drilling_fee', 'other_service_fee', 
-                           'shipping_cost', 'relocation_cost', 'credit_card_fee']
-            
+            # 🔥 แก้บัก: เดิมเอาทุกรายการมาบวกกันแล้ว x1.07 รวดเดียว ไม่สนว่ารายการไหนติ๊ก
+            # "ไม่เอา Vat" (CASH) ไว้ — ทำให้รายการที่เป็น CASH (เช่น ค่าตัด/เจาะที่รับเป็นเงินสด
+            # แยกต่างหาก ไม่ผ่านยอดโอน) โดนคิด VAT 7% เกินจริง กลายเป็นยอดบิลสูงเกินไป แล้วเข้าใจผิดว่า
+            # "ยอดโอนขาด" ทั้งที่ลูกค้าโอนครบแล้ว (ต้องคูณ 1.07 เฉพาะรายการที่ติ๊ก VAT เท่านั้น
+            # เหมือนสูตร so_grand_total_var ในหน้าสร้าง SO — ส่วน CASH ไม่นับรวมในยอดที่ต้องโอนผ่านธนาคาร)
+            vat_cols_to_sum = [
+                ('sales_service_amount', 'sales_service_vat_option'),
+                ('cutting_drilling_fee', 'cutting_drilling_fee_vat_option'),
+                ('other_service_fee', 'other_service_fee_vat_option'),
+                ('shipping_cost', 'shipping_vat_option'),
+                ('relocation_cost', 'relocation_cost_vat_option'),
+                ('credit_card_fee', 'credit_card_fee_vat_option'),
+            ]
+
             db_compare_df['calc_base_total'] = 0.0
-            for col in cols_to_sum:
-                if col in db_compare_df.columns:
-                    db_compare_df['calc_base_total'] += pd.to_numeric(db_compare_df[col], errors='coerce').fillna(0)
-            
-            # คูณ VAT 7% เพื่อหา "ยอดที่ต้องชำระจริง"
+            for amount_col, vat_option_col in vat_cols_to_sum:
+                if amount_col in db_compare_df.columns:
+                    amount = pd.to_numeric(db_compare_df[amount_col], errors='coerce').fillna(0)
+                    if vat_option_col in db_compare_df.columns:
+                        is_vat = db_compare_df[vat_option_col].astype(str).str.upper() == 'VAT'
+                    else:
+                        is_vat = True  # ไม่มีคอลัมน์ option เก็บไว้ ให้ถือว่าเป็น VAT ตามพฤติกรรมเดิม
+                    db_compare_df['calc_base_total'] += amount.where(is_vat, 0.0)
+
+            # คูณ VAT 7% เฉพาะยอดที่ติ๊ก VAT ไว้เท่านั้น เพื่อหา "ยอดที่ต้องชำระผ่านธนาคารจริง"
             db_compare_df['calc_grand_total'] = db_compare_df['calc_base_total'] * 1.07
             # ----------------------------------------------------------------
 
@@ -5460,7 +5852,12 @@ class HRScreen(CTkFrame):
             plan = self.sales_user_info.get(sale_key, {}).get('plan', 'Plan A') 
 
             # --- 2. ดึงข้อมูลตัวเลขจากหน้าจอ ---
-            sales_target_val = float(self.sales_target_entry.get().replace(",", "") or 0.0)
+            # 🔥 แก้บัก: เดิมอ่าน sales_target จาก self.sales_target_entry ซึ่งเป็นช่องกรอกของ
+            # แท็บ "จัดการผู้ใช้งาน" (คนละหน้ากับหน้าคำนวณคอมฯ นี้เลย) ไม่มี widget นี้อยู่จริงในหน้านี้
+            # เลยได้ 0.00 เสมอ (หรือค่าค้างของคนอื่นที่บังเอิญเปิดโปรไฟล์ไว้ก่อนหน้า) ทำให้ KPI Achievement
+            # กลายเป็น 0%/ไม่มีเป้า ทุกครั้งที่กด "คำนวณขั้นสุดท้ายฯ" ทั้งที่ตอนกด "แสดงการคิดแบบละเอียด"
+            # (preview) ดึงถูกจาก sales_user_info อยู่แล้ว — เปลี่ยนให้ใช้แหล่งเดียวกันให้ตรงกัน
+            sales_target_val = float(self.sales_user_info.get(sale_key, {}).get('target', 0.0) or 0.0)
             operating_fee_val = float(self.operating_fee_entry.get().replace(",", "") or 0.0)
             min_sales_val = float(self.min_sales_entry.get().replace(",", "") or 500000.0)
 

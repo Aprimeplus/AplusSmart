@@ -77,6 +77,19 @@ class SaleRevenueWidget(CTkFrame):
         self._build_chart_area()
 
         self.bind("<Map>", self._on_map)
+        self.bind("<Destroy>", self._on_destroy)
+
+    def _on_destroy(self, event=None):
+        """กัน after() ที่ค้างคิวอยู่ (resize debounce / chart draw) ไปเรียก widget ที่ถูก destroy()
+        ไปแล้วตอนกดกลับหน้าเมนูหลัก — ไม่งั้น TclError ที่เกิดขึ้นตอนนั้นอาจทำให้แอปค้าง"""
+        if event is not None and event.widget is not self:
+            return
+        if self._frame_ready_job:
+            try:
+                self.after_cancel(self._frame_ready_job)
+            except Exception:
+                pass
+            self._frame_ready_job = None
 
     def _on_map(self, event=None):
         """ทำงานครั้งเดียว — bind Configure บน chart_frame แบบถาวร"""
@@ -88,6 +101,8 @@ class SaleRevenueWidget(CTkFrame):
 
     def _on_chart_frame_configure(self, event):
         """debounce resize — suppress ระหว่าง _refresh รัน"""
+        if not self.winfo_exists():
+            return
         if event.width < 200 or event.height < 100:
             return
         if self._drawing_chart:
@@ -102,6 +117,8 @@ class SaleRevenueWidget(CTkFrame):
     def _on_chart_resize(self, fw, fh):
         """Fired after debounce — initial draw หรือ window-resize redraw"""
         self._frame_ready_job = None
+        if not self.winfo_exists():
+            return
         if self.sales_view_mode not in ('chart', 'monthly'):
             return
         if self._chart_canvas is None:
@@ -350,13 +367,15 @@ class SaleRevenueWidget(CTkFrame):
                       = REPLACE(LOWER(c.sale_key), ' ', '')
                   AND {date_filter}
             LEFT JOIN (
-                SELECT payout_id,
-                       SUM(final_gp)           AS total_gp,
-                       SUM(final_sales_amount) AS total_sales_amt,
-                       SUM(CASE WHEN final_margin >= 10 THEN final_sales_amount ELSE 0 END) AS sales_normal,
-                       SUM(CASE WHEN final_margin <  10 THEN final_sales_amount ELSE 0 END) AS sales_below
-                FROM   commissions
-                GROUP  BY payout_id
+                SELECT co.payout_id,
+                       SUM(co.final_gp)           AS total_gp,
+                       SUM(co.final_sales_amount) AS total_sales_amt,
+                       SUM(CASE WHEN co.final_margin >= 10 THEN co.final_sales_amount ELSE 0 END) AS sales_normal,
+                       SUM(CASE WHEN co.final_margin <  10 THEN co.final_sales_amount ELSE 0 END) AS sales_below
+                FROM   commissions co
+                JOIN   commission_payout_logs c ON c.id = co.payout_id
+                WHERE  {date_filter}
+                GROUP  BY co.payout_id
             ) cm_agg ON cm_agg.payout_id = c.id
             GROUP BY su.sale_name, su.sale_key, su.sales_target, su.role, su.status
             -- แสดงพนักงานที่ยัง Active ทุกคน (แม้ยังไม่มียอด) + พนักงานที่ปิดใช้งานไปแล้ว (Inactive)
@@ -365,7 +384,9 @@ class SaleRevenueWidget(CTkFrame):
                    OR COALESCE(SUM(c.total_sales), 0) > 0
             ORDER BY su.sale_name ASC;
         """
-        final_params = [target_multiplier] + params
+        # date_filter ถูกแทรกใน query 2 จุด (JOIN commission_payout_logs กับ subquery cm_agg)
+        # จึงต้องส่งชุด params ของมันซ้ำ 2 รอบให้ตรงกับจำนวน %s ทั้งหมดในสตริง query
+        final_params = [target_multiplier] + params + params
         df = pd.read_sql_query(query, self.pg_engine, params=tuple(final_params))
         df['sales_target'] = df['sales_target'].fillna(0)
         df['total_sales'] = df['total_sales'].fillna(0)

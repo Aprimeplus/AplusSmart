@@ -19,16 +19,24 @@ def calculate_reserve_release_ratio(project_gp_pct):
     return 0.0
 
 
-def apply_project_lot_reserve_split(calculated_commission, comm_df):
+def apply_project_lot_reserve_split(calculated_commission, comm_df, lot_commission_override=None):
     """
     งานโครงการ (Multi-Lot Project) — นโยบาย POL-KPI-PROJECT-001:
     ยอดคอมมิชชั่นที่มาจาก SO ที่เป็น Lot ของโครงการ (คอลัมน์ comm_df['is_project_lot'] == True,
     ซึ่งผู้เรียก (hr_screen.py) ต้องกรองมาแล้วว่าเป็น Lot ที่ครบ 3 เงื่อนไขเท่านั้น — Lot ที่ยังไม่ครบ
     ต้องถูกตัดออกจาก comm_df ไปก่อนเรียกฟังก์ชันนี้ เพราะยังไม่นับ KPI/Commission เลยตามนโยบาย)
     ต้องแบ่งจ่ายทันที 50% ที่เหลือกันไว้เป็น Commission Reserve รอ GP True-Up ตอนโปรเจกต์ปิด
-    ส่วนคอมมิชชั่นจากยอดขายปกติจ่ายเต็ม 100% เหมือนเดิม ใช้สูตรเดียวกันทั้ง Plan A และ Plan B
-    ตามตัวอย่างคำนวณในเอกสารนโยบาย (หน้า 9-10):
-        Commission_Project = calculated_commission × (LotSales / TotalSales)
+    ส่วนคอมมิชชั่นจากยอดขายปกติจ่ายเต็ม 100% เหมือนเดิม
+
+    🔥 [แก้ไขตาม PM] เดิม Commission_Project = calculated_commission × (LotSales / TotalSales)
+    ใช้ "เรทเฉลี่ยรวมทั้งเดือน" (ผสม Normal-rate กับ Below-rate ของทุก SO ปนกัน) มาคิดกับ Lot
+    ทำให้ Lot ได้ค่าคอมฯ ผิดเพี้ยนจาก margin ของตัวเองจริงๆ — PM แก้เป็น: Lot ต้องคิดด้วยเรทของ
+    เกณฑ์ (Normal/Below) ที่ margin ของ Lot นั้นเข้าเกณฑ์เองเท่านั้น ไม่ปนกับ SO อื่น
+    ผู้เรียก (แต่ละ Plan) ต้องคำนวณ lot_commission_override เอง (ผลรวมค่าคอมฯ ของ Lot ทุกตัว
+    โดยใช้เรทของ tier ที่ Lot นั้นๆ เข้าเกณฑ์จริง) แล้วส่งเข้ามาแทนการปล่อยให้ฟังก์ชันนี้เฉลี่ยเอง
+    ถ้าไม่ส่งมา (None) จะ fallback ไปใช้สูตรเฉลี่ยแบบเดิม (เผื่อ Plan ที่ยังไม่ได้ปรับปรุงตาม)
+
+        Commission_Project = lot_commission_override  (หรือ calculated_commission × LotSales/TotalSales ถ้าไม่ส่งมา)
         Pay_Now  = (calculated_commission - Commission_Project) + Commission_Project × 0.50
         Reserve  = Commission_Project × 0.50
     คืนค่า (pay_now, reserve, has_project_lot) — ถ้าไม่มี Lot เลยในงวดนี้ pay_now = calculated_commission, reserve = 0
@@ -42,7 +50,10 @@ def apply_project_lot_reserve_split(calculated_commission, comm_df):
     if total_sales <= 0 or lot_sales <= 0:
         return calculated_commission, 0.0, False
 
-    commission_project = calculated_commission * (lot_sales / total_sales)
+    if lot_commission_override is not None:
+        commission_project = float(lot_commission_override)
+    else:
+        commission_project = calculated_commission * (lot_sales / total_sales)
     commission_normal = calculated_commission - commission_project
 
     pay_now = commission_normal + (commission_project * 0.5)
@@ -182,7 +193,17 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         # งานโครงการ (Multi-Lot Project) — ต้องแบ่ง Pay Now/Reserve ก่อนคิดภาษี/ยอดโอนสุทธิ
         # เพราะยอดที่โอนจริงงวดนี้ต้องเป็นแค่ Pay Now เท่านั้น ส่วน Reserve ยังไม่จ่าย รอ GP True-Up
-        lot_pay_now, lot_reserve, has_project_lot = apply_project_lot_reserve_split(calculated_commission, comm_df)
+        # [แก้ไขตาม PM] Plan A คำนวณ commission_amount ต่อแถว (SO) ไว้ถูกต้องอยู่แล้ว (แยก NORMAL_RATE/
+        # BELOW_T_RATE ตาม margin ของ SO นั้นเองเป๊ะ ไม่ปนกัน) — เอาผลรวมของแถวที่เป็น Lot มาใช้ตรงๆ
+        # เป็น commission_project แทนการเฉลี่ยตามสัดส่วนยอดขายกับคอมฯ รวมทั้งก้อนแบบเดิม
+        _lot_mask_a = comm_df.get('is_project_lot')
+        if _lot_mask_a is not None:
+            _lot_mask_a = _lot_mask_a.fillna(False).astype(bool)
+            lot_commission_override_a = comm_df.loc[_lot_mask_a, 'commission_amount'].sum() if _lot_mask_a.any() else None
+        else:
+            lot_commission_override_a = None
+        lot_pay_now, lot_reserve, has_project_lot = apply_project_lot_reserve_split(
+            calculated_commission, comm_df, lot_commission_override_a)
         payout_base_commission = lot_pay_now if has_project_lot else calculated_commission
 
         gross_commission = payout_base_commission + total_incentives
@@ -333,8 +354,9 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'excess_site_shipping': 'sum',
             'excess_stock_shipping': 'sum',
             'excess_cutting': 'sum',          # ค่าตัด/เจาะ excess
+            'is_project_lot': 'max',          # ถ้ามีแถวไหนใน po_number กลุ่มนี้เป็น Lot ให้ทั้งกลุ่มเป็น Lot
         }
-        
+
         valid_agg_rules = {k: v for k, v in agg_rules.items() if k in comm_df.columns}
         po_grouped_df = comm_df.groupby('po_number').agg(valid_agg_rules).reset_index()
 
@@ -384,7 +406,37 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         # งานโครงการ (Multi-Lot Project) — ต้องแบ่ง Pay Now/Reserve ก่อนคิดภาษี/ยอดโอนสุทธิ
         # เพราะยอดที่โอนจริงงวดนี้ต้องเป็นแค่ Pay Now เท่านั้น ส่วน Reserve ยังไม่จ่าย รอ GP True-Up
-        lot_pay_now, lot_reserve, has_project_lot = apply_project_lot_reserve_split(calculated_commission, comm_df)
+        # [แก้ไขตาม PM] เดิมเอาคอมฯ รวมทั้งเดือน (ผสม Normal+Below ปนกัน) มาเฉลี่ยตามสัดส่วนยอดขาย Lot
+        # — ทำให้ Lot ได้เรทเฉลี่ยรวม ไม่ตรงกับ margin ของตัวเอง แก้เป็น: ดู margin ของ Lot (ที่ระดับ
+        # po_number group เดียวกับที่ใช้แบ่ง tier จริงด้านบน) แล้วคูณด้วยเรทของ tier นั้นตรงๆ
+        # (Below ใช้เรทคงที่ 0.63%/0.50% อยู่แล้วไม่มีปัญหา ส่วน Normal ใช้ "เรทเฉลี่ยของ Normal tier
+        # เท่านั้น" เพราะ Tier 1/2/3 ของ Normal เป็นแบบ cascade ตามยอดสะสมรวม ไม่มีเรทตายตัวต่อ SO ใบเดียว
+        # ให้ระบุตรงๆ ได้ — แต่อย่างน้อยก็ไม่ปนกับ Below แล้ว)
+        # 🔥 แก้บักที่พลาดไปตอนแรก: หารด้วย total_standard_sales (ยอดขาย Normal ก่อนหักอะไรเลย) ทำให้
+        # ค่า Operating Fee/ค่านายหน้าที่หักออกไปแล้วครั้งเดียวตอนคิดคอมฯ รวม ถูกเจือปนกลับเข้ามาเป็น
+        # ส่วนหนึ่งของ "เรท" ด้วย เรทเลยต่ำกว่าที่ควรจะเป็น (เช่น ได้ 1.09% ทั้งที่ควรเป็น 1.25% เป๊ะ
+        # เมื่อยอดขาย Normal ทั้งหมดอยู่ใน Tier 1 ล้วนๆ) ต้องหารด้วย commission_base (ฐานหลังหัก
+        # Operating Fee/ค่านายหน้าแล้ว ซึ่งเป็นฐานที่ทำให้เกิด tier_commission จริงๆ) ถึงจะได้เรทที่ตรง
+        # กับเรทของ tier นั้นเป๊ะ (ยืนยันแล้ว: 8,685.44/694,835.40 = 1.25% ตรงเป๊ะเมื่อ commission_base
+        # อยู่ใน Tier 1 ล้วน)
+        lot_commission_override_b = None
+        if 'is_project_lot' in po_grouped_df.columns:
+            lot_groups_b = po_grouped_df[po_grouped_df['is_project_lot'] == True]
+            if not lot_groups_b.empty:
+                effective_normal_rate_b = (tier_commission / commission_base) if commission_base > 0 else 0.0
+                _lot_sum_b = 0.0
+                for _, _r in lot_groups_b.iterrows():
+                    _m = _r['margin']
+                    _s = _r['sales_service_amount']
+                    if _m >= 10:
+                        _lot_sum_b += _s * effective_normal_rate_b
+                    elif _m >= 7.99:
+                        _lot_sum_b += _s * 0.0063
+                    else:
+                        _lot_sum_b += _s * 0.0050
+                lot_commission_override_b = _lot_sum_b
+        lot_pay_now, lot_reserve, has_project_lot = apply_project_lot_reserve_split(
+            calculated_commission, comm_df, lot_commission_override_b)
         payout_base_commission = lot_pay_now if has_project_lot else calculated_commission
 
         gross_commission = payout_base_commission + total_incentives
