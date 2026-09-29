@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox
-from customtkinter import (CTkFrame, CTkLabel, CTkButton, CTkOptionMenu, 
+from customtkinter import (CTkFrame, CTkLabel, CTkButton, CTkOptionMenu,
                            CTkFont, CTkToplevel, CTkEntry)
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,6 +9,7 @@ from matplotlib.ticker import MultipleLocator
 from datetime import datetime
 import calendar
 import psycopg2
+from project_screen import _center_and_style_popup
 
 # =============================================================================
 #  ส่วนที่ 1: Dialog ตั้งค่าเป้าหมาย (Popup)
@@ -17,25 +18,60 @@ class TargetSettingsDialog(CTkToplevel):
     def __init__(self, master, app_container, year, on_save_callback):
         super().__init__(master)
         self.app_container = app_container
-        self.target_year = year
+        self.target_year = year   # ค.ศ. (int) — เก็บ/query DB เป็น ค.ศ. เสมอ, โชว์ผู้ใช้เป็น พ.ศ.
         self.on_save_callback = on_save_callback
-        
-        self.title(f"ตั้งค่าเป้าหมายปี {year}")
-        self.geometry("350x300")
-        self.grab_set() 
-        
-        CTkLabel(self, text=f"ตั้งเป้าหมายปี {year}", font=("Arial", 18, "bold")).pack(pady=15)
-        
-        # ช่องกรอกเป้าหมาย
-        CTkLabel(self, text="เป้าหมายยอดขายทั้งปี (บาท):").pack(pady=(5,0))
-        self.target_entry = CTkEntry(self, width=200)
-        self.target_entry.pack(pady=5)
-        
-        # ปุ่มบันทึก
-        CTkButton(self, text="บันทึก", command=self._save_target, fg_color="#16A34A").pack(pady=20)
+
+        self.title(f"ตั้งค่าเป้าหมายปี {year + 543}")
+        _center_and_style_popup(self, master, 400, 400)
+        self.resizable(False, False)
+        self.grab_set()
+
+        card = CTkFrame(self, corner_radius=12, fg_color=("gray95", "gray17"),
+                         border_width=1, border_color=("gray80", "gray28"))
+        card.pack(fill="both", expand=True, padx=20, pady=20)
+
+        self.title_label = CTkLabel(card, text=f"🎯  ตั้งเป้าหมายปี {year + 543}",
+                                     font=CTkFont(size=18, weight="bold"))
+        self.title_label.pack(pady=(24, 4))
+
+        CTkLabel(card, text="เลือกปี (พ.ศ.)", font=CTkFont(size=13),
+                 text_color=("gray30", "gray70")).pack(pady=(6, 2))
+
+        current_year = datetime.now().year
+        year_options = [str(y + 543) for y in range(current_year - 2, current_year + 4)]
+        if str(year + 543) not in year_options:
+            year_options.append(str(year + 543))
+            year_options.sort()
+        self.year_var = tk.StringVar(value=str(year + 543))
+        CTkOptionMenu(card, variable=self.year_var, values=year_options, width=150,
+                      command=self._on_year_change).pack(pady=(0, 12))
+
+        CTkLabel(card, text="เป้าหมายยอดขายทั้งปี (บาท)", font=CTkFont(size=13),
+                 text_color=("gray30", "gray70")).pack(pady=(4, 10))
+
+        self.target_entry = CTkEntry(card, width=220, height=38,
+                                      font=CTkFont(size=15), justify="center")
+        self.target_entry.pack(pady=(0, 20))
+
+        CTkButton(card, text="บันทึก", command=self._save_target,
+                  width=180, height=38, font=CTkFont(size=14, weight="bold"),
+                  fg_color="#16A34A", hover_color="#15803D").pack(pady=(0, 24))
+
+        self._load_current_settings()
+
+    def _on_year_change(self, thai_year_str):
+        """สลับปีที่กำลังแก้ไข โดยไม่ต้องปิด/เปิด dialog ใหม่"""
+        try:
+            self.target_year = int(thai_year_str) - 543
+        except (TypeError, ValueError):
+            return
+        self.title(f"ตั้งค่าเป้าหมายปี {thai_year_str}")
+        self.title_label.configure(text=f"🎯  ตั้งเป้าหมายปี {thai_year_str}")
         self._load_current_settings()
 
     def _load_current_settings(self):
+        self.target_entry.delete(0, "end")
+        conn = None
         try:
             conn = self.app_container.get_connection()
             cursor = conn.cursor()
@@ -44,7 +80,8 @@ class TargetSettingsDialog(CTkToplevel):
             if row: self.target_entry.insert(0, f"{row[0]:.2f}")
             else: self.target_entry.insert(0, "120000000")
         except Exception as e: print(f"Error: {e}")
-        finally: self.app_container.release_connection(conn)
+        finally:
+            if conn: self.app_container.release_connection(conn)
 
     def _save_target(self):
         try:
@@ -58,7 +95,7 @@ class TargetSettingsDialog(CTkToplevel):
                 """
                 cursor.execute(sql, (self.target_year, target))
             conn.commit()
-            messagebox.showinfo("สำเร็จ", "บันทึกเป้าหมายแล้ว", parent=self)
+            messagebox.showinfo("สำเร็จ", f"บันทึกเป้าหมายปี {self.target_year + 543} แล้ว", parent=self)
             if self.on_save_callback: self.on_save_callback()
             self.destroy()
         except Exception as e: messagebox.showerror("Error", f"{e}", parent=self)

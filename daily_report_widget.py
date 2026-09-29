@@ -151,7 +151,7 @@ class DailyReportWidget(CTkFrame):
 
         headings = {
             "so_number":      ("SO Number",    110, "w"),
-            "po_number":      ("PO Number",    110, "w"),
+            "po_number":      ("จำนวน PO",      80, "center"),
             "customer_name":  ("ชื่อลูกค้า",   160, "w"),
             "comm_period":    ("รอบคอมฯ",       80, "center"),
             "sales_booking":  ("ยอดขาย",        80, "e"),
@@ -175,7 +175,7 @@ class DailyReportWidget(CTkFrame):
         self.tree.tag_configure('status_over', foreground="#2563EB")
         self.tree.tag_configure('status_ok', foreground="#059669")
 
-        # ── Tooltip สำหรับ PO Number column ──────────────────────────────────
+        # ── Tooltip สำหรับคอลัมน์ "จำนวน PO" — hover ดูเลข PO จริงได้ ──────────────
         self._tooltip_win = None
         self._po_full_map = {}   # iid → full PO string (เก็บตอน insert row)
         self.tree.bind("<Motion>", self._on_tree_motion)
@@ -224,9 +224,10 @@ class DailyReportWidget(CTkFrame):
             # 🟢 สร้าง Query แบบ Dynamic ตาม Filter ที่เลือก
             query_base = """
                 SELECT 
-                    c.so_number, 
+                    c.so_number,
                     (SELECT STRING_AGG(po.po_number, ', ') FROM purchase_orders po WHERE po.so_number = c.so_number AND po.status != 'Cancelled') as po_number_list,
-                    c.customer_name, 
+                    c.customer_id,
+                    c.customer_name,
                     c.commission_month,
                     c.commission_year,
                     c.sales_service_amount, 
@@ -396,15 +397,11 @@ class DailyReportWidget(CTkFrame):
                 status_en = row['status']
                 status_th = STATUS_THAI_MAP.get(status_en, status_en)
 
-                # PO: ถ้ามีหลายตัวให้แสดงแค่อันแรก + "+N"
+                # PO: โชว์แค่ "จำนวน PO" (ตัวเลข) — เลข PO จริงดูได้จาก tooltip ตอน hover แทน
+                # (เดิมโชว์ "เลข PO แรก +N" ทำให้งงว่า +N คือรุ่นแก้ไขหรือ PO ใบอื่น)
                 po_raw  = row['po_number_list'] or ""
                 po_list = [p.strip() for p in po_raw.split(",") if p.strip()] if po_raw else []
-                if len(po_list) == 0:
-                    po_display = "-"
-                elif len(po_list) == 1:
-                    po_display = po_list[0]
-                else:
-                    po_display = f"{po_list[0]}  +{len(po_list) - 1}"
+                po_display = str(len(po_list)) if po_list else "-"
 
                 # Sale / PU รวมบรรทัดเดียว
                 sale_str = row.get('sale_key') or "-"
@@ -428,8 +425,9 @@ class DailyReportWidget(CTkFrame):
                 )
                 tag = 'evenrow' if i % 2 == 0 else 'oddrow'
                 iid = self.tree.insert("", "end", values=vals, tags=(tag, status_tag))
-                # เก็บ PO list เต็มไว้ให้ tooltip แสดง
-                if len(po_list) > 1:
+                # เก็บ PO list เต็มไว้ให้ tooltip แสดง — ตอนนี้ในตารางเห็นแค่ "จำนวน" ไม่เห็นเลข PO จริงแล้ว
+                # จึงต้องโชว์ tooltip แม้มี PO แค่ใบเดียวด้วย (ไม่ใช่แค่ตอนมีหลายใบเหมือนเดิม)
+                if po_list:
                     self._po_full_map[iid] = "\n".join(po_list)
 
             self.update_summary(len(df), sum_booking, sum_paid, sum_missing)
@@ -522,6 +520,10 @@ class DailyReportWidget(CTkFrame):
             
             def get_credit_balance(row):
                 d = row['difference_amount']
+                # ใช้ tolerance เดียวกับ get_status_text (< 1 บาท = ครบถ้วน) กันเศษ floating point
+                # เช่น -4.5e-13 ที่ควรจะเป็น 0 พอดี แต่คำนวณเพี้ยนนิดหน่อยจากขั้นตอนก่อนหน้า
+                if abs(d) < 1:
+                    return 0
                 return abs(d) if d < 0 else 0
             
             export_df['remaining_balance'] = export_df.apply(get_credit_balance, axis=1)
@@ -529,6 +531,7 @@ class DailyReportWidget(CTkFrame):
             rename_map = {
                 "so_number": "SO Number",
                 "po_number_list": "PO Number",
+                "customer_id": "รหัสลูกค้า",
                 "customer_name": "Customer Name",
                 "comm_period_display": "รอบคอมมิชชั่น", # 🟢 เพิ่มเข้าไปใน Excel ด้วย
                 "sales_service_amount": "Booking Amount",

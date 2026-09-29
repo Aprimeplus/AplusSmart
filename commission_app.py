@@ -258,6 +258,16 @@ class SalesTasksWindow(CTkToplevel):
         self.after(50, self.load_tasks)
         self.transient(master)
         self.grab_set()
+
+        # 🟢 ป้องกันข้อมูลค้าง (stale): ถ้า user แก้ไข/ส่ง SO ผ่านช่องทางอื่นแล้วสลับกลับมาที่
+        # หน้าต่างนี้ (ซึ่งยังเปิดค้างอยู่โดยไม่ถูกปิด) ให้รีเฟรชข้อมูลใหม่ทุกครั้งที่ได้ focus กลับมา
+        # กันปัญหา "Copy Shortnote" ดึงข้อมูลเก่า (เช่น ค่าจัดส่งที่เพิ่งกรอกเพิ่ม) ไม่ทัน
+        self.bind("<FocusIn>", self._on_focus_in_refresh, add="+")
+
+    def _on_focus_in_refresh(self, event):
+        # FocusIn จะยิงซ้ำเมื่อ widget ลูกภายในหน้าต่างได้โฟกัสด้วย — รีเฟรชเฉพาะตอนตัวหน้าต่างเองได้โฟกัส
+        if event.widget is self:
+            self.load_tasks()
     
     def _setup_commission_status_tab(self):
         """สร้าง UI สำหรับหน้าติดตามค่าคอมมิชชั่น พร้อมตัวกรองเดือน/ปี (เวอร์ชันปรับขนาดตารางให้เล็กลง)"""
@@ -553,6 +563,27 @@ class SalesTasksWindow(CTkToplevel):
         if not so_data:
             messagebox.showwarning("แจ้งเตือน", "ไม่มีข้อมูล SO สำหรับคัดลอก", parent=self)
             return
+
+        # 🟢 [แก้ไข] ดึงข้อมูลล่าสุดจาก DB ซ้ำอีกรอบก่อน copy เสมอ — เดิม so_data ที่ส่งเข้ามาเป็น
+        # dict ที่ถูก cache ไว้ตอนโหลด list ครั้งแรก (เช่น ตอนเปิดหน้า "งานของฉัน") ถ้า user แก้ไข
+        # ข้อมูล (เช่น เพิ่มค่าจัดส่ง) ผ่านหน้าต่างแก้ไขแล้ว list เดิมไม่ได้ refresh ปุ่ม Copy Shortnote
+        # ก็จะยังใช้ค่าเก่าที่ cache ไว้ (พบจาก user แจ้งว่าใส่ค่ารถแล้วแต่ shortnote ไม่ขึ้น)
+        so_number_lookup = so_data.get('so_number')
+        if so_number_lookup:
+            conn = None
+            try:
+                conn = self.app_container.get_connection()
+                fresh_df = pd.read_sql_query(
+                    "SELECT * FROM commissions WHERE so_number = %s AND is_active = 1 ORDER BY timestamp DESC LIMIT 1",
+                    conn, params=(so_number_lookup,)
+                )
+                if not fresh_df.empty:
+                    so_data = fresh_df.iloc[0].to_dict()
+            except Exception:
+                pass  # ถ้าดึงใหม่ไม่สำเร็จ ใช้ so_data เดิมที่ส่งเข้ามาต่อไป
+            finally:
+                if conn:
+                    self.app_container.release_connection(conn)
 
         try:
             so_number = so_data.get('so_number', '-')
@@ -1560,6 +1591,8 @@ class CommissionApp(CTkFrame):
         if self.tasks_window is None or not self.tasks_window.winfo_exists():
             self.tasks_window = SalesTasksWindow(self, app_container=self.app_container, sale_key=self.sale_key)
         else:
+            # เปิดค้างอยู่แล้ว — รีเฟรชข้อมูลใหม่ก่อนโฟกัส กันเห็นข้อมูลเก่า (เช่น เพิ่งแก้ไข SO จากที่อื่นมา)
+            self.tasks_window.load_tasks()
             self.tasks_window.focus()
 
     def _update_tasks_badge(self):

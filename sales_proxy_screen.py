@@ -426,15 +426,17 @@ class SalesProxyScreen(CommissionApp):
         # ให้ Class แม่ (CommissionApp) สร้างปุ่มบันทึกปกติลงใน parent
         super()._populate_action_frame(parent)
 
-        # 🟢 เพิ่มปุ่มเครื่องมือ Sale Support ต่อท้ายใน parent เดียวกัน
-        if self.user_role == 'Sale Support':
+        # 🟢 เพิ่มปุ่มเครื่องมือ (ย้ายเจ้าของ SO / ยอดค้างชำระ / Copy Shortnote) ต่อท้ายใน parent เดียวกัน
+        # เดิมปลดล็อกให้แค่ Sale Support เท่านั้น ทำให้ Sales Manager และ HR ที่ใช้หน้านี้ "แทนเซลส์"
+        # เหมือนกันไม่เห็นปุ่มพวกนี้เลย (รวมถึง Copy Shortnote ที่หายไปด้วย) — เพิ่ม role ที่ใช้จริงเข้ามาด้วย
+        if self.user_role in ('Sale Support', 'Sales Manager', 'HR'):
             self.support_tools_frame = CTkFrame(parent, fg_color="transparent")
             self.support_tools_frame.pack(fill="x", pady=(10, 0))
 
             separator = tk.Frame(self.support_tools_frame, height=2, bd=1, relief="sunken")
             separator.pack(fill="x", padx=20, pady=(20, 10))
 
-            tool_label = CTkLabel(self.support_tools_frame, text="เครื่องมือสำหรับ Sale Support:", font=CTkFont(size=14, weight="bold"), text_color="gray50")
+            tool_label = CTkLabel(self.support_tools_frame, text="เครื่องมือเพิ่มเติม:", font=CTkFont(size=14, weight="bold"), text_color="gray50")
             tool_label.pack(anchor="w", padx=20, pady=(0, 5))
 
             btn_container = CTkFrame(self.support_tools_frame, fg_color="transparent")

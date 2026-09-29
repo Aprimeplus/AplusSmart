@@ -1,9 +1,11 @@
 import tkinter as tk
+from tkinter import messagebox
 from customtkinter import (CTkFrame, CTkLabel, CTkButton, CTkEntry,
                            CTkFont, CTkScrollableFrame, CTkComboBox, CTkCheckBox)
 import pandas as pd
 from tksheet import Sheet
 from datetime import datetime
+from export_utils import export_customer_monitoring_to_excel
 
 try:
     from tkcalendar import DateEntry as _DateEntry
@@ -53,10 +55,25 @@ THAI_MONTH_NUM = {name: i + 1 for i, name in enumerate(THAI_MONTHS_FULL)}
 
 class CustomerMonitoringWidget(CTkFrame):
 
+    # รหัสพนักงานเก่า (จากไฟล์ SO Analysis Report ย้อนหลัง) -> sale_key ปัจจุบัน
+    # แม็พจากการเช็คจริง (ลูกค้ารหัสเดียวกัน อยู่กับ sale_key ไหนใน commissions ปัจจุบัน) ไม่ใช่การเดา
+    # โค้ดที่ตัวอย่างน้อยเกินไปจนไม่มั่นใจ (ON001, PP001, PV001, CM001) ปล่อยเป็นรหัสเดิมไว้ก่อน
+    HISTORICAL_SALE_KEY_MAP = {
+        "AM001": "PIYAWAN",
+        "ID001": "ILADA",
+        "KR001": "BUNNYCEE",
+        "LT001": "LETHAI",
+        "WC001": "WACHIRA",
+        "TG001": "VOW-S",       # ทีม ภาณุพงศ์/ฐรินทร์ญา (VOW-P/VOW-S ปนกันในโค้ดเก่า)
+        "CT001": "Sale Center",
+    }
+
     def __init__(self, master, app_container, sale_key_filter=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app_container
         self._locked_sale_key = sale_key_filter   # ถ้า set = Sale mode (เห็นแค่ตัวเอง)
+        self._is_dormant_view = False
+        self._dormant_df = None
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self._build_filter_panel()
@@ -114,6 +131,15 @@ class CustomerMonitoringWidget(CTkFrame):
             panel, variable=self._ctype_var,
             values=["ทั้งหมด", "ลูกค้าเก่า", "ลูกค้าใหม่"],
             height=28, font=CTkFont(size=11), state="readonly",
+        ).grid(row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
+
+        lbl("Tier (ตามยอดสะสมทั้งปี)", r); r += 1
+        self._tier_var = tk.StringVar(value="ทั้งหมด")
+        CTkComboBox(
+            panel, variable=self._tier_var,
+            values=self.TIER_OPTIONS,
+            height=28, font=CTkFont(size=11), state="readonly",
+            command=lambda _: self._load(),
         ).grid(row=r, column=0, padx=10, pady=(0, 4), sticky="ew"); r += 1
 
         lbl("ปี (พ.ศ.)", r); r += 1
@@ -205,6 +231,11 @@ class CustomerMonitoringWidget(CTkFrame):
                  text_color="#0F172A").pack(side="left")
 
         # toggle buttons (right side)
+        self._btn_export = CTkButton(
+            hdr, text="📥 Export Excel", width=120, height=28,
+            font=CTkFont(size=11), fg_color="#16A34A", hover_color="#15803D",
+            command=self._export_excel)
+        self._btn_export.pack(side="right", padx=(4, 0))
         self._btn_chart = CTkButton(
             hdr, text="📊 แผนภูมิ", width=95, height=28,
             font=CTkFont(size=11), fg_color="#6B7280", hover_color="#4B5563",
@@ -295,7 +326,9 @@ class CustomerMonitoringWidget(CTkFrame):
 
                 df_y = pd.read_sql_query(
                     "SELECT DISTINCT commission_year FROM commissions "
-                    "WHERE is_active=1 ORDER BY commission_year",
+                    "WHERE is_active=1 "
+                    "UNION SELECT DISTINCT year FROM sales_history_customer_monthly "
+                    "ORDER BY 1",
                     conn,
                 )
                 years = [str(y + 543) for y in df_y["commission_year"].tolist()]
@@ -312,6 +345,7 @@ class CustomerMonitoringWidget(CTkFrame):
         if not self._locked_sale_key:
             self._sale_var.set("ทั้งหมด")
         self._ctype_var.set("ทั้งหมด")
+        self._tier_var.set("ทั้งหมด")
         self._year_var.set(str(datetime.now().year + 543))
         self._from_var.set("")
         self._to_var.set("")
@@ -335,6 +369,11 @@ class CustomerMonitoringWidget(CTkFrame):
         ctype    = self._ctype_var.get()
         d_from   = self._parse_date(self._from_var.get().strip())
         d_to     = self._parse_date(self._to_var.get().strip())
+
+        # Dormant Pool เป็นคนละ query ไปเลย (ลูกค้าที่ "ไม่มี" ยอดปีนี้ ไม่ใช่ pivot ยอดรายเดือนแบบปกติ)
+        if self._tier_var.get() == "Dormant Pool":
+            self._load_dormant(year_thai, year, search, sale_key, ctype)
+            return
 
         comm_mode = self._comm_mode_var.get()
 
@@ -377,10 +416,106 @@ class CustomerMonitoringWidget(CTkFrame):
             print(f"CustomerMonitoring _load error: {e}")
             return
 
+        # เติมข้อมูลย้อนหลัง (sales_history_customer_monthly, import จากไฟล์ SO Analysis Report
+        # ปี 2567/2568) เฉพาะ "เดือนที่ commissions ไม่มีข้อมูลจริงจังพอ" กันไม่ให้นับซ้ำกับของจริงในระบบ
+        # — ต้องมีลูกค้าอย่างน้อย MIN_ROWS_TO_TRUST ราย ถึงจะถือว่า commissions มีข้อมูลของเดือนนั้นแล้ว
+        # (บางเดือน เช่น ม.ค./ส.ค. 2568 มีแค่ไม่กี่แถวที่กรอกทดสอบไว้ ไม่ใช่ยอดขายจริงทั้งเดือน)
+        # — ไม่ทำในโหมดสะสมยกมา (comm_mode) เพราะเป็น concept ผูกกับรอบจ่ายคอมฯ ไม่เกี่ยวกับข้อมูลนำเข้า
+        # และไม่ทำถ้ากรองเฉพาะ Sale คนใดคนหนึ่ง เพราะรหัสพนักงานเก่า (TG001 ฯลฯ) ไม่ตรงกับ sale_key ปัจจุบัน
+        if not comm_mode and sale_key == "ทั้งหมด":
+            MIN_ROWS_TO_TRUST = 10
+            month_counts = df["commission_month"].dropna().astype(int).value_counts() if not df.empty else pd.Series(dtype=int)
+            months_with_data = set(month_counts[month_counts >= MIN_ROWS_TO_TRUST].index.tolist())
+            missing_months = [m for m in range(1, 13) if m not in months_with_data]
+            if missing_months:
+                # ตัดแถวเดิมของเดือนที่จะแทนที่ทิ้งก่อน (เช่น 4 แถวทดสอบของ ม.ค.) กันบวกซ้ำกับข้อมูลย้อนหลัง
+                if not df.empty:
+                    df = df[~df["commission_month"].astype("Int64").isin(missing_months)]
+                hist_ph = ["year = %s", "month = ANY(%s)"]
+                hist_params = [year, missing_months]
+                if search:
+                    hist_ph.append("(customer_code ILIKE %s OR customer_name ILIKE %s)")
+                    hist_params += [f"%{search}%", f"%{search}%"]
+                hist_sql = (
+                    "SELECT customer_code AS customer_id, customer_name, sale_key_raw AS sale_key,"
+                    " month AS commission_month, year AS commission_year, total_amount AS amount"
+                    f" FROM sales_history_customer_monthly WHERE {' AND '.join(hist_ph)}"
+                )
+                try:
+                    conn = self.app.get_connection()
+                    try:
+                        df_hist = pd.read_sql_query(hist_sql, conn, params=hist_params)
+                    finally:
+                        self.app.release_connection(conn)
+                    if not df_hist.empty:
+                        df_hist["sale_key"] = df_hist["sale_key"].apply(
+                            lambda k: self.HISTORICAL_SALE_KEY_MAP.get(k, k))
+                        df = pd.concat([df, df_hist], ignore_index=True)
+                except Exception as e:
+                    print(f"CustomerMonitoring _load (historical) error: {e}")
+
         if ctype != "ทั้งหมด" and not df.empty:
             df = df[df["customer_id"].apply(self._customer_type_from_id) == ctype]
 
+        self._is_dormant_view = False
         self._render(df, year_thai)
+
+    def _load_dormant(self, year_thai, year, search, sale_key, ctype):
+        """Dormant Pool: ลูกค้าที่เคยซื้อในปีก่อนหน้า (year) แต่ปีที่เลือกดูไม่มียอดซื้อเลย
+        คนละ query กับ pivot รายเดือนปกติ เพราะยอดปีนี้ = 0 เสมอ (ไม่โผล่ในตาราง commissions ปีนี้)
+        รวม sales_history_customer_monthly (ข้อมูลย้อนหลังปี 2567/2568 ที่ import เข้ามา) เข้าไปด้วย
+        เพื่อให้ "ซื้อครั้งล่าสุด" ย้อนไปถึงปี 2567 ได้ ไม่ใช่แค่ข้อมูลจริงใน commissions (เริ่มปี 2568 บางส่วน)"""
+        sql = """
+            WITH combined AS (
+                SELECT customer_id, customer_name, sale_key,
+                       commission_year AS yr, commission_month AS mo, sales_service_amount AS amt
+                FROM commissions
+                WHERE is_active = 1 AND status NOT IN ('Cancelled','Cancelled by PU')
+                UNION ALL
+                SELECT customer_code AS customer_id, customer_name, sale_key_raw AS sale_key,
+                       year AS yr, month AS mo, total_amount AS amt
+                FROM sales_history_customer_monthly
+            ),
+            ranked AS (
+                SELECT customer_id, customer_name, sale_key, yr, mo, amt,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY customer_id ORDER BY yr DESC, mo DESC
+                       ) AS rn
+                FROM combined
+                WHERE yr < %(year)s
+            )
+            SELECT customer_id, customer_name, sale_key,
+                   yr AS last_year, mo AS last_month, amt AS last_amount
+            FROM ranked
+            WHERE rn = 1
+              AND customer_id NOT IN (
+                  SELECT DISTINCT customer_id FROM combined WHERE yr = %(year)s
+              )
+        """
+        try:
+            conn = self.app.get_connection()
+            try:
+                df = pd.read_sql_query(sql, conn, params={"year": year})
+            finally:
+                self.app.release_connection(conn)
+        except Exception as e:
+            print(f"CustomerMonitoring _load_dormant error: {e}")
+            return
+
+        if not df.empty:
+            # แม็พรหัสพนักงานเก่า -> sale_key ปัจจุบัน (no-op ถ้าเป็น sale_key ปัจจุบันอยู่แล้ว)
+            df["sale_key"] = df["sale_key"].apply(lambda k: self.HISTORICAL_SALE_KEY_MAP.get(k, k))
+            if sale_key != "ทั้งหมด":
+                df = df[df["sale_key"] == sale_key]
+            if search:
+                s = search.lower()
+                df = df[df["customer_id"].str.lower().str.contains(s, na=False) |
+                        df["customer_name"].str.lower().str.contains(s, na=False)]
+            if ctype != "ทั้งหมด":
+                df = df[df["customer_id"].apply(self._customer_type_from_id) == ctype]
+
+        self._is_dormant_view = True
+        self._render_dormant(df, year_thai)
 
     @staticmethod
     def _customer_type_from_id(customer_id):
@@ -428,6 +563,30 @@ class CustomerMonitoringWidget(CTkFrame):
         ("#CFFAFE", "#164E63"),  # cyan
         ("#F3F4F6", "#111827"),  # gray
     ]
+
+    # เกณฑ์จัดกลุ่มลูกค้าตามมูลค่า (Monetary Tier) ตามยอดสั่งซื้อสะสมทั้งปี — POL อ้างอิงจาก PM
+    # (ไม่รวม Dormant Pool — เคสลูกค้าที่ปีนี้ไม่ซื้อเลย ยังไม่ทำในเวอร์ชันนี้)
+    # เรียงจากเกณฑ์สูงสุดไปต่ำสุด: (ยอดขั้นต่ำ, label, ลำดับ rank สำหรับ sort, bg, fg)
+    TIER_THRESHOLDS = [
+        (3_000_000, "S Strategic Whale", 0, "#FEE2E2", "#991B1B"),   # แดง — ลูกค้ารายใหญ่สุด
+        (400_000,   "A Key Account",     1, "#DBEAFE", "#1E40AF"),   # ฟ้า
+        (85_000,    "B Core/Growth",     2, "#D1FAE5", "#065F46"),   # เขียว
+        (0,         "C Transactional",   3, "#F3F4F6", "#374151"),   # เทา
+    ]
+    # "Dormant Pool" ไม่ได้อยู่ใน TIER_THRESHOLDS เพราะไม่ได้ตัดจากยอดสะสมปีนี้ (ยอดปีนี้ = 0 เสมอ)
+    # แต่เป็นเงื่อนไข "เคยซื้อในอดีต แต่ปีนี้ไม่ซื้อเลย" — ใช้ query แยกไปเลยตอนเลือก (ดู _load_dormant)
+    TIER_OPTIONS = ["ทั้งหมด"] + [t[1] for t in TIER_THRESHOLDS] + ["Dormant Pool"]
+    DORMANT_COLOR = ("#EDE9FE", "#5B21B6")   # ม่วง — แยกจากสี S/A/B/C ชัดเจน
+
+    @classmethod
+    def _tier_for_amount(cls, amount):
+        """คืนค่า (label, rank, bg, fg) ของ Tier ตามยอดสั่งซื้อสะสมทั้งปีที่ส่งมา"""
+        amount = float(amount or 0)
+        for threshold, label, rank, bg, fg in cls.TIER_THRESHOLDS:
+            if amount >= threshold:
+                return label, rank, bg, fg
+        last = cls.TIER_THRESHOLDS[-1]
+        return last[1], last[2], last[3], last[4]
 
     @classmethod
     def _heat_color(cls, v, col_max):
@@ -484,6 +643,18 @@ class CustomerMonitoringWidget(CTkFrame):
         ).reset_index()
         pivot.columns.name = None
         pivot["_total"] = pivot[periods].sum(axis=1)
+
+        # กรองตาม Tier (ต้องกรองหลัง pivot เพราะ Tier ขึ้นกับยอดสะสมทั้งปี ไม่ใช่ยอดรายแถว)
+        tier_filter = self._tier_var.get()
+        if tier_filter != "ทั้งหมด":
+            pivot = pivot[pivot["_total"].apply(lambda v: self._tier_for_amount(v)[0]) == tier_filter]
+            if pivot.empty:
+                self._sheet.headers(["(ไม่พบข้อมูล)"])
+                self._sheet.set_sheet_data([[]])
+                self._info_lbl.configure(text="0 ลูกค้า")
+                self._sheet.redraw()
+                return
+
         pivot = pivot.sort_values("_total", ascending=False).reset_index(drop=True)
 
         # เก็บไว้สำหรับ sort โดยไม่ต้อง query DB ใหม่
@@ -494,6 +665,68 @@ class CustomerMonitoringWidget(CTkFrame):
         self._sort_asc      = True
 
         self._draw_table(pivot, periods, year_thai)
+
+    # ── Dormant Pool render (คนละโครงสร้างจาก pivot รายเดือนปกติ) ──────────────
+
+    def _render_dormant(self, df, year_thai):
+        self._sheet.dehighlight_all()
+        self._pivot_base    = None
+        self._months_stored = []
+        self._sort_col_idx  = None
+        self._sort_asc      = True
+        self._last_drawn_pivot  = None
+        self._last_drawn_months = None
+
+        if df.empty:
+            self._sheet.headers(["(ไม่พบข้อมูล)"])
+            self._sheet.set_sheet_data([[]])
+            self._info_lbl.configure(text="0 ลูกค้า (Dormant Pool)")
+            self._sheet.redraw()
+            self._dormant_df = df
+            return
+
+        df = df.sort_values(["last_year", "last_month"], ascending=False).reset_index(drop=True)
+        self._dormant_df = df.copy()
+        self._draw_dormant_table(df, year_thai)
+
+    def _draw_dormant_table(self, df, year_thai):
+        headers = ["รหัสลูกค้า", "ชื่อลูกค้า", "รหัสพนักงาน (ล่าสุด)",
+                   "ซื้อครั้งล่าสุด", "ยอดซื้อครั้งล่าสุด", "Tier"]
+        self._sheet.headers(headers)
+
+        rows = []
+        for _, r in df.iterrows():
+            last_period = f"{THAI_MONTHS_SHORT.get(int(r['last_month']), '-')} {int(r['last_year']) + 543}"
+            amount = float(r['last_amount'] or 0)
+            rows.append([
+                r["customer_id"], r["customer_name"], r["sale_key"] or "-",
+                last_period, f"{amount:,.0f}", "Dormant Pool",
+            ])
+        self._sheet.set_sheet_data(rows)
+
+        self._sheet.set_column_widths([88, 230, 140, 110, 130, 130])
+        self._sheet.align_columns(columns=[4], align="right")
+        self._sheet.align_columns(columns=[3, 5], align="center")
+
+        # salesperson badge colors (ใช้ชุดสีเดียวกับตารางปกติ)
+        _fallback: dict = {}
+        def _sale_color(key):
+            if key in self._SALE_COLORS:
+                return self._SALE_COLORS[key]
+            if key not in _fallback:
+                _fallback[key] = self._SALE_PALETTE[len(_fallback) % len(self._SALE_PALETTE)]
+            return _fallback[key]
+
+        dormant_bg, dormant_fg = self.DORMANT_COLOR
+        for ri in range(len(rows)):
+            sk = df.iloc[ri]["sale_key"]
+            bg, fg = _sale_color(sk) if sk else ("#F3F4F6", "#374151")
+            self._sheet.highlight_cells(row=ri, column=2, bg=bg, fg=fg, redraw=False)
+            self._sheet.highlight_cells(row=ri, column=5, bg=dormant_bg, fg=dormant_fg, redraw=False)
+
+        self._sheet.redraw()
+        self._info_lbl.configure(
+            text=f"{len(rows)} ลูกค้า (Dormant Pool — เคยซื้อในอดีต ปีนี้ยังไม่ซื้อเลย) | ก่อนปี {year_thai}")
 
     # ── view toggle ──────────────────────────────────────────────────────────
 
@@ -745,6 +978,10 @@ class CustomerMonitoringWidget(CTkFrame):
         elif col == n_month + 3:          # คอลัมน์ "รวม"
             sort_key = "_total"
             numeric  = True
+        elif col == n_month + 4:          # คอลัมน์ "Tier" — sort ตามลำดับ S>A>B>C ไม่ใช่ตัวอักษร
+            pivot["_tier_rank"] = pivot["_total"].apply(lambda v: self._tier_for_amount(v)[1])
+            sort_key = "_tier_rank"
+            numeric  = True
         elif 3 <= col < n_month + 3:      # คอลัมน์เดือน
             sort_key = months[col - 3]
             numeric  = True
@@ -776,14 +1013,15 @@ class CustomerMonitoringWidget(CTkFrame):
         base_hdrs   = ["รหัสลูกค้า", "ชื่อลูกค้า", "รหัสพนักงาน"]
         month_hdrs  = [_hdr(mn, 3 + i) for i, mn in enumerate(m_names)]
         total_hdr   = _hdr("รวม", 3 + len(months))
-        headers     = [_hdr(b, i) for i, b in enumerate(base_hdrs)] + month_hdrs + [total_hdr]
+        tier_hdr    = _hdr("Tier", 4 + len(months))
+        headers     = [_hdr(b, i) for i, b in enumerate(base_hdrs)] + month_hdrs + [total_hdr, tier_hdr]
         self._sheet.headers(headers)
 
         def _fmt(v):
             v = float(v)
             return f"{v:,.0f}" if v else ""
 
-        rows, num_matrix = [], []
+        rows, num_matrix, tier_labels = [], [], []
         for _, r in pivot.iterrows():
             row = [r["customer_id"], r["customer_name"], r["sale_key"]]
             num_row = []
@@ -794,23 +1032,28 @@ class CustomerMonitoringWidget(CTkFrame):
             total = float(r["_total"])
             row.append(_fmt(total))
             num_row.append(total)
+            tier_label = self._tier_for_amount(total)[0]
+            row.append(tier_label)
+            tier_labels.append(tier_label)
             rows.append(row)
             num_matrix.append(num_row)
 
-        # summary row (ไม่เปลี่ยนตาม sort)
+        # summary row (ไม่เปลี่ยนตาม sort) — ไม่มี Tier ให้แถวรวม
         base = self._pivot_base if self._pivot_base is not None else pivot
         s_row = ["", "รวมทั้งหมด", ""]
         for m in months:
             s_row.append(_fmt(float(base[m].sum())))
         s_row.append(_fmt(float(base["_total"].sum())))
+        s_row.append("")
         rows.append(s_row)
 
         self._sheet.set_sheet_data(rows)
 
-        widths = [88, 230, 105] + [82] * len(months) + [100]
+        widths = [88, 230, 105] + [82] * len(months) + [100, 130]
         self._sheet.set_column_widths(widths)
         self._sheet.align_columns(
-            columns=list(range(3, len(headers))), align="right")
+            columns=list(range(3, len(headers) - 1)), align="right")
+        self._sheet.align_columns(columns=[len(headers) - 1], align="center")
 
         # salesperson badge colors
         _fallback: dict = {}
@@ -821,9 +1064,12 @@ class CustomerMonitoringWidget(CTkFrame):
                 _fallback[key] = self._SALE_PALETTE[len(_fallback) % len(self._SALE_PALETTE)]
             return _fallback[key]
 
+        tier_col_idx = len(headers) - 1
         for ri, (_, r) in enumerate(pivot.iterrows()):
             bg, fg = _sale_color(r["sale_key"])
             self._sheet.highlight_cells(row=ri, column=2, bg=bg, fg=fg, redraw=False)
+            _, _, tier_bg, tier_fg = self._tier_for_amount(r["_total"])
+            self._sheet.highlight_cells(row=ri, column=tier_col_idx, bg=tier_bg, fg=tier_fg, redraw=False)
 
         # heat map per column
         n_data = len(rows) - 1
@@ -847,3 +1093,64 @@ class CustomerMonitoringWidget(CTkFrame):
         self._sheet.redraw()
         self._info_lbl.configure(
             text=f"{len(pivot)} ลูกค้า | ปี {year_thai} | {len(months)} เดือน")
+
+        # เก็บไว้ให้ export ตรงกับสิ่งที่แสดงอยู่บนจอ (รวมลำดับ sort ปัจจุบัน)
+        self._last_drawn_pivot = pivot
+        self._last_drawn_months = months
+
+    # ── export ───────────────────────────────────────────────────────────────
+
+    def _export_excel(self):
+        if getattr(self, '_is_dormant_view', False):
+            self._export_dormant_excel()
+            return
+
+        pivot = getattr(self, '_last_drawn_pivot', None)
+        months = getattr(self, '_last_drawn_months', None)
+        if pivot is None or pivot.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "กรุณาค้นหาข้อมูลก่อน Export", parent=self)
+            return
+
+        m_names = [self._period_label(m) for m in months]
+
+        export_rows = []
+        for _, r in pivot.iterrows():
+            row = {"รหัสลูกค้า": r["customer_id"], "ชื่อลูกค้า": r["customer_name"],
+                   "รหัสพนักงาน": r["sale_key"]}
+            for m, name in zip(months, m_names):
+                row[name] = float(r.get(m, 0))
+            row["รวม"] = float(r["_total"])
+            row["Tier"] = self._tier_for_amount(r["_total"])[0]
+            export_rows.append(row)
+
+        # แถวสรุปท้ายตาราง — ใช้ยอดจาก base เสมอ (ไม่ผูกกับการ sort) เหมือนที่แสดงบนจอ
+        base = self._pivot_base if self._pivot_base is not None else pivot
+        summary = {"รหัสลูกค้า": "", "ชื่อลูกค้า": "รวมทั้งหมด", "รหัสพนักงาน": ""}
+        for m, name in zip(months, m_names):
+            summary[name] = float(base[m].sum())
+        summary["รวม"] = float(base["_total"].sum())
+        summary["Tier"] = ""
+        export_rows.append(summary)
+
+        df_export = pd.DataFrame(export_rows)
+        export_customer_monitoring_to_excel(self, df_export, self._year_stored)
+
+    def _export_dormant_excel(self):
+        df = getattr(self, '_dormant_df', None)
+        if df is None or df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "กรุณาค้นหาข้อมูลก่อน Export", parent=self)
+            return
+
+        export_rows = []
+        for _, r in df.iterrows():
+            last_period = f"{THAI_MONTHS_SHORT.get(int(r['last_month']), '-')} {int(r['last_year']) + 543}"
+            export_rows.append({
+                "รหัสลูกค้า": r["customer_id"],
+                "ชื่อลูกค้า": r["customer_name"],
+                "รหัสพนักงาน (ล่าสุด)": r["sale_key"] or "-",
+                "ซื้อครั้งล่าสุด": last_period,
+                "ยอดซื้อครั้งล่าสุด": float(r["last_amount"] or 0),
+                "Tier": "Dormant Pool",
+            })
+        df_export = pd.DataFrame(export_rows)
+        export_customer_monitoring_to_excel(self, df_export, self._year_var.get())

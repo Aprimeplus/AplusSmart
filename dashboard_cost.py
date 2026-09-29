@@ -1,13 +1,24 @@
+import os
+import sys
 import tkinter as tk
 from tkinter import messagebox
 from customtkinter import (
-    CTkFrame, CTkLabel, CTkFont, CTkButton,
+    CTkFrame, CTkLabel, CTkFont, CTkButton, CTkToplevel,
     CTkOptionMenu, CTkScrollableFrame, CTkComboBox  # 🟢 เพิ่ม CTkComboBox เข้ามา
 )
 import pandas as pd
 import psycopg2.extras
 from datetime import datetime
 from tkcalendar import DateEntry, Calendar
+
+
+def _resource_path(relative_path):
+    """หา path ของไฟล์ asset (เช่น app_icon.ico) ทั้งตอนรันจาก source และตอน build เป็น exe"""
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 class PatchedDateEntry(DateEntry):
     """แก้ปัญหา calendar ปิดตัวเองเมื่อกดปุ่มเลื่อนเดือน/ปี"""
@@ -87,6 +98,7 @@ class DashboardCostScreen(CTkFrame):
         self.all_product_names = []
         self.all_suppliers = []
         self._date_debounce_job = None
+        self._order_breakdown = []   # 🟢 [เพิ่มใหม่] แยกจำนวน Order ตามชื่อ Sale สำหรับ popup
 
         self._build_sidebar()
         self._build_main_content()
@@ -412,6 +424,19 @@ class DashboardCostScreen(CTkFrame):
             except Exception as e:
                 print(f"[Export] คำนวณ avg/competitiveness error: {e}")
 
+            # 🟢 คอลัมน์ 3: Gross Margin (%) — แทรกหลัง "Markup Guide (%)" ตามที่ PM ขอ
+            # สูตร: (ราคาขายรวม - ต้นทุนรวม×1.02) / ราคาขายรวม × 100 — คูณ 1.02 เข้ากับต้นทุนก่อน
+            # (PM ปรับสูตรใหม่ จากเดิมที่ไม่มีตัวคูณ 1.02) คนละสูตรกับ Markup Guide ที่หารด้วยทุน
+            try:
+                if "ราคาขาย รวม" in export_df.columns and "ต้นทุนรวม (รวมย้าย)" in export_df.columns:
+                    sales = pd.to_numeric(export_df["ราคาขาย รวม"], errors='coerce').fillna(0)
+                    cost  = pd.to_numeric(export_df["ต้นทุนรวม (รวมย้าย)"], errors='coerce').fillna(0)
+                    gm = ((sales - (cost * 1.02)) / sales.replace(0, float('nan')) * 100).round(2)
+                    export_df["GP ขั้นต้น (%)"] = gm
+                    export_df = _insert_after(export_df, "Markup Guide (%)", ["GP ขั้นต้น (%)"])
+            except Exception as e:
+                print(f"[Export] คำนวณ Gross Margin error: {e}")
+
             # ── สร้าง Workbook ────────────────────────────────────────
             wb = openpyxl.Workbook()
             ws = wb.active
@@ -445,6 +470,8 @@ class DashboardCostScreen(CTkFrame):
                     _num_fmt[_ci] = '#,##0.00'
                 elif _cn == "Price competitiveness":
                     _num_fmt[_ci] = '#,##0.00"%"'   # แสดงเป็น -5.62%
+                elif _cn == "GP ขั้นต้น (%)":
+                    _num_fmt[_ci] = '#,##0.00"%"'
 
             # ── Data rows ─────────────────────────────────────────────
             for row_idx, (_, row_data) in enumerate(export_df.iterrows(), start=2):
@@ -658,8 +685,7 @@ class DashboardCostScreen(CTkFrame):
         kpi_frame = CTkFrame(main_frame, fg_color="transparent")
         kpi_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         
-        # 🟢 [แก้ไข] เปลี่ยนจาก range(5) เป็น range(6) เพราะเรามี 6 การ์ดแล้ว
-        for i in range(6):
+        for i in range(8):
             kpi_frame.grid_columnconfigure(i, weight=1)
 
         self.kpi_labels = {}
@@ -669,7 +695,12 @@ class DashboardCostScreen(CTkFrame):
             ("ยอด Win รวม",             "total_win",    "#10B981",            "🏆"),
             ("ปริมาณรวม (เส้น/ชิ้น)",  "total_qty",    COLORS["kpi_green"],  "📦"),
             ("ยอดซื้อรวม (ทุน)",        "total_cost",   COLORS["kpi_red"],    "💰"),
-            ("Markup เฉลี่ย",           "avg_margin",   COLORS["kpi_purple"], "📊"),
+            ("GP รวม",                  "total_gp",     COLORS["kpi_green"],  "💵"),
+            ("Markup เฉลี่ย (✔ และ เทียบเพื่อชุบ ✔)", "avg_margin", COLORS["kpi_purple"], "📊"),
+            # 🟢 [เพิ่มใหม่] Markup All Offer — คำนวณแบบถ่วงน้ำหนักเหมือนกัน แต่รวมทุกบรรทัด/ทุก
+            # offer ที่ทำราคาไป (ไม่กรอง Select เลย) ไว้เทียบดูว่าที่เสนอราคาไปทั้งหมดเทียบกับที่
+            # เลือกซื้อจริงต่างกันแค่ไหน (PM ขอเพิ่มไว้คู่กับ Markup เฉลี่ยตัวเดิม)
+            ("Markup All Offer",       "avg_margin_all", COLORS["kpi_purple"], "📋"),
         ]
 
         for i, (title, key, color, icon) in enumerate(kpi_config):
@@ -690,6 +721,23 @@ class DashboardCostScreen(CTkFrame):
                                  text_color=color)
             val_label.pack(pady=(0, 12))
             self.kpi_labels[key] = val_label
+
+            # 🟢 [แก้ไข] การ์ด "จำนวน Order รวม" กดดูได้ว่า PU แต่ละคนทำไปกี่ Order (ตามที่ PM ขอ)
+            if key == "total_orders":
+                card.bind("<Button-1>", lambda e: self._show_order_breakdown_popup())
+                val_label.bind("<Button-1>", lambda e: self._show_order_breakdown_popup())
+                try:
+                    val_label.configure(cursor="hand2")
+                except Exception:
+                    pass
+                # 🟢 [แก้ไข] ลองแสดง breakdown แบบต่างๆ ไว้ในการ์ดแล้วดูแปลกๆ ไม่สวย เลยยุบกลับไปเป็น
+                # แค่คลิกเปิด popup ดูรายชื่อ (ตามที่ user แจ้งว่าให้เก็บเป็น popup ก็พอ)
+                hint = CTkLabel(card, text="(คลิกดูรายชื่อคนทำจัดซื้อ)",
+                                 font=CTkFont(family=FONT_FAMILY, size=9),
+                                 text_color=COLORS["text_medium"], cursor="hand2")
+                hint.pack(pady=(0, 8))
+                hint.bind("<Button-1>", lambda e: self._show_order_breakdown_popup())
+                self._order_breakdown_frame = None
 
         # ── Table ────────────────────────────────────────────
         table_outer = CTkFrame(main_frame, fg_color=COLORS["bg_white"],
@@ -738,6 +786,7 @@ class DashboardCostScreen(CTkFrame):
             "Sum of\nราคาขาย\nรวม",
             "Total\nWin Sales", # 🟢 เพิ่มคอลัมน์นี้ตรงกลาง
             "Average of\nMarkup\nGuide (%)",
+            "GP ขั้นต้น\n(%)",             # 🟢 [เพิ่มใหม่] ตามที่ PM ขอ — อยู่ขวาของ Markup Guide (%)
             "Sum of\nต้นทุนรวม\n(รวมย้าย)",
             "avg. cost/per\norder",          # 🟢 เพิ่มใหม่
             "Price\nCompetitive\nness",     # 🟢 เพิ่มใหม่
@@ -770,6 +819,7 @@ class DashboardCostScreen(CTkFrame):
             "Sum of\nราคาขาย\nรวม":             "ราคาขาย รวม",
             "Total\nWin Sales":                 "ราคาขาย รวม",
             "Average of\nMarkup\nGuide (%)":     "Markup Guide (%)",
+            "GP ขั้นต้น\n(%)":                None,   # 🟢 calculated — (ราคาขายรวม-ต้นทุนรวม)/ราคาขายรวม
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":    "ต้นทุนรวม (รวมย้าย)",
             "avg. cost/per\norder":              None,   # 🟢 calculated
             "Price\nCompetitive\nness":         None,   # 🟢 calculated
@@ -802,6 +852,7 @@ class DashboardCostScreen(CTkFrame):
         self.pct_cols = {
             "WIN RATE\n%",
             "Average of\nMarkup\nGuide (%)",
+            "GP ขั้นต้น\n(%)",                     # 🟢 เพิ่มใหม่
             "Average of\nส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)",
             "ส่วนลดรวม\n1+2 (%)",                    # 🟢 เพิ่มใหม่
@@ -929,6 +980,7 @@ class DashboardCostScreen(CTkFrame):
             "Sum of\nราคาขาย\nรวม":             120,
             "Total\nWin Sales":                 120,
             "Average of\nMarkup\nGuide (%)":    120,
+            "GP ขั้นต้น\n(%)":                120,   # 🟢 เพิ่มใหม่
             "Sum of\nต้นทุนรวม\n(รวมย้าย)":    120,
             "avg. cost/per\norder":             120,
             "Price\nCompetitive\nness":         120,
@@ -1239,10 +1291,25 @@ class DashboardCostScreen(CTkFrame):
                 if key in ["order_no", "sale_order_no", "product_name", "supplier"]:
                     df = df[df[col].astype(str).str.contains(val, case=False, na=False, regex=False)]
                 else:
+                    # 🟢 [แก้ไข] ข้าม dropdown "Select" ตอนกรอง df สำหรับการ์ด KPI — เพราะ _update_kpis
+                    # กรองเฉพาะแถว ✔ / เทียบเพื่อชุบ ✔ เองอยู่แล้วเสมอ ถ้าปล่อยให้ dropdown นี้กรองซ้ำ
+                    # (เช่น เลือก "✔" เจาะจง) จะตัดแถว "เทียบเพื่อชุบ ✔" ทิ้งไปด้วยทั้งที่ควรนับ ทำให้
+                    # ยอด/Markup เฉลี่ยขึ้นๆ ลงๆ ตาม dropdown ทั้งที่ควรเป็นตัวเลขเดียวคงที่ (พบจาก PM)
+                    if key == "select":
+                        continue
                     df = df[df[col].astype(str) == str(val)]
 
+        # df_for_kpi = ผ่านทุก filter ยกเว้น dropdown "Select" — ให้การ์ด KPI นับ ✔/เทียบเพื่อชุบ ✔
+        # เสมอ ไม่ขึ้นกับว่า user เลือก dropdown Select เป็นอะไร
+        df_for_kpi = df
+
+        # ส่วนตารางด้านล่างยังเคารพ dropdown "Select" ตามที่ user เลือกไว้ตามปกติ (ไว้ไล่ดูแถวเทียบราคาได้)
+        select_val = self.filter_vars["select"].get()
+        if select_val != "All" and select_val != "" and "Select" in df.columns:
+            df = df[df["Select"].astype(str) == str(select_val)]
+
         self.current_filtered_df = df.copy()   # เก็บไว้สำหรับ Export
-        self._update_kpis(df)
+        self._update_kpis(df_for_kpi)
         self._update_table(df)
 
     # =========================================================
@@ -1259,49 +1326,190 @@ class DashboardCostScreen(CTkFrame):
             df_active = df[df["รายการสินค้า"].astype(str).str.strip() != ""]
 
         # นับ Unique Sale Order No. (ไม่นับซ้ำ) — กัน "nan"/"None" จาก pandas astype(str)
+        # นับจาก df_active ทั้งหมด (ไม่กรอง Select) เพราะเป็นตัวเลข "ทำราคาไปกี่ออเดอร์" ไม่ใช่ตัวเลขเงิน
         if "Sale Order No." in df_active.columns:
             _so = df_active["Sale Order No."].astype(str).str.strip()
-            total_orders = _so[~_so.isin(["", "nan", "None", "NaN", "NaT"])].nunique()
+            _valid_mask = ~_so.isin(["", "nan", "None", "NaN", "NaT"])
+            total_orders = _so[_valid_mask].nunique()
+
+            # 🟢 [แก้ไข] แยกจำนวน Order ตาม "คนทำจัดซื้อ" (created_by / PU User) ไม่ใช่ Sale
+            # เพื่อให้กดที่การ์ด "จำนวน Order รวม" แล้วเห็นว่า PU แต่ละคนทำไปกี่ Order (ตามที่ PM ขอ)
+            if "created_by" in df_active.columns:
+                _valid_rows = df_active[_valid_mask].copy()
+                _valid_rows["_so_clean"] = _so[_valid_mask]
+                _breakdown = (_valid_rows.groupby(_valid_rows["created_by"].astype(str).str.strip())["_so_clean"]
+                              .nunique().sort_values(ascending=False))
+                self._order_breakdown = list(_breakdown.items())
+            else:
+                self._order_breakdown = []
         else:
             total_orders = len(df_active)
+            self._order_breakdown = []
 
-        total_qty    = (df_active["จำนวน"].sum()
-                        if "จำนวน" in df_active.columns else 0)
-        total_cost   = (df_active["ต้นทุนรวม (รวมย้าย)"].sum()
-                        if "ต้นทุนรวม (รวมย้าย)" in df_active.columns else 0)
-        total_sales  = (df_active["ราคาขาย รวม"].sum()
-                        if "ราคาขาย รวม" in df_active.columns else 0)
-                        
+        # 🟢 [แก้ไข] ยอดเงิน/ปริมาณ/Markup ต้องนับเฉพาะแถวที่ "Select" ไว้จริง (✔ หรือ เทียบเพื่อชุบ ✔)
+        # เดิมนับรวมทุกแถวรวมถึงแถว "เทียบ" ที่แค่เอาไว้เปรียบเทียบราคา (ไม่ได้ซื้อ/ขายจริง) ทำให้ยอด
+        # ทั้งฝั่งซื้อและฝั่งขายพองขึ้นจากการนับซ้ำ (พบจาก @WebMaster-APlus code review)
+        if "Select" in df_active.columns:
+            _sel = df_active["Select"].astype(str).str.strip()
+            df_selected = df_active[_sel.isin(["✔", "เทียบเพื่อชุบ ✔"])]
+        else:
+            df_selected = df_active
+
+        total_qty    = (df_selected["จำนวน"].sum()
+                        if "จำนวน" in df_selected.columns else 0)
+        total_cost   = (df_selected["ต้นทุนรวม (รวมย้าย)"].sum()
+                        if "ต้นทุนรวม (รวมย้าย)" in df_selected.columns else 0)
+        total_sales  = (df_selected["ราคาขาย รวม"].sum()
+                        if "ราคาขาย รวม" in df_selected.columns else 0)
+        total_gp     = total_sales - total_cost
+
         # 🟢 [เพิ่มใหม่] คำนวณหายอด Win รวม (กรองเฉพาะสถานะ WIN)
         if "สถานะ" in df_active.columns and "ราคาขาย รวม" in df_active.columns:
             win_df = df_active[df_active["สถานะ"].astype(str).str.strip().str.upper() == "WIN"]
             total_win = pd.to_numeric(win_df["ราคาขาย รวม"], errors='coerce').fillna(0).sum()
         else:
             total_win = 0
-                        
-        # คำนวณ Markup เฉลี่ย โดยไม่เอาเลข 0 มาคิด
-        if "Markup Guide (%)" in df_active.columns:
-            margin_series = pd.to_numeric(df_active["Markup Guide (%)"], errors='coerce').dropna()
-            margin_non_zero = margin_series[margin_series != 0] # ตัดเลข 0 ทิ้ง
-            avg_margin = margin_non_zero.mean() if not margin_non_zero.empty else 0
+
+        # 🟢 [แก้ไข] Markup เฉลี่ย ต้องเป็น "ค่าถ่วงน้ำหนัก" จากยอดขายรวม/ยอดซื้อรวม (ของแถวที่ Select
+        # เท่านั้น) ไม่ใช่เอา % ของแต่ละบรรทัดมาเฉลี่ยตรงๆ (แบบเดิมให้น้ำหนักบรรทัดเล็กเท่าบรรทัดใหญ่
+        # ทำให้ตัวเลขเพี้ยนไปไกลจากยอดขาย/ยอดซื้อจริงที่โชว์อยู่ในการ์ดข้างๆ กันเอง)
+        total_cost_num = pd.to_numeric(pd.Series([total_cost]), errors='coerce').iloc[0]
+        total_sales_num = pd.to_numeric(pd.Series([total_sales]), errors='coerce').iloc[0]
+        if pd.notna(total_cost_num) and total_cost_num > 0:
+            avg_margin = (total_sales_num / total_cost_num - 1) * 100
         else:
             avg_margin = 0
 
+        # 🟢 [เพิ่มใหม่] Markup All Offer — คำนวณแบบเดียวกัน (ถ่วงน้ำหนักจากยอดรวม) แต่ใช้ df_active
+        # ทั้งหมด (ทุกบรรทัดที่ทำราคาไป ไม่กรอง Select) แทน df_selected ตามที่ PM ขอเพิ่ม
+        total_cost_all  = (df_active["ต้นทุนรวม (รวมย้าย)"].sum()
+                           if "ต้นทุนรวม (รวมย้าย)" in df_active.columns else 0)
+        total_sales_all = (df_active["ราคาขาย รวม"].sum()
+                           if "ราคาขาย รวม" in df_active.columns else 0)
+        total_cost_all_num = pd.to_numeric(pd.Series([total_cost_all]), errors='coerce').iloc[0]
+        total_sales_all_num = pd.to_numeric(pd.Series([total_sales_all]), errors='coerce').iloc[0]
+        if pd.notna(total_cost_all_num) and total_cost_all_num > 0:
+            avg_margin_all = (total_sales_all_num / total_cost_all_num - 1) * 100
+        else:
+            avg_margin_all = 0
+
         self.kpi_labels["total_orders"].configure(text=f"{total_orders:,}")
         self.kpi_labels["total_qty"].configure(text=f"{total_qty:,.0f}")
-        
+
+        # 🟢 [แก้ไข] แสดงยอดแยกตามคนทำจัดซื้อในการ์ดให้ครบทุกคน เป็นกล่อง badge มีขอบ เรียง 2 คอลัมน์
+        # (ตามที่ PM วาดร่างไว้เป็นกรอบสี่เหลี่ยมเล็กๆ ต่อคน แทนข้อความเป็นแถวเฉยๆ ที่ดูจืดไป)
+        bframe = getattr(self, "_order_breakdown_frame", None)
+        if bframe is not None:
+            for child in bframe.winfo_children():
+                child.destroy()
+            for i, (name, cnt) in enumerate(self._order_breakdown):
+                r, c = divmod(i, 2)
+                chip = CTkFrame(bframe, fg_color=COLORS["bg_main"], corner_radius=6,
+                                 border_width=1, border_color=COLORS["border"])
+                chip.grid(row=r, column=c, padx=3, pady=3, sticky="nsew")
+                CTkLabel(chip, text=name or "(ไม่ระบุ)",
+                         font=CTkFont(family=FONT_FAMILY, size=10),
+                         text_color=COLORS["text_medium"]).pack(pady=(4, 0), padx=6)
+                CTkLabel(chip, text=f"{cnt:,}",
+                         font=CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
+                         text_color=COLORS["kpi_blue"]).pack(pady=(0, 4), padx=6)
+
         self.kpi_labels["total_cost"].configure(
             text=f"฿{total_cost/1_000_000:.2f}M" if total_cost >= 1_000_000 else f"฿{total_cost:,.0f}")
-            
+
         self.kpi_labels["total_sales"].configure(
             text=f"฿{total_sales/1_000_000:.2f}M" if total_sales >= 1_000_000 else f"฿{total_sales:,.0f}")
-            
+
         # 🟢 [เพิ่มใหม่] จัดรูปแบบตัวเลขให้การ์ด ยอด Win รวม
         self.kpi_labels["total_win"].configure(
             text=f"฿{total_win/1_000_000:.2f}M" if total_win >= 1_000_000 else f"฿{total_win:,.0f}")
-            
+
+        # 🟢 [เพิ่มใหม่] การ์ด GP (Gross Profit) รวม — โชว์คู่กับ Markup เฉลี่ยถ่วงน้ำหนัก
+        self.kpi_labels["total_gp"].configure(
+            text=f"฿{total_gp/1_000_000:.2f}M" if abs(total_gp) >= 1_000_000 else f"฿{total_gp:,.0f}")
+
         self.kpi_labels["avg_margin"].configure(
             text=f"{avg_margin:,.2f}%" if pd.notna(avg_margin) else "0.00%")
+
+        # 🟢 [เพิ่มใหม่] การ์ด Markup All Offer
+        self.kpi_labels["avg_margin_all"].configure(
+            text=f"{avg_margin_all:,.2f}%" if pd.notna(avg_margin_all) else "0.00%")
+
+    # =========================================================
+    # ORDER BREAKDOWN POPUP (จำนวน Order รวม แยกตาม Sale)
+    # =========================================================
+    def _show_order_breakdown_popup(self):
+        try:
+            if getattr(self, "_order_breakdown_popup", None) is not None:
+                self._order_breakdown_popup.destroy()
+        except Exception:
+            pass
+
+        root = self.winfo_toplevel()
+        root.update_idletasks()
+
+        # 🟢 [แก้ไข] ปรับความสูงของ popup ให้ยืดหด "ตามจำนวนแถวจริง" แทนที่จะตายตัว 460 เสมอ
+        # (เดิมมี 3 คน แต่กล่องสูง 460 เลยดูโล่งว่างข้างล่างเยอะ ไม่สมส่วน)
+        n_rows = max(len(self._order_breakdown), 1)
+        header_h = 100      # หัวเรื่อง + "รวมทั้งหมด"
+        row_h = 46           # ความสูงต่อแถว (รวม pady)
+        footer_h = 60        # ปุ่มปิด + padding
+        pop_w = 300
+        pop_h = min(max(header_h + n_rows * row_h + footer_h, 220), 520)
+
+        # คำนวณตำแหน่งให้ popup เด้งตรงกลางหน้าต่างหลักเสมอ — ก่อนหน้านี้ไม่ตั้งตำแหน่ง
+        # ทำให้ CTkToplevel ไปเด้งที่ตำแหน่งเริ่มต้นของจอ (มุมซ้ายบน) แทนที่จะอยู่ตรงกลางแอป
+        x = root.winfo_x() + (root.winfo_width() - pop_w) // 2
+        y = root.winfo_y() + (root.winfo_height() - pop_h) // 2
+
+        pop = CTkToplevel(self)
+        pop.title("จำนวน Order แยกตามคนทำจัดซื้อ")
+        pop.geometry(f"{pop_w}x{pop_h}+{max(x, 0)}+{max(y, 0)}")
+        pop.resizable(False, False)
+        pop.transient(root)
+        pop.lift()
+        pop.focus_force()
+        pop.after(50, pop.grab_set)
+        # 🟢 [เพิ่มใหม่] ใช้ icon เดียวกับหน้าต่างหลักของแอป (เดิมเป็น icon ตั้งต้นของ Tk สีฟ้าเริ่มต้น)
+        try:
+            pop.after(200, lambda: pop.iconbitmap(_resource_path("app_icon.ico")))
+        except Exception:
+            pass
+        self._order_breakdown_popup = pop
+
+        CTkLabel(pop, text="🗂 Order แยกตามคนทำจัดซื้อ (PU)",
+                 font=CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
+                 text_color=COLORS["text_dark"]).pack(padx=14, pady=(12, 2), anchor="w")
+
+        total_all = sum(cnt for _, cnt in self._order_breakdown)
+        CTkLabel(pop, text=f"รวมทั้งหมด {total_all:,} Order",
+                 font=CTkFont(family=FONT_FAMILY, size=11),
+                 text_color=COLORS["text_medium"]).pack(padx=14, pady=(0, 8), anchor="w")
+
+        scroll = CTkScrollableFrame(pop, fg_color=COLORS["bg_main"])
+        scroll.grid_columnconfigure(0, weight=1)
+        scroll.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+
+        if not self._order_breakdown:
+            CTkLabel(scroll, text="ไม่มีข้อมูล",
+                     font=CTkFont(family=FONT_FAMILY, size=12),
+                     text_color=COLORS["text_medium"]).pack(pady=20)
+        else:
+            for i, (sale_name, cnt) in enumerate(self._order_breakdown):
+                row = CTkFrame(scroll, fg_color=COLORS["bg_white"], corner_radius=6)
+                row.pack(fill="x", pady=2)
+                row.grid_columnconfigure(0, weight=1)
+                CTkLabel(row, text=sale_name or "(ไม่ระบุ)",
+                         font=CTkFont(family=FONT_FAMILY, size=12),
+                         text_color=COLORS["text_dark"], anchor="w").grid(
+                             row=0, column=0, sticky="ew", padx=(10, 4), pady=6)
+                CTkLabel(row, text=f"{cnt:,}",
+                         font=CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+                         text_color=COLORS["kpi_blue"]).grid(row=0, column=1, sticky="e", padx=10, pady=8)
+
+        CTkButton(pop, text="ปิด", command=pop.destroy, width=90,
+                  fg_color=COLORS["text_medium"]).pack(pady=(0, 12))
+
     # =========================================================
     # TABLE UPDATE
     # =========================================================
@@ -1452,6 +1660,22 @@ class DashboardCostScreen(CTkFrame):
                         row_data.append("")
                     continue
 
+                # 🟢 [แก้ไข] Gross Margin (%) = (ราคาขายรวม - ต้นทุนรวม×1.02) / ราคาขายรวม × 100
+                # PM ปรับสูตรใหม่ให้คูณต้นทุนด้วย 1.02 ก่อนหักออกจากยอดขาย (เดิมไม่มีตัวคูณนี้)
+                # คนละสูตรกับ Markup Guide (%) ที่หารด้วยต้นทุน — อันนี้หารด้วยยอดขาย ตามที่ PM ขอ
+                if dcol == "GP ขั้นต้น\n(%)":
+                    try:
+                        sales = pd.to_numeric(row.get("ราคาขาย รวม", 0), errors='coerce') or 0
+                        cost  = pd.to_numeric(row.get("ต้นทุนรวม (รวมย้าย)", 0), errors='coerce') or 0
+                        if sales:
+                            gm = (sales - (cost * 1.02)) / sales * 100
+                            row_data.append(f"{gm:.2f}%")
+                        else:
+                            row_data.append("")
+                    except Exception:
+                        row_data.append("")
+                    continue
+
                 src = col_source.get(dcol)
 
                 if src is None or src not in row.index:
@@ -1577,6 +1801,20 @@ class DashboardCostScreen(CTkFrame):
                             total_row[idx] = f"{float(m):.2f}%"
                 except Exception:
                     pass
+
+            # 🟢 [แก้ไข] Gross Margin (%) รวม — weighted เหมือนกับ Average of Markup Guide (%)
+            # แต่หารด้วยยอดขายรวมแทนต้นทุนรวม = (ราคาขายรวม - ต้นทุนรวม×1.02) / ราคาขายรวม × 100
+            # (PM ปรับสูตรใหม่ให้คูณต้นทุนด้วย 1.02 ก่อนหักออก — เดิมไม่มีตัวคูณนี้)
+            try:
+                idx_gm = cidx("GP ขั้นต้น\n(%)")
+                if idx_gm >= 0 and "ราคาขาย รวม" in df.columns and "ต้นทุนรวม (รวมย้าย)" in df.columns:
+                    total_s_gm = pd.to_numeric(df["ราคาขาย รวม"], errors='coerce').fillna(0).sum()
+                    total_c_gm = pd.to_numeric(df["ต้นทุนรวม (รวมย้าย)"], errors='coerce').fillna(0).sum()
+                    if total_s_gm != 0:
+                        gm_w = (total_s_gm - (total_c_gm * 1.02)) / total_s_gm * 100
+                        total_row[idx_gm] = f"{gm_w:.2f}%"
+            except Exception:
+                pass
 
             # 🟢 ส่วนลดรวม 1+2 รวม = sum of (ส่วนลด1+ส่วนลด2) × จำนวน
             try:

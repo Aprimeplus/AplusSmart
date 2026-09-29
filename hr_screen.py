@@ -856,7 +856,10 @@ class HRScreen(CTkFrame):
                 po.id AS po_id,
                 GREATEST(
                     COALESCE(SUM(CASE
-                        WHEN COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
+                        -- แก้ไข: เดิม match แบบเป๊ะ (EXP-0079, EXP-0128) พลาดรหัสที่มีต่อท้าย เช่น EXP-0079A
+                        -- (เปอร์เซ็นต์คู่ตรงนี้จำเป็น แม้ query นี้เรียกแบบไม่มี param ส่งเข้ามาก็ตาม
+                        -- เพราะ SQLAlchemy engine ตรวจจับเครื่องหมายเปอร์เซ็นต์เดี่ยวในข้อความ SQL เสมอ)
+                        WHEN COALESCE(poi.product_code, '') LIKE 'EXP-0079%%' OR COALESCE(poi.product_code, '') LIKE 'EXP-0128%%'
                         THEN poi.total_price ELSE 0 END), 0),
                     COALESCE(MAX(po.cutting_cost), 0)
                 ) AS po_cutting_per_po,
@@ -5305,7 +5308,9 @@ class HRScreen(CTkFrame):
                            SUM(COALESCE(poi.total_price, 0)) as po_cutting_item_cost
                     FROM purchase_order_items poi
                     JOIN purchase_orders po ON po.id = poi.purchase_order_id
-                    WHERE COALESCE(poi.product_code, '') IN ('EXP-0079', 'EXP-0128')
+                    -- แก้ไข: เดิม match แบบเป๊ะ พลาดรหัสที่มีต่อท้าย เช่น EXP-0079A
+                    -- (ใช้เครื่องหมายเปอร์เซ็นต์คู่ตรงนี้เพราะ query นี้ถูกส่ง parameter อื่นเข้ามาด้วย)
+                    WHERE (COALESCE(poi.product_code, '') LIKE 'EXP-0079%%' OR COALESCE(poi.product_code, '') LIKE 'EXP-0128%%')
                       AND po.status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
                     GROUP BY po.so_number
                 ) poi_cutting ON poi_cutting.so_number = c.so_number

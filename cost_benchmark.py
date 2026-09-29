@@ -1062,6 +1062,7 @@ class CostBenchmarkScreen(CTkFrame):
         if HAS_TKSHEET:
             self._build_tksheet(self.table_frame)
             self.after(200, self._load_from_db)
+            self.after(4000, lambda: __import__('threading').Thread(target=self._sla_flush_queue, daemon=True).start())
         else:
             tk.Label(self.table_frame, text="⚠️ กรุณาติดตั้ง tksheet", fg="red", bg="white").pack(expand=True)
 
@@ -3195,6 +3196,44 @@ class CostBenchmarkScreen(CTkFrame):
             focused = self.focus_get()
             if focused and focused.winfo_class() in ('Entry', 'Text', 'TEntry'):
                 return
+
+            # 🟢 [แก้ไข] ถ้า user เลือกทั้งแถว (คลิกที่หมายเลขแถวซ้ายสุด) ตอน copy ต้องรวมทั้งฝั่ง
+            # frozen (คอลัมน์ตรึง) กับฝั่ง main เข้าเป็นบรรทัดเดียวกันก่อนส่งเข้า clipboard — เดิม
+            # copy() เลือก copy ได้แค่ฝั่งเดียว (ตามที่คลิกล่าสุด) พอไปวางใน Excel เลยได้แค่ครึ่งแถว
+            # หรือกลายเป็น 2 แถวแยกกัน (พบจาก user แจ้งว่า "ก็อปทั้งแถว ถ้าตรึงมันได้ไม่ครบ")
+            #
+            # 🛠️ ใช้ selection จาก "ฝั่งเดียว" ไม่ union ทั้งสองฝั่ง — เพราะถ้า main/frozen ซิงค์กัน
+            # ไม่ทันช่วงที่ user คลิก (เช่น cursor เก่าค้างอยู่คนละแถวใน frozen) การ union จะทำให้ได้
+            # แถว "ผี" เพิ่มมาโดยไม่ตั้งใจ (พบจาก user แจ้งว่า copy 1 แถว แต่วางแล้วได้ 2 แถว ไม่ตรงกัน)
+            selected_rows = set()
+            try:
+                selected_rows = set(self.sheet.get_selected_rows() or [])
+            except Exception:
+                pass
+            if not selected_rows and self.sheet_frozen:
+                try:
+                    selected_rows = set(self.sheet_frozen.get_selected_rows() or [])
+                except Exception:
+                    pass
+
+            if selected_rows:
+                # 🟢 [แก้ไข] PM ขอให้ copy แถวได้ "ครบทุกคอลัมน์จริง" เสมอ แม้จะมีคอลัมน์ที่ซ่อนไว้อยู่
+                # ก็ให้ติดมาด้วย (ไม่กรอง hidden_cols_list ออกอีกต่อไป) — ใช้ get_row_data() ตรงๆ
+                # ซึ่งคืนค่าทุกคอลัมน์จริงเสมอไม่ว่าจะซ่อนไว้หรือไม่ ทั้งกรณีตรึง/ไม่ตรึงคอลัมน์
+                lines = []
+                for r in sorted(selected_rows):
+                    if self.sheet_frozen:
+                        frozen_part = [str(v) if v is not None else "" for v in self.sheet_frozen.get_row_data(r)]
+                        main_part = [str(v) if v is not None else "" for v in self.sheet.get_row_data(r)]
+                        combined = frozen_part + main_part
+                    else:
+                        combined = [str(v) if v is not None else "" for v in self.sheet.get_row_data(r)]
+                    lines.append("\t".join(combined))
+                full_text = "\n".join(lines)
+                self.clipboard_clear()
+                self.clipboard_append(full_text)
+                return "break"
+
             if getattr(self, '_last_active_sheet', 'main') == 'frozen' and self.sheet_frozen:
                 self.sheet_frozen.copy()
             else:
@@ -6432,13 +6471,150 @@ class CostBenchmarkScreen(CTkFrame):
         finally:
             self._sla_reset_jobs.pop(datarn, None)
 
-    def _sla_record_copy(self, so_number: str):
-        """บันทึก copied_at + duration_min + temp เมื่อกด Copy Short Note (ครั้งแรก)"""
-        from datetime import datetime
+    # ── ไฟล์คิวเก็บ "การ copy ที่บันทึกลง DB ไม่สำเร็จ" ไว้ในเครื่อง เพื่อส่งใหม่ภายหลัง ──
+    @staticmethod
+    def _sla_queue_path():
+        import os
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        folder = os.path.join(base, "AplusSmart")
         try:
-            # ── หา Temp จาก row ที่ติ๊ก ✔ ของ SO นี้ ──────────────────────
-            TEMP_RANK = {"HOT": 3, "WARM": 2, "COLD": 1}
-            best_temp = None
+            os.makedirs(folder, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(folder, "sla_pending_copies.json")
+
+    def _sla_queue_load(self):
+        import json
+        try:
+            with open(self._sla_queue_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def _sla_queue_save(self, items):
+        import json
+        try:
+            with open(self._sla_queue_path(), "w", encoding="utf-8") as f:
+                json.dump(items, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"SLA queue save error: {e}")
+
+    def _sla_write_copy(self, so_number, user_key, copied_time, best_temp):
+        """เขียนการ copy ลง DB (copied_at = เวลาที่ user กด copy จริง ไม่ใช่เวลาที่ retry สำเร็จ)
+        โยน exception ถ้าล้มเหลว ให้ผู้เรียกจัดการ retry/คิวเอง"""
+        from datetime import datetime
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            cur = conn.cursor()
+            holiday_set = set()
+            try:
+                cur.execute(
+                    "SELECT holiday_date FROM company_holidays "
+                    "WHERE EXTRACT(YEAR FROM holiday_date) IN %s",
+                    (tuple({datetime.now().year, datetime.now().year - 1}),)
+                )
+                holiday_set = {r[0] for r in cur.fetchall()}
+            except Exception as he:
+                print(f"SLA holiday load warning: {he}")
+                conn.rollback()
+
+            # started_at จาก "ใครก็ได้" ที่เริ่มทำ SO นี้ไว้ก่อน (เอาอันเก่าสุด) — SO อาจถูกส่งต่อระหว่างคน
+            cur.execute("""
+                SELECT started_at FROM sla_benchmark
+                WHERE so_number = %s AND copied_at IS NULL AND started_at IS NOT NULL
+                ORDER BY started_at ASC LIMIT 1
+            """, (so_number,))
+            row = cur.fetchone()
+            if not row:
+                cur.execute("""
+                    SELECT created_at FROM cost_benchmarks
+                    WHERE "Sale Order No." = %s AND created_by = %s AND created_at IS NOT NULL
+                    ORDER BY created_at ASC LIMIT 1
+                """, (so_number, user_key))
+                cb_row = cur.fetchone()
+                started_at = cb_row[0] if cb_row else copied_time
+                cur.execute("""
+                    INSERT INTO sla_benchmark (so_number, user_key, started_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT ON CONSTRAINT uq_sla_so_user DO NOTHING
+                """, (so_number, user_key, started_at))
+            else:
+                started_at = row[0]
+            biz_min = self._calc_business_minutes(started_at, copied_time, holiday_set)
+            # ปิดงานทุกแถวของ SO นี้ (ทุก user_key ที่ยังค้าง) ไม่ใช่แค่ของคนที่กด
+            cur.execute("""
+                UPDATE sla_benchmark
+                SET copied_at = %s, temp = %s, duration_min = %s
+                WHERE so_number = %s AND copied_at IS NULL
+            """, (copied_time, best_temp, biz_min, so_number))
+            conn.commit()
+        except Exception:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+    def _sla_log_copy(self, so_number, user_key, method, result, attempts, error_msg, copied_time):
+        """บันทึก log ทุกครั้งที่ copy Short Note (ใคร/เมื่อไร/ด้วยวิธีไหน/สำเร็จหรือไม่) — best effort ห้ามทำให้งานหลักพัง"""
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO sla_copy_log (so_number, user_key, method, result, attempts, error_msg, copied_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (so_number, user_key, method, result, attempts, (str(error_msg)[:500] if error_msg else None), copied_time))
+            conn.commit()
+        except Exception as e:
+            print(f"SLA copy log error: {e}")
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+    def _sla_flush_queue(self):
+        """ส่งการ copy ที่ค้างในคิวเครื่องขึ้น DB อีกรอบ (เรียกตอนเปิดหน้าจอ และหลังบันทึกสำเร็จครั้งถัดไป)
+        รันใน background thread เท่านั้น"""
+        from datetime import datetime
+        items = self._sla_queue_load()
+        if not items:
+            return
+        remaining = []
+        for it in items:
+            try:
+                copied_time = datetime.fromisoformat(it["copied_time"])
+                self._sla_write_copy(it["so_number"], it.get("user_key"), copied_time, it.get("best_temp"))
+                self._sla_log_copy(it["so_number"], it.get("user_key"), it.get("method"), "ok_from_queue",
+                                   None, None, copied_time)
+            except Exception as e:
+                print(f"SLA queue retry failed (SO={it.get('so_number')}): {e}")
+                remaining.append(it)
+        self._sla_queue_save(remaining)
+
+    def _sla_record_copy(self, so_number: str, method: str = "button"):
+        """บันทึก copied_at + duration_min + temp เมื่อ copy Short Note ทั้งก้อน
+        รันงาน DB ใน background thread + retry อัตโนมัติ 3 ครั้ง (เงียบ ไม่รบกวน user) ถ้ายังล้มเหลว
+        เก็บลงคิวในเครื่องแล้วส่งใหม่ตอนเปิดโปรแกรม/บันทึกครั้งถัดไป และ log ทุกครั้งลง sla_copy_log
+        (method = 'button' หรือ 'keyboard')"""
+        import threading
+        import time
+        from datetime import datetime
+
+        # ── หา Temp จาก row ที่ติ๊ก ✔ ของ SO นี้ — ต้องอ่านจาก sheet บน main thread เท่านั้น ──
+        TEMP_RANK = {"HOT": 3, "WARM": 2, "COLD": 1}
+        best_temp = None
+        try:
             total_rows = self.sheet.get_total_rows()
             for r in range(total_rows):
                 so_val  = str(self._sheet_get(r, "Sale Order No.") or "").strip()
@@ -6448,64 +6624,41 @@ class CostBenchmarkScreen(CTkFrame):
                     if pri in TEMP_RANK:
                         if best_temp is None or TEMP_RANK[pri] > TEMP_RANK[best_temp]:
                             best_temp = pri
+        except Exception as e:
+            print(f"_sla_record_copy (read temp) error: {e}")
 
-            conn = self.app_container.get_connection()
-            try:
-                cur = conn.cursor()
-                # ── โหลดวันหยุดนักขัตฤกษ์จาก company_holidays ──────────────
-                holiday_set = set()
+        copied_time = datetime.now()          # เวลาที่ user กด copy จริง
+        user_key = self.current_user
+        MAX_ATTEMPTS = 3
+        RETRY_DELAY_SEC = [1, 3]
+
+        def _do_db_work():
+            last_err = None
+            for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
-                    cur.execute(
-                        "SELECT holiday_date FROM company_holidays "
-                        "WHERE EXTRACT(YEAR FROM holiday_date) IN %s",
-                        (tuple({datetime.now().year, datetime.now().year - 1}),)
-                    )
-                    holiday_set = {r[0] for r in cur.fetchall()}
-                except Exception as he:
-                    print(f"SLA holiday load warning: {he}")
+                    self._sla_write_copy(so_number, user_key, copied_time, best_temp)
+                    self._sla_log_copy(so_number, user_key, method, "ok", attempt, None, copied_time)
+                    self.after(0, lambda: self._sla_clear_row_memory(so_number))
+                    self._sla_flush_queue()   # ถือโอกาสส่งของค้างในคิวด้วย (ถ้ามี)
+                    return
+                except Exception as e:
+                    last_err = e
+                    print(f"_sla_record_copy attempt {attempt}/{MAX_ATTEMPTS} failed: {e}")
+                    if attempt < MAX_ATTEMPTS:
+                        time.sleep(RETRY_DELAY_SEC[attempt - 1])
+            print(f"_sla_record_copy: ล้มเหลวหลังลอง {MAX_ATTEMPTS} ครั้ง (SO={so_number}): {last_err}")
+            items = self._sla_queue_load()
+            items.append({"so_number": so_number, "user_key": user_key, "best_temp": best_temp,
+                          "method": method, "copied_time": copied_time.isoformat()})
+            self._sla_queue_save(items)
+            self._sla_log_copy(so_number, user_key, method, "queued", MAX_ATTEMPTS, last_err, copied_time)
 
-                cur.execute("""
-                    SELECT started_at FROM sla_benchmark
-                    WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-                """, (so_number, self.current_user))
-                row = cur.fetchone()
-                if not row or row[0] is None:
-                    # ไม่มี record หรือมีแต่ started_at = NULL → fallback จาก cost_benchmarks
-                    cur.execute("""
-                        SELECT created_at FROM cost_benchmarks
-                        WHERE "Sale Order No." = %s AND created_by = %s
-                          AND created_at IS NOT NULL
-                        ORDER BY created_at ASC LIMIT 1
-                    """, (so_number, self.current_user))
-                    cb_row = cur.fetchone()
-                    started_at = cb_row[0] if cb_row else datetime.now()
-                    if not row:
-                        cur.execute("""
-                            INSERT INTO sla_benchmark (so_number, user_key, started_at)
-                            VALUES (%s, %s, %s)
-                            ON CONFLICT ON CONSTRAINT uq_sla_so_user DO NOTHING
-                        """, (so_number, self.current_user, started_at))
-                    else:
-                        # record มีอยู่แต่ started_at เป็น NULL → update started_at ด้วย
-                        cur.execute("""
-                            UPDATE sla_benchmark SET started_at = %s
-                            WHERE so_number = %s AND user_key = %s
-                              AND copied_at IS NULL AND started_at IS NULL
-                        """, (started_at, so_number, self.current_user))
-                else:
-                    started_at = row[0]
-                now = datetime.now()
-                biz_min = self._calc_business_minutes(started_at, now, holiday_set)
-                cur.execute("""
-                    UPDATE sla_benchmark
-                    SET copied_at = %s, temp = %s, duration_min = %s
-                    WHERE so_number = %s AND user_key = %s AND copied_at IS NULL
-                """, (now, best_temp, biz_min, so_number, self.current_user))
-                conn.commit()
-            finally:
-                self.app_container.release_connection(conn)
+        threading.Thread(target=_do_db_work, daemon=True).start()
 
-            # ล้าง memory ทุก row ของ SO นี้ — ถ้า user ต้องทำใหม่จะได้เริ่มจับเวลาใหม่
+    def _sla_clear_row_memory(self, so_number: str):
+        """ล้าง memory ทุก row ของ SO นี้ (ให้เริ่มจับเวลาใหม่ถ้า user ต้องทำใหม่) — ต้องรันบน main thread
+        เพราะแตะ widget ของ tksheet (เรียกจาก _sla_record_copy หลังบันทึก DB สำเร็จใน background thread)"""
+        try:
             so_col_idx = self._col_index_cache.get("Sale Order No.", -1)
             if so_col_idx >= 0:
                 for dn in list(self._sla_row_start_times.keys()):
@@ -6516,7 +6669,7 @@ class CostBenchmarkScreen(CTkFrame):
                     if row_so == so_number:
                         self._sla_row_start_times.pop(dn, None)
         except Exception as e:
-            print(f"_sla_record_copy error: {e}")
+            print(f"_sla_clear_row_memory error: {e}")
 
     def _show_extend_popup(self):
         """Extend SLA popup — ขยายเวลา SLA (ครั้งที่ 1 = self authorize, ครั้งที่ 2 = ขอ manager)"""
@@ -7142,6 +7295,17 @@ class CostBenchmarkScreen(CTkFrame):
             if selected:
                 pop.clipboard_clear()
                 pop.clipboard_append(selected)
+                # 🟢 [แก้ไข] Ctrl+A → Ctrl+C (หรือ Ctrl+C โดยไม่เลือกอะไร) คือการ copy Short Note ทั้งก้อน
+                # เหมือนกดปุ่ม "Copy to Clipboard" แต่เดิมทางลัดนี้ copy อย่างเดียว ไม่ปิดงานใน SLA เลย
+                # ทำให้งานค้างในหน้า "งานค้าง" ทั้งที่ user ส่ง Short Note แล้ว (พบจากเคส TG0923-3-@-phatt.fah)
+                try:
+                    if selected.strip() == _get_txt_content().strip():
+                        _sel_so = listbox.curselection()
+                        _so_val = listbox.get(_sel_so[0]) if _sel_so else ""
+                        if _so_val and _so_val != "?":
+                            self._sla_record_copy(_so_val, method="keyboard")
+                except Exception as _e:
+                    print(f"_copy_selection SLA record error: {_e}")
             return "break"
 
         def _paste(event=None):
@@ -7253,9 +7417,12 @@ class CostBenchmarkScreen(CTkFrame):
                 copy_btn.configure(text="✅ คัดลอกแล้ว!", fg_color="#047857")
                 pop.after(2000, lambda: copy_btn.configure(
                     text="📋 Copy to Clipboard", fg_color="#059669"))
-                sel = listbox.curselection()
-                if sel:
-                    self._sla_record_copy(listbox.get(sel[0]))
+                # 🟢 ใช้ _chosen_so ที่จับไว้ตอนเปิด dialog ยืนยัน แทนการเช็ค listbox.curselection()
+                # ใหม่ตอนนี้ — ถ้า selection ใน listbox หลุด/ถูกล้างไปตอนที่ dialog ยืนยันเปิดอยู่ (เช่น
+                # listbox รีเฟรชตัวเองระหว่างนั้น) จะทำให้ copy clipboard สำเร็จตามปกติ แต่ระบบไม่บันทึก
+                # SLA ว่า copy แล้ว (บัคที่ PM แจ้งมา — user copy ได้จริง แต่ยังค้างในหน้า "งานค้าง")
+                if _chosen_so and _chosen_so != "?":
+                    self._sla_record_copy(_chosen_so)
 
             CTkButton(btn_f, text="✅ ตรวจสอบแล้ว — Copy เลย",
                       fg_color="#059669", hover_color="#047857",

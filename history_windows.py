@@ -304,17 +304,27 @@ class PurchaseDetailWindow(CTkToplevel):
             self._recalculate_summary_totals()
 
     def _position_window(self):
-        """จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลางแนวนอน และยึดตำแหน่งบนสุดไว้"""
+        """จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลางแนวนอนของ "หน้าต่างแอปหลัก" (ไม่ใช่ทั้งจอ) และยึดขอบบนไว้
+        เดิมอิง winfo_screenwidth() คือกึ่งกลางของทั้งจอ พอผู้ใช้เปิดแอปอยู่จอที่สอง หรือแอปไม่ได้อยู่
+        กึ่งกลางจอพอดี popup เลยไปเด้งคนละตำแหน่งกับที่แอปอยู่ (พบจาก user แจ้ง "เด้งผิดจอ")"""
         self.update_idletasks()
         width = self.winfo_width()
         height = self.winfo_height()
-        
-        # จัดกึ่งกลางแนวนอนของ "หน้าจอ"
-        x = (self.winfo_screenwidth() // 2) - (width // 2)
-        
-        # ยึดตำแหน่งบนสุดของหน้าต่าง (แกน Y) ไว้ที่ 40 pixels จากขอบจอบนเสมอ
-        y = 40
-        
+
+        root = None
+        try:
+            root = self.master.winfo_toplevel()
+            root_x, root_w, root_y = root.winfo_x(), root.winfo_width(), root.winfo_y()
+        except Exception:
+            root_x, root_w, root_y = 0, self.winfo_screenwidth(), 0
+
+        # จัดกึ่งกลางแนวนอนเทียบกับหน้าต่างแอปหลัก แล้ว clamp ไม่ให้หลุดขอบจอที่แอปอยู่จริง
+        x = root_x + (root_w // 2) - (width // 2)
+        x = max(0, min(x, self.winfo_screenwidth() - width))
+
+        # ยึดตำแหน่งบนสุดของหน้าต่าง (แกน Y) ไว้ที่ 40 pixels จากขอบบนของหน้าต่างแอปหลัก
+        y = max(0, root_y + 40) if root is not None else 40
+
         self.geometry(f'{width}x{height}+{x}+{y}')
 
     def _load_supplier_data_for_autocomplete(self):

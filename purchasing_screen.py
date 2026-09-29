@@ -3806,6 +3806,7 @@ class SLADashboard(CTkFrame):
         self.tree.tag_configure("medium",  background="#FEF9C3", foreground="#854D0E")  # ปานกลาง  — เหลือง
         self.tree.tag_configure("slow",    background="#FECACA", foreground="#991B1B")  # ช้า        — แดง
         self.tree.tag_configure("pending", background="#E2E8F0", foreground="#374151")  # ดำเนินการ — เทา
+        self.tree.tag_configure("unrated", background="#F1F5F9", foreground="#64748B")  # ประเมินไม่ได้ — เทาอ่อน
 
         # ── row 3: Summary bar ────────────────────────────────────────────────
         sbar = CTkFrame(self, fg_color="#F1F5F9", corner_radius=8,
@@ -3830,6 +3831,9 @@ class SLADashboard(CTkFrame):
             ("medium",  "[ ปานกลาง ]",  "#FEF9C3", "#854D0E"),
             ("slow",    "[ ช้า ]",        "#FECACA", "#991B1B"),
             ("pending", "[ ดำเนินการ ]", "#E2E8F0", "#374151"),
+            # 🟢 [เพิ่มใหม่] แถวที่ไม่มีประเภท/Target ให้ตัดสิน — เดิมถูกนับเป็น "รวดเร็ว" อัตโนมัติ
+            # (บัคที่ทำให้ % รวดเร็วสูงเกินจริง) แยกเป็นสถานะของตัวเอง ไม่นับปนกับ 3 สถานะที่ประเมินได้จริง
+            ("unrated", "[ ประเมินไม่ได้ ]", "#F1F5F9", "#64748B"),
         ]
         self._legend_labels = {}
         for tag, label, bg, fg in legend_items:
@@ -4519,8 +4523,12 @@ class SLADashboard(CTkFrame):
                     # "[ รวดเร็ว ]" ทันทีไม่ว่าจะใช้เวลาเกิน Target แค่ไหนก็ตาม — ตัด "or not mto"
                     # ออก เพราะ target ที่คำนวณไว้ก่อนหน้านี้ (base_target=1440 ถ้า is_mto) รวม
                     # ผลของ MTO ไปแล้ว ไม่ต้องเช็ค mto ซ้ำตรงนี้อีก
+                    #
+                    # 🟢 [แก้ไข] แถวที่ไม่มี Target (ช่อง ประเภท ว่าง หา base_target ไม่ได้) เดิม
+                    # ให้ผ่านเป็น "รวดเร็ว" อัตโนมัติ ทำให้ % รวดเร็วสูงเกินจริง (พบจาก code review)
+                    # เปลี่ยนเป็นสถานะ "ประเมินไม่ได้" แยกต่างหาก แล้วตัดออกจากฐานคำนวณ % แทน
                     if not has_target:
-                        return "[ รวดเร็ว ]", "fast"
+                        return "[ ประเมินไม่ได้ ]", "unrated"
                     if pct <= 1.0:
                         return "[ รวดเร็ว ]", "fast"
                     elif pct <= 1.5:
@@ -4566,10 +4574,13 @@ class SLADashboard(CTkFrame):
                             diff_str   = "-"
                             sla_result, row_tag = _sla_tag(0, False, is_mto)
                     else:
+                        # copy แล้วแต่ไม่มีทั้ง started_at และ duration_min เลย — ไม่มีทางรู้ได้ว่าใช้
+                        # เวลาไปเท่าไหร่ ไม่ควรให้ผ่านเป็น "รวดเร็ว" อัตโนมัติเหมือนเดิม (เหตุผลเดียวกับ
+                        # กรณีไม่มี Target — ข้อมูลหายไม่ควรเท่ากับสอบผ่าน)
                         dur_str    = "-"
                         diff_str   = "-"
-                        sla_result = "[ รวดเร็ว ]"
-                        row_tag    = "fast"
+                        sla_result = "[ ประเมินไม่ได้ ]"
+                        row_tag    = "unrated"
                 else:
                     dur_str    = "รอ Copy"
                     diff_str   = "-"
@@ -4584,7 +4595,18 @@ class SLADashboard(CTkFrame):
 
                 sla_sales_sum += total_sales
 
-                sale_key_short = sale_key.split("-")[0] if sale_key and "-" in sale_key else sale_key
+                # 🟢 [ตามที่ PM ขอ] Waiting ต้องมีวันหมดอายุ: ยังเป็น Waiting (เซลล์ยังไม่ใส่สถานะ/เหตุผลเลย) และ
+                # ส่งราคาไปแล้วเกินจำนวน "วันทำงาน" ตาม Temp (HOT 12 / WARM 28 / COLD 45 วัน) ให้แสดงเป็น
+                # "แพ้อัตโนมัติ - เซลล์ขาดการติดตาม (L-FLW)" นับจากเวลาส่งราคาใน SLA (copied_at) ด้วย
+                # _biz_min ตัวเดียวกับ SLA (จ-ส 08:30-17:30 หักพัก = วันละ 480 นาที ไม่นับวันอาทิตย์)
+                # Temp ว่าง/"ไม่แจ้ง" ใช้กฎ WARM — แสดงผลบนหน้าจออย่างเดียว ไม่แก้ข้อมูลใน DB
+                # แถวที่เซลล์ใส่สถานะแล้วจะไม่ถูกแตะ เซลล์อัปเดตเป็น WIN/LOSE ทีหลังได้ตามปกติ
+                if not _ss_raw and copied_dt is not None:
+                    _limit_days = self.WAITING_EXPIRE_WORKDAYS.get(temp_base, self.WAITING_EXPIRE_WORKDAYS["WARM"])
+                    if _biz_min(copied_dt, datetime.now()) > _limit_days * self.WORKDAY_MINUTES:
+                        so_status = "แพ้อัตโนมัติ - เซลล์ขาดการติดตาม (L-FLW)"
+
+                sale_key_short =sale_key.split("-")[0] if sale_key and "-" in sale_key else sale_key
                 row_vals = (r["so_number"], order_no, sale_key_short, r["user_key"], win_rate_val, temp,
                             started, copied, dur_str,
                             order_size, target_str, extend_str,
@@ -4614,31 +4636,47 @@ class SLADashboard(CTkFrame):
             done_cnt  = sum(1 for iid in self.tree.get_children()
                             if "ดำเนินการ" not in str(self.tree.item(iid, "values")))
             pending_cnt = total - done_cnt
-            # นับตาม tag แม่นยำกว่า
+            # นับตาม tag แม่นยำกว่า — "unrated" นับเป็น "เสร็จแล้ว" ด้วย (copy แล้วจริง แค่ให้เกรดไม่ได้)
+            # ไม่ใช่ "รอ Copy" (ยังไม่ได้บันทึกว่าเสร็จ)
             done_cnt    = sum(1 for iid in self.tree.get_children()
                               if self.tree.item(iid, "tags") and
-                              self.tree.item(iid, "tags")[0] in ("fast", "medium", "slow"))
+                              self.tree.item(iid, "tags")[0] in ("fast", "medium", "slow", "unrated"))
+            unrated_cnt = sum(1 for iid in self.tree.get_children()
+                              if self.tree.item(iid, "tags") and
+                              self.tree.item(iid, "tags")[0] == "unrated")
             pending_cnt = total - done_cnt
             sla_sales_sum = locals().get("sla_sales_sum", 0.0)
+            unrated_note = f"  |  ⚠️ ประเมินไม่ได้ {unrated_cnt}" if unrated_cnt else ""
             self._summary_label.configure(
-                text=f"รวมทั้งหมด  {total}  Order  |  ✅ เสร็จแล้ว  {done_cnt}  |  ⏳ รอ Copy  {pending_cnt}")
+                text=f"รวมทั้งหมด  {total}  Order  |  ✅ เสร็จแล้ว  {done_cnt}  |  ⏳ รอ Copy  {pending_cnt}{unrated_note}")
             self._summary_sales_label.configure(
                 text=f"💰 Sum of ราคาขาย: ฿{sla_sales_sum:,.2f}")
 
             # อัพเดต % ของแต่ละสีในแถบ Legend ตามสัดส่วนจริงของ order ทั้งหมดที่แสดงอยู่
+            # 🟢 [แก้ไข] แถวที่ "ประเมินไม่ได้" (ไม่มี Target/ไม่มีข้อมูลเวลา) ตัดออกจากฐานคำนวณ % ของ
+            # รวดเร็ว/ปานกลาง/ช้า/ดำเนินการ ไปเลย (โชว์ % ของตัวเองแยกต่างหาก) กันไม่ให้ดึงตัวเลข %
+            # ของสถานะอื่นให้เพี้ยนไปจากความเป็นจริง (พบจาก code review — แต่ก่อนนับปนกับ "รวดเร็ว")
             if hasattr(self, "_legend_labels"):
-                tag_counts = {"fast": 0, "medium": 0, "slow": 0, "pending": 0}
+                tag_counts = {"fast": 0, "medium": 0, "slow": 0, "pending": 0, "unrated": 0}
                 for iid in self.tree.get_children():
                     tags = self.tree.item(iid, "tags")
                     if tags and tags[0] in tag_counts:
                         tag_counts[tags[0]] += 1
+                base_total = total - tag_counts["unrated"]   # ฐานคำนวณของ 4 สถานะที่ประเมินได้จริง
                 for tag, (lbl, label) in self._legend_labels.items():
-                    pct = (tag_counts[tag] / total * 100) if total else 0
+                    if tag == "unrated":
+                        pct = (tag_counts[tag] / total * 100) if total else 0
+                    else:
+                        pct = (tag_counts[tag] / base_total * 100) if base_total else 0
                     lbl.configure(text=f"{label}  {pct:.0f}%")
 
             self.after_idle(self._paint_status_cells)
 
     # ── per-cell color สำหรับคอลัม "สถานะ" ─────────────────────────────────
+    # Waiting ค้างเกินกี่ "วันทำงาน" (จ-ส) นับจากเวลาส่งราคา ถือว่าแพ้อัตโนมัติ — แยกตาม Temp
+    WAITING_EXPIRE_WORKDAYS = {"HOT": 12, "WARM": 28, "COLD": 45}
+    WORKDAY_MINUTES = 480   # 08:30-17:30 หักพัก 1 ชม. = 8 ชม./วัน
+
     _STATUS_LABEL_MAP = {
         "L-PRC-1": "L-PRC-1 แพงกว่า (ราคา)",
         "L-PRC-2": "L-PRC-2 แพงกว่า (ราคา+ส่วนลด)",

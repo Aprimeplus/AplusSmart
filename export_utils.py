@@ -382,3 +382,139 @@ def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
     finally:
         if conn:
             app_container.release_connection(conn)
+
+
+# --- START: ฟังก์ชัน Export ตาราง Markup Guide (จัดซื้อ) ---
+def export_markup_guide_to_excel(parent_window, pg_engine, search_text="", category="ทั้งหมด"):
+    """
+    Export ตาราง Markup Guide (T1-T5 ต่อ SKU) เป็น Excel
+    รูปแบบตารางแบนราบ (1 แถว/SKU, คอลัมน์ T1-T5 เรียงข้างกัน) — ตามที่ PM เลือก
+    ใช้ filter (คำค้นหา/หมวดหมู่) เดียวกับที่กำลังดูอยู่บนหน้าจอ แต่ไม่จำกัด 500 รายการเหมือนบนตาราง
+    รวมทุก SKU ที่ค้นเจอ แม้ยังไม่ได้ตั้ง Tier เลย (0/5) — ใช้เป็น template แก้ไข/นำกลับเข้าระบบได้ในอนาคต
+    """
+    try:
+        query = "SELECT p.product_code, p.product_name, p.category FROM products p WHERE 1=1"
+        params = []
+        if search_text:
+            query += " AND (p.product_code ILIKE %s OR p.product_name ILIKE %s)"
+            params += [f"%{search_text}%", f"%{search_text}%"]
+        if category and category != "ทั้งหมด":
+            query += " AND p.category = %s"
+            params.append(category)
+        query += " ORDER BY p.product_code"
+
+        df = pd.read_sql_query(query, pg_engine, params=tuple(params))
+        if df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบสินค้าตามเงื่อนไขที่เลือก", parent=parent_window)
+            return
+
+        codes = df["product_code"].tolist()
+        tdf = pd.read_sql_query(
+            "SELECT product_code, tier, markup_percent, price_min, price_max, weight_min, weight_max "
+            "FROM markup_guide_tiers WHERE product_code = ANY(%s)",
+            pg_engine, params=(codes,))
+        tiers_by_sku = {code: g.set_index("tier").to_dict("index") for code, g in tdf.groupby("product_code")}
+
+        rows = []
+        for _, r in df.iterrows():
+            code = r["product_code"]
+            tiers = tiers_by_sku.get(code, {})
+            row = {
+                "รหัสสินค้า (SKU)": code,
+                "ชื่อสินค้า": r["product_name"] or "",
+                "หมวดหมู่": r["category"] or "",
+            }
+            for t in range(1, 6):
+                trow = tiers.get(t)
+                row[f"T{t} Markup %"] = trow["markup_percent"] if trow else None
+                row[f"T{t} ราคาต่ำสุด"] = trow["price_min"] if trow else None
+                row[f"T{t} ราคาสูงสุด"] = trow["price_max"] if trow else None
+                row[f"T{t} น้ำหนักรวมต่ำสุด (กก.)"] = trow["weight_min"] if trow else None
+                row[f"T{t} น้ำหนักรวมสูงสุด (กก.)"] = trow["weight_max"] if trow else None
+            rows.append(row)
+
+        df_export = pd.DataFrame(rows)
+
+        default_filename = f"markup_guide_export_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="บันทึกไฟล์ Markup Guide",
+            initialfile=default_filename,
+            parent=parent_window
+        )
+
+        if save_path:
+            df_export.to_excel(save_path, index=False)
+            messagebox.showinfo("สำเร็จ", f"Export Markup Guide เรียบร้อยแล้ว ({len(df_export)} รายการ)\nบันทึกที่: {save_path}",
+                                 parent=parent_window)
+
+    except Exception as e:
+        messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)
+        traceback.print_exc()
+# --- END: ฟังก์ชัน Export ตาราง Markup Guide (จัดซื้อ) ---
+
+
+# --- START: ฟังก์ชัน Export ตาราง Customer Monitoring ---
+def export_customer_monitoring_to_excel(parent_window, df_export, year_thai):
+    """
+    Export ตาราง Customer Monitoring (ยอดขายรายลูกค้า) ที่กำลังแสดงอยู่บนจอ ออกเป็น Excel
+    df_export ต้องเป็น DataFrame ที่จัดคอลัมน์/ลำดับแถวตามที่แสดงบนจอแล้ว (รวมแถว "รวมทั้งหมด" ท้ายตาราง)
+    ถูกสร้างจาก customer_monitoring.py (มี pivot/format logic อยู่แล้ว) — ฟังก์ชันนี้แค่จัดการ save dialog
+    """
+    try:
+        if df_export is None or df_export.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูลให้ Export", parent=parent_window)
+            return
+
+        default_filename = f"customer_monitoring_{year_thai}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="บันทึกไฟล์ Customer Monitoring",
+            initialfile=default_filename,
+            parent=parent_window
+        )
+
+        if save_path:
+            df_export.to_excel(save_path, index=False)
+            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้ว ({len(df_export)} แถว)\nบันทึกที่: {save_path}",
+                                 parent=parent_window)
+
+    except Exception as e:
+        messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)
+        traceback.print_exc()
+# --- END: ฟังก์ชัน Export ตาราง Customer Monitoring ---
+
+
+# --- START: ฟังก์ชัน Export ตาราง สรุปยอดขาย vs เป้าหมาย (Sales Manager) ---
+def export_sales_target_to_excel(parent_window, df_export, period_label):
+    """
+    Export ตาราง "สรุปยอดขาย vs เป้าหมาย" เป็น Excel — แยกคอลัมน์ตามเดือนในช่วงที่เลือก
+    พร้อมคอลัมน์สรุปรวมทั้งช่วง (เป้าหมาย/ยอดขายจริง/%/ส่วนต่าง) ท้ายตาราง
+    df_export ถูกจัดคอลัมน์/แถวไว้แล้วจาก sales_manager_screen.py — ฟังก์ชันนี้แค่จัดการ save dialog
+    """
+    try:
+        if df_export is None or df_export.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบข้อมูลให้ Export", parent=parent_window)
+            return
+
+        safe_period = period_label.replace(" ", "_").replace("/", "-")
+        default_filename = f"sales_target_{safe_period}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="บันทึกไฟล์สรุปยอดขาย vs เป้าหมาย",
+            initialfile=default_filename,
+            parent=parent_window
+        )
+
+        if save_path:
+            df_export.to_excel(save_path, index=False)
+            messagebox.showinfo("สำเร็จ", f"Export ข้อมูลเรียบร้อยแล้ว ({len(df_export)} แถว)\nบันทึกที่: {save_path}",
+                                 parent=parent_window)
+
+    except Exception as e:
+        messagebox.showerror("ผิดพลาด", f"ไม่สามารถ Export ไฟล์ได้: {e}", parent=parent_window)
+        traceback.print_exc()
+# --- END: ฟังก์ชัน Export ตาราง สรุปยอดขาย vs เป้าหมาย (Sales Manager) ---

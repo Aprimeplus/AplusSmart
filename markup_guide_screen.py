@@ -10,6 +10,7 @@ from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton, CTkEntry,
 import pandas as pd
 import psycopg2.extras
 from project_screen import _center_and_style_popup
+from export_utils import export_markup_guide_to_excel
 
 
 class MarkupGuideTab(CTkFrame):
@@ -58,12 +59,15 @@ class MarkupGuideTab(CTkFrame):
 
         CTkButton(bar, text="⟳ รีเฟรช", width=90, height=32, fg_color="transparent", border_width=1,
                   text_color=("gray10", "gray90"), command=self._load_products).grid(
-            row=0, column=4, padx=15, pady=10, sticky="e")
+            row=0, column=4, padx=(15, 5), pady=10, sticky="e")
+
+        CTkButton(bar, text="Export Excel", width=110, height=32, fg_color="#16A34A", hover_color="#15803D",
+                  command=self._export_to_excel).grid(row=0, column=5, padx=(0, 15), pady=10, sticky="e")
 
         if not self.editable:
             CTkLabel(bar, text="🔒 ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้จัดการฝ่ายจัดซื้อ)",
                      text_color="#D97706", font=CTkFont(size=12)).grid(
-                row=1, column=0, columnspan=5, padx=15, pady=(0, 8), sticky="w")
+                row=1, column=0, columnspan=6, padx=15, pady=(0, 8), sticky="w")
 
     def _build_status_bar(self):
         self.status_label = CTkLabel(self, text="พิมพ์คำค้นหา หรือเลือกหมวดหมู่ เพื่อแสดงรายการสินค้า",
@@ -191,6 +195,16 @@ class MarkupGuideTab(CTkFrame):
 
         note = " (แสดงสูงสุด 500 รายการแรก ค้นหาให้แคบลงถ้าไม่เจอ)" if len(df) == 500 else ""
         self.status_label.configure(text=f"พบ {len(df)} รายการ{note} — กดลูกศรข้าง SKU เพื่อดูรายละเอียด Tier, ดับเบิลคลิก SKU เพื่อแก้ไข")
+
+    def _export_to_excel(self):
+        search_text = self.search_var.get().strip()
+        category = self.category_var.get()
+        if not search_text and category == "ทั้งหมด":
+            messagebox.showwarning("เลือกเงื่อนไขก่อน",
+                                    "กรุณาพิมพ์คำค้นหา หรือเลือกหมวดหมู่ก่อน Export "
+                                    "(ป้องกันการ Export สินค้าทั้งหมด 11,000+ รายการโดยไม่ตั้งใจ)", parent=self)
+            return
+        export_markup_guide_to_excel(self, self.pg_engine, search_text=search_text, category=category)
 
     @staticmethod
     def _format_range(min_val, max_val):

@@ -362,11 +362,24 @@ class ProjectScreen(ctk.CTkFrame):
                 query = """
                     SELECT p.id, p.project_code, p.project_name, p.customer_name,
                            p.total_project_value, p.status,
-                           COALESCE(SUM(l.lot_value) FILTER (WHERE l.status != 'Cancelled'), 0) AS lot_sum,
+                           p.deposit_pct, p.deposit_method,
+                           COALESCE(SUM(
+                               GREATEST(0, (
+                                   (CASE WHEN c.sales_service_vat_option = 'VAT' THEN COALESCE(c.sales_service_amount, 0) ELSE 0 END
+                                  + CASE WHEN c.cutting_drilling_fee_vat_option = 'VAT' THEN COALESCE(c.cutting_drilling_fee, 0) ELSE 0 END
+                                  + CASE WHEN c.other_service_fee_vat_option = 'VAT' THEN COALESCE(c.other_service_fee, 0) ELSE 0 END
+                                  + CASE WHEN c.shipping_vat_option = 'VAT' THEN COALESCE(c.shipping_cost, 0) ELSE 0 END
+                                  + CASE WHEN c.credit_card_fee_vat_option = 'VAT' THEN COALESCE(c.credit_card_fee, 0) ELSE 0 END
+                                  + CASE WHEN c.relocation_cost_vat_option = 'VAT' THEN COALESCE(c.relocation_cost, 0) ELSE 0 END
+                                   ) * 1.07 - COALESCE(c.wht_3_percent, 0)
+                               ))
+                           ) FILTER (WHERE l.status != 'Cancelled'), 0) AS lot_sum,
                            COUNT(l.id) FILTER (WHERE l.status != 'Cancelled') AS lot_count,
                            COUNT(l.id) FILTER (WHERE l.kpi_qualified_flag) AS lot_done
                     FROM projects p
                     LEFT JOIN project_lots l ON l.project_id = p.id
+                    LEFT JOIN commissions c ON c.so_number = l.so_number AND c.is_active = 1
+                             AND c.status NOT IN ('Cancelled', 'Cancelled by PU')
                 """
                 params = None
                 if self._locked_sale_key:
@@ -410,7 +423,16 @@ class ProjectScreen(ctk.CTkFrame):
         lot_count = int(r["lot_count"] or 0)
         lot_done = int(r["lot_done"] or 0)
         has_target = total_value > 0
-        pct = min(100, (lot_sum / total_value * 100)) if has_target else (100 if lot_count else 0)
+        # แถบ = ยอด Lot (รวม VAT/ค่าส่งแล้ว เทียบฐานเดียวกับมูลค่าโครงการ NET) + มัดจำก้อนเดียวถ้าเป็นวิธี
+        # "หักที่ Lot สุดท้าย" (ยอด Lot คือส่วนที่เหลือหลังหักมัดจำ) — เดิมเอา lot_value ที่ยังไม่รวม VAT
+        # ไปหารมูลค่า NET เลยได้ ~81% ทั้งที่ Lot ครบหมดแล้ว
+        covered = lot_sum
+        dep_pct = r.get("deposit_pct")
+        if r.get("deposit_method") == "last_lot" and dep_pct is not None and pd.notna(dep_pct):
+            covered += total_value * float(dep_pct) / 100
+        pct = min(100, (covered / total_value * 100)) if has_target else (100 if lot_count else 0)
+        if has_target and total_value - covered < 1.0 and lot_count:
+            pct = 100
 
         card = CTkFrame(parent, fg_color="#FFFFFF", corner_radius=12,
                          border_width=1, border_color="#E2E8F0")
@@ -548,25 +570,25 @@ class ProjectScreen(ctk.CTkFrame):
 
     def _sync_payment_collected(self, conn, project_id):
         """เช็ค 'เก็บเงินครบ' อัตโนมัติจาก commissions.difference_amount ของ SO ที่ผูกไว้กับแต่ละ Lot
-        (difference_amount = 0 แปลว่ายอดชำระตรงกับยอดเต็มแล้ว) — ไม่ต้องให้คนติ๊กเองอีกต่อไป
+        (difference_amount >= 0 แปลว่าชำระครบหรือเกินเล็กน้อยจากเศษสตางค์ — เดิมเช็คเท่ากับ 0 เป๊ะ ทำให้จ่ายเกิน 0.61 บาท Lot 4 ของ SO6908ID011 ไม่ถูกนับว่าเก็บเงินแล้ว) — ไม่ต้องให้คนติ๊กเองอีกต่อไป
         ถ้า SO ที่ผูกไว้ถูกยกเลิก (ทุก record ของ so_number นั้นเป็น Cancelled/is_active=0 หมด)
         ให้ Lot กลายเป็นสถานะ 'Cancelled' ทันที ไม่นับเป็นเก็บเงินครบ/ครบเงื่อนไขอีกต่อไป"""
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE project_lots l
                 SET payment_collected_flag = CASE WHEN cs.is_cancelled THEN FALSE
-                                                    ELSE (COALESCE(c.difference_amount, 1) = 0) END,
+                                                    ELSE (COALESCE(c.difference_amount, -1) >= 0) END,
                     payment_collected_date = CASE WHEN NOT cs.is_cancelled
-                                                        AND COALESCE(c.difference_amount, 1) = 0
+                                                        AND COALESCE(c.difference_amount, -1) >= 0
                                                    THEN COALESCE(l.payment_collected_date, CURRENT_DATE)
                                                    ELSE NULL END,
                     kpi_qualified_flag = CASE WHEN cs.is_cancelled THEN FALSE
                                                ELSE (l.delivered_flag AND l.invoice_recorded_flag
-                                                     AND COALESCE(c.difference_amount, 1) = 0) END,
+                                                     AND COALESCE(c.difference_amount, -1) >= 0) END,
                     status = CASE
                         WHEN cs.is_cancelled THEN 'Cancelled'
                         WHEN l.delivered_flag AND l.invoice_recorded_flag
-                             AND COALESCE(c.difference_amount, 1) = 0 THEN 'Collected'
+                             AND COALESCE(c.difference_amount, -1) >= 0 THEN 'Collected'
                         WHEN l.invoice_recorded_flag THEN 'Invoiced'
                         WHEN l.delivered_flag THEN 'Delivered'
                         ELSE 'Draft'
@@ -744,7 +766,13 @@ class ProjectScreen(ctk.CTkFrame):
             is_estimate = active_lots_df.empty or grand_total_sum <= 0
             # ยังไม่มี Lot จริงเลย — โชว์ยอดมัดจำประมาณการจาก "มูลค่าโครงการรวม" ที่กรอกไว้ตอนสร้างโครงการ
             # ไปก่อน แทนที่จะโชว์ 0.00 บาท เพราะลูกค้าโอนมัดจำก้อนแรกตั้งแต่ก่อน Lot 1 จะถูกสร้างด้วยซ้ำ
-            total_deposit = (total_value * deposit_ratio) if is_estimate else (grand_total_sum * deposit_ratio)
+            # วิธี "หักที่ Lot สุดท้าย": มัดจำเป็นก้อนเดียวคิดจาก "มูลค่าโครงการรวม" ทั้งบิล ไม่ใช่จากยอดรวมของ Lot
+            # ที่สร้างไว้ (ยอด Lot คือส่วนที่เหลือหลังหักมัดจำแล้ว) — เดิมคิดจากยอด Lot ทำให้ SO6908ID011-M
+            # มัดจำขาดไป 2,110.10 บาท และยอดคงเหลือค้างชำระขึ้น 2,110.71 ทั้งที่ลูกค้าจ่ายครบ
+            if is_estimate or (deposit_method == "last_lot" and total_value and total_value > 0):
+                total_deposit = total_value * deposit_ratio
+            else:
+                total_deposit = grand_total_sum * deposit_ratio
             has_any_manual_dep = False
             if deposit_method == "spread" and not active_lots_df.empty:
                 # ยอดมัดจำรวมจริง = ยอดกรอกเอง (ถ้ามี) แทนยอดคำนวณ % สำหรับ Lot นั้นๆ
@@ -776,6 +804,8 @@ class ProjectScreen(ctk.CTkFrame):
         commission_sum = float(paid_lots_df["product_amount"].sum()) if not paid_lots_df.empty else 0.0
         total_paid = paid_lots_sum + (total_deposit if proj_dep_received else 0.0)
         remaining_due = max(0.0, total_value - total_paid) if has_target else 0.0
+        if remaining_due < 1.0:
+            remaining_due = 0.0  # เศษสตางค์จากการปัดยอดแต่ละ Lot ไม่นับเป็นยอดค้าง
         paid_pct = min(100, (total_paid / total_value * 100)) if has_target and total_value > 0 else 0
 
         kpi_row = CTkFrame(info, fg_color="transparent")
