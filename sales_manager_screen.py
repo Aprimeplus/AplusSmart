@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
                                CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkEntry,
-                               CTkOptionMenu, CTkRadioButton, CTkTabview, CTkCheckBox)
+                               CTkOptionMenu, CTkRadioButton, CTkTabview, CTkCheckBox, CTkTextbox)
 from tkinter import messagebox
 import pandas as pd
 from datetime import datetime
@@ -26,7 +26,9 @@ matplotlib.use('TkAgg')
 from history_windows import SOPopupWindow, DeferralHistoryWindow, ManagerDeferApprovalDialog
 from daily_report_widget import DailyReportWidget
 from customer_monitoring import CustomerMonitoringWidget
-from project_screen import ProjectScreen
+from project_screen import ProjectScreen, _center_and_style_popup
+from so_change_logic import (revert_change_request, complete_change_request, compute_so_diff,
+                             expire_overdue_requests)
 # SalesTargetWidget ("เป้าการขาย") ย้ายไปเป็นไฟล์กลางแล้ว — ใช้ร่วมกับหน้า
 # รายงานผู้บริหาร (management_report_screen.py) จะได้แก้บัคที่จุดเดียว ไม่ต้องแก้ซ้ำ 2 ที่
 from sales_target_widget import SalesTargetWidget
@@ -842,6 +844,17 @@ class SalesManagerScreen(CTkFrame):
         except Exception as e:
             print(f"Load SO Edit Requests Error: {e}")
 
+        # ── ส่วนที่ 2b: คำขอแก้ไข SO ทั้งใบ (Sale ขอสิทธิ์ / ส่งผลการแก้ไข) ────
+        try:
+            _c = self.app_container.get_connection()
+            try:
+                expire_overdue_requests(_c)   # ย้อน SO ที่สิทธิ์แก้ไขหมดอายุก่อนแสดงรายการ
+            finally:
+                self.app_container.release_connection(_c)
+            self._render_so_change_requests(search_txt)
+        except Exception as e:
+            print(f"Load SO Change Requests Error: {e}")
+
         # ── ส่วนที่ 3: คำขอยกเลิก SO ค่ารถ (Transport Cancel Requests) ─────
         try:
             # สร้าง table ถ้ายังไม่มี
@@ -1440,6 +1453,229 @@ class SalesManagerScreen(CTkFrame):
             messagebox.showerror("Error", f"Approve Failed: {e}")
         finally:
             if conn: self.app_container.release_connection(conn)
+
+    # ─────────────────────────────────────────────────────────────────
+    # คำขอแก้ไข SO ทั้งใบ (so_change_requests) — ด่าน 1: SM อนุมัติ "สิทธิ์แก้ไข"
+    # ─────────────────────────────────────────────────────────────────
+    SO_CHANGE_EDIT_DAYS = 7   # สิทธิ์แก้ไขหมดอายุหลังอนุมัติกี่วัน
+
+    def _render_so_change_requests(self, search_txt=""):
+        sql = """
+            SELECT r.id, r.so_number, r.original_commission_id, r.sale_key, r.original_status,
+                   r.reason, r.status, r.requested_at, r.submitted_at, r.expires_at,
+                   u.sale_name, c.customer_name
+            FROM so_change_requests r
+            LEFT JOIN sales_users u ON u.sale_key = r.sale_key
+            LEFT JOIN commissions c ON c.id = r.original_commission_id
+            WHERE r.status IN ('Requested', 'Submitted')
+        """
+        params = []
+        if search_txt:
+            sql += " AND r.so_number ILIKE %s"
+            params.append(f"%{search_txt.replace('SO', '')}%")
+        sql += " ORDER BY r.requested_at ASC"
+        df = pd.read_sql_query(sql, self.pg_engine, params=tuple(params))
+        if df.empty:
+            return
+
+        groups = [
+            ("Submitted", "📝  แก้ไข SO เสร็จแล้ว — รออนุมัติผลการแก้ไข", "#B45309", "#FFFBEB", "#FDE68A"),
+            ("Requested", "📝  คำขอแก้ไข SO ทั้งใบ — รออนุมัติสิทธิ์แก้ไข", "#6D28D9", "#F5F3FF", "#DDD6FE"),
+        ]
+        for status, title, tcolor, bg, border in groups:
+            sub = df[df["status"] == status]
+            if sub.empty:
+                continue
+            sep = CTkFrame(self.approval_results_frame, fg_color=bg, corner_radius=6,
+                           border_width=1, border_color=border)
+            sep.pack(fill="x", padx=8, pady=(14, 4))
+            CTkLabel(sep, text=title, font=CTkFont(size=13, weight="bold"),
+                     text_color=tcolor).pack(anchor="w", padx=14, pady=6)
+
+            for _, r in sub.iterrows():
+                card = CTkFrame(self.approval_results_frame, fg_color=bg, border_width=1,
+                                border_color=border, corner_radius=8)
+                card.pack(fill="x", padx=8, pady=4)
+                info = CTkFrame(card, fg_color="transparent")
+                info.pack(side="left", fill="both", expand=True, padx=15, pady=10)
+                CTkLabel(info, text=f"📋 SO: {r['so_number']}  |  👤 Sale: {r['sale_name'] or r['sale_key']} ({r['sale_key']})",
+                         font=CTkFont(size=13, weight="bold")).pack(anchor="w")
+                CTkLabel(info, text=f"ลูกค้า: {r['customer_name'] or '-'}   |   สถานะ SO ตอนขอ: {r['original_status']}",
+                         font=CTkFont(size=12), text_color="#64748B").pack(anchor="w", pady=(2, 0))
+                CTkLabel(info, text=f"💬 เหตุผล: {r['reason']}", font=CTkFont(size=12),
+                         text_color=tcolor, wraplength=620, justify="left").pack(anchor="w")
+                btn_f = CTkFrame(card, fg_color="transparent")
+                btn_f.pack(side="right", padx=12, pady=10)
+                rid = int(r['id'])
+                if status == "Requested":
+                    CTkButton(btn_f, text="✅ อนุมัติให้แก้ไข", fg_color="#16A34A", hover_color="#15803D",
+                              width=130, height=32,
+                              command=lambda x=rid: self._decide_so_change_request(x, approve=True)).pack(side="left", padx=4)
+                    CTkButton(btn_f, text="❌ ไม่อนุมัติ", fg_color="#DC2626", hover_color="#B91C1C",
+                              width=110, height=32,
+                              command=lambda x=rid: self._decide_so_change_request(x, approve=False)).pack(side="left", padx=4)
+                else:
+                    CTkButton(btn_f, text="🔍 ดูก่อน/หลัง และอนุมัติผล", fg_color="#2563EB", hover_color="#1D4ED8",
+                              width=200, height=32,
+                              command=lambda x=rid: self._open_so_change_review(x)).pack()
+
+    def _open_so_change_review(self, req_id):
+        try:
+            req = pd.read_sql_query("""
+                SELECT r.id, r.so_number, r.original_commission_id, r.new_commission_id, r.sale_key,
+                       r.original_status, r.reason, u.sale_name
+                FROM so_change_requests r LEFT JOIN sales_users u ON u.sale_key = r.sale_key
+                WHERE r.id = %s AND r.status = 'Submitted'
+            """, self.pg_engine, params=(int(req_id),))
+            if req.empty:
+                messagebox.showinfo("ดำเนินการไปแล้ว", "คำขอนี้ถูกดำเนินการไปแล้ว กรุณารีเฟรช")
+                self._refresh_all_tabs()
+                return
+            r = req.iloc[0]
+            old = pd.read_sql_query("SELECT * FROM commissions WHERE id = %s", self.pg_engine,
+                                    params=(int(r["original_commission_id"]),)).iloc[0].to_dict()
+            new = pd.read_sql_query("SELECT * FROM commissions WHERE id = %s", self.pg_engine,
+                                    params=(int(r["new_commission_id"]),)).iloc[0].to_dict()
+        except Exception as e:
+            messagebox.showerror("Error", f"โหลดข้อมูลไม่สำเร็จ: {e}")
+            return
+        diff = compute_so_diff(old, new)
+        SOChangeReviewDialog(self, r.to_dict(), diff,
+                             on_approve=lambda dlg: self._finish_so_change(int(req_id), True, dlg),
+                             on_reject=lambda dlg: self._finish_so_change(int(req_id), False, dlg))
+
+    def _finish_so_change(self, req_id, approve, dlg):
+        reason = None
+        if not approve:
+            reason = self._ask_reason("ไม่อนุมัติผลการแก้ไข SO", "เหตุผลที่ไม่อนุมัติ (SO จะย้อนเป็นค่าเดิม) *")
+            if reason is None:
+                return
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                if approve:
+                    res = complete_change_request(cur, req_id, self.user_key)
+                else:
+                    res = revert_change_request(cur, req_id, self.user_key, f"SM ไม่อนุมัติผลการแก้ไข: {reason}")
+                if res is None:
+                    conn.rollback()
+                    messagebox.showinfo("ดำเนินการไปแล้ว", "คำขอนี้ถูกดำเนินการไปแล้ว กรุณารีเฟรช")
+                else:
+                    conn.commit()
+                    if approve:
+                        messagebox.showinfo(
+                            "สำเร็จ",
+                            f"อนุมัติผลการแก้ไข SO {res[0]} แล้ว\nสถานะกลับไปที่ '{res[1]}'"
+                            + ("\n(ต้องให้ HR ตรวจใหม่)" if res[1] == 'PO Sent' else ""))
+                    else:
+                        messagebox.showinfo("สำเร็จ", f"ย้อน SO {res[0]} กลับเป็นค่าเดิมแล้ว และแจ้งเซลส์แล้ว")
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+            self._refresh_all_tabs()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Error", f"ดำเนินการไม่สำเร็จ: {e}")
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+    def _ask_reason(self, title, prompt):
+        """หน้าต่างให้ SM พิมพ์เหตุผล คืนค่าข้อความ (หรือ None ถ้ายกเลิก)"""
+        result = {"text": None}
+        win = CTkToplevel(self)
+        win.withdraw()
+        win.title(title)
+        win.resizable(False, False)
+        win.transient(self.winfo_toplevel())
+        CTkLabel(win, text=prompt, font=CTkFont(size=13, weight="bold")).pack(anchor="w", padx=18, pady=(16, 4))
+        box = CTkTextbox(win, width=420, height=100)
+        box.pack(padx=18)
+        box.focus_set()
+
+        def _ok():
+            txt = box.get("1.0", "end").strip()
+            if len(txt) < 3:
+                messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุเหตุผล", parent=win)
+                return
+            result["text"] = txt
+            win.destroy()
+
+        row = CTkFrame(win, fg_color="transparent")
+        row.pack(fill="x", padx=18, pady=14)
+        CTkButton(row, text="ยกเลิก", fg_color="#94A3B8", hover_color="#64748B",
+                  command=win.destroy).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        CTkButton(row, text="ยืนยัน", command=_ok).pack(side="left", expand=True, fill="x", padx=(6, 0))
+        win.update_idletasks()
+        _center_and_style_popup(win, self, 460, 270)
+        win.deiconify()
+        win.lift()
+        win.grab_set()
+        self.wait_window(win)
+        return result["text"]
+
+    def _decide_so_change_request(self, req_id, approve):
+        reject_reason = None
+        if not approve:
+            reject_reason = self._ask_reason("ไม่อนุมัติคำขอแก้ไข SO", "เหตุผลที่ไม่อนุมัติ *")
+            if reject_reason is None:
+                return
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT so_number, original_commission_id, sale_key, original_status, status
+                    FROM so_change_requests WHERE id = %s FOR UPDATE
+                """, (req_id,))
+                req = cur.fetchone()
+                if not req or req[4] != 'Requested':
+                    conn.rollback()
+                    messagebox.showinfo("ดำเนินการไปแล้ว", "คำขอนี้ถูกดำเนินการไปแล้ว กรุณารีเฟรช")
+                    self._refresh_all_tabs()
+                    return
+                so_number, comm_id, sale_key, original_status = req[0], req[1], req[2], req[3]
+                if approve:
+                    cur.execute("""
+                        UPDATE so_change_requests
+                        SET status = 'Approved', approved_by = %s, approved_at = NOW(),
+                            expires_at = NOW() + (%s || ' days')::interval
+                        WHERE id = %s
+                    """, (self.user_key, str(self.SO_CHANGE_EDIT_DAYS), req_id))
+                    cur.execute("UPDATE commissions SET status = 'Edit Approved' WHERE id = %s", (comm_id,))
+                    msg = (f"SM อนุมัติให้แก้ไข SO {so_number} แล้ว — แก้ไขได้ภายใน {self.SO_CHANGE_EDIT_DAYS} วัน "
+                           f"(แท็บ ✏️ แก้ไข SO)")
+                else:
+                    cur.execute("""
+                        UPDATE so_change_requests
+                        SET status = 'Rejected', result_by = %s, result_at = NOW(), reject_reason = %s
+                        WHERE id = %s
+                    """, (self.user_key, reject_reason, req_id))
+                    cur.execute("UPDATE commissions SET status = %s WHERE id = %s", (original_status, comm_id))
+                    msg = f"SM ไม่อนุมัติให้แก้ไข SO {so_number}: {reject_reason}"
+                cur.execute("""
+                    INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
+                    VALUES (%s, %s, FALSE, %s)
+                """, (sale_key, msg, comm_id))
+                cur.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES (%s, 'commissions', %s, %s, %s, NOW())
+                """, ('SO Change Request ' + ('Approved' if approve else 'Rejected'), comm_id, self.user_key,
+                      f"request #{req_id}" + ("" if approve else f": {reject_reason}")))
+            conn.commit()
+            messagebox.showinfo("สำเร็จ", "อนุมัติสิทธิ์แก้ไข SO แล้ว" if approve
+                                else "ไม่อนุมัติคำขอแก้ไข SO แล้ว SO กลับสู่สถานะเดิม")
+            self._refresh_all_tabs()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Error", f"ดำเนินการไม่สำเร็จ: {e}")
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
 
     # ── SO Edit card (ยุบรวมในแท็บ Approval) ──────────────────────
     def _create_so_edit_card(self, parent, row):
@@ -2462,3 +2698,60 @@ class SMApproveConfirmDialog(CTkToplevel):
         self.confirmed = True
         self.destroy()
         self.destroy()
+
+
+class SOChangeReviewDialog(CTkToplevel):
+    """SM ดูก่อน/หลังของ SO ที่เซลส์แก้ตามคำขอ แล้วอนุมัติผลหรือไม่อนุมัติ (ย้อนค่าเดิม)"""
+
+    def __init__(self, master, req, diff, on_approve, on_reject):
+        super().__init__(master)
+        self.withdraw()
+        self.title(f"อนุมัติผลการแก้ไข SO {req['so_number']}")
+        self.transient(master.winfo_toplevel())
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        head = CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 4))
+        CTkLabel(head, text=f"SO {req['so_number']}  ·  แก้โดย {req.get('sale_name') or req['sale_key']}",
+                 font=CTkFont(size=16, weight="bold")).pack(anchor="w")
+        CTkLabel(head, text=f"เหตุผลที่ขอแก้: {req['reason']}", font=CTkFont(size=12),
+                 text_color="#6D28D9", wraplength=700, justify="left").pack(anchor="w", pady=(4, 0))
+        note = ("SO จะกลับไปที่ PO Sent ให้ HR ตรวจใหม่" if req['original_status'] == 'HR Verified'
+                else f"อนุมัติแล้ว SO กลับไปที่สถานะเดิม ({req['original_status']})")
+        CTkLabel(head, text=note, font=CTkFont(size=11), text_color="gray50").pack(anchor="w")
+
+        CTkLabel(self, text=f"รายการที่เปลี่ยนแปลง ({len(diff)} ช่อง)", font=CTkFont(size=13, weight="bold")).grid(
+            row=1, column=0, sticky="w", padx=18, pady=(8, 2))
+        wrap = CTkFrame(self, fg_color="transparent")
+        wrap.grid(row=2, column=0, sticky="nsew", padx=18)
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_rowconfigure(0, weight=1)
+        tree = ttk.Treeview(wrap, columns=("field", "before", "after"), show="headings",
+                            height=min(14, max(4, len(diff) + 1)))
+        for col, text, w, anc in (("field", "ช่องที่แก้", 200, "w"), ("before", "ก่อน", 240, "w"), ("after", "หลัง", 240, "w")):
+            tree.heading(col, text=text)
+            tree.column(col, width=w, anchor=anc)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        for field, before, after in diff:
+            tree.insert("", "end", values=(field, before, after))
+        if not diff:
+            tree.insert("", "end", values=("(ไม่พบช่องที่เปลี่ยนแปลง)", "", ""))
+
+        btns = CTkFrame(self, fg_color="transparent")
+        btns.grid(row=3, column=0, sticky="ew", padx=18, pady=14)
+        CTkButton(btns, text="ปิด", fg_color="#94A3B8", hover_color="#64748B", width=90,
+                  command=self.destroy).pack(side="left")
+        CTkButton(btns, text="❌ ไม่อนุมัติ (ย้อนเป็นค่าเดิม)", fg_color="#DC2626", hover_color="#B91C1C",
+                  command=lambda: on_reject(self)).pack(side="right", padx=(8, 0))
+        CTkButton(btns, text="✅ อนุมัติผลการแก้ไข", fg_color="#16A34A", hover_color="#15803D",
+                  command=lambda: on_approve(self)).pack(side="right")
+
+        self.update_idletasks()
+        _center_and_style_popup(self, master, 760, min(640, 330 + 26 * min(len(diff), 12)))
+        self.deiconify()
+        self.lift()
+        self.grab_set()

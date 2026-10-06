@@ -99,6 +99,7 @@ class DashboardCostScreen(CTkFrame):
         self.all_suppliers = []
         self._date_debounce_job = None
         self._order_breakdown = []   # 🟢 [เพิ่มใหม่] แยกจำนวน Order ตามชื่อ Sale สำหรับ popup
+        self._order_sales = {}       # ยอดขายรวม (ราคาขาย รวม เฉพาะแถว Select) แยกตามคนทำจัดซื้อ สำหรับ popup
 
         self._build_sidebar()
         self._build_main_content()
@@ -1319,6 +1320,7 @@ class DashboardCostScreen(CTkFrame):
         if df.empty:
             for key in self.kpi_labels:
                 self.kpi_labels[key].configure(text="–")
+            self._order_sales = {}
             return
 
         df_active = df
@@ -1354,6 +1356,16 @@ class DashboardCostScreen(CTkFrame):
             df_selected = df_active[_sel.isin(["✔", "เทียบเพื่อชุบ ✔"])]
         else:
             df_selected = df_active
+
+        # ยอดขายรวมแยกตามคนทำจัดซื้อ (PU) — ใช้คอลัมน์ "Sum of ราคาขายรวม" เฉพาะแถวที่ Select = ✔ เท่านั้น
+        # (PM ไม่ต้องการนับ "เทียบเพื่อชุบ ✔" ใน popup นี้ — ต่างจากการ์ดยอดขายรวมที่ยังนับทั้งสองแบบ)
+        self._order_sales = {}
+        if ("created_by" in df_active.columns and "ราคาขาย รวม" in df_active.columns
+                and "Select" in df_active.columns):
+            _only_check = df_active[df_active["Select"].astype(str).str.strip() == "✔"]
+            _amt = pd.to_numeric(_only_check["ราคาขาย รวม"], errors="coerce").fillna(0)
+            _by = _only_check["created_by"].astype(str).str.strip()
+            self._order_sales = _amt.groupby(_by).sum().to_dict()
 
         total_qty    = (df_selected["จำนวน"].sum()
                         if "จำนวน" in df_selected.columns else 0)
@@ -1451,10 +1463,10 @@ class DashboardCostScreen(CTkFrame):
         # 🟢 [แก้ไข] ปรับความสูงของ popup ให้ยืดหด "ตามจำนวนแถวจริง" แทนที่จะตายตัว 460 เสมอ
         # (เดิมมี 3 คน แต่กล่องสูง 460 เลยดูโล่งว่างข้างล่างเยอะ ไม่สมส่วน)
         n_rows = max(len(self._order_breakdown), 1)
-        header_h = 100      # หัวเรื่อง + "รวมทั้งหมด"
+        header_h = 130      # หัวเรื่อง + แถวรวมทั้งหมดที่ตรึงไว้ล่าง
         row_h = 46           # ความสูงต่อแถว (รวม pady)
         footer_h = 60        # ปุ่มปิด + padding
-        pop_w = 300
+        pop_w = 420
         pop_h = min(max(header_h + n_rows * row_h + footer_h, 220), 520)
 
         # คำนวณตำแหน่งให้ popup เด้งตรงกลางหน้าต่างหลักเสมอ — ก่อนหน้านี้ไม่ตั้งตำแหน่ง
@@ -1482,9 +1494,26 @@ class DashboardCostScreen(CTkFrame):
                  text_color=COLORS["text_dark"]).pack(padx=14, pady=(12, 2), anchor="w")
 
         total_all = sum(cnt for _, cnt in self._order_breakdown)
-        CTkLabel(pop, text=f"รวมทั้งหมด {total_all:,} Order",
-                 font=CTkFont(family=FONT_FAMILY, size=11),
-                 text_color=COLORS["text_medium"]).pack(padx=14, pady=(0, 8), anchor="w")
+        _sales_by = getattr(self, "_order_sales", {}) or {}
+        total_sales_all = sum(float(v) for v in _sales_by.values())
+
+        # แถวสรุป "รวม" ตรึงไว้ใต้รายการ (อยู่นอกกล่องเลื่อน) เห็นได้ตลอดแม้รายชื่อ PU จะยาวจนต้องเลื่อน
+        # สร้างก่อนด้วย side="bottom" เพื่อให้ได้พื้นที่ก่อนกล่องเลื่อนที่ขยายเต็ม — ปุ่มปิดอยู่ล่างสุดตามเดิม
+        CTkButton(pop, text="ปิด", command=pop.destroy, width=90,
+                  fg_color=COLORS["text_medium"]).pack(side="bottom", pady=(0, 12))
+        total_row = CTkFrame(pop, fg_color=COLORS["bg_white"], corner_radius=6,
+                              border_width=1, border_color=COLORS["border"])
+        total_row.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
+        total_row.grid_columnconfigure(0, weight=1)
+        CTkLabel(total_row, text="รวมทั้งหมด", font=CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+                 text_color=COLORS["text_dark"], anchor="w").grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=8)
+        CTkLabel(total_row, text=f"{total_all:,} Order",
+                 font=CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+                 text_color=COLORS["kpi_blue"]).grid(row=0, column=1, sticky="e", padx=(4, 8), pady=8)
+        CTkLabel(total_row, text=f"฿{total_sales_all:,.2f}",
+                 font=CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+                 text_color=COLORS["text_dark"], width=120, anchor="e").grid(
+                     row=0, column=2, sticky="e", padx=(0, 10), pady=8)
 
         scroll = CTkScrollableFrame(pop, fg_color=COLORS["bg_main"])
         scroll.grid_columnconfigure(0, weight=1)
@@ -1503,12 +1532,14 @@ class DashboardCostScreen(CTkFrame):
                          font=CTkFont(family=FONT_FAMILY, size=12),
                          text_color=COLORS["text_dark"], anchor="w").grid(
                              row=0, column=0, sticky="ew", padx=(10, 4), pady=6)
-                CTkLabel(row, text=f"{cnt:,}",
+                CTkLabel(row, text=f"{cnt:,} Order",
                          font=CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
-                         text_color=COLORS["kpi_blue"]).grid(row=0, column=1, sticky="e", padx=10, pady=8)
+                         text_color=COLORS["kpi_blue"]).grid(row=0, column=1, sticky="e", padx=(4, 8), pady=8)
+                CTkLabel(row, text=f"฿{float(_sales_by.get(str(sale_name).strip(), 0.0)):,.2f}",
+                         font=CTkFont(family=FONT_FAMILY, size=12),
+                         text_color=COLORS["text_dark"], width=120, anchor="e").grid(
+                             row=0, column=2, sticky="e", padx=(0, 10), pady=8)
 
-        CTkButton(pop, text="ปิด", command=pop.destroy, width=90,
-                  fg_color=COLORS["text_medium"]).pack(pady=(0, 12))
 
     # =========================================================
     # TABLE UPDATE

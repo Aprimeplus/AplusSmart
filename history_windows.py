@@ -1664,7 +1664,7 @@ class PurchaseDetailWindow(CTkToplevel):
                 so_number = self.po_data.get('so_number')
                 if so_number:
                     # คืนสถานะ SO กลับไปเป็น 'PO In Progress' เพื่อให้ PU รู้ว่าต้องจัดการต่อ
-                    cursor.execute("UPDATE commissions SET status = 'PO In Progress' WHERE so_number = %s AND is_active = 1", (so_number,))
+                    cursor.execute("UPDATE commissions SET status = 'PO In Progress' WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')", (so_number,))
                 
                 if po_creator_key:
                     # สร้าง Notification แจ้งเตือนคนสร้าง PO

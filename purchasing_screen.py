@@ -551,7 +551,7 @@ class MyTasksWindow(CTkToplevel):
                 # ลืม update → commission ค้างเป็น 'PO In Progress' แม้ส่ง PO แล้ว
                 if so_number:
                     cursor.execute(
-                        "UPDATE commissions SET status = 'PO Sent' WHERE so_number = %s AND is_active = 1",
+                        "UPDATE commissions SET status = 'PO Sent' WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')",
                         (so_number,)
                     )
 
@@ -3299,10 +3299,10 @@ class PurchasingScreen(CTkFrame):
                     so_number_to_update = header.get("so_number")
                     if so_number_to_update:
                         if status != 'Draft':
-                            cursor.execute("UPDATE commissions SET status = 'PO Sent' WHERE so_number = %s AND is_active = 1", (so_number_to_update,))
+                            cursor.execute("UPDATE commissions SET status = 'PO Sent' WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')", (so_number_to_update,))
                             print(f"Updated commissions status to 'PO Sent' for SO: {so_number_to_update}")
                         else:
-                            cursor.execute("UPDATE commissions SET status = 'PO In Progress' WHERE so_number = %s AND is_active = 1", (so_number_to_update,))
+                            cursor.execute("UPDATE commissions SET status = 'PO In Progress' WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')", (so_number_to_update,))
                     
                     if status == 'Pending Approval':
                         self._create_initial_approval_notification(cursor, new_po_id)

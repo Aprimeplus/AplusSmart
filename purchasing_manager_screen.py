@@ -1503,7 +1503,7 @@ class PurchasingManagerScreen(CTkFrame):
                     new_so_status = 'PO Sent'
                     cursor.execute("""
                         UPDATE commissions SET status = %s 
-                        WHERE so_number = %s AND is_active = 1
+                        WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')
                     """, (new_so_status, so_number))
                     # <<< END: สิ้นสุดการแก้ไข >>>
 

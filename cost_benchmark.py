@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox
+import tkinter.font as tkfont
 from customtkinter import CTkFrame, CTkLabel, CTkFont, CTkButton, CTkOptionMenu, CTkEntry, CTkCheckBox, CTkScrollableFrame, CTkToplevel, CTkComboBox
 import pandas as pd
 import psycopg2.extras
@@ -486,10 +487,14 @@ class InlineSearchPopup(tk.Toplevel):
         )
         
         scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=self.listbox.yview)
-        self.listbox.configure(yscrollcommand=scrollbar.set)
-        
+        hscrollbar = tk.Scrollbar(list_frame, orient="horizontal", command=self.listbox.xview)
+        self.listbox.configure(yscrollcommand=scrollbar.set, xscrollcommand=hscrollbar.set)
+
         scrollbar.pack(side="right", fill="y")
+        hscrollbar.pack(side="bottom", fill="x")
         self.listbox.pack(side="left", fill="both", expand=True)
+        self._base_w = 400
+        self._list_font = tkfont.Font(font=self.listbox.cget("font"))
 
         self.listbox.bind("<ButtonRelease-1>", self._on_click)
         self.entry.bind("<Down>", self._on_down)
@@ -525,26 +530,12 @@ class InlineSearchPopup(tk.Toplevel):
             print(f"place_near_cell error: {e}")
 
     def _set_geometry(self, rx, ry, popup_w, popup_h=240, ref_widget=None):
+        self._ref_widget = ref_widget
+        self._anchor_xy = (rx, ry)
+        self._popup_h = popup_h
         try:
-            if ref_widget is not None:
-                root = ref_widget.winfo_toplevel()
-                win_x = root.winfo_rootx()
-                win_y = root.winfo_rooty()
-                win_w = root.winfo_width()
-                win_h = root.winfo_height()
-            else:
-                win_x, win_y = 0, 0
-                win_w = self.winfo_screenwidth()
-                win_h = self.winfo_screenheight()
-
-            if rx + popup_w > win_x + win_w: rx = win_x + win_w - popup_w - 5
-            if ry + popup_h > win_y + win_h: ry = ry - popup_h - 30
-
-            rx = max(rx, win_x)
-            ry = max(ry, win_y)
-
             self.withdraw()
-            self.geometry(f"{popup_w}x{popup_h}+{rx}+{ry}")
+            self._apply_geometry()
             def _show_and_focus():
                 self.deiconify()
                 try: self.entry.focus_set()
@@ -552,6 +543,31 @@ class InlineSearchPopup(tk.Toplevel):
             self.after(1, _show_and_focus)
         except Exception:
             pass
+
+    def _bounds(self):
+        ref = getattr(self, "_ref_widget", None)
+        if ref is not None:
+            root = ref.winfo_toplevel()
+            return (root.winfo_rootx(), root.winfo_rooty(),
+                    root.winfo_width(), root.winfo_height())
+        return 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+
+    def _apply_geometry(self):
+        # กว้างพอดีชื่อสินค้าที่ยาวที่สุด (เดิมล็อก 400px ทำให้ชื่อถูกตัด) แต่ไม่เกินหน้าต่างแอป
+        # เทียบกับหน้าต่างแอป ไม่ใช่จอหลัก — ไม่งั้นพอแอปอยู่จอที่สองจะเด้งไปจอหลัก
+        if not getattr(self, "_anchor_xy", None):
+            return
+        rx, ry = self._anchor_xy
+        win_x, win_y, win_w, win_h = self._bounds()
+        items = self.listbox.get(0, tk.END)
+        longest = max((self._list_font.measure(str(i)) for i in items), default=0)
+        popup_w = max(self._base_w, min(longest + 50, win_w - 10))
+        popup_h = self._popup_h
+        if rx + popup_w > win_x + win_w: rx = win_x + win_w - popup_w - 5
+        if ry + popup_h > win_y + win_h: ry = ry - popup_h - 30
+        rx = max(rx, win_x)
+        ry = max(ry, win_y)
+        self.geometry(f"{popup_w}x{popup_h}+{rx}+{ry}")
 
     def filter_list(self, term):
         term = (term or "").lower().strip()
@@ -617,6 +633,14 @@ class InlineSearchPopup(tk.Toplevel):
                 pass
         else:
             self._add_new_item = None
+
+        self._fit_width()
+
+    def _fit_width(self):
+        try:
+            self._apply_geometry()
+        except Exception:
+            pass
 
     def _on_type(self, *args):
         # Debounce 120ms ลดลงนิดหน่อยเพื่อให้รู้สึกตอบสนองเร็วขึ้น 
@@ -3232,15 +3256,42 @@ class CostBenchmarkScreen(CTkFrame):
                 full_text = "\n".join(lines)
                 self.clipboard_clear()
                 self.clipboard_append(full_text)
+                # 🟢 [เพิ่มใหม่] user หลายคนถนัด Ctrl+C เลือกแถวคัดลอกตรงนี้ ไม่ผ่าน popup "Short Note"
+                # เลย ทำให้ส่งราคาลูกค้าไปแล้วจริง แต่ระบบไม่รู้ ยังค้างโชว์ในหน้า "งานค้าง" ตลอด —
+                # ปิดงาน SLA ให้ด้วยถ้าแถวที่ copy มี SO ที่ติ๊ก Select = ✔ (เหมือนเงื่อนไขตอนกด
+                # ปุ่ม Short Note) จะได้ไม่ต้องบังคับ user เปลี่ยนพฤติกรรม
+                self._sla_record_from_rows(selected_rows)
                 return "break"
 
-            if getattr(self, '_last_active_sheet', 'main') == 'frozen' and self.sheet_frozen:
-                self.sheet_frozen.copy()
-            else:
-                self.sheet.copy()
+            # 🟢 [เพิ่มใหม่] กรณี user ลาก select เป็นช่วงเซลล์ (ไม่ได้คลิกเลขแถวซ้ายสุด) แล้ว Ctrl+C
+            # ไม่เข้าเงื่อนไข selected_rows ด้านบน แต่ก็ยังเป็นการ "ส่งงาน" เหมือนกัน ต้องปิด SLA ให้ด้วย
+            copy_sheet = self.sheet_frozen if (getattr(self, '_last_active_sheet', 'main') == 'frozen' and self.sheet_frozen) else self.sheet
+            copy_sheet.copy()
+            try:
+                cell_rows = {r for r, _c in (copy_sheet.get_selected_cells() or [])}
+                self._sla_record_from_rows(cell_rows)
+            except Exception as _e:
+                print(f"_mt_copy_router SLA record (cell range) error: {_e}")
         except Exception:
             pass
         return "break"
+
+    def _sla_record_from_rows(self, rows):
+        """หา SO ที่ติ๊ก Select = ✔ ในแถวที่ user เพิ่ง Ctrl+C บนตารางหลัก (ไม่ผ่าน Short Note popup)
+        แล้วปิดงาน SLA ให้ — เผื่อ user ถนัด copy แถวตรงๆ แทนการเปิด popup"""
+        try:
+            so_numbers = set()
+            for r in sorted(rows):
+                sel_val = str(self._sheet_get(r, "Select") or "").strip()
+                if sel_val not in ("✔", "เทียบเพื่อชุบ ✔"):
+                    continue
+                so_val = str(self._sheet_get(r, "Sale Order No.") or "").strip()
+                if so_val:
+                    so_numbers.add(so_val)
+            for so_val in so_numbers:
+                self._sla_record_copy(so_val, method="grid_ctrl_c")
+        except Exception as _e:
+            print(f"_sla_record_from_rows error: {_e}")
 
     def _clean_clipboard_quotes(self):
         """ล้างเครื่องหมาย Double Quote ที่เกิดจากระบบ CSV ตอน Copy"""
@@ -7295,15 +7346,15 @@ class CostBenchmarkScreen(CTkFrame):
             if selected:
                 pop.clipboard_clear()
                 pop.clipboard_append(selected)
-                # 🟢 [แก้ไข] Ctrl+A → Ctrl+C (หรือ Ctrl+C โดยไม่เลือกอะไร) คือการ copy Short Note ทั้งก้อน
-                # เหมือนกดปุ่ม "Copy to Clipboard" แต่เดิมทางลัดนี้ copy อย่างเดียว ไม่ปิดงานใน SLA เลย
-                # ทำให้งานค้างในหน้า "งานค้าง" ทั้งที่ user ส่ง Short Note แล้ว (พบจากเคส TG0923-3-@-phatt.fah)
+                # 🟢 [แก้ไข] เดิมปิดงาน SLA ให้เฉพาะตอน copy "ทั้งก้อน" เป๊ะๆ เท่านั้น — ถ้า user
+                # เลือกคัดลอกแค่บางส่วนของ Short Note (เช่น แก้คำก่อนส่ง) จะ copy ได้จริงแต่ไม่ปิดงาน
+                # ค้างให้ ทั้งที่ user ก็ส่งราคาออกจาก popup นี้ไปแล้วเหมือนกัน ตัดเงื่อนไขเทียบข้อความ
+                # เป๊ะออก ถือว่า Ctrl+C ใดๆ ในกล่องนี้ = ส่งงานแล้ว (พบจากเคส TG0923-3-@-phatt.fah)
                 try:
-                    if selected.strip() == _get_txt_content().strip():
-                        _sel_so = listbox.curselection()
-                        _so_val = listbox.get(_sel_so[0]) if _sel_so else ""
-                        if _so_val and _so_val != "?":
-                            self._sla_record_copy(_so_val, method="keyboard")
+                    _sel_so = listbox.curselection()
+                    _so_val = listbox.get(_sel_so[0]) if _sel_so else ""
+                    if _so_val and _so_val != "?":
+                        self._sla_record_copy(_so_val, method="keyboard")
                 except Exception as _e:
                     print(f"_copy_selection SLA record error: {_e}")
             return "break"

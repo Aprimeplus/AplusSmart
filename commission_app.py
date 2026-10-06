@@ -4,7 +4,7 @@ import re
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton, CTkRadioButton, 
-                           CTkEntry, CTkOptionMenu, CTkScrollableFrame, CTkToplevel, CTkTabview, CTkCheckBox)
+                           CTkEntry, CTkOptionMenu, CTkScrollableFrame, CTkToplevel, CTkTabview, CTkCheckBox, CTkTextbox)
 import pandas as pd
 from datetime import datetime, timedelta
 import traceback
@@ -20,6 +20,7 @@ from daily_report_widget import DailyReportWidget
 from outstanding_dashboard_tab import OutstandingDashboardTab
 from customer_monitoring import CustomerMonitoringWidget
 from project_screen import ProjectScreen, _center_and_style_popup
+from so_change_logic import revert_change_request, expire_overdue_requests
 
 class PaymentUpdateWindow(CTkToplevel):
     """หน้าต่าง Pop-up สำหรับอัปเดตข้อมูลการชำระเงินโดยเฉพาะ"""
@@ -1447,6 +1448,7 @@ class CommissionApp(CTkFrame):
         }
 
         self.editing_record_id = None
+        self.editing_change_request_id = None   # ถ้ามีค่า = กำลังแก้ SO ตามคำขอแก้ไขที่ SM อนุมัติแล้ว
         self.history_window = None
         self.customer_data = {}
         self.customer_codes = []
@@ -1553,6 +1555,7 @@ class CommissionApp(CTkFrame):
             app_container=self.app_container,
             sale_key=self.sale_key,
             sale_name=self.sale_name,
+            on_edit_full=self._start_change_request_edit,
         )
         self.so_edit_view.pack(fill="both", expand=True)
 
@@ -1682,7 +1685,26 @@ class CommissionApp(CTkFrame):
 
     def _start_polling(self):
         self._update_tasks_badge()
+        self._sweep_expired_change_requests()
         self.polling_job_id = self.after(30000, self._start_polling)
+
+    def _sweep_expired_change_requests(self):
+        """ย้อน SO ที่สิทธิ์แก้ไขหมดอายุกลับเป็นค่าเดิม แล้วรีเฟรชรายการถ้ามีที่ถูกย้อน"""
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            n = expire_overdue_requests(conn)
+        except Exception as e:
+            print(f"sweep expired change requests error: {e}")
+            return
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+        if n:
+            try:
+                self.so_edit_view.load_list()
+            except Exception:
+                pass
 
     def _on_destroy(self, event):
         if hasattr(event, 'widget') and event.widget is self:
@@ -1789,12 +1811,118 @@ class CommissionApp(CTkFrame):
                 parent=self.history_window
             )
 
+    # ── แก้ SO ทั้งใบตามคำขอที่ SM อนุมัติสิทธิ์แล้ว (so_change_requests) ───────────
+    def _change_request_still_valid(self, req_id):
+        """เช็คว่าคำขอยัง Approved และไม่หมดอายุ ถ้าหมดอายุให้ย้อน SO เป็นค่าเดิมทันที"""
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("SELECT status, expires_at < NOW() FROM so_change_requests WHERE id = %s", (req_id,))
+                row = cur.fetchone()
+                if not row or row[0] != 'Approved':
+                    conn.rollback()
+                    messagebox.showinfo("คำขอไม่พร้อมแล้ว", "คำขอแก้ไข SO นี้ไม่อยู่ในสถานะที่แก้ไขได้แล้ว", parent=self)
+                    return False
+                if row[1]:
+                    revert_change_request(cur, req_id, 'system', 'สิทธิ์แก้ไขหมดอายุ (เกิน 7 วัน)')
+                    conn.commit()
+                    messagebox.showwarning("สิทธิ์หมดอายุ",
+                                           "สิทธิ์แก้ไข SO นี้หมดอายุแล้ว ระบบย้อน SO กลับเป็นค่าเดิมให้แล้ว\n"
+                                           "หากต้องการแก้ไขอีก กรุณาส่งคำขอใหม่", parent=self)
+                    return False
+            conn.rollback()
+            return True
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Error", f"ตรวจสอบคำขอไม่สำเร็จ: {e}", parent=self)
+            return False
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
+    def _start_change_request_edit(self, row_dict):
+        """เปิดฟอร์ม SO หลักด้วยข้อมูลเดิม เพื่อแก้ไขทั้งใบตามคำขอที่ได้รับอนุมัติ"""
+        req_id = row_dict.get("change_req_id")
+        if not req_id or not self._change_request_still_valid(int(req_id)):
+            try:
+                self.so_edit_view.load_list()
+            except Exception:
+                pass
+            return
+        if not messagebox.askyesno(
+                "แก้ไข SO ทั้งใบ",
+                f"โหลดข้อมูล SO {row_dict.get('so_number')} ลงฟอร์มเพื่อแก้ไข?\n\n"
+                "ข้อมูลที่กรอกค้างในฟอร์มตอนนี้จะถูกแทนที่\n"
+                "เมื่อแก้เสร็จกดบันทึก ระบบจะส่งผลให้ Sales Manager อนุมัติอีกครั้ง", parent=self):
+            return
+        try:
+            df = pd.read_sql_query(
+                "SELECT * FROM commissions WHERE id = %s AND is_active = 1",
+                self.app_container.pg_engine, params=(int(row_dict.get("id")),))
+            if df.empty:
+                messagebox.showerror("ไม่พบข้อมูล", "ไม่พบข้อมูล SO นี้แล้ว กรุณารีเฟรช", parent=self)
+                return
+            data = df.iloc[0].to_dict()
+        except Exception as e:
+            messagebox.showerror("Error", f"โหลดข้อมูลไม่สำเร็จ: {e}", parent=self)
+            return
+        self._clear_form(confirm=False)
+        self.editing_record_id = int(data.get("id"))
+        self.editing_change_request_id = int(req_id)
+        self._populate_form_from_data(data)
+        try:
+            self.main_tabview.set("📝 สร้าง/แก้ไข Sales Order")
+        except Exception:
+            pass
+
+    def _finalize_change_request_submit(self, req_id, so_number):
+        """หลังบันทึกแถวใหม่แล้ว: ผูกแถวใหม่เข้ากับคำขอ เปลี่ยนเป็น Submitted และแจ้ง SM"""
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM commissions WHERE so_number = %s AND is_active = 1 "
+                            "ORDER BY id DESC LIMIT 1", (so_number,))
+                new_row = cur.fetchone()
+                new_id = new_row[0] if new_row else None
+                cur.execute("""
+                    UPDATE so_change_requests
+                    SET status = 'Submitted', new_commission_id = %s, submitted_at = NOW()
+                    WHERE id = %s AND status = 'Approved'
+                """, (new_id, req_id))
+                cur.execute("SELECT sale_key FROM sales_users WHERE role = 'Sales Manager' AND status = 'Active'")
+                for (mgr,) in cur.fetchall():
+                    cur.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
+                        VALUES (%s, %s, FALSE, %s)
+                    """, (mgr, f"[EDIT-REVIEW] {self.sale_name} ({self.sale_key}) แก้ไข SO {so_number} เสร็จแล้ว รออนุมัติผล", new_id))
+                cur.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES ('SO Change Submitted', 'commissions', %s, %s, %s, NOW())
+                """, (new_id, self.sale_key, f"request #{req_id}"))
+            conn.commit()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Error",
+                                 f"บันทึกแก้ไข SO แล้ว แต่ส่งผลให้ SM ไม่สำเร็จ: {e}\nกรุณาแจ้งผู้ดูแลระบบ", parent=self)
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
+
     def _save_data(self):
         """บันทึกข้อมูล SO และเก็บประวัติการแก้ไข (Audit Trail)"""
         form_data = self._gather_data_from_form()
         is_valid, message = self._validate_form(form_data)
         if not is_valid:
             messagebox.showerror("ข้อมูลไม่ถูกต้อง", message, parent=self)
+            return
+
+        # แก้ SO ตามคำขอแก้ไข: ตรวจว่าสิทธิ์ยังใช้ได้ก่อนบันทึก (อาจหมดอายุระหว่างที่เซลส์เปิดฟอร์มค้างไว้)
+        if self.editing_change_request_id and not self._change_request_still_valid(self.editing_change_request_id):
+            self._clear_form(confirm=False)
             return
 
         # ตรวจสอบวันที่จัดส่งเกิน cutoff — บังคับให้เปลี่ยนรอบคอมก่อนบันทึก
@@ -1891,7 +2019,7 @@ class CommissionApp(CTkFrame):
                     cursor.execute("UPDATE commissions SET is_active = 0 WHERE id = %s", (self.editing_record_id,))
                     
                     # 2. ปรับสถานะใบใหม่ (ให้เป็น Edited เสมอ รอเซลส์ไปกด "นำส่ง" เองทีหลัง)
-                    form_data['status'] = 'Edited'
+                    form_data['status'] = 'Edit Review' if self.editing_change_request_id else 'Edited'
                     form_data['original_id'] = self.editing_record_id
                 else:
                     form_data['status'] = 'Draft'
@@ -1911,9 +2039,19 @@ class CommissionApp(CTkFrame):
                     payment1_amount=form_data.get('payment1_amount', 0),
                     payment1_date=form_data.get('payment1_date'))
 
-            messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
+            if self.editing_change_request_id:
+                self._finalize_change_request_submit(self.editing_change_request_id, form_data.get('so_number'))
+                messagebox.showinfo("ส่งผลการแก้ไขแล้ว",
+                                    "บันทึกการแก้ไข SO แล้ว และส่งให้ Sales Manager อนุมัติผล\n"
+                                    "ระหว่างรอ SO นี้ยังถูกพักไว้", parent=self)
+            else:
+                messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)
             self._clear_form(confirm=False)
             self._update_tasks_badge()
+            try:
+                self.so_edit_view.load_list()
+            except Exception:
+                pass
 
         except Exception as e:
             if conn: conn.rollback()
@@ -3635,6 +3773,7 @@ class CommissionApp(CTkFrame):
         self.unloading_status_var.set("ไม่รวมลง")
 
         self.editing_record_id = None
+        self.editing_change_request_id = None
         self._toggle_customer_fields()
         self._update_final_calculations()
 
@@ -3717,14 +3856,19 @@ class SOEditTabView(CTkFrame):
 
     PAGE_SIZE = 10
 
+    # SO ที่ส่งไปแล้วและขอแก้ไขได้ (Paid/Cancelled ห้ามแตะ — ค่าคอมคิดไปแล้ว)
+    REQUESTABLE_STATUSES = ('Pending Sale Manager Approval', 'Pending PU', 'PO In Progress',
+                            'PO Sent', 'HR Verified')
+
     THAI_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
                    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
 
-    def __init__(self, master, app_container, sale_key, sale_name, **kwargs):
+    def __init__(self, master, app_container, sale_key, sale_name, on_edit_full=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app_container = app_container
         self.sale_key = sale_key
         self.sale_name = sale_name
+        self.on_edit_full = on_edit_full   # เรียกตอนเซลส์กด "แก้ไข SO ทั้งใบ" (คำขอที่ SM อนุมัติแล้ว)
 
         self._all_rows = []        # ข้อมูลทั้งหมดจาก DB
         self._filtered_rows = []   # หลัง filter ด้วย search
@@ -3741,7 +3885,7 @@ class SOEditTabView(CTkFrame):
         CTkLabel(title_bar, text="✏️ แก้ไข SO ที่ยื่นแล้ว",
                  font=CTkFont(size=16, weight="bold")).pack(side="left")
         CTkLabel(title_bar,
-                 text="วันที่จัดส่ง / ค่าจัดส่ง → บันทึกทันที  |  รอบเดือนค่าคอม → รอ SM อนุมัติ",
+                 text="แก้ไข SO ที่ส่งไปแล้ว → ขอแก้ไขทั้งใบ แล้วรอ SM อนุมัติ 2 ด่าน  |  SO ที่จ่ายค่าคอมแล้วแก้ไม่ได้",
                  font=CTkFont(size=12), text_color="gray").pack(side="right")
 
         # ── Row 1: Search bar + Refresh ─────────────────────────
@@ -3806,7 +3950,19 @@ class SOEditTabView(CTkFrame):
                            c.commission_month, c.commission_year, c.status,
                            (SELECT ser.status FROM so_edit_requests ser
                             WHERE ser.commission_id = c.id AND ser.status = 'pending'
-                            ORDER BY ser.id DESC LIMIT 1) AS pending_edit
+                            ORDER BY ser.id DESC LIMIT 1) AS pending_edit,
+                           (SELECT scr.status FROM so_change_requests scr
+                            WHERE scr.so_number = c.so_number
+                              AND scr.status IN ('Requested', 'Approved', 'Submitted')
+                            ORDER BY scr.id DESC LIMIT 1) AS change_req,
+                           (SELECT scr.id FROM so_change_requests scr
+                            WHERE scr.so_number = c.so_number
+                              AND scr.status IN ('Requested', 'Approved', 'Submitted')
+                            ORDER BY scr.id DESC LIMIT 1) AS change_req_id,
+                           (SELECT scr.expires_at FROM so_change_requests scr
+                            WHERE scr.so_number = c.so_number
+                              AND scr.status IN ('Requested', 'Approved', 'Submitted')
+                            ORDER BY scr.id DESC LIMIT 1) AS change_req_expires
                     FROM commissions c
                     WHERE c.sale_key = %s AND c.is_active = 1
                       AND c.status NOT IN ('Cancelled')
@@ -3948,9 +4104,13 @@ class SOEditTabView(CTkFrame):
             month_str, year_str = str(m), str(y)
 
         raw_status = row.get("status") or ""
-        if raw_status in ("Paid", "HR Verified"):
+        if raw_status == "Paid":
             status_display = "✅ จ่ายค่าคอมแล้ว"
             status_color   = "#16A34A"
+        elif raw_status == "HR Verified":
+            # HR ตรวจแล้วแต่ยังไม่จ่ายจริง (ขอแก้ไขได้ แล้ว HR ต้องตรวจใหม่)
+            status_display = "🔎 HR ตรวจแล้ว รอจ่ายค่าคอม"
+            status_color   = "#2563EB"
         else:
             status_display = "🕐 ยังไม่จ่ายค่าคอม"
             status_color   = "#D97706"
@@ -3961,13 +4121,48 @@ class SOEditTabView(CTkFrame):
                  font=CTkFont(size=13),
                  text_color="#7C3AED" if has_pending else status_color).pack(anchor="w")
 
+        # ── ขอแก้ไข SO ทั้งใบ (ต้องผ่าน SM 2 ด่าน) ──
+        change_req = row.get("change_req")
+        CHANGE_BADGE = {
+            "Requested": ("⏳ รอ SM อนุมัติสิทธิ์แก้ไข SO", "#B45309"),
+            "Approved":  ("✅ SM อนุมัติแล้ว — แก้ไข SO ได้ (ภายในเวลาที่กำหนด)", "#16A34A"),
+            "Submitted": ("⏳ ส่งผลการแก้ไขแล้ว — รอ SM อนุมัติผล", "#B45309"),
+        }
+        if change_req in CHANGE_BADGE:
+            txt, col = CHANGE_BADGE[change_req]
+            exp = row.get("change_req_expires")
+            if change_req == "Approved" and exp is not None:
+                try:
+                    txt = f"✅ SM อนุมัติแล้ว — แก้ไข SO ได้ถึง {exp.strftime('%d/%m/%Y %H:%M')}"
+                except Exception:
+                    pass
+            CTkLabel(info, text=txt, font=CTkFont(size=13, weight="bold"),
+                     text_color=col).pack(anchor="w", pady=(2, 0))
+
         # Edit button
         btn_frame = CTkFrame(card, fg_color="transparent")
         btn_frame.grid(row=0, column=1, padx=15, pady=8)
-        CTkButton(btn_frame, text="✏️ แก้ไข",
-                  fg_color="#3B82F6", hover_color="#2563EB",
-                  width=90, height=32,
-                  command=lambda r=row: self._open_edit_dialog(r)).pack()
+        if change_req == "Approved" and self.on_edit_full:
+            CTkButton(btn_frame, text="✏️ แก้ไข SO ทั้งใบ",
+                      fg_color="#16A34A", hover_color="#15803D",
+                      width=150, height=32,
+                      command=lambda r=row: self.on_edit_full(r)).pack()
+        # ปุ่ม "แก้ไข" เดิม (แก้วันที่จัดส่ง/ค่าจัดส่งทันทีโดยไม่ผ่าน SM) ถูกตัดออกตามที่ PM ต้องการ —
+        # การแก้ SO ที่ส่งไปแล้วทุกแบบต้องผ่านคำขอแก้ไข SO ทั้งใบ (SM อนุมัติ 2 ด่าน)
+        if change_req is None and raw_status in self.REQUESTABLE_STATUSES:
+            CTkButton(btn_frame, text="📝 ขอแก้ไข SO ทั้งใบ",
+                      fg_color="#7C3AED", hover_color="#6D28D9",
+                      width=150, height=32,
+                      command=lambda r=row: self._open_change_request_dialog(r)).pack()
+        # การ์ดที่ไม่มีปุ่ม (เช่น SO ที่ Paid) ต้องไม่เหลือกรอบปุ่มเปล่า ไม่งั้นกรอบเปล่าจะมีความสูงตั้งต้น
+        # ดันให้การ์ดสูงกว่าใบอื่น
+        if not btn_frame.winfo_children():
+            btn_frame.destroy()
+
+    def _open_change_request_dialog(self, row_dict):
+        dlg = SOChangeRequestDialog(self, self.app_container, row_dict, self.sale_key, self.sale_name)
+        self.wait_window(dlg)
+        self.load_list()
 
     # ── Open edit dialog ──────────────────────────────────────────
     def _open_edit_dialog(self, row_dict):
@@ -3975,6 +4170,107 @@ class SOEditTabView(CTkFrame):
                            row_dict, self.sale_key, self.sale_name)
         self.wait_window(dlg)
         self.load_list()   # reload + reset to page 1 after save
+
+
+class SOChangeRequestDialog(CTkToplevel):
+    """Sale ขอแก้ไข SO ที่ส่งไปแล้วทั้งใบ — ต้องระบุเหตุผล แล้วส่งให้ SM อนุมัติสิทธิ์แก้ไขก่อน
+    ระหว่างรอ SO จะถูกล็อก (สถานะ 'Edit Requested') ไม่ให้ PU/HR ทำงานต่อ"""
+
+    def __init__(self, master, app_container, row, sale_key, sale_name):
+        super().__init__(master)
+        self.withdraw()
+        self.app_container = app_container
+        self.row = row
+        self.sale_key = sale_key
+        self.sale_name = sale_name
+        self.title("ขอแก้ไข SO")
+        self.resizable(False, False)
+        self.transient(master.winfo_toplevel())
+
+        so = row.get("so_number", "")
+        CTkLabel(self, text=f"📝 ขอแก้ไข SO: {so}", font=CTkFont(size=16, weight="bold")).pack(
+            anchor="w", padx=20, pady=(16, 2))
+        CTkLabel(self, text=f"ลูกค้า: {row.get('customer_name') or '-'}   |   สถานะปัจจุบัน: {row.get('status')}",
+                 font=CTkFont(size=12), text_color="gray50").pack(anchor="w", padx=20)
+        CTkLabel(self, text=("ส่งคำขอให้ Sales Manager อนุมัติก่อน จึงจะแก้ไข SO ได้\n"
+                             "ระหว่างรอและระหว่างแก้ไข SO นี้จะถูกพักไว้ ฝ่ายจัดซื้อ/HR ยังทำงานต่อไม่ได้"),
+                 font=CTkFont(size=12), text_color="#B45309", justify="left").pack(anchor="w", padx=20, pady=(8, 4))
+
+        CTkLabel(self, text="เหตุผล / ปัญหาที่ต้องการแก้ไข *", font=CTkFont(size=13, weight="bold")).pack(
+            anchor="w", padx=20, pady=(8, 2))
+        self.reason_box = CTkTextbox(self, width=440, height=110)
+        self.reason_box.pack(padx=20)
+        self.reason_box.focus_set()
+
+        btns = CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=20, pady=16)
+        CTkButton(btns, text="ยกเลิก", fg_color="#94A3B8", hover_color="#64748B",
+                  command=self.destroy).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        CTkButton(btns, text="ส่งคำขอให้ SM", fg_color="#7C3AED", hover_color="#6D28D9",
+                  command=self._submit).pack(side="left", expand=True, fill="x", padx=(6, 0))
+
+        self.update_idletasks()
+        _center_and_style_popup(self, master, 500, 380)
+        self.deiconify()
+        self.lift()
+        self.grab_set()
+
+    def _submit(self):
+        reason = self.reason_box.get("1.0", "end").strip()
+        if len(reason) < 5:
+            messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาระบุเหตุผลที่ต้องการแก้ไข SO", parent=self)
+            return
+        so_number = self.row.get("so_number")
+        comm_id = int(self.row.get("id"))
+        conn = None
+        try:
+            conn = self.app_container.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("SELECT status, is_active FROM commissions WHERE id = %s FOR UPDATE", (comm_id,))
+                cur_row = cur.fetchone()
+                if not cur_row or cur_row[1] != 1 or cur_row[0] not in SOEditTabView.REQUESTABLE_STATUSES:
+                    conn.rollback()
+                    messagebox.showwarning(
+                        "ขอแก้ไขไม่ได้",
+                        f"SO นี้อยู่ในสถานะ '{cur_row[0] if cur_row else '-'}' ซึ่งขอแก้ไขไม่ได้แล้ว "
+                        "(อาจมีการเปลี่ยนสถานะไปแล้ว) กรุณารีเฟรชรายการ", parent=self)
+                    return
+                original_status = cur_row[0]
+                cur.execute("""
+                    SELECT 1 FROM so_change_requests
+                    WHERE so_number = %s AND status IN ('Requested', 'Approved', 'Submitted')
+                """, (so_number,))
+                if cur.fetchone():
+                    conn.rollback()
+                    messagebox.showinfo("มีคำขออยู่แล้ว", "SO นี้มีคำขอแก้ไขที่ยังไม่จบอยู่แล้ว", parent=self)
+                    return
+                cur.execute("""
+                    INSERT INTO so_change_requests
+                        (so_number, original_commission_id, sale_key, original_status, reason, status)
+                    VALUES (%s, %s, %s, %s, %s, 'Requested') RETURNING id
+                """, (so_number, comm_id, self.sale_key, original_status, reason))
+                req_id = cur.fetchone()[0]
+                cur.execute("UPDATE commissions SET status = 'Edit Requested' WHERE id = %s", (comm_id,))
+                cur.execute("SELECT sale_key FROM sales_users WHERE role = 'Sales Manager' AND status = 'Active'")
+                for (mgr,) in cur.fetchall():
+                    cur.execute("""
+                        INSERT INTO notifications (user_key_to_notify, message, is_read, related_so_id)
+                        VALUES (%s, %s, FALSE, %s)
+                    """, (mgr, f"[EDIT-REQ] {self.sale_name} ({self.sale_key}) ขอแก้ไข SO {so_number}: {reason[:80]}", comm_id))
+                cur.execute("""
+                    INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
+                    VALUES ('SO Change Request', 'commissions', %s, %s, %s, NOW())
+                """, (comm_id, self.sale_key, f"request #{req_id} (จากสถานะ {original_status}): {reason}"))
+            conn.commit()
+            messagebox.showinfo("ส่งคำขอแล้ว", f"ส่งคำขอแก้ไข SO {so_number} ให้ SM แล้ว\nรอ SM อนุมัติสิทธิ์แก้ไข", parent=self)
+            self.destroy()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            messagebox.showerror("Error", f"ส่งคำขอไม่สำเร็จ: {e}", parent=self)
+        finally:
+            if conn:
+                self.app_container.release_connection(conn)
 
 
 # ============================================================

@@ -296,6 +296,143 @@ class _NewProjectDialog(CTkToplevel):
             self.on_submit(code, name, customer, value, deposit_pct, deposit_method, planned_lot_count)
 
 
+def load_project_gp_df(engine, project_id):
+    return pd.read_sql_query("""
+        SELECT c.id, c.so_number, c.sale_key,
+               COALESCE(c.final_sales_amount, c.sales_service_amount, 0) AS final_sales_amount,
+               COALESCE(c.final_cost_amount, 0) AS final_cost_amount,
+               COALESCE(c.cost_multiplier, 1.03) AS cost_multiplier,
+               COALESCE(c.commission_reserve_amount, 0) AS commission_reserve_amount,
+               COALESCE(c.reserve_status, 'Pending') AS reserve_status
+        FROM commissions c
+        JOIN project_lots pl ON pl.so_number = c.so_number
+        WHERE pl.project_id = %s AND c.is_active = 1
+          AND c.status NOT IN ('Cancelled', 'Cancelled by PU')
+        ORDER BY c.so_number
+    """, engine, params=(project_id,))
+
+
+def build_gp_derivation_table(parent, df, total_sales, total_cost, gp_pct):
+    """ตารางแสดงที่มาของ GP โปรเจกต์ ราย SO + สูตรรวม — GP รวมคิดจากยอดรวมก่อน ไม่ใช่เฉลี่ย GP ราย Lot"""
+    box = CTkFrame(parent, fg_color="#F8FAFC", corner_radius=8, border_width=1, border_color="#E2E8F0")
+    CTkLabel(box, text="📐 ที่มาของ GP (คิดจากยอดรวมทุก Lot แล้วค่อยหาร ไม่ใช่เฉลี่ย GP ราย Lot)",
+             font=CTkFont(size=12, weight="bold"), text_color="#1E3A5F").pack(anchor="w", padx=12, pady=(8, 4))
+
+    cols = ["so", "sales", "cost", "mult", "cost_total", "profit", "gp"]
+    heads = {"so": "SO", "sales": "ยอดขาย", "cost": "ต้นทุนจริง", "mult": "ตัวคูณ",
+             "cost_total": "ต้นทุนรวม (×ตัวคูณ)", "profit": "กำไร", "gp": "GP ราย SO"}
+    tree = ttk.Treeview(box, columns=cols, show="headings", height=min(8, max(2, len(df) + 1)))
+    for c in cols:
+        tree.heading(c, text=heads[c])
+        tree.column(c, width=170 if c == "so" else (150 if c == "cost_total" else 100),
+                    anchor="w" if c == "so" else "e")
+    for _, r in df.iterrows():
+        sales = float(r["final_sales_amount"])
+        cost_raw = float(r["final_cost_amount"])
+        mult = float(r["cost_multiplier"])
+        cost_tot = cost_raw * mult
+        profit = sales - cost_tot
+        gp = (profit / sales * 100) if sales > 0 else 0.0
+        tree.insert("", "end", values=(r["so_number"], f"{sales:,.2f}", f"{cost_raw:,.2f}", f"{mult:.2f}",
+                                       f"{cost_tot:,.2f}", f"{profit:,.2f}", f"{gp:.2f}%"))
+    tree.insert("", "end", values=("รวมทั้งโครงการ", f"{total_sales:,.2f}", "", "",
+                                   f"{total_cost:,.2f}", f"{total_sales - total_cost:,.2f}", f"{gp_pct:.2f}%"),
+                tags=("total",))
+    tree.tag_configure("total", background="#DBEAFE")
+    tree.pack(fill="x", padx=12, pady=(0, 6))
+
+    zero_cost = int((df["final_cost_amount"] <= 0).sum())
+    if zero_cost:
+        CTkLabel(box, text=f"⚠ มี {zero_cost} SO ที่ยังไม่มีต้นทุนจริง (เป็น 0) — GP รวมอาจสูงเกินจริง ควรตรวจก่อนปิดโปรเจกต์",
+                 font=CTkFont(size=11, weight="bold"), text_color="#DC2626", wraplength=640, justify="left"
+                 ).pack(anchor="w", padx=12, pady=(0, 4))
+    CTkLabel(box, text=(f"สูตร: GP = (ยอดขายรวม − ต้นทุนรวม) ÷ ยอดขายรวม × 100\n"
+                        f"     = ({total_sales:,.2f} − {total_cost:,.2f}) ÷ {total_sales:,.2f} × 100 = {gp_pct:.2f}%"),
+             font=CTkFont(size=12), text_color="#334155", justify="left").pack(anchor="w", padx=12, pady=(0, 10))
+    return box
+
+
+def project_offset_info(engine, project_id):
+    """เทียบ "มูลค่าโครงการ (ตั้งไว้)" กับ "ยอดขายจริงรวมทุก Lot" (ค่าสินค้า+ค่าส่ง+บริการ + VAT 7% ตามสูตรเดียวกับ
+    ยอดที่ต้องชำระของ SO) — ส่วนต่าง (offset) = มูลค่าโครงการ − ยอดขายจริง ไม่รวม Lot ที่ยกเลิก"""
+    row = pd.read_sql_query("""
+        SELECT p.total_project_value, p.planned_lot_count,
+               COUNT(c.id) AS lot_count,
+               COALESCE(SUM(
+                   (CASE WHEN c.sales_service_vat_option = 'VAT' THEN COALESCE(c.sales_service_amount, 0) ELSE 0 END
+                  + CASE WHEN c.cutting_drilling_fee_vat_option = 'VAT' THEN COALESCE(c.cutting_drilling_fee, 0) ELSE 0 END
+                  + CASE WHEN c.other_service_fee_vat_option = 'VAT' THEN COALESCE(c.other_service_fee, 0) ELSE 0 END
+                  + CASE WHEN c.shipping_vat_option = 'VAT' THEN COALESCE(c.shipping_cost, 0) ELSE 0 END
+                  + CASE WHEN c.credit_card_fee_vat_option = 'VAT' THEN COALESCE(c.credit_card_fee, 0) ELSE 0 END
+                  + CASE WHEN c.relocation_cost_vat_option = 'VAT' THEN COALESCE(c.relocation_cost, 0) ELSE 0 END
+                   ) * 1.07
+               ), 0) AS actual_total
+        FROM projects p
+        LEFT JOIN project_lots pl ON pl.project_id = p.id
+        LEFT JOIN commissions c ON c.so_number = pl.so_number AND c.is_active = 1
+                 AND c.status NOT IN ('Cancelled', 'Cancelled by PU')
+        WHERE p.id = %s
+        GROUP BY p.total_project_value, p.planned_lot_count
+    """, engine, params=(project_id,))
+    if row.empty:
+        return None
+    r = row.iloc[0]
+    planned = r["total_project_value"]
+    plan_cnt = r["planned_lot_count"]
+    return {
+        "project_value": float(planned or 0),
+        "actual_total": float(r["actual_total"] or 0),
+        "lot_count": int(r["lot_count"] or 0),
+        "planned_lot_count": int(plan_cnt) if plan_cnt is not None and pd.notna(plan_cnt) else None,
+    }
+
+
+def build_offset_box(parent, info):
+    """กล่องเทียบมูลค่าโครงการ vs ยอดขายจริง + ส่วนต่าง (Offset)"""
+    pv, act = info["project_value"], info["actual_total"]
+    diff = pv - act
+    pct = (diff / pv * 100) if pv > 0 else 0.0
+    lots, planned = info["lot_count"], info["planned_lot_count"]
+    incomplete = planned is not None and lots < planned
+
+    if pv <= 0:
+        color, bg, msg = "#64748B", "#F1F5F9", "ยังไม่ได้ระบุมูลค่าโครงการ — เทียบส่วนต่างไม่ได้"
+    elif abs(diff) < 1.0:
+        color, bg, msg = "#16A34A", "#F0FDF4", "✅ ยอดขายจริงตรงกับมูลค่าโครงการ"
+    elif diff > 0:
+        color, bg = "#D97706", "#FFFBEB"
+        msg = (f"⚠ ยอดขายจริง ต่ำกว่า มูลค่าโครงการ {diff:,.2f} บาท ({pct:.2f}%)"
+               + (f" — ยังสร้าง Lot ไม่ครบตามแผน ({lots}/{planned} Lot)" if incomplete
+                  else " — Lot ครบแล้วแต่ยอดไม่ถึง ควรตรวจว่ามียอดตกหล่น/ส่วนลดหรือไม่"))
+    else:
+        color, bg = "#DC2626", "#FEF2F2"
+        msg = f"⚠ ยอดขายจริง เกิน มูลค่าโครงการ {abs(diff):,.2f} บาท ({abs(pct):.2f}%) — ควรตรวจยอด SO ของแต่ละ Lot"
+
+    box = CTkFrame(parent, fg_color=bg, corner_radius=8, border_width=1, border_color="#E2E8F0")
+    box.grid_columnconfigure(1, weight=1)
+    CTkLabel(box, text="⚖ เทียบมูลค่าโครงการกับยอดขายจริง (Offset)",
+             font=CTkFont(size=12, weight="bold"), text_color="#1E3A5F").grid(
+        row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 2))
+    rows = [
+        ("มูลค่าโครงการ (ตั้งไว้)", f"{pv:,.2f} บาท", "#1E293B", False),
+        ("ยอดขายจริงรวมทุก Lot (ทุกรายการที่ติ๊ก VAT + VAT 7%)", f"{act:,.2f} บาท", "#1E293B", False),
+        ("ส่วนต่าง (มูลค่าโครงการ − ยอดขายจริง)", f"{diff:,.2f} บาท", color, True),
+    ]
+    for i, (lbl, val, col, bold) in enumerate(rows, start=1):
+        w = "bold" if bold else "normal"
+        CTkLabel(box, text=lbl, font=CTkFont(size=12, weight=w), text_color="#475569").grid(
+            row=i, column=0, sticky="w", padx=12, pady=1)
+        CTkLabel(box, text=val, font=CTkFont(size=12, weight=w), text_color=col).grid(
+            row=i, column=1, sticky="e", padx=12, pady=1)
+    CTkLabel(box, text=msg, font=CTkFont(size=11, weight="bold"), text_color=color,
+             wraplength=620, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", padx=12, pady=(2, 2))
+    CTkLabel(box, text=("*นับ: ค่าสินค้า/บริการ, ค่าตัด/เจาะ, บริการอื่นๆ, ค่าจัดส่ง, ค่าธรรมเนียมบัตร, ค่าย้าย "
+                        "เฉพาะรายการที่ติ๊ก VAT — ไม่นับรายการเงินสด, ค่าธรรมเนียมโอน, คูปอง"),
+             font=CTkFont(size=10), text_color="#94A3B8", wraplength=620, justify="left").grid(
+        row=5, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 8))
+    return box
+
+
 class ProjectScreen(ctk.CTkFrame):
     """หน้าจัดการโครงการ (Multi-Lot Project) — Phase 1: โครงสร้างข้อมูล + ติดตามสถานะ"""
 
@@ -666,6 +803,10 @@ class ProjectScreen(ctk.CTkFrame):
         proj = proj_df.iloc[0]
 
         self.body.grid_columnconfigure(0, weight=1)
+        # หน้ารายการตั้ง row 0 weight=1 ไว้ — ต้องล้างก่อนเข้าหน้ารายละเอียด ไม่งั้นพอหน้าต่างเตี้ย grid จะบีบ
+        # แถวปุ่มด้านบนจนปุ่มโดนตัดครึ่ง (แถวที่ควรยืดหดมีแค่ตาราง Lot ด้านล่างเท่านั้น)
+        for i in range(0, 6):
+            self.body.grid_rowconfigure(i, weight=0)
         self.body.grid_rowconfigure(2, weight=1)
 
         top_row = CTkFrame(self.body, fg_color="transparent")
@@ -702,6 +843,8 @@ class ProjectScreen(ctk.CTkFrame):
         elif proj["status"] == "Closed":
             CTkLabel(actions_frame, text=f"🔒 ปิดโปรเจกต์แล้ว — GP จริง {float(proj['final_gp_pct'] or 0):.2f}%",
                       font=CTkFont(size=12, weight="bold"), text_color="#475569").pack(side="left")
+            CTkButton(actions_frame, text="📐 ดูที่มา GP", width=120, fg_color="#0F766E", hover_color="#115E59",
+                      command=lambda: self._show_gp_derivation(project_id)).pack(side="left", padx=(12, 0))
 
         # ฟอนต์ใหญ่ขึ้นเฉพาะแผงข้อมูลนี้ — พื้นที่การ์ดกว้าง แต่ตัวหนังสือเดิมเล็กเกินไปเมื่อเทียบกับพื้นที่ว่าง
         info_title_font = CTkFont(size=20, weight="bold")
@@ -845,6 +988,16 @@ class ProjectScreen(ctk.CTkFrame):
                    note="*ตัด VAT & ค่าธรรมเนียมแล้ว", bg_color="#EFF6FF")
         next_row += 1
 
+        # ── เทียบมูลค่าโครงการกับยอดขายจริง (Offset) ──
+        try:
+            _off = project_offset_info(self.pg_engine, project_id)
+            if _off:
+                build_offset_box(info, _off).grid(row=next_row, column=0, columnspan=4, sticky="ew",
+                                                   padx=18, pady=(0, 10))
+                next_row += 1
+        except Exception as _e:
+            print(f"offset box error: {_e}")
+
         # ── กล่องมัดจำ (checkbox "ได้รับมัดจำแล้ว" + ปุ่ม "เงินมัดจำพร้อมใช้งาน") ──────────────
         if deposit_pct_val is not None and pd.notna(deposit_pct_val):
             CTkLabel(info, text=f"ยอดมัดจำ ({float(deposit_pct_val):.0f}% ของยอดที่ต้องชำระ, {method_text}): "
@@ -949,23 +1102,52 @@ class ProjectScreen(ctk.CTkFrame):
         CTkLabel(self.body, text="คอลัมน์ \"ยอดสุทธิ (โอนจริง)\" = ยอดคิดคอมมิชชั่นควบคู่ยอดชำระจริง",
                  font=self.small_font, text_color="#94A3B8").grid(row=4, column=0, sticky="w", pady=(6, 0))
 
+    def _load_project_gp_df(self, project_id):
+        return load_project_gp_df(self.pg_engine, project_id)
+
+    def _build_gp_derivation_table(self, parent, df, total_sales, total_cost, gp_pct):
+        return build_gp_derivation_table(parent, df, total_sales, total_cost, gp_pct)
+
+    def _show_gp_derivation(self, project_id):
+        """ดูที่มา GP ของโปรเจกต์ที่ปิดแล้ว (คำนวณจากข้อมูลปัจจุบัน เทียบกับค่าที่บันทึกตอนปิด)"""
+        try:
+            df = self._load_project_gp_df(project_id)
+            proj = pd.read_sql_query("SELECT project_code, final_gp_pct FROM projects WHERE id = %s",
+                                     self.pg_engine, params=(project_id,)).iloc[0]
+        except Exception as e:
+            messagebox.showerror("Database Error", f"โหลดข้อมูลไม่สำเร็จ: {e}", parent=self)
+            return
+        if df.empty:
+            messagebox.showwarning("ไม่มีข้อมูล", "ไม่พบ SO ของโครงการนี้", parent=self)
+            return
+        total_sales = float(df["final_sales_amount"].sum())
+        total_cost = float((df["final_cost_amount"] * df["cost_multiplier"]).sum())
+        gp_pct = ((total_sales - total_cost) / total_sales * 100) if total_sales > 0 else 0.0
+
+        win = CTkToplevel(self)
+        win.title(f"ที่มา GP — {proj['project_code']}")
+        CTkLabel(win, text=f"ที่มา GP โปรเจกต์ {proj['project_code']}",
+                 font=CTkFont(size=16, weight="bold")).pack(anchor="w", padx=18, pady=(16, 6))
+        saved = float(proj["final_gp_pct"] or 0)
+        CTkLabel(win, text=f"GP ที่บันทึกไว้ตอนปิดโปรเจกต์ (ใช้ตัดสินจ่าย Reserve): {saved:.2f}%",
+                 font=CTkFont(size=13, weight="bold"), text_color="#0F766E").pack(anchor="w", padx=18)
+        if abs(saved - gp_pct) > 0.005:
+            CTkLabel(win, text=f"⚠ คำนวณใหม่จากข้อมูลปัจจุบันได้ {gp_pct:.2f}% ต่างจากค่าที่บันทึกตอนปิด "
+                               f"(มีการแก้ไขยอด/ต้นทุนของ SO หลังปิดโปรเจกต์) — ค่าที่ใช้จ่ายจริงยังเป็น {saved:.2f}%",
+                     font=CTkFont(size=11), text_color="#B45309", wraplength=640, justify="left"
+                     ).pack(anchor="w", padx=18, pady=(2, 0))
+        box = self._build_gp_derivation_table(win, df, total_sales, total_cost, gp_pct)
+        box.pack(fill="x", padx=18, pady=(8, 12))
+        CTkButton(win, text="ปิด", width=100, command=win.destroy).pack(pady=(0, 14))
+        win.update_idletasks()
+        _center_and_style_popup(win, self, 760, min(640, 260 + 26 * len(df)))
+
     def _open_close_project_dialog(self, project_id):
         """3b — GP True-Up (POL-KPI-PROJECT-001 หน้า 10): ปิดโปรเจกต์ คำนวณ GP จริงรวมทั้งโปรเจกต์
         จากข้อมูล commissions จริงของทุก Lot แล้วตัดสินว่า Commission Reserve ที่กันไว้ 50% ต่อ Lot
         จะจ่ายคืนกี่ % ตามเกณฑ์ GP>=15% จ่ายเต็ม / 7.5-14.99% จ่ายตามสัดส่วน / <7.5% ริบทั้งหมด"""
         try:
-            df = pd.read_sql_query("""
-                SELECT c.id, c.so_number, c.sale_key,
-                       COALESCE(c.final_sales_amount, c.sales_service_amount, 0) AS final_sales_amount,
-                       COALESCE(c.final_cost_amount, 0) AS final_cost_amount,
-                       COALESCE(c.cost_multiplier, 1.03) AS cost_multiplier,
-                       COALESCE(c.commission_reserve_amount, 0) AS commission_reserve_amount,
-                       COALESCE(c.reserve_status, 'Pending') AS reserve_status
-                FROM commissions c
-                JOIN project_lots pl ON pl.so_number = c.so_number
-                WHERE pl.project_id = %s AND c.is_active = 1
-                  AND c.status NOT IN ('Cancelled', 'Cancelled by PU')
-            """, self.pg_engine, params=(project_id,))
+            df = self._load_project_gp_df(project_id)
         except Exception as e:
             messagebox.showerror("Database Error", f"โหลดข้อมูลคำนวณ GP ไม่สำเร็จ: {e}", parent=self)
             return
@@ -1003,6 +1185,15 @@ class ProjectScreen(ctk.CTkFrame):
         CTkLabel(gp_box, text=f"GP จริงรวมทั้งโครงการ: {gp_pct:.2f}%",
                  font=CTkFont(size=14, weight="bold"), text_color=gp_color
                  ).pack(anchor="w", padx=14, pady=(4, 10))
+
+        self._build_gp_derivation_table(win, df, total_sales, total_cost, gp_pct).pack(
+            fill="x", padx=18, pady=(0, 10))
+        try:
+            _off = project_offset_info(self.pg_engine, project_id)
+            if _off:
+                build_offset_box(win, _off).pack(fill="x", padx=18, pady=(0, 10))
+        except Exception as _e:
+            print(f"offset box error: {_e}")
 
         if gp_pct >= 15:
             tier_text = "✅ GP ≥ 15% → จ่าย Commission Reserve คืนเต็มจำนวน (100%)"
@@ -1055,7 +1246,7 @@ class ProjectScreen(ctk.CTkFrame):
                   ).pack(side="left", expand=True, fill="x", padx=(6, 0))
 
         win.update_idletasks()
-        W, H = 720, min(700, 380 + 24 * len(pending_df))
+        W, H = 780, min(960, 660 + 24 * len(pending_df) + 22 * len(df))
         _center_and_style_popup(win, self, W, H)
 
     def _commit_close_project(self, win, project_id, gp_pct, total_sales, total_cost, ratio, pending_df):
