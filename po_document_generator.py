@@ -30,6 +30,83 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+# ───────────────── เครื่องพิมพ์: เลือกได้ + จำไว้ในเครื่องผู้ใช้จนกว่าจะเปลี่ยนเอง ─────────────────
+DEFAULT_PRINTER_LABEL = "เครื่องพิมพ์เริ่มต้นของ Windows"
+
+
+def _print_settings_path():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    folder = os.path.join(base, "AplusSmart")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(folder, "print_settings.json")
+
+
+def load_saved_printer():
+    """ชื่อเครื่องพิมพ์ที่ผู้ใช้เลือกไว้ครั้งก่อน ('' = ใช้เครื่องเริ่มต้นของ Windows)"""
+    import json
+    try:
+        with open(_print_settings_path(), "r", encoding="utf-8") as f:
+            return str(json.load(f).get("printer", "") or "")
+    except Exception:
+        return ""
+
+
+def save_printer(name):
+    import json
+    try:
+        with open(_print_settings_path(), "w", encoding="utf-8") as f:
+            json.dump({"printer": name or ""}, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"save_printer error: {e}")
+
+
+def list_printers():
+    """รายชื่อเครื่องพิมพ์ที่ติดตั้งในเครื่องนี้ (Windows API ผ่าน ctypes ไม่ต้องติดตั้งไลบรารีเพิ่ม)"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PRINTER_INFO_4(ctypes.Structure):
+            _fields_ = [("pPrinterName", wintypes.LPWSTR), ("pServerName", wintypes.LPWSTR), ("Attributes", wintypes.DWORD)]
+
+        PRINTER_ENUM_LOCAL, PRINTER_ENUM_CONNECTIONS = 0x2, 0x4
+        flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS
+        needed, returned = wintypes.DWORD(0), wintypes.DWORD(0)
+        winspool = ctypes.WinDLL("winspool.drv")
+        winspool.EnumPrintersW(flags, None, 4, None, 0, ctypes.byref(needed), ctypes.byref(returned))
+        if needed.value == 0:
+            return []
+        buf = (ctypes.c_byte * needed.value)()
+        if not winspool.EnumPrintersW(flags, None, 4, buf, needed, ctypes.byref(needed), ctypes.byref(returned)):
+            return []
+        arr = ctypes.cast(buf, ctypes.POINTER(PRINTER_INFO_4))
+        names = [arr[i].pPrinterName for i in range(returned.value) if arr[i].pPrinterName]
+        return sorted(set(names), key=lambda n: n.lower())
+    except Exception as e:
+        print(f"list_printers error: {e}")
+        return []
+
+
+def default_printer_name():
+    try:
+        import ctypes
+        from ctypes import wintypes
+        winspool = ctypes.WinDLL("winspool.drv")
+        size = wintypes.DWORD(0)
+        winspool.GetDefaultPrinterW(None, ctypes.byref(size))
+        if size.value == 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(size.value)
+        if winspool.GetDefaultPrinterW(buf, ctypes.byref(size)):
+            return buf.value
+    except Exception:
+        pass
+    return ""
+
+
 def _ask_save_or_print(default_filename):
     """ถามผู้ใช้ก่อนว่าจะ 'พิมพ์เลย' (ไม่ต้องเลือกที่บันทึก — สร้างไฟล์ไว้ที่ temp แล้วส่งเข้าคิวพิมพ์
     ผ่าน Windows print verb ทันที) หรือ 'บันทึกไฟล์ลงเครื่อง' แบบเดิม (เปิด Save As dialog)
@@ -56,6 +133,30 @@ def _ask_save_or_print(default_filename):
                  font=ctk.CTkFont(size=15, weight="bold")).pack(padx=24, pady=(24, 4))
     ctk.CTkLabel(dlg, text="เลือกได้ว่าจะพิมพ์เลย หรือบันทึกไฟล์ไว้ก่อน",
                  font=ctk.CTkFont(size=12), text_color="#94A3B8").pack(padx=24, pady=(0, 16))
+
+    # เลือกเครื่องพิมพ์ — จำค่าที่เลือกไว้ทันที ครั้งต่อไปใช้เครื่องเดิมโดยไม่ต้องเลือกใหม่ จนกว่าผู้ใช้จะมาเปลี่ยนเอง
+    printers = list_printers()
+    saved = load_saved_printer()
+    sys_default = default_printer_name()
+    default_text = f"{DEFAULT_PRINTER_LABEL}" + (f" ({sys_default})" if sys_default else "")
+    options = [default_text] + printers
+    cur_value = saved if (saved and saved in printers) else default_text
+    pr_var = ctk.StringVar(value=cur_value)
+
+    pr_row = ctk.CTkFrame(dlg, fg_color="transparent")
+    pr_row.pack(fill="x", padx=24, pady=(0, 14))
+    ctk.CTkLabel(pr_row, text="เครื่องพิมพ์", font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
+
+    def _on_printer(val):
+        save_printer("" if val == default_text else val)
+
+    ctk.CTkOptionMenu(pr_row, variable=pr_var, values=options, command=_on_printer, dynamic_resizing=False,
+                      width=332).pack(anchor="w", pady=(2, 2))
+    ctk.CTkLabel(pr_row, text="เครื่องที่เลือกจะถูกจำไว้ จนกว่าคุณจะเลือกเครื่องอื่น",
+                 font=ctk.CTkFont(size=11), text_color="#94A3B8").pack(anchor="w")
+    if saved and saved not in printers:
+        ctk.CTkLabel(pr_row, text=f"⚠ ไม่พบเครื่อง \"{saved}\" ในเครื่องนี้ จึงใช้เครื่องพิมพ์เริ่มต้นแทน",
+                     font=ctk.CTkFont(size=11), text_color="#B42318", wraplength=332, justify="left").pack(anchor="w", pady=(2, 0))
 
     def _choose(val):
         result["choice"] = val
@@ -107,8 +208,23 @@ def _finish_print_or_save(save_path, print_directly):
         messagebox.showinfo("สำเร็จ", f"สร้างเอกสารเรียบร้อย:\n{save_path}")
         return
     try:
+        printer = load_saved_printer()
+        if printer and printer in list_printers():
+            try:
+                # printto = สั่งพิมพ์ไปเครื่องที่ระบุ (ต้องให้โปรแกรมเปิด PDF ของเครื่องนี้รองรับ เช่น Adobe Reader)
+                os.startfile(save_path, "printto", f'"{printer}"')
+                messagebox.showinfo("สำเร็จ", f"ส่งเอกสารเข้าคิวพิมพ์แล้ว\nเครื่องพิมพ์: {printer}")
+                return
+            except Exception as e_to:
+                print(f"printto failed ({e_to}) — fallback to default printer")
+                os.startfile(save_path, "print")
+                messagebox.showwarning(
+                    "ส่งไปเครื่องที่เลือกไม่ได้",
+                    f"โปรแกรมเปิด PDF ในเครื่องนี้ไม่รองรับการเลือกเครื่องพิมพ์\n"
+                    f"จึงส่งเข้าคิวของเครื่องพิมพ์เริ่มต้นของ Windows แทน\n(เครื่องที่เลือกไว้: {printer})")
+                return
         os.startfile(save_path, "print")
-        messagebox.showinfo("สำเร็จ", "ส่งเอกสารเข้าคิวพิมพ์แล้ว")
+        messagebox.showinfo("สำเร็จ", "ส่งเอกสารเข้าคิวพิมพ์แล้ว (เครื่องพิมพ์เริ่มต้นของ Windows)")
     except Exception as e:
         messagebox.showerror(
             "ส่งพิมพ์อัตโนมัติไม่สำเร็จ",
@@ -441,11 +557,29 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
     story.append(header_table)
 
     # --- 2. ตารางสินค้า ---
-    item_widths = [1.0*cm, 1.5*cm, 4.3*cm, 1.2*cm, 2.0*cm, 2.0*cm]
+    item_widths = [1.0*cm, 1.3*cm, 3.2*cm, 1.7*cm, 1.6*cm, 1.4*cm, 1.9*cm]
     item_scale = width / sum(item_widths)
     ITEM_COL_WIDTHS = [w * item_scale for w in item_widths]
     item_rows = []
     
+    def _fmt_item_discount(item):
+        """ส่วนลดรายรายการ: ชนิด % แสดง 40% / ชนิดบาท แสดงยอดเงิน (ว่างถ้าไม่มีส่วนลด)"""
+        try:
+            dv = float(item.get('discount_value', 0) or 0)
+        except Exception:
+            dv = 0.0
+        if dv == 0:
+            return ''
+        return f"{dv:g}%" if str(item.get('discount_type') or '').strip() == '%' else f"{dv:,.2f}"
+
+    def _fmt_qty(q):
+        """จำนวนเต็มไม่ต้องโชว์ทศนิยม (กันตัวเลขยาวขึ้นบรรทัดใหม่ในช่องแคบ) / มีเศษแสดง 2-3 ตำแหน่ง"""
+        try:
+            qv = float(q or 0)
+        except Exception:
+            return ''
+        return f"{qv:,.0f}" if qv == int(qv) else f"{qv:,.3f}".rstrip('0').rstrip('.')
+
     recalc_total_cost = 0.0
     for i, item in enumerate(items_data, 1):
         try: total_price = round(float(item.get('total_price', 0) or 0), 2)
@@ -456,16 +590,17 @@ def _build_right_column(header_data, items_data, payments_data, styles, P, PB, f
             make_para(str(i), 'Small_Center_TH'), 
             make_para(item.get('status', ''), 'Small_Center_TH'), 
             make_para(item.get('product_name', ''), 'Product_Name_TH'), 
-            make_para(f"{item.get('quantity', 0):.2f}", 'Small_Right_TH'), 
+            make_para(_fmt_qty(item.get('quantity', 0)), 'Small_Right_TH'), 
             make_para(f"{float(item.get('unit_price', 0) or 0):,.3f}", 'Small_Right_TH'),
+            make_para(_fmt_item_discount(item), 'Small_Right_TH'),
             make_para(format_num(total_price), 'Small_Right_TH'),
         ])
     
-    while len(item_rows) < 5: item_rows.append([''] * 6)
+    while len(item_rows) < 5: item_rows.append([''] * 7)
     item_row_heights = [0.6*cm, 0.6*cm] + [None] * len(item_rows)
     
     full_item_rows = [[make_para("PURCHASED RECORD", 'Header_Bold_TH')], 
-                      [make_para("ลำดับ", 'Tiny_Center_TH'), make_para("สถานะ", 'Small_Center_TH'), make_para("ชื่อสินค้า", 'Small_Center_TH'), make_para("จำนวน", 'Tiny_Center_TH'), make_para("ราคา", 'Small_Center_TH'), make_para("รวม", 'Small_Center_TH')]] + item_rows
+                      [make_para("ลำดับ", 'Tiny_Center_TH'), make_para("สถานะ", 'Small_Center_TH'), make_para("ชื่อสินค้า", 'Small_Center_TH'), make_para("จำนวน", 'Tiny_Center_TH'), make_para("ราคา", 'Small_Center_TH'), make_para("ส่วนลด", 'Small_Center_TH'), make_para("รวม", 'Small_Center_TH')]] + item_rows
     item_table = Table(full_item_rows, colWidths=ITEM_COL_WIDTHS, rowHeights=item_row_heights)
     item_table.setStyle(TableStyle([ ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('SPAN', (0,0), (-1,0)), ('BACKGROUND', (0,0), (-1,0), colors.lightgrey), ('BACKGROUND', (0,1), (-1,1), colors.HexColor("#DDEBF7")), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 3), ('ALIGN', (0,1), (-1,1), 'CENTER'), ]))
     story.append(item_table)

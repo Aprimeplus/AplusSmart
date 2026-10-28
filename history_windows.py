@@ -18,6 +18,8 @@ from customtkinter import (
 )
 
 import utils
+from post_verify_alerts import record_po_edit_by_id
+from paid_lock import is_po_paid, is_commission_paid, warn_locked
 from custom_widgets import DateSelector
 from utils import FormattedNumericEntry, RejectionReasonDialog
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
@@ -1440,8 +1442,25 @@ class PurchaseDetailWindow(CTkToplevel):
             close_button = CTkButton(self.button_frame, text="ปิด", command=self.destroy, fg_color="gray", height=button_height)
             close_button.grid(row=0, column=1, padx=(5,0), pady=vertical_padding, sticky="ew")
 
+        self._apply_paid_lock_ui()
+
+    def _apply_paid_lock_ui(self):
+        """SO จ่ายค่าคอมแล้ว (Paid) → PO ล็อก ดูอย่างเดียว: ปิดปุ่มบันทึก/ตีกลับ/อนุมัติ/ปฏิเสธ"""
+        try:
+            if not is_po_paid(self.app_container, self.purchase_id):
+                return
+            for w in self.button_frame.winfo_children():
+                t = str(w.cget("text"))
+                if t in ("บันทึกการแก้ไข", "บันทึก", "บันทึก (Disabled)", "ตีกลับ (Revert)", "อนุมัติ", "ปฏิเสธ"):
+                    w.configure(state="disabled", fg_color="gray", hover_color="gray", text="🔒 " + t)
+        except Exception as e:
+            print(f"paid lock UI error: {e}")
+
     def _open_transport_edit_dialog(self):
         """เปิดหน้าต่างแก้ไขค่าขนส่ง"""
+        if is_po_paid(self.app_container, self.purchase_id):
+            warn_locked(self)
+            return
         try:
             TransportEditDialog(
                 master=self,
@@ -1631,6 +1650,9 @@ class PurchaseDetailWindow(CTkToplevel):
 
     def _revert_to_draft(self):
         """สำหรับ Manager: ตีกลับ PO ที่ 'Approved' แล้วกลับไปเป็น 'Draft'"""
+        if is_po_paid(self.app_container, self.purchase_id):
+            warn_locked(self)
+            return
         dialog = RejectionReasonDialog(self)
         self.wait_window(dialog)
         reason = getattr(dialog, '_reason_string', None)
@@ -1686,6 +1708,9 @@ class PurchaseDetailWindow(CTkToplevel):
 
     def _save_changes(self):
         """บันทึกการแก้ไขข้อมูล PO (Header, Items, Payments) แบบสมบูรณ์"""
+        if is_po_paid(self.app_container, self.purchase_id):
+            warn_locked(self)
+            return
         
         # คำนวณยอดเงินล่าสุดก่อนบันทึก
         self._recalculate_summary_totals()
@@ -1805,6 +1830,14 @@ class PurchaseDetailWindow(CTkToplevel):
                     get_num('bill_discount'),
                     self.purchase_id
                 ))
+
+                # PO ที่ถูกแก้หลัง HR ตรวจ/จ่ายแล้ว → แจ้ง Director/HR (HR Verified กลับไปรอตรวจใหม่)
+                try:
+                    _old_gt = float((self.po_data or {}).get('grand_total') or 0)
+                    record_po_edit_by_id(cursor, self.purchase_id, self.app_container.current_user_key,
+                                         f"ยอดจ่ายซัพ (Grand Total) {_old_gt:,.2f} → {float(grand_total or 0):,.2f}")
+                except Exception as _pv_err:
+                    print(f"post-verify alert (PO edit) error: {_pv_err}")
 
                 # ... (ส่วน PART 2: ITEMS และ PART 3: PAYMENTS ปล่อยไว้เหมือนเดิมได้เลยครับ ไม่ต้องแก้) ...
                 # ... แต่เพื่อให้ชัวร์ คุณก๊อปปี้ส่วนล่างของฟังก์ชันเดิมมาต่อท้ายตรงนี้ได้เลย ...
@@ -3008,6 +3041,12 @@ class SOPopupWindow(CTkToplevel):
         # Save Button
         save_button = CTkButton(parent_frame, text="บันทึกข้อมูล SO", command=self._save_so_changes, fg_color="#16A34A", hover_color="#15803D", font=CTkFont(size=16, weight="bold"))
         save_button.pack(fill="x", padx=10, pady=20)
+        try:
+            if is_commission_paid(self.app_container, (self.sales_data or {}).get('id')):
+                save_button.configure(state="disabled", fg_color="gray", hover_color="gray",
+                                      text="🔒 SO จ่ายค่าคอมแล้ว — ดูอย่างเดียว")
+        except Exception:
+            pass
 
     def _so_bind_events(self):
         self.trace_ids_for_so_calc = []
@@ -3262,6 +3301,9 @@ class SOPopupWindow(CTkToplevel):
             return
 
         so_id = self.sales_data.get('id')
+        if is_commission_paid(self.app_container, so_id):
+            warn_locked(self)
+            return
         updated_data = {}
         
         # 1. Mapping ชื่อ Widget -> ชื่อคอลัมน์ DB
@@ -3602,6 +3644,10 @@ class SOReassignmentDialog(CTkToplevel):
         so_id = int(self.current_so_data['id'])
         current_status = self.current_so_data['status']
 
+        if current_status == 'Paid':
+            warn_locked(self)
+            return
+
         if new_sale_key == old_sale_key:
             messagebox.showwarning("แจ้งเตือน", "คุณเลือกเจ้าของเดิม ไม่มีการเปลี่ยนแปลง", parent=self)
             return
@@ -3933,6 +3979,9 @@ class TransportEditDialog(CTkToplevel):
     # ในคลาส TransportEditDialog
     def _save_transport_changes(self):
         """บันทึกข้อมูลและคำนวณส่วนต่างเพื่ออัปเดต Grand Total"""
+        if is_po_paid(self.app_container, self.po_id):
+            warn_locked(self)
+            return
         
         # 1. รับค่าใหม่จาก GUI (ใช้ .get() และ .strip() ให้ชัวร์)
         new_stock_cost = utils.convert_to_float(self.stock_cost.get())
@@ -4052,6 +4101,13 @@ class TransportEditDialog(CTkToplevel):
                 # Log
                 cursor.execute("INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp) VALUES (%s, %s, %s, %s, %s, NOW())", 
                                ('Edit PO Transport', 'purchase_orders', self.po_id, user, f"Updated Transport/Cutting (Diff GT: {diff_grand_total})"))
+
+                # PO ที่ถูกแก้ค่าขนส่ง/ค่าตัดหลัง HR ตรวจ/จ่ายแล้ว → แจ้ง Director/HR
+                try:
+                    record_po_edit_by_id(cursor, self.po_id, user,
+                                         f"แก้ค่าขนส่ง/ค่าตัด (ผลต่างยอดจ่ายซัพ {diff_grand_total:+,.2f})")
+                except Exception as _pv_err:
+                    print(f"post-verify alert (transport edit) error: {_pv_err}")
 
             conn.commit()
             messagebox.showinfo("สำเร็จ", "บันทึกข้อมูลเรียบร้อยแล้ว", parent=self)

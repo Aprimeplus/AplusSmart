@@ -7,6 +7,7 @@ from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
                            CTkOptionMenu, CTkTabview) # <-- เพิ่ม CTkTabview
 from tkinter import messagebox
 import pandas as pd
+from paid_lock import LOCK_MSG
 from datetime import datetime
 import psycopg2.errors
 import psycopg2.extras
@@ -683,6 +684,9 @@ class PurchasingManagerScreen(CTkFrame):
                 so_record = cursor.fetchone()          
                 so_status = so_record['status'] if so_record else 'N/A'
                 so_sale_key = so_record['sale_key'] if so_record and 'sale_key' in so_record else None # <-- เพิ่มบรรทัดนี้
+                if so_status == 'Paid':
+                    messagebox.showwarning("ล็อก — ดูได้อย่างเดียว", LOCK_MSG, parent=self)
+                    return
                 print(f"--- DEBUG REVERT PO ---")
                 print(f"SO: {so_number} | Status ที่ดึงได้: {so_status} | Sale Key ที่ดึงได้: {so_sale_key}")
                 # ^^^^ สิ้นสุดส่วนที่เพิ่ม ^^^^
@@ -798,6 +802,9 @@ class PurchasingManagerScreen(CTkFrame):
                 so_id = so_record['id']
                 so_status = so_record['status']
                 so_sale_key = so_record['sale_key']
+                if so_status == 'Paid':
+                    messagebox.showwarning("ล็อก — ดูได้อย่างเดียว", LOCK_MSG, parent=self)
+                    return
                 support_key = so_record['support_user_key'] # ดึงรหัส Sale Support
 
                 # 2. สร้างคำเตือน

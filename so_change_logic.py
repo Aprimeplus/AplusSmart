@@ -6,6 +6,8 @@
 
 LOCK_STATUSES = ('Edit Requested', 'Edit Approved', 'Edit Review')
 
+from post_verify_alerts import record_event as _pv_record_event
+
 
 def revert_change_request(cursor, req_id, result_by, reason):
     """ย้อน SO กลับเป็นค่าเดิมก่อนขอแก้ไข (ไม่อนุมัติผล / สิทธิ์หมดอายุ)
@@ -138,6 +140,22 @@ def complete_change_request(cursor, req_id, approved_by):
     cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'commissions'")
     existing_cols = {r[0] for r in cursor.fetchall()}
 
+    # สรุปว่าแก้ช่องไหนจากอะไรเป็นอะไร ไว้แจ้ง Director/HR กรณี SO เดิมผ่าน HR ตรวจแล้ว
+    diff_summary = ""
+    if original_status == 'HR Verified':
+        try:
+            def _row_dict(rid):
+                cursor.execute("SELECT * FROM commissions WHERE id = %s", (rid,))
+                cols = [d[0] for d in cursor.description]
+                row = cursor.fetchone()
+                return dict(zip(cols, row)) if row else {}
+            diffs = compute_so_diff(_row_dict(orig_id), _row_dict(new_id))
+            diff_summary = "; ".join(f"{f}: {a} → {b}" for f, a, b in diffs[:8])
+            if len(diffs) > 8:
+                diff_summary += f" (และอีก {len(diffs) - 8} ช่อง)"
+        except Exception as _e:
+            diff_summary = ""
+
     sets = []
     for col in CARRY_OVER_ALWAYS:
         if col in existing_cols:
@@ -163,6 +181,9 @@ def complete_change_request(cursor, req_id, approved_by):
         INSERT INTO audit_log (action, table_name, record_id, user_info, changes, timestamp)
         VALUES ('SO Change Completed', 'commissions', %s, %s, %s, NOW())
     """, (new_id, approved_by, f"request #{req_id}: กลับสถานะ {restore_status}"))
+    if original_status == 'HR Verified':
+        _pv_record_event(cursor, so_number, 'SO_EDITED_AFTER_VERIFY', sale_key, 'HR Verified', 'PO Sent', None,
+                         f"เซลส์ {sale_key} แก้ SO (SM {approved_by} อนุมัติ)" + (f" | {diff_summary}" if diff_summary else ""))
     return so_number, restore_status
 
 

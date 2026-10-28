@@ -12,6 +12,20 @@ from datetime import datetime
 from tkcalendar import DateEntry, Calendar
 
 
+def _sku_qty_key(name, qty, note=""):
+    """คีย์เทียบราคา = สินค้าเดียวกัน + ขนาด/สเปกเดียวกัน + จำนวนเท่ากัน
+    (จำนวนต่างกัน ต้นทุนรวมเทียบกันตรงๆ ไม่ได้ / สินค้าสั่งตัดตามแบบชื่อเดียวกันแต่ขนาดต่างกัน คือคนละชิ้น)"""
+    import re as _re
+    try:
+        q = float(str(qty).replace(",", "").strip())
+        q_txt = f"{q:g}"
+    except Exception:
+        q_txt = str(qty).strip()
+    n = "" if note is None or str(note).strip().lower() in ("none", "nan") else str(note)
+    n = _re.sub(r"\s+", "", n).lower().rstrip(".")
+    return f"{str(name).strip()}|{n}|{q_txt}"
+
+
 def _resource_path(relative_path):
     """หา path ของไฟล์ asset (เช่น app_icon.ico) ทั้งตอนรันจาก source และตอน build เป็น exe"""
     try:
@@ -362,13 +376,21 @@ class DashboardCostScreen(CTkFrame):
                         lambda s: "chub" if s in _EXP_CHUB_TYPES else "normal")
                     _ev["_order"] = (_ev["Order No."].astype(str).str.strip()
                                       if "Order No." in _ev.columns else "")
+                    # เทียบเฉพาะสินค้าเดียวกัน + จำนวนเท่ากัน
+                    _ev["_skq"] = [_sku_qty_key(n, q, nt) for n, q, nt in zip(_ev["รายการสินค้า"], _ev["จำนวน"], _ev.get("หมายเหตุ (ความยาว, OD)", [""] * len(_ev)))]
 
                     # avg แยกตาม (Order No., SKU, กลุ่ม) + นับจำนวน supplier — ต้องผูก Order No.
                     # ด้วยเสมอ ไม่งั้นสินค้าชื่อเดียวกันจากคนละใบขอราคากันจะถูกเฉลี่ยรวมกันผิดๆ
                     # (บั๊กเดียวกับที่แก้ใน _update_table แต่ export ใช้โค้ดแยกชุดกัน)
                     _exp_avg_map = {}
-                    _grp_avg   = _ev.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
-                    _grp_count = _ev.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
+                    # นับ supplier ที่ต่างกัน (เจ้าเดียวกันหลายแถว = ราคาเดียว) เหมือนหน้าจอ
+                    _ssr = (_ev["ชื่อ Supplier"].astype(str).str.strip()
+                            if "ชื่อ Supplier" in _ev.columns else pd.Series([""] * len(_ev), index=_ev.index))
+                    _ev["_sup"] = [sv if sv and sv.lower() not in ("none", "nan") else f"(แถว {ix})"
+                                   for sv, ix in zip(_ssr, _ev.index)]
+                    _ps = _ev.groupby(["_order", "_skq", "_grp", "_sup"])["ต้นทุนรวม (รวมย้าย)"].mean().reset_index()
+                    _grp_avg   = _ps.groupby(["_order", "_skq", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
+                    _grp_count = _ps.groupby(["_order", "_skq", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
                     for (order_no, sku, grp), avg in _grp_avg.items():
                         _exp_avg_map[(order_no, sku, grp)] = (avg, int(_grp_count.get((order_no, sku, grp), 1)))
 
@@ -380,7 +402,7 @@ class DashboardCostScreen(CTkFrame):
                             _esku = str(_er.get("รายการสินค้า", "")).strip()
                             _egrp = "chub" if _esel in _EXP_CHUB_TYPES else "normal"
                             _eorder = str(_er.get("Order No.", "")).strip()
-                            _ekey = (_eorder, _esku, _egrp)
+                            _ekey = (_eorder, _sku_qty_key(_esku, _er.get("จำนวน", ""), _er.get("หมายเหตุ (ความยาว, OD)", "")), _egrp)
                             if _esku and _ekey not in _exp_sel_idx:
                                 _exp_sel_idx[_ekey] = _ei
 
@@ -393,7 +415,7 @@ class DashboardCostScreen(CTkFrame):
                         cost     = pd.to_numeric(erow.get("ต้นทุนรวม (รวมย้าย)", 0), errors='coerce')
                         grp      = "chub" if sel_type in _EXP_CHUB_TYPES else "normal"
                         order_no = str(erow.get("Order No.", "")).strip()
-                        map_key  = (order_no, sku, grp)
+                        map_key  = (order_no, _sku_qty_key(sku, erow.get("จำนวน", ""), erow.get("หมายเหตุ (ความยาว, OD)", "")), grp)
                         entry    = _exp_avg_map.get(map_key)
 
                         # avg. cost/per order — แสดงที่ row ✔ ของกลุ่ม
@@ -697,7 +719,7 @@ class DashboardCostScreen(CTkFrame):
             ("ปริมาณรวม (เส้น/ชิ้น)",  "total_qty",    COLORS["kpi_green"],  "📦"),
             ("ยอดซื้อรวม (ทุน)",        "total_cost",   COLORS["kpi_red"],    "💰"),
             ("GP รวม",                  "total_gp",     COLORS["kpi_green"],  "💵"),
-            ("Markup เฉลี่ย (✔ และ เทียบเพื่อชุบ ✔)", "avg_margin", COLORS["kpi_purple"], "📊"),
+            ("Markup เฉลี่ย (✔)", "avg_margin", COLORS["kpi_purple"], "📊"),
             # 🟢 [เพิ่มใหม่] Markup All Offer — คำนวณแบบถ่วงน้ำหนักเหมือนกัน แต่รวมทุกบรรทัด/ทุก
             # offer ที่ทำราคาไป (ไม่กรอง Select เลย) ไว้เทียบดูว่าที่เสนอราคาไปทั้งหมดเทียบกับที่
             # เลือกซื้อจริงต่างกันแค่ไหน (PM ขอเพิ่มไว้คู่กับ Markup เฉลี่ยตัวเดิม)
@@ -794,6 +816,8 @@ class DashboardCostScreen(CTkFrame):
             "Sum of\nต้นทุน/เส้น",
             "ต้นทุน/\nกก.",    
             "ชื่อ Supplier",
+            "ค่าย้าย\n(ซื้อ)",                      # 🟢 เพิ่มใหม่ (PM/User ขอ) — ต่อจากชื่อ Supplier
+            "ค่าส่ง\n(ขาย)",                       # 🟢 เพิ่มใหม่
             "Average of\nส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)",
             "Average of\nส่วนลด 1\n(บาท)",          # 🟢 เพิ่มใหม่
@@ -827,6 +851,8 @@ class DashboardCostScreen(CTkFrame):
             "Sum of\nต้นทุน/เส้น":              "ต้นทุน/เส้น",
             "ต้นทุน/\nกก.":                     "ต้นทุน/กก. (รวมย้าย)",
             "ชื่อ Supplier":                     "ชื่อ Supplier",
+            "ค่าย้าย\n(ซื้อ)":                  "ค่าย้าย (ซื้อ)",
+            "ค่าส่ง\n(ขาย)":                   "ค่าส่ง (ขาย)",
             "Average of\nส่วนลด 2 (%)":         "ส่วนลด 2 (%)",
             "Average of\nส่วนลด 1 (%)":         "ส่วนลด 1 (%)",
             "Average of\nส่วนลด 1\n(บาท)":      "ส่วนลด 1 (บาท)",       # 🟢 เพิ่มใหม่
@@ -845,6 +871,8 @@ class DashboardCostScreen(CTkFrame):
             "Sum of\nต้นทุน/เส้น",
             "ต้นทุน/\nกก.",
             "Sum of ต้นทุนรวม\n(ไม่รวมย้าย)",
+            "ค่าย้าย\n(ซื้อ)",
+            "ค่าส่ง\n(ขาย)",
             "Average of\nส่วนลด 1\n(บาท)",           # 🟢 เพิ่มใหม่
             "Average of\nส่วนลด 2\n(บาท)",           # 🟢 เพิ่มใหม่
             "ส่วนลดรวม\n1+2",                         # 🟢 เพิ่มใหม่
@@ -988,6 +1016,8 @@ class DashboardCostScreen(CTkFrame):
             "Sum of\nต้นทุน/เส้น":              120,
             "ต้นทุน/\nกก.":                     120,
             "ชื่อ Supplier":                    120,
+            "ค่าย้าย\n(ซื้อ)":                  90,
+            "ค่าส่ง\n(ขาย)":                   90,
             "Average of\nส่วนลด 2 (%)":         120,
             "Average of\nส่วนลด 1 (%)":         120,
             "Average of\nส่วนลด 1\n(บาท)":      120,
@@ -1310,13 +1340,14 @@ class DashboardCostScreen(CTkFrame):
             df = df[df["Select"].astype(str) == str(select_val)]
 
         self.current_filtered_df = df.copy()   # เก็บไว้สำหรับ Export
-        self._update_kpis(df_for_kpi)
+        # จำนวน Order ตามตัวกรองทั้งหมดรวม dropdown Select (df) ส่วนยอดเงิน/Markup ยังใช้ df_for_kpi ที่ไม่ขึ้นกับ Select
+        self._update_kpis(df_for_kpi, df_orders=df)
         self._update_table(df)
 
     # =========================================================
     # KPI UPDATE
     # =========================================================
-    def _update_kpis(self, df):
+    def _update_kpis(self, df, df_orders=None):
         if df.empty:
             for key in self.kpi_labels:
                 self.kpi_labels[key].configure(text="–")
@@ -1327,17 +1358,22 @@ class DashboardCostScreen(CTkFrame):
         if "รายการสินค้า" in df.columns:
             df_active = df[df["รายการสินค้า"].astype(str).str.strip() != ""]
 
+        # แถวที่ใช้นับจำนวน Order = ผ่านตัวกรองทุกอันรวม dropdown Select (ผู้ใช้เห็นอะไรในตารางก็นับตามนั้น)
+        df_orders_active = df_orders if df_orders is not None else df
+        if "รายการสินค้า" in df_orders_active.columns:
+            df_orders_active = df_orders_active[df_orders_active["รายการสินค้า"].astype(str).str.strip() != ""]
+
         # นับ Unique Sale Order No. (ไม่นับซ้ำ) — กัน "nan"/"None" จาก pandas astype(str)
         # นับจาก df_active ทั้งหมด (ไม่กรอง Select) เพราะเป็นตัวเลข "ทำราคาไปกี่ออเดอร์" ไม่ใช่ตัวเลขเงิน
-        if "Sale Order No." in df_active.columns:
-            _so = df_active["Sale Order No."].astype(str).str.strip()
+        if "Sale Order No." in df_orders_active.columns:
+            _so = df_orders_active["Sale Order No."].astype(str).str.strip()
             _valid_mask = ~_so.isin(["", "nan", "None", "NaN", "NaT"])
             total_orders = _so[_valid_mask].nunique()
 
             # 🟢 [แก้ไข] แยกจำนวน Order ตาม "คนทำจัดซื้อ" (created_by / PU User) ไม่ใช่ Sale
             # เพื่อให้กดที่การ์ด "จำนวน Order รวม" แล้วเห็นว่า PU แต่ละคนทำไปกี่ Order (ตามที่ PM ขอ)
-            if "created_by" in df_active.columns:
-                _valid_rows = df_active[_valid_mask].copy()
+            if "created_by" in df_orders_active.columns:
+                _valid_rows = df_orders_active[_valid_mask].copy()
                 _valid_rows["_so_clean"] = _so[_valid_mask]
                 _breakdown = (_valid_rows.groupby(_valid_rows["created_by"].astype(str).str.strip())["_so_clean"]
                               .nunique().sort_values(ascending=False))
@@ -1345,24 +1381,26 @@ class DashboardCostScreen(CTkFrame):
             else:
                 self._order_breakdown = []
         else:
-            total_orders = len(df_active)
+            total_orders = len(df_orders_active)
             self._order_breakdown = []
 
         # 🟢 [แก้ไข] ยอดเงิน/ปริมาณ/Markup ต้องนับเฉพาะแถวที่ "Select" ไว้จริง (✔ หรือ เทียบเพื่อชุบ ✔)
         # เดิมนับรวมทุกแถวรวมถึงแถว "เทียบ" ที่แค่เอาไว้เปรียบเทียบราคา (ไม่ได้ซื้อ/ขายจริง) ทำให้ยอด
         # ทั้งฝั่งซื้อและฝั่งขายพองขึ้นจากการนับซ้ำ (พบจาก @WebMaster-APlus code review)
+        # PM ไม่ต้องการนับแถว "เทียบเพื่อชุบ ✔" ในยอดรวม — การ์ดยอดขาย/ยอดซื้อ/GP/ปริมาณ/Markup เฉลี่ยนับเฉพาะ ✔
+        # (ใช้ฐานเดียวกันทั้งหมดเพื่อให้ GP กับ Markup คำนวณจากยอดชุดเดียวกัน)
         if "Select" in df_active.columns:
             _sel = df_active["Select"].astype(str).str.strip()
-            df_selected = df_active[_sel.isin(["✔", "เทียบเพื่อชุบ ✔"])]
+            df_selected = df_active[_sel == "✔"]
         else:
             df_selected = df_active
 
         # ยอดขายรวมแยกตามคนทำจัดซื้อ (PU) — ใช้คอลัมน์ "Sum of ราคาขายรวม" เฉพาะแถวที่ Select = ✔ เท่านั้น
-        # (PM ไม่ต้องการนับ "เทียบเพื่อชุบ ✔" ใน popup นี้ — ต่างจากการ์ดยอดขายรวมที่ยังนับทั้งสองแบบ)
+        # (PM ไม่ต้องการนับ "เทียบเพื่อชุบ ✔" — ตรงกับการ์ดยอดขายรวมที่นับเฉพาะ ✔ เช่นกัน)
         self._order_sales = {}
-        if ("created_by" in df_active.columns and "ราคาขาย รวม" in df_active.columns
-                and "Select" in df_active.columns):
-            _only_check = df_active[df_active["Select"].astype(str).str.strip() == "✔"]
+        if ("created_by" in df_orders_active.columns and "ราคาขาย รวม" in df_orders_active.columns
+                and "Select" in df_orders_active.columns):
+            _only_check = df_orders_active[df_orders_active["Select"].astype(str).str.strip() == "✔"]
             _amt = pd.to_numeric(_only_check["ราคาขาย รวม"], errors="coerce").fillna(0)
             _by = _only_check["created_by"].astype(str).str.strip()
             self._order_sales = _amt.groupby(_by).sum().to_dict()
@@ -1477,7 +1515,10 @@ class DashboardCostScreen(CTkFrame):
         pop = CTkToplevel(self)
         pop.title("จำนวน Order แยกตามคนทำจัดซื้อ")
         pop.geometry(f"{pop_w}x{pop_h}+{max(x, 0)}+{max(y, 0)}")
-        pop.resizable(False, False)
+        # ให้ผู้ใช้ลากขอบขยาย/ย่อเองได้ (รายชื่อ PU เยอะอาจอยากดูทีเดียวทั้งหมด) แต่ไม่ให้เล็กเกินไปจน
+        # แถว "รวมทั้งหมด" กับปุ่มปิดที่ตรึงไว้ด้านล่างโดนบีบ
+        pop.resizable(True, True)
+        pop.minsize(380, 260)
         pop.transient(root)
         pop.lift()
         pop.focus_force()
@@ -1584,10 +1625,19 @@ class DashboardCostScreen(CTkFrame):
                 lambda s: "chub" if s in CHUB_TYPES else "normal")
             df_cost["_order"] = (df_cost["Order No."].astype(str).str.strip()
                                   if "Order No." in df_cost.columns else "")
+            # เทียบราคาเฉพาะ "สินค้าเดียวกัน + จำนวนเท่ากัน" (จำนวนต่างกัน ต้นทุนรวมต่างกันอยู่แล้ว เทียบไม่ได้)
+            df_cost["_skq"] = [_sku_qty_key(n, q, nt) for n, q, nt in zip(df_cost["รายการสินค้า"], df_cost["จำนวน"], df_cost.get("หมายเหตุ (ความยาว, OD)", [""] * len(df_cost)))]
 
-            # avg แยกตาม (Order No., SKU, กลุ่ม) — ไม่ปน order อื่นหรือ chub/normal ข้ามกัน
-            grp_avg   = df_cost.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
-            grp_count = df_cost.groupby(["_order", "รายการสินค้า", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
+            # avg แยกตาม (Order No., SKU+จำนวน, กลุ่ม) — ไม่ปน order อื่นหรือ chub/normal ข้ามกัน
+            # นับ "supplier ที่ต่างกัน" ไม่ใช่จำนวนแถว: supplier เดียวกันหลายแถวถือเป็นราคาเดียว (เฉลี่ยในเจ้าเดียวกันก่อน)
+            # supplier ว่าง → ถือเป็นคนละเจ้า (ไม่ตัดทิ้ง) ถ้าเหลือเจ้าเดียว → ไม่มีตัวเทียบ
+            _sup_series = (df_cost["ชื่อ Supplier"].astype(str).str.strip()
+                           if "ชื่อ Supplier" in df_cost.columns else pd.Series([""] * len(df_cost), index=df_cost.index))
+            df_cost["_sup"] = [sv if sv and sv.lower() not in ("none", "nan") else f"(แถว {ix})"
+                               for sv, ix in zip(_sup_series, df_cost.index)]
+            _per_sup = (df_cost.groupby(["_order", "_skq", "_grp", "_sup"])["ต้นทุนรวม (รวมย้าย)"].mean().reset_index())
+            grp_avg   = _per_sup.groupby(["_order", "_skq", "_grp"])["ต้นทุนรวม (รวมย้าย)"].mean()
+            grp_count = _per_sup.groupby(["_order", "_skq", "_grp"])["ต้นทุนรวม (รวมย้าย)"].count()
             for (order_no, sku, grp), avg in grp_avg.items():
                 sku_avg_map[(order_no, sku, grp)] = (avg, int(grp_count.get((order_no, sku, grp), 1)))
 
@@ -1602,7 +1652,7 @@ class DashboardCostScreen(CTkFrame):
                 _sku = str(_r.get("รายการสินค้า", "")).strip()
                 _grp = "chub" if _sel in CHUB_TYPES else "normal"
                 _order = str(_r.get("Order No.", "")).strip()
-                _key = (_order, _sku, _grp)
+                _key = (_order, _sku_qty_key(_sku, _r.get("จำนวน", ""), _r.get("หมายเหตุ (ความยาว, OD)", "")), _grp)
                 if _sku and _key not in _sku_selected_idx:
                     _sku_selected_idx[_key] = _idx
 
@@ -1627,7 +1677,7 @@ class DashboardCostScreen(CTkFrame):
                 # 🟢 avg. cost/per order — แสดงที่ row ที่ถูก ✔ ของ (Order No., SKU, group) นั้น
                 if dcol == "avg. cost/per\norder":
                     try:
-                        sku     = str(row.get("รายการสินค้า", "")).strip()
+                        sku     = _sku_qty_key(row.get("รายการสินค้า", ""), row.get("จำนวน", ""), row.get("หมายเหตุ (ความยาว, OD)", ""))
                         sel_val = str(row.get("Select", "")).strip()
                         grp     = "chub" if sel_val in CHUB_TYPES else "normal"
                         order_no = str(row.get("Order No.", "")).strip()
@@ -1658,7 +1708,7 @@ class DashboardCostScreen(CTkFrame):
                         if sel_type not in SELECT_TYPES:
                             row_data.append("")
                         else:
-                            sku      = str(row.get("รายการสินค้า", "")).strip()
+                            sku      = _sku_qty_key(row.get("รายการสินค้า", ""), row.get("จำนวน", ""), row.get("หมายเหตุ (ความยาว, OD)", ""))
                             qty      = pd.to_numeric(row.get("จำนวน", 0), errors='coerce')
                             cost     = pd.to_numeric(row.get("ต้นทุนรวม (รวมย้าย)", 0), errors='coerce')
                             grp      = "chub" if sel_type in CHUB_TYPES else "normal"
@@ -1913,6 +1963,7 @@ class DashboardCostScreen(CTkFrame):
                         _cost = pd.to_numeric(_row.get("ต้นทุนรวม (รวมย้าย)", 0), errors='coerce')
                         if not _sku or pd.isna(_cost) or _cost <= 0:
                             continue
+                        _sku = _sku_qty_key(_sku, _row.get("จำนวน", ""), _row.get("หมายเหตุ (ความยาว, OD)", ""))
                         _grp   = "chub" if _sel in CHUB_TYPES else "normal"
                         _order_no = str(_row.get("Order No.", "")).strip()
                         _entry = sku_avg_map.get((_order_no, _sku, _grp))

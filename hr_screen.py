@@ -21,6 +21,8 @@ import os
 import shutil
 from tkinter import font as tkfont
 from outstanding_dashboard_tab import OutstandingDashboardTab
+from post_verify_tab import (PostVerifyAlertsTab, EVENT_SHORT, EVENT_PLAIN, STATUS_PLAIN,
+                             fetch_post_verify_context, headline_text, plain_lines)
 from project_screen import (_center_and_style_popup, ProjectScreen,
                             load_project_gp_df, build_gp_derivation_table,
                             project_offset_info, build_offset_box)
@@ -467,7 +469,8 @@ class PayoutConfirmDialog(CTkToplevel):
                  comm_df, selected_year, selected_month,
                  has_project_lot=False, lot_pay_now=None, lot_reserve=None,
                  reserve_release_net=None, reserve_release_count=0,
-                 lot_breakdown_rows=None, reserve_release_rows=None, lot_parts=None):
+                 lot_breakdown_rows=None, reserve_release_rows=None, lot_parts=None,
+                 post_verify_lines=None, require_pv_check=False, unacked_event_ids=None):
         super().__init__(master)
         # ซ่อนไว้ก่อนจนสร้าง UI + ตั้งขนาด/ตำแหน่งเสร็จ ค่อยแสดง — ไม่งั้นหน้าต่างโผล่ที่ตำแหน่งเริ่มต้น
         # แล้วถูกย้าย/ปรับขนาดทีหลัง เห็นเป็นอาการ "สั่น"
@@ -485,6 +488,12 @@ class PayoutConfirmDialog(CTkToplevel):
         self._lot_breakdown_rows = lot_breakdown_rows or []
         self._reserve_release_rows = reserve_release_rows or []
         self._lot_parts = lot_parts
+        self._post_verify_lines = post_verify_lines or []
+        self._require_pv_check = bool(require_pv_check and self._post_verify_lines)
+        self._pv_unacked_ids = list(unacked_event_ids or [])
+        self._pv_check_var = tk.BooleanVar(value=False)
+        self.ack_ids = []          # คืนให้ผู้เรียก: เหตุการณ์ที่ผู้จ่ายติ๊กรับทราบพร้อมกดยืนยัน
+        self._confirm_btn = None
 
         # ---- แยก SO งวดปัจจุบัน vs ตกหล่น ----
         self._current_rows = []
@@ -521,6 +530,7 @@ class PayoutConfirmDialog(CTkToplevel):
         # เนื้อหายาวกว่านี้ก็เลื่อนดูเอา
         n_so = min(len(self._current_rows) + len(self._old_rows), 6)
         est = 400 + 28 * n_so
+        est += 30 + 20 * len(self._post_verify_lines) if self._post_verify_lines else 0
         if has_project_lot:
             est += 200 + 34 * len(self._lot_breakdown_rows)
         if reserve_release_net is not None:
@@ -554,6 +564,22 @@ class PayoutConfirmDialog(CTkToplevel):
 
         body = CTkScrollableFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=16, pady=12)
+
+        # ── ข้อควรตรวจก่อนจ่าย (SO ที่ถูกแก้หลัง HR ตรวจ / SO ตกค้าง) ────────
+        if self._post_verify_lines:
+            pv_box = CTkFrame(body, fg_color="#FFF7ED", corner_radius=10, border_width=1, border_color="#FDBA74")
+            pv_box.pack(fill="x", pady=(0, 10))
+            CTkLabel(pv_box, text="⚠ ข้อควรตรวจก่อนจ่าย", font=CTkFont(size=13, weight="bold"),
+                     text_color="#C2410C").pack(anchor="w", padx=14, pady=(8, 2))
+            for ln in self._post_verify_lines:
+                CTkLabel(pv_box, text=ln, font=CTkFont(size=11), text_color="#7C2D12", anchor="w",
+                         justify="left", wraplength=420).pack(fill="x", padx=14)
+            if self._require_pv_check:
+                CTkCheckBox(pv_box, text="ฉันตรวจรายการเตือนข้างต้นแล้ว (ต้องติ๊กก่อนกดยืนยันจ่าย)",
+                            variable=self._pv_check_var, command=self._on_pv_check,
+                            font=CTkFont(size=12, weight="bold"), text_color="#7C2D12",
+                            fg_color="#EA580C", hover_color="#C2410C").pack(anchor="w", padx=14, pady=(8, 2))
+            CTkLabel(pv_box, text="", height=4).pack()
 
         # ── สรุปยอดเงิน ─────────────────────────────────────────────────
         fin_box = CTkFrame(body, fg_color="#F0F4FF", corner_radius=10)
@@ -699,10 +725,13 @@ class PayoutConfirmDialog(CTkToplevel):
                   width=140, height=38,
                   fg_color="#6B7280", hover_color="#4B5563",
                   command=self._cancel).pack(side="left", padx=8)
-        CTkButton(btn_frame, text="✅  ยืนยันการจ่าย",
+        self._confirm_btn = CTkButton(btn_frame, text="✅  ยืนยันการจ่าย",
                   width=160, height=38,
                   fg_color="#16A34A", hover_color="#15803D",
-                  command=self._confirm).pack(side="left", padx=8)
+                  command=self._confirm)
+        self._confirm_btn.pack(side="left", padx=8)
+        if self._require_pv_check:
+            self._confirm_btn.configure(state="disabled", fg_color="#94A3B8", hover_color="#94A3B8")
 
     # ------------------------------------------------------------------
     def _center(self, master, w, h):
@@ -720,7 +749,19 @@ class PayoutConfirmDialog(CTkToplevel):
         except Exception:
             pass
 
+    def _on_pv_check(self):
+        if self._confirm_btn is None:
+            return
+        if self._pv_check_var.get():
+            self._confirm_btn.configure(state="normal", fg_color="#16A34A", hover_color="#15803D")
+        else:
+            self._confirm_btn.configure(state="disabled", fg_color="#94A3B8", hover_color="#94A3B8")
+
     def _confirm(self):
+        if self._require_pv_check and not self._pv_check_var.get():
+            return
+        if self._require_pv_check:
+            self.ack_ids = list(self._pv_unacked_ids)
         self.result = True
         self.grab_release()
         self.destroy()
@@ -893,6 +934,7 @@ class HRScreen(CTkFrame):
         self.payout_history_tab = self.commission_tabs.add("3. ประวัติการจ่าย")
         self.reserve_tab = self.commission_tabs.add("4. Reserve งานโครงการ")
         self.project_mgmt_tab = self.commission_tabs.add("5. จัดการโครงการ")
+        self.post_verify_tab = self.commission_tabs.add("6. แจ้งเตือน/SO ตกค้าง")
 
         self._create_compare_commission_tab(self.compare_commission_tab)
         self._create_process_commission_tab(self.process_commission_tab)
@@ -1573,6 +1615,14 @@ class HRScreen(CTkFrame):
                 self._load_payout_history(); self._payout_history_loaded = True
             elif selected_sub_tab == "4. Reserve งานโครงการ" and not self._reserve_tab_loaded:
                 self._load_reserve_summary(); self._reserve_tab_loaded = True
+            elif selected_sub_tab == "6. แจ้งเตือน/SO ตกค้าง":
+                if not getattr(self, "_post_verify_loaded", False):
+                    self.post_verify_view = PostVerifyAlertsTab(
+                        self.post_verify_tab, self.app_container, user_key=self.user_key)
+                    self.post_verify_view.pack(fill="both", expand=True)
+                    self._post_verify_loaded = True
+                else:
+                    self.post_verify_view.load()
             elif selected_sub_tab == "5. จัดการโครงการ" and not self._project_mgmt_loaded:
                 # HR เห็นได้ทุกโครงการเหมือน Director/Admin (ไม่ใส่ sale_key_filter) — และมีสิทธิ์
                 # ปิดโปรเจกต์ (GP True-Up) ได้อยู่แล้วตามโค้ดเดิมของ ProjectScreen (can_close เช็ค role hr)
@@ -5232,11 +5282,16 @@ class HRScreen(CTkFrame):
         
     def _create_process_commission_tab(self, parent_tab):
         parent_tab.grid_columnconfigure(0, weight=1)
-        parent_tab.grid_rowconfigure(1, weight=1)
+        parent_tab.grid_rowconfigure(2, weight=1)
         
         control_frame = CTkFrame(parent_tab)
         control_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         
+        # กล่องเตือน "ข้อควรตรวจก่อนจ่าย" (SO ที่ถูกแก้หลัง HR ตรวจ / SO ตกค้าง) — ว่างเมื่อไม่มีอะไรต้องเตือน
+        self.pv_warning_frame = CTkFrame(parent_tab, fg_color="transparent")
+        self.pv_warning_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=0)
+        self.post_verify_warning_lines = []
+
         CTkLabel(control_frame, text="เลือกพนักงานขาย:").pack(side="left", padx=(10,5))
         self.active_sales_keys = self._get_active_sales_list()
         self.selected_sale_for_process = tk.StringVar()
@@ -5253,7 +5308,7 @@ class HRScreen(CTkFrame):
         # --- [แก้ไข] เปลี่ยนเป็น CTkScrollableFrame ---
         # เพื่อให้หน้าจอเลื่อนลงได้เมื่อเนื้อหายาวเกินหน้าจอโน้ตบุ๊ก
         self.process_result_frame = CTkScrollableFrame(parent_tab, label_text="ผลลัพธ์การคำนวณ")
-        self.process_result_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        self.process_result_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
         self.process_result_frame.grid_columnconfigure(0, weight=1)
 
         self.after(100, self._on_sale_selected_for_process)
@@ -5435,6 +5490,7 @@ class HRScreen(CTkFrame):
 
             # บันทึก ID ของ SO ที่จะถูกประมวลผล
             self.current_so_ids = self.current_comm_df['id'].tolist()
+            self._refresh_post_verify_warning()
 
             # Reconciliation Logic
             if not self.current_comm_df.empty:
@@ -5990,6 +6046,157 @@ class HRScreen(CTkFrame):
             CTkLabel(container, text=f"แสดงที่มา GP ไม่สำเร็จ: {e}", text_color="red"
                      ).pack(anchor="w", padx=10)
 
+    def _refresh_post_verify_warning(self):
+        """กล่อง "ข้อควรตรวจก่อนจ่าย" ในหน้าคำนวณ & จ่าย — สำหรับผู้จ่ายเงิน/กรรมการ
+        สรุปประโยคเดียว + ตารางแบบภาษาคน: SO ในรอบนี้ที่ถูกแก้หลัง HR ตรวจ (ใคร แก้อะไร ยอดเท่าไร)
+        และ SO ของเซลส์คนนี้ที่ไม่ได้อยู่ในรอบจ่ายนี้ (ไม่งั้นตกหล่นเงียบๆ) — SO ที่เคยผ่าน HR แล้วเป็นแถบแดง"""
+        frame = getattr(self, 'pv_warning_frame', None)
+        if frame is None:
+            return
+        for w in frame.winfo_children():
+            w.destroy()
+        self.post_verify_warning_lines = []
+        self.post_verify_unacked_ids = []
+        self.post_verify_require_check = False
+        try:
+            df_cur = getattr(self, 'current_comm_df', None)
+            if df_cur is None or df_cur.empty:
+                return
+            so_list = df_cur['so_number'].astype(str).tolist()
+            ids = [int(i) for i in df_cur['id'].tolist()]
+            sale_key = self.selected_sale_for_process.get()
+            events, stuck = fetch_post_verify_context(
+                self.pg_engine, so_list, ids, sale_key, self.selected_year, self.selected_month)
+        except Exception as e:
+            print(f"post-verify warning error: {e}")
+            return
+        if events.empty and stuck.empty:
+            return
+
+        self.post_verify_warning_lines = plain_lines(events, stuck, sale_key, self.thai_months)
+        # ทางเลือก ข.: ถ้ามีเหตุการณ์ที่ยังไม่รับทราบ หรือมี SO ที่เคยผ่าน HR แล้วถูกดึงกลับ → popup ยืนยันจ่ายต้องติ๊กรับทราบก่อน
+        self.post_verify_unacked_ids = [int(i) for i in events.loc[events['ack_at'].isna(), 'id'].tolist()] if not events.empty else []
+        self.post_verify_require_check = bool(self.post_verify_unacked_ids) or (
+            (not stuck.empty) and bool(stuck['was_verified'].any()))
+        n_ver = int(stuck['was_verified'].sum()) if not stuck.empty else 0
+        serious = n_ver > 0
+        bg, border, title_c, text_c = (("#FEF2F2", "#F87171", "#B91C1C", "#7F1D1D") if serious
+                                       else ("#FFF7ED", "#FDBA74", "#C2410C", "#7C2D12"))
+
+        box = CTkFrame(frame, fg_color=bg, corner_radius=8, border_width=1, border_color=border)
+        box.pack(fill="x", pady=(0, 6))
+        box.grid_columnconfigure(0, weight=1)
+
+        # ── แถบสรุปบรรทัดเดียว (ตรึงไว้) + ปุ่ม — รายละเอียดซ่อนไว้ กดขยายดูได้ ไม่กินพื้นที่ผลคำนวณ ──
+        head = CTkFrame(box, fg_color="transparent")
+        head.pack(fill="x", padx=12, pady=(8, 8))
+        CTkLabel(head, text="⚠ ควรตรวจก่อนจ่าย: " + headline_text(events, stuck, sale_key),
+                 font=CTkFont(size=13, weight="bold"), text_color=title_c, anchor="w", justify="left",
+                 wraplength=900).pack(side="left", fill="x", expand=True)
+
+        detail = CTkFrame(box, fg_color="transparent")
+        expanded = bool(getattr(self, '_pv_expanded', False))
+
+        def _toggle():
+            self._pv_expanded = not bool(getattr(self, '_pv_expanded', False))
+            if self._pv_expanded:
+                detail.pack(fill="x")
+                toggle_btn.configure(text="▲ ซ่อนรายละเอียด")
+            else:
+                detail.pack_forget()
+                toggle_btn.configure(text="▼ ดูรายละเอียด")
+
+        toggle_btn = CTkButton(head, text=("▲ ซ่อนรายละเอียด" if expanded else "▼ ดูรายละเอียด"), width=130, height=28,
+                               fg_color="#475569", hover_color="#334155", command=_toggle)
+        toggle_btn.pack(side="right", padx=(6, 0))
+        CTkButton(head, text="ดูทั้งหมด (แท็บ 6)", width=120, height=28, fg_color="#EA580C", hover_color="#C2410C",
+                  command=lambda: self.commission_tabs.set("6. แจ้งเตือน/SO ตกค้าง")).pack(side="right", padx=(6, 0))
+
+        def _ack_events():
+            eids = [int(i) for i in events['id'].tolist()]
+            conn = None
+            try:
+                conn = self.app_container.get_connection()
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE so_post_verify_events SET ack_by = %s, ack_at = NOW() "
+                                "WHERE id = ANY(%s) AND ack_at IS NULL", (self.user_key, eids))
+                conn.commit()
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                messagebox.showerror("Error", f"บันทึกการรับทราบไม่สำเร็จ: {e}", parent=self)
+            finally:
+                if conn:
+                    self.app_container.release_connection(conn)
+            self._refresh_post_verify_warning()
+
+        if not events.empty:
+            n_unack = int(events['ack_at'].isna().sum())
+            if n_unack:
+                CTkButton(head, text=f"✔ รับทราบ ({n_unack})", width=110, height=28, fg_color="#16A34A",
+                          hover_color="#15803D", command=_ack_events).pack(side="right", padx=(6, 0))
+            else:
+                CTkLabel(head, text="✔ รับทราบแล้ว", font=CTkFont(size=12), text_color="#16A34A").pack(side="right", padx=(6, 0))
+
+        if expanded:
+            detail.pack(fill="x")
+
+        def _row(parent, values, widths, bold=False, bgc="transparent", color=None):
+            r = CTkFrame(parent, fg_color=bgc, corner_radius=4)
+            r.pack(fill="x", pady=1)
+            for v, w in zip(values, widths):
+                CTkLabel(r, text=v, width=w, anchor="w", justify="left", wraplength=max(w - 8, 40),
+                         font=CTkFont(size=12, weight="bold" if bold else "normal"),
+                         text_color=color or text_c).pack(side="left", padx=(8, 0), pady=3)
+            return r
+
+        # ── ส่วนที่ 1: SO ในรอบนี้ที่ถูกแก้หลัง HR ตรวจ ──
+        if not events.empty:
+            sec = CTkFrame(detail, fg_color="transparent")
+            sec.pack(fill="x", padx=12, pady=(6, 2))
+            CTkLabel(sec, text="① SO ในรอบนี้ที่ถูกแก้หลัง HR ตรวจแล้ว — ค่าคอมของ SO เหล่านี้อาจเปลี่ยน",
+                     font=CTkFont(size=13, weight="bold"), text_color=title_c).pack(side="left")
+
+            tbl = CTkFrame(detail, fg_color="white", corner_radius=6)
+            tbl.pack(fill="x", padx=12, pady=(0, 6))
+            W = [130, 330, 230, 110, 90]
+            _row(tbl, ["SO", "เกิดอะไรขึ้น", "ใคร / เมื่อไร", "ยอดขาย (บาท)", "สถานะ"], W, bold=True, bgc="#F1F5F9", color="#334155")
+            for _, r in events.head(8).iterrows():
+                when = r['changed_at'].strftime('%d/%m %H:%M') if pd.notna(r['changed_at']) else '-'
+                what = EVENT_PLAIN.get(r['event_type'], r['event_type'])
+                if r['detail']:
+                    what += f" — {r['detail']}"
+                amt = f"{float(r['sales_amount']):,.0f}" if pd.notna(r['sales_amount']) else "-"
+                _row(tbl, [r['so_number'], what, f"{r['changed_by'] or '-'}  {when}", amt,
+                           "รับทราบแล้ว" if pd.notna(r['ack_at']) else "ใหม่"], W,
+                     color="#475569" if pd.notna(r['ack_at']) else "#9A3412")
+            if len(events) > 8:
+                CTkLabel(tbl, text=f"  …และอีก {len(events) - 8} เหตุการณ์ (ดูทั้งหมดที่แท็บ 6)", font=CTkFont(size=11),
+                         text_color="#64748B", anchor="w").pack(fill="x", padx=8, pady=(0, 4))
+
+        # ── ส่วนที่ 2: SO ที่ไม่ได้อยู่ในรอบจ่ายนี้ ──
+        if not stuck.empty:
+            sec2 = CTkFrame(detail, fg_color="transparent")
+            sec2.pack(fill="x", padx=12, pady=(6, 2))
+            CTkLabel(sec2, text=f"② SO ของ {sale_key} ที่ไม่ได้อยู่ในรอบจ่ายนี้ — เซลส์จะยังไม่ได้ค่าคอมของ SO เหล่านี้รอบนี้",
+                     font=CTkFont(size=13, weight="bold"), text_color=title_c).pack(side="left")
+            tbl2 = CTkFrame(detail, fg_color="white", corner_radius=6)
+            tbl2.pack(fill="x", padx=12, pady=(0, 10))
+            W2 = [130, 190, 130, 110, 330]
+            _row(tbl2, ["SO", "ตอนนี้อยู่ที่", "รอบค่าคอม", "ยอดขาย (บาท)", "หมายเหตุ"], W2, bold=True, bgc="#F1F5F9", color="#334155")
+            for _, r in stuck.head(8).iterrows():
+                per = f"{self.thai_months[int(r['commission_month']) - 1]} {int(r['commission_year']) + 543}"
+                amt = f"{float(r['sales_amount']):,.0f}" if pd.notna(r['sales_amount']) else "-"
+                verified = bool(r['was_verified'])
+                _row(tbl2, [r['so_number'], STATUS_PLAIN.get(r['status'], r['status']), per, amt,
+                            "★ เคยผ่าน HR ตรวจแล้ว แต่ถูกดึงกลับ — ตรวจให้ครบก่อนปิดรอบ" if verified else ""], W2,
+                     bgc="#FEE2E2" if verified else "transparent", color="#991B1B" if verified else "#475569",
+                     bold=verified)
+            if len(stuck) > 8:
+                CTkLabel(tbl2, text=f"  …และอีก {len(stuck) - 8} SO (ดูทั้งหมดที่แท็บ 6)", font=CTkFont(size=11),
+                         text_color="#64748B", anchor="w").pack(fill="x", padx=8, pady=(0, 4))
+        CTkLabel(detail, text="", height=4).pack()
+
     def _load_pending_reserve_release(self, container, draw=True):
         """3b GP True-Up — ดึงยอด Reserve ที่โปรเจกต์ปิดแล้วตัดสินใจ 'จ่ายคืน' (release_amount) ของเซลส์
         คนนี้ที่ยังไม่เคยถูกนำไปรวมจ่ายในรอบไหนเลย (status='Pending' ใน reserve_release_queue) มาบวกเข้า
@@ -6278,10 +6485,27 @@ class HRScreen(CTkFrame):
                 lot_breakdown_rows=lot_breakdown_rows,
                 reserve_release_rows=reserve_release_rows,
                 lot_parts=lot_parts,
+                post_verify_lines=list(getattr(self, 'post_verify_warning_lines', []) or []),
+                require_pv_check=bool(getattr(self, 'post_verify_require_check', False)),
+                unacked_event_ids=list(getattr(self, 'post_verify_unacked_ids', []) or []),
             )
             self.wait_window(dlg)
             if not dlg.result:
                 return
+
+            # ผู้จ่ายติ๊กรับทราบรายการเตือนพร้อมกดยืนยัน → บันทึกว่าใครรับทราบเมื่อไร (เป็นหลักฐานว่าเห็นก่อนจ่าย)
+            if getattr(dlg, 'ack_ids', None):
+                try:
+                    _c = self.app_container.get_connection()
+                    try:
+                        with _c.cursor() as _cur:
+                            _cur.execute("UPDATE so_post_verify_events SET ack_by = %s, ack_at = NOW() "
+                                         "WHERE id = ANY(%s) AND ack_at IS NULL", (self.user_key, dlg.ack_ids))
+                        _c.commit()
+                    finally:
+                        self.app_container.release_connection(_c)
+                except Exception as _e:
+                    print(f"ack events on confirm error: {_e}")
 
             # =========================================================
             # เตรียมข้อมูลสำหรับบันทึก Log

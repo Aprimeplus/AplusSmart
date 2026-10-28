@@ -9,6 +9,7 @@ from datetime import datetime
 import traceback
 from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 import utils
+from paid_lock import is_po_paid, warn_locked
 from export_utils import export_commission_details_to_excel, export_payout_so_list_to_excel
 import psycopg2.errors
 import psycopg2.extras
@@ -436,7 +437,7 @@ class HRVerificationWindow(CTkToplevel):
             action_frame = ctk.CTkFrame(po_card, fg_color="transparent")
             action_frame.grid(row=0, column=1, padx=10, pady=5, sticky="e")
 
-            # 🔥 จุดแก้ไข: เรียก PurchaseDetailWindow แทน (หน้าต่าง Master ของ HR/PU)
+            #  จุดแก้ไข: เรียก PurchaseDetailWindow แทน (หน้าต่าง Master ของ HR/PU)
             from history_windows import PurchaseDetailWindow
             edit_button = ctk.CTkButton(
                 action_frame, 
@@ -3859,6 +3860,9 @@ class EditPOWindowByHR(CTkToplevel):
         
     def _save_changes(self):
         """บันทึกข้อมูล (ตัด Relocation ออกจาก Logic)"""
+        if is_po_paid(self.app_container, self.po_id):
+            warn_locked(self)
+            return
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:

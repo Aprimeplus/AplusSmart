@@ -9,6 +9,8 @@ import traceback
 
 from custom_widgets import AutoCompleteEntry, DateSelector
 import utils
+from post_verify_alerts import record_po_edit_by_id
+from paid_lock import cur_is_po_paid, LOCK_MSG
 import psycopg2.extras
 
 
@@ -299,9 +301,18 @@ class PurchaseOrderWindow(ctk.CTkToplevel):
             conn = self.app_container.get_connection()
             with conn.cursor() as cursor:
                 if self.po_id:
+                    if cur_is_po_paid(cursor, self.po_id):
+                        conn.rollback()
+                        messagebox.showwarning("ล็อก — ดูได้อย่างเดียว", LOCK_MSG, parent=self)
+                        return
                     set_clauses = [f"{key} = %s" for key in header_data.keys()]
                     params = list(header_data.values()) + [self.po_id]
                     cursor.execute(f"UPDATE purchase_orders SET {', '.join(set_clauses)} WHERE id = %s", tuple(params))
+                    try:
+                        record_po_edit_by_id(cursor, self.po_id, self.app_container.current_user_key,
+                                             f"แก้ไข PO (ยอดต้นทุนรวมใหม่ {total_cost:,.2f})")
+                    except Exception as _pv_err:
+                        print(f"post-verify alert (PO window) error: {_pv_err}")
                 else:
                     columns = header_data.keys()
                     values = [f"%({key})s" for key in columns]

@@ -46,6 +46,8 @@ from po_selection_dialog import POSelectionDialog
 from super_supplier_list import SuggestedSupplierPopup, SuperSupplierTab
 from markup_guide_screen import MarkupGuideTab
 import utils
+from post_verify_alerts import sync_so_status_after_po_save
+from paid_lock import cur_is_so_paid, cur_is_po_paid, LOCK_MSG
 
 # 🟢 พจนานุกรมแปลสถานะเป็นภาษาไทย (เอาไว้แสดงผลบนหน้าจอ UI)
 STATUS_THAI_MAP = {
@@ -541,6 +543,10 @@ class MyTasksWindow(CTkToplevel):
         conn = self.app_container.get_connection()
         try:
             with conn.cursor() as cursor:
+                if cur_is_po_paid(cursor, po_id):
+                    conn.rollback()
+                    messagebox.showwarning("ล็อก — ดูได้อย่างเดียว", LOCK_MSG, parent=self)
+                    return
                 cursor.execute("UPDATE purchase_orders SET status = 'Pending Approval', approval_status = 'Pending Mgr 1', timestamp = %s WHERE id = %s RETURNING po_number, so_number", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), po_id))
                 po_num_res = cursor.fetchone()
                 po_number  = po_num_res[0] if po_num_res else "N/A"
@@ -550,10 +556,10 @@ class MyTasksWindow(CTkToplevel):
                 # _save_po() ทำอยู่แล้ว แต่ _submit_draft (ส่งจาก Tasks Window)
                 # ลืม update → commission ค้างเป็น 'PO In Progress' แม้ส่ง PO แล้ว
                 if so_number:
-                    cursor.execute(
-                        "UPDATE commissions SET status = 'PO Sent' WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')",
-                        (so_number,)
-                    )
+                    # กฎใหม่: ไม่ดึงสถานะ SO ถอยหลังมั่ว (Paid ไม่แตะ / HR Verified กลับไปรอ HR ตรวจใหม่ + แจ้ง Director/HR)
+                    sync_so_status_after_po_save(
+                        cursor, so_number, po_number, False,
+                        getattr(self.purchasing_screen, 'user_key', None), detail="ส่ง PO จากหน้างานของฉัน")
 
                 cursor.execute("SELECT sale_key, role FROM sales_users WHERE role IN ('Purchasing Manager', 'Manager', 'Director') AND status = 'Active'")
                 managers = cursor.fetchall()
@@ -681,17 +687,17 @@ class ProductManagementWindow(CTkToplevel):
         self.tree.column("price", width=100, anchor="e")
         self.tree.column("weight", width=100, anchor="e")
 
-        self.tree.pack(fill="both", expand=True)
-
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("Treeview", background="#F5F5F5", foreground="black", rowheight=25, fieldbackground="#F5F5F5")
         style.map('Treeview', background=[('selected', '#3B82F6')])
         style.configure("Treeview.Heading", font=CTkFont(size=12, weight="bold"), background="#E0E0E0", foreground="black")
 
+        # ใช้ grid ให้แถบเลื่อนอยู่ชิดขอบขวาตลอดความสูงตาราง (เดิม pack ตารางก่อน แถบเลื่อนถูกบีบเหลือชิ้นเล็กที่มุมล่างขวา เลื่อนแล้วบั๊ก)
         vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
-        vsb.pack(side='right', fill='y')
         self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
 
     def load_products(self):
         for item in self.tree.get_children():
@@ -3216,6 +3222,8 @@ class PurchasingScreen(CTkFrame):
                     lock_key = (header.get("so_number") or "").strip()
                     if lock_key:
                         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
+                        if cur_is_so_paid(cursor, lock_key):
+                            raise ValueError(LOCK_MSG)
 
                     if not self.editing_po_id:
                         cursor.execute("""
@@ -3298,11 +3306,10 @@ class PurchasingScreen(CTkFrame):
                     # [🔥 แก้ไข Indent ใหม่] ให้บังคับสถานะ Draft ได้ถูกต้อง
                     so_number_to_update = header.get("so_number")
                     if so_number_to_update:
-                        if status != 'Draft':
-                            cursor.execute("UPDATE commissions SET status = 'PO Sent' WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')", (so_number_to_update,))
-                            print(f"Updated commissions status to 'PO Sent' for SO: {so_number_to_update}")
-                        else:
-                            cursor.execute("UPDATE commissions SET status = 'PO In Progress' WHERE so_number = %s AND is_active = 1 AND status NOT IN ('Edit Requested', 'Edit Approved', 'Edit Review')", (so_number_to_update,))
+                        # กฎใหม่: ไม่ดึงสถานะ SO ถอยหลังมั่ว (Paid ไม่แตะ / HR Verified กลับไปรอ HR ตรวจใหม่ + แจ้ง Director/HR)
+                        sync_so_status_after_po_save(
+                            cursor, so_number_to_update, header.get("po_number"), status == 'Draft',
+                            self.user_key, detail=("แก้ไข PO เดิม" if self.editing_po_id else "เพิ่ม PO ใหม่"))
                     
                     if status == 'Pending Approval':
                         self._create_initial_approval_notification(cursor, new_po_id)
@@ -4216,6 +4223,8 @@ class SLADashboard(CTkFrame):
                     COALESCE(s.started_at, cb.created_at_cb) AS started_at,
                     s.copied_at,
                     s.duration_min,
+                    s.closed_reason,
+                    s.id                                      AS sla_id,
                     m.memo                                    AS sale_memo
                 FROM (
                     SELECT "Sale Order No."  AS so_number,
@@ -4338,7 +4347,8 @@ class SLADashboard(CTkFrame):
                                    "สถานะ"                AS status_cb,
                                    "รหัส Sale"            AS sale_key_cb,
                                    "Order No."            AS order_no,
-                                   "WIN RATE %%"          AS win_rate_cb
+                                   "WIN RATE %%"          AS win_rate_cb,
+                                   "PRIORITY"             AS priority_cb
                             FROM   cost_benchmarks
                             WHERE  "Select" = '✔'
                             AND    "Sale Order No." IN ({ph})
@@ -4387,7 +4397,18 @@ class SLADashboard(CTkFrame):
                                         return s
                                 return "-"
 
+                            # Temp สำรองจากช่อง PRIORITY ของตารางหลัก (ใช้ "แสดงผล" เท่านั้น ไม่เอาไปคำนวณ Target)
+                            _TR = {"HOT": 3, "WARM": 2, "COLD": 1}
+                            def _best_priority(vals):
+                                best = ""
+                                for v in vals:
+                                    v = str(v).strip().upper()
+                                    if v in _TR and (not best or _TR[v] > _TR[best]):
+                                        best = v
+                                return best
+
                             cb_summary = cb_raw.groupby("so_number").agg(
+                                priority_cb=("priority_cb",  _best_priority),
                                 total_cost =("cost_num",     "sum"),
                                 total_sales=("sale_num",     "sum"),
                                 sku_count  =("cost_num",     "count"),
@@ -4399,9 +4420,9 @@ class SLADashboard(CTkFrame):
                             cb_summary = cb_summary.merge(_prod_summary, on="so_number", how="left")
                             df = df.merge(cb_summary, on="so_number", how="left")
 
-                for col in ("total_cost", "total_sales", "sku_count", "so_status", "products", "sale_key", "order_no", "win_rate"):
+                for col in ("total_cost", "total_sales", "sku_count", "so_status", "products", "sale_key", "order_no", "win_rate", "priority_cb"):
                     if col not in df.columns:
-                        df[col] = "" if col in ("products", "sale_key", "order_no", "win_rate") else 0
+                        df[col] = "" if col in ("products", "sale_key", "order_no", "win_rate", "priority_cb") else 0
                 df["total_cost"]  = df["total_cost"].fillna(0)
                 df["total_sales"] = df["total_sales"].fillna(0)
                 df["sku_count"]   = df["sku_count"].fillna(0)
@@ -4420,16 +4441,18 @@ class SLADashboard(CTkFrame):
             for _, r in df.iterrows():
                 started_dt = pd.to_datetime(r["started_at"]) if pd.notna(r["started_at"]) else None
                 copied_dt  = pd.to_datetime(r["copied_at"])  if pd.notna(r["copied_at"])  else None
+                if copied_dt is not None and str(r.get("closed_reason") or "") == "no_start_time":
+                    started_dt = None   # ไม่รู้เวลาเริ่มจริง → ไม่แสดงเวลาเริ่ม และขึ้น "ประเมินไม่ได้" ไม่ให้เกรด
                 started  = started_dt.strftime("%H:%M") if started_dt else "-"
                 copied   = copied_dt.strftime("%H:%M")  if copied_dt  else "-"
                 temp     = str(r["temp"]) if pd.notna(r["temp"]) else "-"
                 dur_raw  = r["duration_min"]
-                sale_key      = str(r.get("sale_key", "") or "")
-                order_no      = str(r.get("order_no",  "") or "")
-                products_full  = str(r.get("products", "") or "")
+                sale_key      = "" if pd.isna(r.get("sale_key")) else str(r.get("sale_key") or "")
+                order_no      = "" if pd.isna(r.get("order_no")) else str(r.get("order_no") or "")
+                products_full  = "" if pd.isna(r.get("products")) else str(r.get("products") or "")
                 total_sales    = float(r.get("total_sales", 0) or 0)
                 sales_str      = f"฿{total_sales:,.2f}" if total_sales else "-"
-                win_rate_val   = str(r.get("win_rate", "") or "").strip() or "-"
+                win_rate_val   = ("" if pd.isna(r.get("win_rate")) else str(r.get("win_rate") or "")).strip() or "-"
                 _memo_raw      = r.get("sale_memo")
                 memo_val       = str(_memo_raw).strip() if pd.notna(_memo_raw) else ""
                 _ss = r.get("so_status", "")
@@ -4536,7 +4559,18 @@ class SLADashboard(CTkFrame):
                     else:
                         return "[ ช้า ]", "slow"
 
-                if started_dt and copied_dt:
+                if copied_dt is None and r.get("closed_reason"):
+                    # ปิดงานค้างโดยไม่นับ SLA (ไม่ทราบเวลาส่งจริง) — ไม่ให้โชว์ "รอ Copy" และไม่นับเข้าฐาน %
+                    diff_str   = "-"
+                    if r.get("closed_reason") == "auto_order_no":
+                        # มี Order No. แล้ว = ส่งราคาแล้วจริง แค่ไม่มีเวลา copy ให้คำนวณ SLA
+                        dur_str    = "ส่งแล้ว"
+                        sla_result = "[ ส่งแล้ว (ไม่มีเวลา SLA) ]"
+                    else:
+                        dur_str    = "-"
+                        sla_result = "[ ประเมินไม่ได้ ]"
+                    row_tag    = "unrated"
+                elif started_dt and copied_dt:
                     # คำนวณ business minutes จาก started_at → copied_at
                     d       = _biz_min(started_dt, copied_dt)
                     dur_str = _fmt(d)
@@ -4581,6 +4615,13 @@ class SLADashboard(CTkFrame):
                         diff_str   = "-"
                         sla_result = "[ ประเมินไม่ได้ ]"
                         row_tag    = "unrated"
+                elif pd.isna(r.get("sla_id")) and self._is_legacy_no_sla(r.get("cb_date"), started_dt):
+                    # SO เก่าที่ไม่เคยมีแถวใน sla_benchmark (ทำก่อนมีระบบจับเวลา SLA / ไม่เคยกด "เริ่มทำ")
+                    # ไม่ใช่งานค้างจริง → ไม่โชว์ "รอ Copy" และไม่ท่วมตัวเลขงานค้าง
+                    dur_str    = "ไม่มีข้อมูล SLA"
+                    diff_str   = "-"
+                    sla_result = "[ ประเมินไม่ได้ ]"
+                    row_tag    = "unrated"
                 else:
                     dur_str    = "รอ Copy"
                     diff_str   = "-"
@@ -4607,7 +4648,9 @@ class SLADashboard(CTkFrame):
                         so_status = "แพ้อัตโนมัติ - เซลล์ขาดการติดตาม (L-FLW)"
 
                 sale_key_short =sale_key.split("-")[0] if sale_key and "-" in sale_key else sale_key
-                row_vals = (r["so_number"], order_no, sale_key_short, r["user_key"], win_rate_val, temp,
+                _pcb = r.get("priority_cb")
+                temp_disp = temp if temp != "-" else ((str(_pcb).strip() if pd.notna(_pcb) else "") or "-")
+                row_vals = (r["so_number"], order_no or "-", sale_key_short, r["user_key"], win_rate_val, temp_disp,
                             started, copied, dur_str,
                             order_size, target_str, extend_str,
                             diff_str, sla_result, so_status, sales_str)
@@ -5031,6 +5074,23 @@ class SLADashboard(CTkFrame):
             cur = datetime.combine(cur.date() + timedelta(days=1), time(0, 0))
         return total
 
+    @staticmethod
+    def _is_legacy_no_sla(cb_date, started_dt, grace_days=2):
+        """SO ที่ไม่มีแถว SLA และ "วันที่ขอราคา" เก่ากว่า grace_days วัน → ถือเป็นข้อมูลเก่า ไม่ใช่งานค้าง
+        (วันที่ในตารางเป็น d/m/yy แบบ พ.ศ. 2 หลัก หรือ 4 หลัก; ถ้าอ่านไม่ได้ใช้เวลาเริ่ม/สร้างแทน)"""
+        from datetime import datetime as _d, timedelta as _td
+        limit = _d.now() - _td(days=grace_days)
+        try:
+            dd, mm, yy = [int(x) for x in str(cb_date).strip().split("/")[:3]]
+            yy = (2500 + yy if yy < 100 else yy) - 543
+            return _d(yy, mm, dd) < limit
+        except Exception:
+            pass
+        try:
+            return started_dt is not None and started_dt.to_pydatetime().replace(tzinfo=None) < limit
+        except Exception:
+            return False
+
     def _show_pending_popup(self):
         """Popup แสดงรายการงานค้าง (รอ Copy) ทุกคน"""
         import tkinter as tk
@@ -5042,6 +5102,24 @@ class SLADashboard(CTkFrame):
         try:
             conn = self.app.get_connection()
             cur = conn.cursor()
+            # ปิดอัตโนมัติ: SO ที่ติ๊ก ✔ และมี Order No. จริงแล้ว = ออกใบเสนอราคาไปแล้ว แต่ PU ไม่ได้ copy ผ่านจุดที่ระบบจับ
+            # ไม่ใส่ copied_at (ไม่รู้เวลาส่งจริง) → ทำเครื่องหมาย closed_reason ไม่นับเข้าสถิติ SLA และไม่โผล่ค้างอีก
+            try:
+                cur.execute("""
+                    UPDATE sla_benchmark s
+                    SET closed_reason = 'auto_order_no', closed_at = NOW()
+                    WHERE s.copied_at IS NULL AND s.closed_reason IS NULL
+                      AND s.so_number IN (
+                          SELECT "Sale Order No." FROM cost_benchmarks
+                          WHERE "Select" = '✔'
+                            AND "Sale Order No." IS NOT NULL AND TRIM("Sale Order No.") != ''
+                            AND TRIM(COALESCE("Order No.", '')) NOT IN ('', '-', 'รอแจ้ง', 'หมด')
+                      )
+                """)
+                conn.commit()
+            except Exception as _e:
+                print(f"auto-close pending SLA error: {_e}")
+                conn.rollback()
             # 🔧 FULL OUTER JOIN — เดิมใช้ sla_benchmark เป็นตารางหลัก เลยไม่เห็น SO ที่ติ๊ก ✔
             # ไว้แล้วแต่ยังไม่มีใครกด "เริ่มทำ" เลย (ไม่มีแถวใน sla_benchmark)
             # ใช้ LEFT JOIN จาก cb ฝั่งเดียวก็ไม่ได้เหมือนกัน เพราะ SO ที่เริ่มทำไปแล้วหลายตัว
@@ -5072,10 +5150,11 @@ class SLADashboard(CTkFrame):
                     GROUP BY "Sale Order No."
                 ) cb
                 FULL OUTER JOIN sla_benchmark s ON s.so_number = cb.so_number
-                WHERE s.copied_at IS NULL
+                WHERE s.copied_at IS NULL AND s.closed_reason IS NULL
                   AND (
                         s.started_at IS NOT NULL
-                        OR (s.so_number IS NULL AND cb.created_at_cb >= (CURRENT_DATE - INTERVAL '1 day'))
+                        OR (s.so_number IS NULL AND cb.created_at_cb >= (CURRENT_DATE - INTERVAL '1 day')
+                            AND TRIM(COALESCE(cb.order_no, '')) IN ('', '-', 'รอแจ้ง', 'หมด'))
                       )
                 ORDER BY s.started_at ASC NULLS FIRST
             """)

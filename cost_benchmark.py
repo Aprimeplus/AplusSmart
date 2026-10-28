@@ -2820,6 +2820,7 @@ class CostBenchmarkScreen(CTkFrame):
                     self.sheet_frozen.redraw()
                 self._push_undo()
 
+            self._sla_start_from_paste(sorted(modified_rows))   # วางข้อมูล = เริ่มจับเวลา SLA
             self.after(30, _calc_after_paste)
 
             if self.auto_save_job_id:
@@ -2922,6 +2923,7 @@ class CostBenchmarkScreen(CTkFrame):
                 self.sheet.redraw()
                 self._push_undo()
 
+            self._sla_start_from_paste(sorted(modified_rows))   # วางข้อมูล = เริ่มจับเวลา SLA
             self.after(30, _calc_after_paste_frozen)
 
             if self.auto_save_job_id:
@@ -6423,6 +6425,36 @@ class CostBenchmarkScreen(CTkFrame):
             current = datetime.combine(d + timedelta(days=1), WORK_START)
         return total_min
 
+    def _sla_start_from_paste(self, rows):
+        """วางข้อมูลเข้าแถว (Ctrl+V) ก็ต้องเริ่มจับเวลา SLA เหมือนพิมพ์เอง — เดิมมีแต่การพิมพ์แก้เซลล์ที่เริ่มจับเวลา
+        งานที่เตรียมข้อมูลที่อื่นแล้ววางเข้ามาจึงไม่มีเวลาเริ่ม ตอน copy ได้ 0 นาทีและถูกให้เกรด "รวดเร็ว" ทั้งที่ไม่รู้เวลาจริง"""
+        try:
+            from datetime import datetime as _dt
+            SLA_SKIP_COLS = {"Select", "Sale Order No.", "วันที่ขอราคา",
+                             "Order No.", "รหัส Sale", "PRIORITY", "WIN RATE %", "สถานะ", "QT"}
+            now = _dt.now()
+            for r in rows:
+                so_val = str(self._sheet_get(r, "Sale Order No.") or "").strip()
+                has_data = False
+                for cname in self.columns:
+                    if cname in SLA_SKIP_COLS:
+                        continue
+                    v = self._sheet_get(r, cname)
+                    if v is not None and str(v).strip() not in ("", "0", "0.0"):
+                        has_data = True
+                        break
+                if not has_data:
+                    continue
+                if r in self._sla_reset_jobs:
+                    try: self.after_cancel(self._sla_reset_jobs.pop(r))
+                    except Exception: pass
+                if r not in self._sla_row_start_times:
+                    self._sla_row_start_times[r] = now
+                if so_val:
+                    self._sla_record_start(so_val, self._sla_row_start_times[r])
+        except Exception as e:
+            print(f"_sla_start_from_paste error: {e}")
+
     def _sla_record_start(self, so_number: str, started_at=None):
         """บันทึก started_at เมื่อ PU เริ่มกรอกข้อมูล (เฉพาะครั้งแรกของ SO นี้) — รันใน background thread"""
         import threading
@@ -6578,6 +6610,10 @@ class CostBenchmarkScreen(CTkFrame):
                 ORDER BY started_at ASC LIMIT 1
             """, (so_number,))
             row = cur.fetchone()
+            # เวลาเริ่มที่ "เชื่อถือได้" = มีแถว SLA ที่ถูกบันทึกจากการกรอก/วางข้อมูลจริง และเริ่มก่อนเวลา copy
+            # ไม่มีแถว (ไม่เคยจับเวลาได้) หรือเวลาเริ่มไม่น้อยกว่าเวลา copy → ไม่รู้เวลาเริ่มจริง
+            # อย่าให้เกรดผ่านเป็น "0 นาที / รวดเร็ว" ให้ทำเครื่องหมาย no_start_time ไว้ แล้วหน้าสถิติจะขึ้น "ประเมินไม่ได้"
+            start_reliable = True
             if not row:
                 cur.execute("""
                     SELECT created_at FROM cost_benchmarks
@@ -6591,15 +6627,25 @@ class CostBenchmarkScreen(CTkFrame):
                     VALUES (%s, %s, %s)
                     ON CONFLICT ON CONSTRAINT uq_sla_so_user DO NOTHING
                 """, (so_number, user_key, started_at))
+                start_reliable = False
             else:
                 started_at = row[0]
-            biz_min = self._calc_business_minutes(started_at, copied_time, holiday_set)
+                if started_at >= copied_time:
+                    start_reliable = False
+            if start_reliable:
+                biz_min = self._calc_business_minutes(started_at, copied_time, holiday_set)
+                reason = None
+            else:
+                biz_min = None
+                reason = 'no_start_time'
             # ปิดงานทุกแถวของ SO นี้ (ทุก user_key ที่ยังค้าง) ไม่ใช่แค่ของคนที่กด
             cur.execute("""
                 UPDATE sla_benchmark
-                SET copied_at = %s, temp = %s, duration_min = %s
+                SET copied_at = %s, temp = %s, duration_min = %s,
+                    closed_reason = COALESCE(%s, closed_reason),
+                    closed_at = CASE WHEN %s IS NOT NULL THEN NOW() ELSE closed_at END
                 WHERE so_number = %s AND copied_at IS NULL
-            """, (copied_time, best_temp, biz_min, so_number))
+            """, (copied_time, best_temp, biz_min, reason, reason, so_number))
             conn.commit()
         except Exception:
             if conn:
@@ -7124,7 +7170,9 @@ class CostBenchmarkScreen(CTkFrame):
             lines.append("สถานะ :")
             lines.append(f"ยืนราคา {days} วัน")
             lines.append(f"จุดรับ : {dest_str}")
+            lines.append("ค่าย้าย+ในค่าของ :")
             lines.append(f"การจัดส่ง : {delivery}")
+            lines.append("ค่าส่ง+ในค่าของ :")
             lines.append(f"ประเภทรถ : {vehicle}")
             lines.append(f"หมายเหตุ : {note1_str}")
             lines.append("")
@@ -8008,6 +8056,22 @@ class CostBenchmarkScreen(CTkFrame):
             conn = self.app_container.get_connection()
             try:
                 with conn.cursor() as cursor:
+                    # เก็บสำเนาข้อมูลเดิมไว้ก่อนถูกบันทึกทับ (กู้คืนได้เมื่อมีคนบันทึกพลาด)
+                    # เก็บอย่างมากทุก 10 นาที/ชุดข้อมูล และลบประวัติที่เก่ากว่า 30 วัน ถ้าพลาดจะไม่ขวางการบันทึก
+                    try:
+                        cursor.execute("SAVEPOINT cbh")
+                        cursor.execute(
+                            "INSERT INTO cost_benchmarks_history SELECT *, now() FROM cost_benchmarks "
+                            "WHERE benchmark_month = %s AND benchmark_year = %s AND created_by = %s "
+                            "AND NOT EXISTS (SELECT 1 FROM cost_benchmarks_history h WHERE h.benchmark_month = %s "
+                            "AND h.benchmark_year = %s AND h.created_by = %s AND h.snapshot_at > now() - interval '10 minutes')",
+                            (month_val, year_val, self.current_user) * 2
+                        )
+                        cursor.execute("DELETE FROM cost_benchmarks_history WHERE snapshot_at < now() - interval '30 days'")
+                        cursor.execute("RELEASE SAVEPOINT cbh")
+                    except Exception as e_hist:
+                        cursor.execute("ROLLBACK TO SAVEPOINT cbh")
+                        print(f"cost_benchmarks_history skipped: {e_hist}")
                     cursor.execute(
                         "DELETE FROM cost_benchmarks WHERE benchmark_month = %s AND benchmark_year = %s AND created_by = %s",
                         (month_val, year_val, self.current_user)

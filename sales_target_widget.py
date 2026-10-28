@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from customtkinter import (CTkFrame, CTkLabel, CTkFont, CTkButton,
                                CTkScrollableFrame, CTkInputDialog, CTkToplevel, CTkEntry,
-                               CTkOptionMenu, CTkRadioButton, CTkTabview, CTkCheckBox)
+                               CTkOptionMenu, CTkRadioButton, CTkTabview, CTkCheckBox, CTkTextbox)
 from tkinter import messagebox
 import pandas as pd
 from datetime import datetime
@@ -31,6 +31,8 @@ matplotlib.use('TkAgg')
 from hr_screen import SalesFilterDialog
 from export_utils import export_sales_target_to_excel
 from daily_report_dashboard import TargetSettingsDialog
+from project_screen import _center_and_style_popup
+import qt_conversion as qcv
 
 
 class SalesTargetWidget(CTkFrame):
@@ -228,6 +230,9 @@ class SalesTargetWidget(CTkFrame):
         CTkButton(fbar, text="⚙️ ตั้งเป้าหมายรายปี", width=150, fg_color="#F59E0B", hover_color="#D97706",
                   command=self._open_yearly_target_settings).pack(side="left", padx=(0, 10))
 
+        CTkButton(fbar, text="📥 นำเข้า QT", width=110, fg_color="#7C3AED", hover_color="#6D28D9",
+                  command=self._open_qt_import).pack(side="left", padx=(0, 10))
+
         CTkButton(fbar, text="⚙️ ตั้งเส้นคุ้มทุน / เป้า GP", width=190, fg_color="#0EA5E9", hover_color="#0284C7",
                   command=self._open_margin_threshold_settings).pack(side="left", padx=(0, 10))
 
@@ -329,6 +334,9 @@ class SalesTargetWidget(CTkFrame):
         except Exception as e:
             messagebox.showerror("Error", str(e), parent=self)
             traceback.print_exc()
+
+    def _open_qt_import(self):
+        QTImportDialog(self, self.app_container, on_done=self._on_search)
 
     def _open_yearly_target_settings(self):
         """เปิด dialog ตั้งเป้าหมายรายปี (ตัวเดียวกับหน้า Daily Report) — แก้ตาราง
@@ -522,8 +530,20 @@ class SalesTargetWidget(CTkFrame):
         # ── Sale Center: ดึงจาก commissions โดยตรง (ไม่มีค่าคอม) ─────
         sc_date_filter = date_sql.replace("c.", "sc.")
         sc_query = f"""
-            SELECT COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales
+            SELECT COALESCE(SUM(sc.sales_service_amount), 0) AS total_sales,
+                   -- GP ประมาณการของ CT = ยอดขาย − (ต้นทุน PO × ตัวคูณ 1.03) เฉพาะ SO ที่มี PO แล้ว
+                   COALESCE(SUM(CASE WHEN po.cost > 0 THEN sc.sales_service_amount END), 0) AS gp_base,
+                   COALESCE(SUM(CASE WHEN po.cost > 0 THEN
+                       sc.sales_service_amount - po.cost * (CASE WHEN COALESCE(sc.cost_multiplier, 0) < 1.01
+                                                                 THEN 1.03 ELSE sc.cost_multiplier END)
+                   END), 0) AS gp_est
             FROM commissions sc
+            LEFT JOIN (
+                SELECT so_number, COALESCE(SUM(total_cost), 0) AS cost
+                FROM purchase_orders
+                WHERE status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
+                GROUP BY so_number
+            ) po ON po.so_number = sc.so_number
             WHERE sc.sale_key IN ('Sale Center', 'CHARITA-CT')
               AND sc.is_active = 1
               AND sc.status NOT IN ('Cancelled', 'Cancelled by PU')
@@ -532,14 +552,20 @@ class SalesTargetWidget(CTkFrame):
         try:
             sc_df = pd.read_sql_query(sc_query, self.pg_engine, params=tuple(date_params))
             sc_total = float(sc_df['total_sales'].iloc[0]) if not sc_df.empty else 0.0
+            sc_gp_base = float(sc_df['gp_base'].iloc[0]) if not sc_df.empty else 0.0
+            sc_gp_est = float(sc_df['gp_est'].iloc[0]) if not sc_df.empty else 0.0
         except Exception:
             sc_total = 0.0
+            sc_gp_base = 0.0
+            sc_gp_est = 0.0
 
         if sc_total > 0:
             sc_row = pd.DataFrame([{
                 'sale_name': 'Sale Center', 'sale_key': 'Sale Center', 'status': 'Active',
                 'sales_target': 0.0, 'total_sales': sc_total,
-                'total_outstanding': 0.0, 'avg_margin': 0.0,
+                'total_outstanding': 0.0,
+                'total_gp': sc_gp_est, 'total_sales_amt': sc_gp_base,
+                'avg_margin': (sc_gp_est / sc_gp_base * 100) if sc_gp_base > 0 else 0.0,
                 'sales_normal': sc_total, 'sales_below': 0.0,
             }])
             df = pd.concat([df, sc_row], ignore_index=True)
@@ -582,7 +608,8 @@ class SalesTargetWidget(CTkFrame):
         floor_v, goal_v = self._get_margin_thresholds()
         dlg = CTkToplevel(self)
         dlg.title("ตั้งเส้นคุ้มทุน / เป้า GP")
-        dlg.geometry("380x230")
+        _center_and_style_popup(dlg, self, 380, 230)   # กลางหน้าต่างหลัก + ไอคอนแอป (เดิมเด้งผิดจอ ไอคอนเป็นของ tk)
+        dlg.resizable(False, False)
         dlg.transient(self.winfo_toplevel())
         dlg.after(50, dlg.grab_set)
         CTkLabel(dlg, text="เส้นห้ามต่ำกว่า (จุดคุ้มทุน) %", font=CTkFont(size=13)).pack(anchor="w", padx=24, pady=(20, 2))
@@ -1187,6 +1214,54 @@ class SalesTargetWidget(CTkFrame):
         plt.close(fig)
 
     # ── Table ─────────────────────────────────────────────────────────────────
+    def _get_heatmap_df(self, year):
+        """ยอดขาย + GP รายเดือนต่อคน ของปีที่เลือก (ค.ศ.) สำหรับ Heatmap
+        คืน DataFrame: sale_key, sale_name, status, month, sales, gp, gp_base
+        (gp/gp_base ใช้คิด GP% แบบถ่วงน้ำหนัก = Σ GP บาท ÷ Σ ยอดขายที่คิด GP)"""
+        sale_filter = ""
+        params = [int(year)]
+        if self.selected_sales_filter:
+            ph = ','.join(["REPLACE(LOWER(%s), ' ', '')"] * len(self.selected_sales_filter))
+            sale_filter = f" AND REPLACE(LOWER(su.sale_key), ' ', '') IN ({ph})"
+            params.extend(self.selected_sales_filter)
+        query = f"""
+            SELECT su.sale_name, su.sale_key, su.status,
+                   c.commission_month AS month,
+                   COALESCE(SUM(c.total_sales), 0)       AS sales,
+                   COALESCE(SUM(cm.total_gp), 0)         AS gp,
+                   COALESCE(SUM(cm.total_sales_amt), 0)  AS gp_base
+            FROM   sales_users su
+            JOIN   commission_payout_logs c
+                   ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
+                  AND c.commission_year = %s
+            LEFT JOIN (
+                SELECT payout_id, SUM(final_gp) AS total_gp, SUM(final_sales_amount) AS total_sales_amt
+                FROM   commissions GROUP BY payout_id
+            ) cm ON cm.payout_id = c.id
+            WHERE  1 = 1 {sale_filter}
+            GROUP  BY su.sale_name, su.sale_key, su.status, c.commission_month
+        """
+        df = pd.read_sql_query(query, self.pg_engine, params=tuple(params))
+        # ข้อมูลย้อนหลัง (ปีก่อนมีระบบจริง) จาก sales_history_monthly
+        try:
+            hist = pd.read_sql_query(f"""
+                SELECT su.sale_name, su.sale_key, su.status, h.month,
+                       h.actual_sales AS sales,
+                       CASE WHEN h.margin_pct IS NOT NULL THEN h.margin_pct / 100 * h.actual_sales ELSE 0 END AS gp,
+                       CASE WHEN h.margin_pct IS NOT NULL THEN h.actual_sales ELSE 0 END AS gp_base
+                FROM   sales_history_monthly h
+                JOIN   sales_users su
+                       ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(h.sale_key), ' ', '')
+                WHERE  h.year = %s {sale_filter}
+            """, self.pg_engine, params=tuple(params))
+            if not hist.empty:
+                df = pd.concat([df, hist], ignore_index=True)
+        except Exception:
+            traceback.print_exc()
+        for c in ('sales', 'gp', 'gp_base'):
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+        return df
+
     def _create_table(self, parent_frame, data_df):
         for w in parent_frame.winfo_children():
             w.destroy()
@@ -1267,84 +1342,979 @@ class SalesTargetWidget(CTkFrame):
             return f"+{gap:,.0f}" if gap >= 0 else f"{gap:,.0f}"
 
         team_margin = _wtd_margin(rows)
-        company_margin = _wtd_margin(rows + inactive_rows)
+        company_margin = _wtd_margin(rows + inactive_rows + ct_rows)
 
-        outer = CTkScrollableFrame(parent_frame, fg_color="white", corner_radius=10)
-        outer.pack(fill="both", expand=True, padx=10, pady=10)
-        CTkLabel(outer, text=f"สรุปยอดขาย vs เป้าหมาย  —  {period_label}",
-                 font=CTkFont(size=15, weight="bold"), text_color="#0F172A"
-                 ).pack(anchor="w", padx=16, pady=(12, 2))
-        CTkLabel(outer, text="GP สุทธิทุกช่อง หักค่าขนส่ง ค่าตัดเจาะพับ และค่านายหน้าแล้ว",
-                 font=CTkFont(size=12), text_color="#64748B").pack(anchor="w", padx=16, pady=(0, 8))
+        # ── ค่าเวลา/Pace (ตาม DEV-SPEC-SALEDASH-001) ─────────────────────────────────
+        # N = จำนวนเดือนที่เลือก (ปกติ ม.ค.–เดือนสิ้นสุด), T% = N/12, L = เดือนที่เหลือของปี
+        SHORT_M = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+        PACE_BAND = 10.0   # ช่วง "เฝ้าระวัง" (percentage point) — ยังไม่มีหน้าตั้งค่า ใช้ค่าเริ่มต้นของ spec
+        s_dt, e_dt = self.custom_target_start, self.custom_target_end
+        try:
+            N = (e_dt.year * 12 + e_dt.month) - (s_dt.year * 12 + s_dt.month) + 1
+        except Exception:
+            N = 12
+        N = max(1, min(N, 12))
+        T_PCT = N / 12 * 100
+        L = 12 - N
+        e_short = SHORT_M[e_dt.month - 1] if e_dt else ""
+        s_short = SHORT_M[s_dt.month - 1] if s_dt else ""
+        range_short = f"{s_short}–{e_short}"
+        rest_short = f"{SHORT_M[e_dt.month % 12]}–ธ.ค." if (L > 0 and e_dt) else "—"
 
-        cards = CTkFrame(outer, fg_color="transparent")
-        cards.pack(fill="x", padx=16, pady=(0, 10))
+        PACE = {
+            'ok':    ("ตามแผน",       "#E3F3EA", "#1E7B4C", "#2E9E64"),
+            'watch': ("เฝ้าระวัง",     "#FFF1D6", "#8A5A00", "#E0A100"),
+            'low':   ("ต่ำกว่าแผน",    "#FDE7E5", "#B42318", "#D9534F"),
+            'none':  ("ยังไม่มอบหมาย", "#EEF0F3", "#5B6573", "#9AA4B2"),
+            'nogoal': ("ไม่มีเกณฑ์",   "#EEF0F3", "#5B6573", "#9AA4B2"),
+        }
+        GPST = {
+            'ok':    "#E3F3EA", 'mid': "#FFF1D6", 'low': "#FDE7E5", 'none': "#EEF0F3",
+        }
+        GPFG = {
+            'ok':    "#1E7B4C", 'mid': "#8A5A00", 'low': "#B42318", 'none': "#5B6573",
+        }
+
+        def _pace_key(pct_year):
+            if pct_year is None:
+                return 'none'
+            if pct_year >= T_PCT:
+                return 'ok'
+            if pct_year >= T_PCT - PACE_BAND:
+                return 'watch'
+            return 'low'
+
+        def _m(v):
+            return f"{v / 1e6:,.2f} ล้าน"
+
+        def _num(v):
+            return f"{v:,.0f}"
+
+        def _calc(sales, ytd, annual):
+            """คืน dict ตัวเลขทั้งหมดของแถวในตาราง A (None = แสดง —)"""
+            d = {'sales': sales, 'ytd': ytd, 'annual': annual}
+            d['ytd_pct'] = (sales / ytd * 100) if ytd > 0 else None
+            d['year_pct'] = (sales / annual * 100) if annual > 0 else None
+            if annual > 0:
+                d['short'] = max(annual - sales, 0.0)
+                d['over'] = sales - annual if sales > annual else 0.0
+                d['per_month'] = (d['short'] / L) if L > 0 else None
+            else:
+                d['short'] = d['over'] = d['per_month'] = None
+            return d
+
+        # แถวผู้ขาย (Active) — เป้าทั้งปี = เป้าช่วงที่เลือก ÷ N × 12 (เป้ารายเดือนเท่ากันทุกเดือน)
+        def _annual_of(ytd):
+            return ytd / N * 12 if ytd > 0 else 0.0
+
+        sale_calc = [(r, _calc(r['sales'], r['target'], _annual_of(r['target']))) for r in rows]
+        team_calc = _calc(total_s, total_t, _annual_of(total_t))
+        inact_t = sum(r['target'] for r in inactive_rows)
+        inact_s = sum(r['sales'] for r in inactive_rows)
+        inact_calc = _calc(inact_s, inact_t, _annual_of(inact_t))
+        ct_s = sum(r['sales'] for r in ct_rows)
+        company_s = total_s + inact_s + ct_s
+        company_calc = _calc(company_s, company_t, _annual_of(company_t))
+
+        # ══════════════════════════ UI ══════════════════════════
+        outer = CTkScrollableFrame(parent_frame, fg_color="#F4F6F9", corner_radius=10)
+        # ยังไม่ pack ตอนนี้: สร้าง widget ทั้งหมดขณะที่ยังไม่แสดงผล แล้วค่อยแสดงทีเดียวตอนท้าย (ลดการคำนวณ layout/วาดซ้ำ)
+        # ตอนสร้าง widget จำนวนมาก ตัว scrollbar ของ CTk จะสั่ง update_idletasks ซ้ำทุกครั้งที่ขนาดเปลี่ยน ทำให้หน้าโหลดนานมาก
+        # (วัดได้ ~40 วินาที) → ปิดการอัปเดต scrollbar ชั่วคราวระหว่างสร้างหน้า แล้วคืนค่าตอนท้ายฟังก์ชัน
+        try:
+            _ysc_saved = outer._parent_canvas.cget("yscrollcommand")
+            outer._parent_canvas.configure(yscrollcommand=lambda *_a: None)
+        except Exception:
+            _ysc_saved = None
+
+        head = CTkFrame(outer, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(12, 6))
+        left = CTkFrame(head, fg_color="transparent")
+        left.pack(side="left", fill="x", expand=True)
+        CTkLabel(left, text="APLUS SMART · SALES", font=CTkFont(size=11, weight="bold"),
+                 text_color="#1F4E79").pack(anchor="w")
+        CTkLabel(left, text=f"สรุปยอดขาย vs เป้าหมาย  —  {period_label}",
+                 font=CTkFont(size=20, weight="bold"), text_color="#0F172A").pack(anchor="w")
+        CTkLabel(left, text="GP สุทธิทุกช่อง หักค่าขนส่ง ค่าตัดเจาะพับ และค่านายหน้าแล้ว",
+                 font=CTkFont(size=12), text_color="#64748B").pack(anchor="w")
+        CTkLabel(head, text=f"  เวลาผ่านไป {N} / 12 เดือน ({T_PCT:.0f}%)  ",
+                 font=CTkFont(size=12, weight="bold"), text_color="#1F4E79",
+                 fg_color="#E3ECF6", corner_radius=8, height=32).pack(side="right", padx=(8, 0))
+
+        def _bar(parent, pct, color, width=150, height=14):
+            cv = tk.Canvas(parent, width=width, height=height, highlightthickness=0, bg="white")
+            cv.create_rectangle(0, 3, width, height - 3, fill="#E9EDF2", outline="")
+            if pct is not None and pct > 0:
+                cv.create_rectangle(0, 3, max(2, min(pct, 100) / 100 * width), height - 3, fill=color, outline="")
+            mx = T_PCT / 100 * width
+            cv.create_line(mx, 0, mx, height, fill="#111827", width=2)
+            return cv
+
+        _font_cache = {}
+
+        def _fnt(size, bold=False):
+            """ฟอนต์สำหรับ tk.Label / Canvas ใช้รูปแบบ tuple (ครอบครัว, -พิกเซล, น้ำหนัก)
+            ห้ามส่ง Font/CTkFont object เข้า Canvas.create_text — ในแอปนี้ Tk จะไม่สนใจ object ฟอนต์ (ขนาดไม่เปลี่ยนตามที่สั่ง)"""
+            k_ = (size, bold)
+            if k_ not in _font_cache:
+                _font_cache[k_] = (CTkFont().cget("family"), -size, "bold" if bold else "normal")
+            return _font_cache[k_]
+
+        _cfnt = _fnt
+
+        def _pill(parent, text, bg, fg):
+            return CTkLabel(parent, text=text, font=CTkFont(size=12, weight="bold"), text_color=fg,
+                            fg_color=bg, corner_radius=12, height=26)
+
+        # กล่องแจ้งเตือน + การ์ดทีม 4 ใบ: สร้างที่ว่างไว้ก่อน แล้วเติมหลังคำนวณ Heatmap (ใช้ข้อมูลรายเดือน)
+        alerts_holder = CTkFrame(outer, fg_color="transparent")
+        alerts_holder.pack(fill="x")
+        cards_holder = CTkFrame(outer, fg_color="transparent")
+        cards_holder.pack(fill="x", padx=11, pady=(4, 8))
         for i in range(4):
-            cards.grid_columnconfigure(i, weight=1)
+            cards_holder.grid_columnconfigure(i, weight=1, uniform="kpi4")
 
-        def _card(col, title, value, note, title_color):
-            c = CTkFrame(cards, fg_color="white", corner_radius=10, border_width=1, border_color="#E2E8F0")
-            c.grid(row=0, column=col, sticky="nsew", padx=5)
-            CTkLabel(c, text=title, font=CTkFont(size=12, weight="bold"), text_color=title_color).pack(anchor="w", padx=14, pady=(10, 0))
-            CTkLabel(c, text=value, font=CTkFont(size=24, weight="bold"), text_color="#0F172A").pack(anchor="w", padx=14)
-            CTkLabel(c, text=note, font=CTkFont(size=11), text_color="#64748B").pack(anchor="w", padx=14, pady=(0, 10))
+        # ── ตัวช่วยสร้างตารางแบบ grid (รองรับแถบสี/ป้ายสถานะ) ──
+        def _make_table(title, legend_text, headers, anchors, minw, weights):
+            card = CTkFrame(outer, fg_color="white", corner_radius=12, border_width=1, border_color="#E1E6ED")
+            card.pack(fill="x", padx=16, pady=(8, 8))
+            th = CTkFrame(card, fg_color="transparent")
+            th.pack(fill="x", padx=16, pady=(12, 6))
+            CTkLabel(th, text=title, font=CTkFont(size=15, weight="bold"), text_color="#0F172A").pack(side="left")
+            if legend_text:
+                CTkLabel(th, text=legend_text, font=CTkFont(size=11), text_color="#64748B").pack(side="right")
+            body = CTkFrame(card, fg_color="transparent")
+            body.pack(fill="x", padx=12, pady=(0, 12))
+            for ci, (w, mw) in enumerate(zip(weights, minw)):
+                body.grid_columnconfigure(ci, weight=w, minsize=mw)
+            for ci, h in enumerate(headers):
+                hf = tk.Frame(body, bg="#E8F3EC")
+                hf.grid(row=0, column=ci, sticky="nsew")
+                tk.Label(hf, text=h, font=_fnt(12, True), fg="#1F4E79", bg="#E8F3EC",
+                         anchor=anchors[ci], justify="left" if anchors[ci] == "w" else "right",
+                         wraplength=max(minw[ci] - 12, 60)).pack(fill="x", padx=10, pady=8, expand=True)
+            return body
 
-        _card(0, "ห้ามต่ำกว่า", f"{floor_pct:.1f}%", "จุดคุ้มทุน ต่ำกว่านี้คือขาดทุน", "#A3231C")
-        _card(1, "เป้าที่ต้องทำ", f"{goal_pct:.1f}%", "ระดับที่ทำให้ทั้งบริษัทถึงเป้ากำไร", "#7A4F00")
-        _card(2, "ทำได้จริง เฉพาะทีมที่ยัง active", f"{team_margin:.2f}%" if team_margin else "—",
-              "ถ่วงน้ำหนักด้วยยอดขาย ไม่ใช่ค่าเฉลี่ยรายบิล", "#14603A")
-        _card(3, "รวมทั้งบริษัท", f"{company_margin:.2f}%" if company_margin else "—",
-              "รวมยอดที่ไม่มีเจ้าของแล้ว", "#475569")
+        def _cell(body, r, c, text, anchor, bg, bold=False, color="#1E293B", sub=None):
+            f = tk.Frame(body, bg=bg)
+            f.grid(row=r, column=c, sticky="nsew")
+            tk.Label(f, text=text, font=_fnt(13, bold), fg=color, bg=bg,
+                     anchor=anchor).pack(fill="x", padx=10, pady=(7, 0 if sub else 7), expand=not sub)
+            if sub:
+                tk.Label(f, text=sub, font=_fnt(10), fg="#B7791F", bg=bg, anchor=anchor
+                         ).pack(fill="x", padx=10, pady=(0, 5))
+            return f
 
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("SMSalesTable.Treeview", background="white", foreground="#1E293B",
-                        rowheight=34, fieldbackground="white", font=('TH Sarabun New', 13))
-        style.configure("SMSalesTable.Treeview.Heading", background="#D1FAE5", foreground="#065F46",
-                        font=('TH Sarabun New', 13, 'bold'), relief="flat")
-        style.map("SMSalesTable.Treeview", background=[('selected', '#EDE9FE')],
-                  foreground=[('selected', '#1E293B')])
+        def _cell_widget(body, r, c, bg, builder, anchor="w"):
+            f = tk.Frame(body, bg=bg)
+            f.grid(row=r, column=c, sticky="nsew")
+            w = builder(f)
+            w.pack(anchor=anchor, padx=10, pady=6, expand=True)
+            return f
 
-        cols = ('name', 'sales', 'target', 'margin', 'floor', 'goal', 'status', 'gap')
-        tree = ttk.Treeview(outer, columns=cols, show='headings',
-                            style="SMSalesTable.Treeview", height=len(rows) + len(inactive_rows) + 4)
-        tree.heading('name',   text='พนักงาน');               tree.column('name',   width=190, anchor='w')
-        tree.heading('sales',  text='ยอดขายจริง (บาท)');     tree.column('sales',  width=140, anchor='e')
-        tree.heading('target', text='เป้าหมาย (บาท)');       tree.column('target', width=140, anchor='e')
-        tree.heading('margin', text='GP สุทธิที่ทำได้'); tree.column('margin', width=140, anchor='center')
-        tree.heading('floor',  text='ห้ามต่ำกว่า');           tree.column('floor',  width=90,  anchor='center')
-        tree.heading('goal',   text='เป้า');                  tree.column('goal',   width=80,  anchor='center')
-        tree.heading('status', text='สถานะ');                 tree.column('status', width=170, anchor='w')
-        tree.heading('gap',    text='ส่วนต่างจากเป้า (บาท)'); tree.column('gap',    width=150, anchor='e')
+        # ══ ตาราง A: ยอดขายเทียบเป้า ══
+        legend_a = f"เขียว ตามแผน ≥ {T_PCT:.0f}%   ·   เหลือง เฝ้าระวัง {T_PCT - PACE_BAND:.0f}–{T_PCT:.0f}%   ·   แดง ต่ำกว่าแผน < {T_PCT - PACE_BAND:.0f}%"
+        hdr_a = ["พนักงาน", "ยอดขายจริง (บาท)", f"เป้า YTD {range_short}", "% ถึงเป้า YTD", "เป้าทั้งปี",
+                 "% ของเป้าปี", "ยอดที่ยังขาด", f"ต้องทำ/เดือน {rest_short}", "สถานะ Pace"]
+        anc_a = ["w", "e", "e", "e", "e", "w", "e", "e", "w"]
+        tb_a = _make_table("A · ยอดขายเทียบเป้า (Sales Achievement)", legend_a, hdr_a, anc_a,
+                           [150, 110, 110, 80, 110, 220, 110, 110, 120], [3, 2, 2, 1, 2, 3, 2, 2, 2])
 
-        tree.tag_configure('st_low',  background='#FBE9E7', foreground='#A3231C')
-        tree.tag_configure('st_mid',  background='#FBF0DC', foreground='#7A4F00')
-        tree.tag_configure('st_ok',   background='#E2F0E8', foreground='#14603A')
-        tree.tag_configure('st_none', background='#EDEBE4', foreground='#4A4A50')
-        tree.tag_configure('total',       background='#EFF6FF', font=('TH Sarabun New', 13, 'bold'), foreground='#1D4ED8')
-        tree.tag_configure('grand_total', background='#DCFCE7', font=('TH Sarabun New', 13, 'bold'), foreground='#166534')
+        row_i = [1]
 
-        def _put(label, sales, target, margin, bold_tag=None):
-            st_text, st_tag = _status(margin)
-            tree.insert('', 'end', tags=((bold_tag,) if bold_tag else (st_tag,)),
-                        values=(label,
-                                f"{sales:,.0f}" if sales > 0 else '—',
-                                f"{target:,.0f}" if target > 0 else '—',
-                                f"{margin:.2f}%" if margin > 0 else '—',
-                                f"{floor_pct:.1f}%", f"{goal_pct:.1f}%",
-                                st_text, _gap_baht(margin, sales)))
+        def _put_a(label, d, kind='person', sub=None):
+            r = row_i[0]; row_i[0] += 1
+            bg = {"team": "#F1F5FA", "company": "#E6EEF7"}.get(kind, "white")
+            bold = kind in ("team", "company")
+            nm_color = "#1F4E79" if bold else "#1E293B"
+            _cell(tb_a, r, 0, label, "w", bg, bold, nm_color, sub)
+            _cell(tb_a, r, 1, _num(d['sales']) if d['sales'] else "—", "e", bg, bold)
+            _cell(tb_a, r, 2, _num(d['ytd']) if d['ytd'] > 0 else "—", "e", bg, bold)
+            _cell(tb_a, r, 3, f"{d['ytd_pct']:.1f}%" if d['ytd_pct'] is not None else "—", "e", bg, bold)
+            _cell(tb_a, r, 4, _num(d['annual']) if d['annual'] > 0 else "—", "e", bg, bold)
+            # % ของเป้าปี: แถบ + marker เวลา + ตัวเลข (แสดงค่าจริงแม้เกิน 100%)
+            pk_ = 'none' if kind == 'inactive' else ('nogoal' if kind == 'ct' else _pace_key(d['year_pct']))
+            yp_ = d['year_pct']
 
-        for r in rows:
-            _put(r['name'], r['sales'], r['target'], r['actual_margin'])
-        _put('รวมทีมที่ยัง active', total_s, total_t, team_margin, bold_tag='total')
-        for r in inactive_rows:
-            _put(r['name'], r['sales'], r['target'], r['actual_margin'])
-        ct_sales = sum(r['sales'] for r in ct_rows)
+            def _bar_cell(f, yp_=yp_, pk_=pk_):
+                box = CTkFrame(f, fg_color="transparent")
+                if yp_ is None:
+                    CTkLabel(box, text="—", font=CTkFont(size=13), text_color="#64748B").pack(side="left")
+                else:
+                    _bar(box, yp_, PACE[pk_][3]).pack(side="left")
+                    CTkLabel(box, text=f"  {yp_:.1f}%", font=CTkFont(size=13, weight="bold"),
+                             text_color=PACE[pk_][2]).pack(side="left")
+                return box
+            _cell_widget(tb_a, r, 5, bg, _bar_cell)
+            if d['short'] is None:
+                short_txt, per_txt, short_col = "—", "—", "#1E293B"
+            elif d['over'] > 0:
+                short_txt, per_txt, short_col = f"เกินเป้า +{_num(d['over'])}", "0", "#1E7B4C"
+            else:
+                short_txt = _num(d['short'])
+                per_txt = _num(d['per_month']) if d['per_month'] is not None else "—"
+                short_col = "#1E293B"
+            if kind == 'inactive':
+                per_txt = "—"
+            _cell(tb_a, r, 6, short_txt, "e", bg, bold, short_col)
+            _cell(tb_a, r, 7, per_txt, "e", bg, bold)
+            lab, pbg, pfg, _ = PACE[pk_]
+            _cell_widget(tb_a, r, 8, bg, lambda f, lab=lab, pbg=pbg, pfg=pfg: _pill(f, f"  {lab}  ", pbg, pfg))
+
+        for r_, d_ in sale_calc:
+            _put_a(r_['name'], d_)
+        _put_a("รวมทีมที่ยัง active", team_calc, 'team')
+        for r_ in inactive_rows:
+            _put_a(r_['name'], inact_calc, 'inactive', sub="เป้ายังไม่มีผู้รับผิดชอบ")
         if ct_rows:
-            _put('Sale Center (CT)', ct_sales, 0.0, 0.0)
-        inact_sales = sum(r['sales'] for r in inactive_rows)
-        _put('รวมทั้งบริษัท', total_s + inact_sales + ct_sales, company_t, company_margin, bold_tag='grand_total')
-        tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+            _put_a("Sale Center (CT) *", _calc(ct_s, 0.0, 0.0), 'ct')
+        _put_a("รวมทั้งบริษัท", company_calc, 'company')
+
+        # ══ ตาราง KPI: ผลงานรายคน (ตามเกณฑ์ KPI ปี 2569 — เป้าหมายหลัก 100%, ผ่านเกณฑ์ ≥ 85%) ══
+        # ระดับ 1–5 (ยอดขาย): เซลล์ ≥101 / 90 / 85 / 75 · ทีม(ผู้จัดการ) ≥101 / 95 / 90 / 85 · เทียบที่ทศนิยม 2 ตำแหน่ง ถึงเส้นก็นับ
+        # ระดับ GP: > 20 / > 15 / > 13 / > 12 (ต้อง "เกิน" เส้น) · ทุกบทบาทใช้เส้นเดียวกัน
+        LV_NAME = {5: "ดีมาก", 4: "ดี", 3: "มาตรฐาน", 2: "ปรับปรุง", 1: "ต่ำกว่าเกณฑ์"}
+        LV_BG = {5: "#1E7B4C", 4: "#CFEBDA", 3: "#DCE8F3", 2: "#FFE3A8", 1: "#F6C1BB"}
+        LV_FG = {5: "#FFFFFF", 4: "#14603A", 3: "#1F4E79", 2: "#8A5A00", 1: "#B42318"}
+        PASS_PCT = 85.0
+
+        def _sales_level(pct, is_team=False):
+            p = round(pct, 2)
+            cuts = (101.0, 95.0, 90.0, 85.0) if is_team else (101.0, 90.0, 85.0, 75.0)
+            if p >= cuts[0]:
+                return 5
+            if p >= cuts[1]:
+                return 4
+            if p >= cuts[2]:
+                return 3
+            if p >= cuts[3]:
+                return 2
+            return 1
+
+        def _gp_level(gp):
+            g = round(gp, 2)
+            if g > 20.0:
+                return 5
+            if g > 15.0:
+                return 4
+            if g > 13.0:
+                return 3
+            if g > 12.0:
+                return 2
+            return 1
+
+        tb_k = _make_table(
+            "ผลงานรายคน · " + period_label,
+            "เซลล์ใช้เกณฑ์เซลล์ · แถวทีมใช้เกณฑ์ผู้จัดการ",
+            ["พนักงาน", "ยอดขาย (บาท)", "เป้า (บาท)", "% ต่อเป้า", "ระดับยอดขาย", "ผล", "GP%", "ระดับ GP", "แจ้งเตือน"],
+            ["w", "e", "e", "e", "w", "w", "e", "w", "w"],
+            [190, 120, 120, 80, 150, 70, 80, 150, 150], [4, 2, 2, 1, 3, 1, 1, 3, 3])
+        row_k = [1]
+
+        def _lv_pill(text, lv):
+            return lambda f: _pill(f, f"  {lv} {text}  ", LV_BG[lv], LV_FG[lv])
+
+        def _grey_pill(f):
+            return _pill(f, "  ไม่มีเกณฑ์  ", "#EEF0F3", "#5B6573")
+
+        def _put_k(label, sub, sales, target, margin, kind="person"):
+            r = row_k[0]; row_k[0] += 1
+            bg = {"team": "#E6EEF7", "company": "#EEF1F5"}.get(kind, "white")
+            bold = kind in ("team", "company")
+            _cell(tb_k, r, 0, label, "w", bg, bold, "#1F4E79" if bold else "#1E293B", sub)
+            _cell(tb_k, r, 1, _num(sales) if sales else "—", "e", bg, bold)
+            has_target = kind in ("person", "team") and target > 0
+            pct = (sales / target * 100) if has_target else None
+            _cell(tb_k, r, 2, _num(target) if has_target else "—", "e", bg, bold)
+            _cell(tb_k, r, 3, f"{pct:.2f}%" if pct is not None else "—", "e", bg, bold,
+                  "#1E7B4C" if (pct is not None and pct >= PASS_PCT) else ("#B42318" if pct is not None else "#1E293B"))
+            if pct is not None:
+                lv = _sales_level(pct, is_team=(kind == "team"))
+                _cell_widget(tb_k, r, 4, bg, _lv_pill(LV_NAME[lv], lv))
+                passed = round(pct, 2) >= PASS_PCT
+                _cell(tb_k, r, 5, "ผ่าน" if passed else "ไม่ผ่าน", "w", bg, True, "#1E7B4C" if passed else "#B42318")
+            else:
+                _cell_widget(tb_k, r, 4, bg, _grey_pill)
+                _cell(tb_k, r, 5, "—", "w", bg)
+            if margin and margin > 0:
+                glv = _gp_level(margin)
+                _cell(tb_k, r, 6, f"{margin:.2f}%", "e", bg, bold)
+                if kind in ("person", "team", "inactive"):
+                    _cell_widget(tb_k, r, 7, bg, _lv_pill(LV_NAME[glv], glv))
+                else:
+                    _cell_widget(tb_k, r, 7, bg, _grey_pill)
+            else:
+                _cell(tb_k, r, 6, "—", "e", bg, bold)
+                _cell_widget(tb_k, r, 7, bg, _grey_pill)
+            # แจ้งเตือน (บน dashboard เท่านั้น)
+            alert, alert_col = "—", "#1E293B"
+            if margin and 0 < margin < 10 and kind in ("person", "team", "inactive"):
+                alert, alert_col = "GP วิกฤต < 10%", "#B42318"
+            elif pct is not None and round(pct, 2) < PASS_PCT:
+                alert, alert_col = ("ทีมไม่ผ่าน 85%" if kind == "team" else "ไม่ผ่านเกณฑ์"), "#B42318"
+            elif pct is not None and margin and 0 < margin < 13:
+                alert, alert_col = "ยอดดีแต่กำไรต่ำ", "#B42318"
+            _cell(tb_k, r, 8, alert, "w", bg, False, alert_col)
+
+        for r_ in rows:
+            _put_k(r_['name'], None, r_['sales'], r_['target'], r_['actual_margin'])
+        for r_ in inactive_rows:
+            _put_k(f"ยอดขาย Inactive {s_dt.year + 543 if s_dt else ''}", "ไม่มีเป้า · นับยอดรวมในทีม",
+                   r_['sales'], 0.0, r_['actual_margin'], 'inactive')
+        team_sales_all = total_s + inact_s
+        team_margin_all = _wtd_margin(rows + inactive_rows)
+        _put_k("ทีมขาย", "active + inactive ÷ เป้า active · เกณฑ์ผู้จัดการ", team_sales_all, total_t, team_margin_all, 'team')
+        if ct_rows:
+            _put_k("Sale Center (CT)", "ไม่อยู่ในเกณฑ์ KPI · GP ประมาณการ", ct_s, 0.0, _wtd_margin(ct_rows), 'ct')
+        _put_k("รวมทั้งบริษัท", None, company_s, 0.0, company_margin, 'company')
+
+        # ══ เป้าหมายของแต่ละคน (ยึดเป้า 100%) — ยอดที่ต้องทำต่อเดือนในช่วงที่เหลือ ══
+        # ทุกคนเห็น 4 ระดับพร้อมกัน: 100% เป้าทั้งปี / 100% เป้าไตรมาส / Incentive ขั้น 1 (≥101%) / ขั้น 2 (≥115%)
+        # ตัวเลข = ยอดที่ต้องทำต่อเดือน · % = ต้องเพิ่มจากยอดเฉลี่ยที่ทำมา (ยอดสะสม ÷ จำนวนเดือน)
+        import math
+        L_rem = 12 - N
+        if L_rem > 0 and e_dt:
+            qi = (e_dt.month - 1) // 3 if e_dt.month % 3 != 0 else e_dt.month // 3   # ไตรมาสเป้าหมาย (0-based)
+            q_months = [3 * qi + 1, 3 * qi + 2, 3 * qi + 3]
+            q_rem = [m_ for m_ in q_months if m_ > e_dt.month]
+            m_rem = len(q_rem)
+            q_label = f"Q{qi + 1}"
+            q_range = f"{SHORT_M[q_months[0] - 1]}–{SHORT_M[q_months[-1] - 1]}"
+
+            def _quarter_sales():
+                """ยอดขายของไตรมาสเป้าหมายที่ทำไปแล้ว (กรณีเลือกถึงกลางไตรมาส) แยกตามกลุ่มพนักงาน"""
+                qs = datetime(e_dt.year, q_months[0], 1)
+                if e_dt < qs:
+                    return {}
+                saved_rng = (self.custom_target_start, self.custom_target_end)
+                try:
+                    self.custom_target_start, self.custom_target_end = qs, e_dt
+                    qdf = self._get_data()
+                finally:
+                    self.custom_target_start, self.custom_target_end = saved_rng
+                qdf = qdf[~qdf['sale_key'].isin(EXCLUDE)].copy()
+                qdf['_group'] = qdf.apply(
+                    lambda rr: MERGE[rr['sale_key']][0] if rr['sale_key'] in MERGE else rr['sale_name'], axis=1)
+                qdf = self._merge_inactive_group(qdf)
+                return qdf.groupby('_group')['total_sales'].sum().to_dict()
+
+            q_sales_by = _quarter_sales()
+
+            def _need(q_target, q_sales, factor):
+                """ยอดที่ต้องทำต่อเดือนในช่วงที่เหลือของไตรมาส เพื่อให้ได้ factor × เป้าไตรมาส"""
+                return max(q_target * factor - q_sales, 0.0) / m_rem
+
+            def _inc_pill(need, avg):
+                if avg <= 0:
+                    return None
+                inc = (need / avg - 1) * 100
+                if inc <= 10:
+                    return inc, "#E3F3EA", "#1E7B4C"
+                if inc <= 30:
+                    return inc, "#FFF1D6", "#8A5A00"
+                return inc, "#FDE7E5", "#B42318"
+
+            def _num_pill_cell(need, avg):
+                pill = _inc_pill(need, avg)
+
+                def _b(f, need=need, pill=pill):
+                    box = CTkFrame(f, fg_color="transparent")
+                    CTkLabel(box, text=_num(need), font=CTkFont(size=13), text_color="#1E293B", anchor="e").pack(anchor="e")
+                    if pill:
+                        inc, pbg, pfg = pill
+                        CTkLabel(box, text=f" +{inc:.1f}% " if inc >= 0 else f" {inc:.1f}% ", font=CTkFont(size=10, weight="bold"),
+                                 text_color=pfg, fg_color=pbg, corner_radius=9, height=18).pack(anchor="e", pady=(2, 0))
+                    return box
+                return _b
+
+            goal_range = f"{rest_short}" if rest_short != "—" else ""
+            tb_g = _make_table(
+                f"เป้าหมายของแต่ละคน · {goal_range} {e_dt.year + 543} (ยึดเป้า 100%)",
+                "เขียว เพิ่ม ≤ 10%  ·  เหลือง 10–30% ต้องวางแผน  ·  แดง > 30% ผู้จัดการต้องเข้าช่วย",
+                ["พนักงาน", "ทำได้เฉลี่ย/เดือน", "100% เป้าทั้งปี", f"100% เป้า {q_label}",
+                 f"Incentive ขั้นที่ 1 ({q_label} ≥ 101%)", f"Incentive ขั้นที่ 2 ({q_label} ≥ 115%)",
+                 "GP (ต้อง ≥ 15.00%)", "สิ่งที่ต้องทำ"],
+                ["w", "e", "e", "e", "e", "e", "w", "w"],
+                [200, 110, 110, 110, 130, 130, 150, 260], [4, 2, 2, 2, 2, 2, 3, 5])
+            row_g = [1]
+            GP_OK = 15.0
+
+            def _gp_pill_cell(margin):
+                ok = margin >= GP_OK
+                txt = f"  {margin:.2f}% ✓  " if ok else f"  {margin:.2f}% ✗ ต่ำกว่า 15%  "
+                return lambda f: _pill(f, txt, "#E3F3EA" if ok else "#FDE7E5", "#1E7B4C" if ok else "#B42318")
+
+            def _put_g(label, sub, avg, ann_need, q_target, q_sales, margin, action, kind="person"):
+                r = row_g[0]; row_g[0] += 1
+                bg = "#E6EEF7" if kind == "team" else "white"
+                _cell(tb_g, r, 0, label, "w", bg, kind == "team", "#1F4E79" if kind == "team" else "#1E293B", sub)
+                _cell(tb_g, r, 1, _num(avg), "e", bg, kind == "team")
+                _cell_widget(tb_g, r, 2, bg, _num_pill_cell(ann_need, avg), "e")
+                _cell_widget(tb_g, r, 3, bg, _num_pill_cell(_need(q_target, q_sales, 1.00), avg), "e")
+                _cell_widget(tb_g, r, 4, bg, _num_pill_cell(_need(q_target, q_sales, 1.01), avg), "e")
+                _cell_widget(tb_g, r, 5, bg, _num_pill_cell(_need(q_target, q_sales, 1.15), avg), "e")
+                _cell_widget(tb_g, r, 6, bg, _gp_pill_cell(margin))
+                _cell(tb_g, r, 7, action, "w", bg, kind == "team")
+
+            def _action(inc_q, margin):
+                if inc_q is None:
+                    return "—"
+                if inc_q <= 10:
+                    txt = f"ถึง 100% {q_label} ได้ด้วยแรงเพิ่มเล็กน้อย → ไล่ Incentive ขั้นที่ 1/2"
+                elif inc_q <= 30:
+                    txt = "วางแผนเพิ่มบิล T3 (100,000–299,999) สัปดาห์ละ 1 ใบ"
+                else:
+                    txt = "ผู้จัดการเข้าช่วย: ดีล T3–T4 + ไล่ QT ค้าง"
+                if margin < GP_OK:
+                    txt += " · GP ต้องถึง 15.00% จึงจะได้ Incentive"
+                return txt
+
+            for r_, d_ in sale_calc:
+                avg_ = r_['sales'] / N
+                q_target_ = (d_['annual'] / 12.0) * 3 if d_['annual'] > 0 else 0.0
+                q_sales_ = q_sales_by.get(r_['name'], 0.0)
+                ann_need_ = max(d_['annual'] - r_['sales'], 0.0) / L_rem if d_['annual'] > 0 else 0.0
+                pill_q = _inc_pill(_need(q_target_, q_sales_, 1.00), avg_)
+                sub_ = (f"ยอดสะสม {d_['ytd_pct']:.2f}% ของเป้า {range_short}" if d_['ytd_pct'] is not None else None)
+                _put_g(r_['name'], sub_, avg_, ann_need_, q_target_, q_sales_, r_['actual_margin'],
+                       _action(pill_q[0] if pill_q else None, r_['actual_margin']))
+
+            # แถวทีม: เฉลี่ยใช้ยอดทีม active · ส่วนที่ยังขาดถึงเป้าปีใช้ยอดรวม inactive (ตาม spec)
+            team_avg = total_s / N
+            team_ann = team_calc['annual']
+            team_q_target = (team_ann / 12.0) * 3 if team_ann > 0 else 0.0
+            team_q_sales = sum(q_sales_by.get(r_['name'], 0.0) for r_ in rows) + sum(
+                q_sales_by.get(r_['name'], 0.0) for r_ in inactive_rows)
+            team_ann_need = max(team_ann - team_sales_all, 0.0) / L_rem if team_ann > 0 else 0.0
+            tq_need = _need(team_q_target, team_q_sales, 1.00)
+            add_m = max(tq_need - team_avg, 0.0)
+            bills = math.ceil(add_m / 174000.0) if add_m > 0 else 0
+            team_action = (f"100% {q_label}: เพิ่ม ~{add_m / 1e6:.1f} ล้าน/เดือน ≈ บิล T3 เพิ่ม ~{bills} ใบ/เดือนทั้งทีม · "
+                           f"100% ทั้งปี: ต้องเพิ่ม T3 + T4 ทุกคน") if add_m > 0 else "ทีมอยู่ในแนวทางถึง 100%"
+            team_pct = (team_sales_all / total_t * 100) if total_t > 0 else None
+            team_sub = (f"ยอดสะสม {team_pct:.2f}% (รวมยอด inactive) · เป้าปี {team_ann:,.0f}" if team_pct is not None else None)
+            _put_g("ทีมขาย", team_sub, team_avg, team_ann_need, team_q_target, team_q_sales, team_margin_all,
+                   team_action, 'team')
+
+            if team_ann > 0:
+                proj = team_sales_all + L_rem * team_avg
+                CTkLabel(outer, text=(f"ผู้จัดการและ CEO เห็นทุกแถว · ถ้าทีมทำตามอัตราเดิม สิ้นปีได้ {proj / team_ann * 100:.2f}% "
+                                      f"ของเป้าปี {team_ann / 1e6:.1f} ล้าน (ขาด {max(team_ann - proj, 0) / 1e6:.2f} ล้านจาก 100%)"),
+                         font=CTkFont(size=11), text_color="#64748B", anchor="w").pack(anchor="w", padx=20, pady=(0, 6))
+
+        else:
+            CTkLabel(outer, text="ตาราง \"เป้าหมายของแต่ละคน\" แสดงเมื่อเลือก \"ถึงรอบ\" ก่อนเดือนธันวาคม (ต้องมีเดือนที่เหลือให้คำนวณยอดที่ต้องทำ)",
+                     font=CTkFont(size=11), text_color="#64748B", anchor="w").pack(anchor="w", padx=20, pady=(0, 6))
+
+        # ══ Heatmap ระดับ รายเดือน · รายไตรมาส · รายปี (ทุกช่อง: บน = ยอดขาย, ล่าง = GP) ══
+        try:
+            hm_year = e_dt.year if e_dt else datetime.now().year
+            hdf = self._get_heatmap_df(hm_year)
+            hdf = hdf[~hdf['sale_key'].isin(EXCLUDE) & (hdf['sale_key'] != self.SALE_CENTER_KEY)].copy()
+            if not hdf.empty:
+                hdf['_group'] = hdf.apply(
+                    lambda rr: MERGE[rr['sale_key']][0] if rr['sale_key'] in MERGE else rr['sale_name'], axis=1)
+                hdf = self._merge_inactive_group(hdf)
+            hm = {}                                   # (กลุ่ม, เดือน) → [ยอด, GP, ฐาน GP]
+            for _, hr_ in hdf.iterrows():
+                cell = hm.setdefault((hr_['_group'], int(hr_['month'])), [0.0, 0.0, 0.0])
+                cell[0] += float(hr_['sales']); cell[1] += float(hr_['gp']); cell[2] += float(hr_['gp_base'])
+        except Exception:
+            traceback.print_exc()
+            hm, hm_year = {}, (e_dt.year if e_dt else datetime.now().year)
+
+        today_ = datetime.now()
+        if hm_year < today_.year:
+            last_closed = 12
+        elif hm_year == today_.year:
+            last_closed = today_.month - 1            # เดือนปัจจุบันยังไม่ปิดยอด (HR ยังไม่จ่ายค่าคอม) → "รอ"
+        else:
+            last_closed = 0
+
+        hm_rows = [(r_['name'], (r_['annual'] / 12.0) if r_.get('annual') else (r_['target'] / max(N, 1)), 'person')
+                   for r_ in rows]
+        inactive_name = inactive_rows[0]['name'] if inactive_rows else None
+
+        def _sum_cells(names, months):
+            t = [0.0, 0.0, 0.0]
+            for nm in names:
+                for mm in months:
+                    c_ = hm.get((nm, mm))
+                    if c_:
+                        t[0] += c_[0]; t[1] += c_[1]; t[2] += c_[2]
+            return t
+
+        hm_card = CTkFrame(outer, fg_color="white", corner_radius=12, border_width=1, border_color="#E1E6ED")
+        hm_card.pack(fill="x", padx=16, pady=(8, 8))
+        CTkLabel(hm_card, text="Heatmap ระดับ รายเดือน · รายไตรมาส · รายปี", font=CTkFont(size=15, weight="bold"),
+                 text_color="#0F172A").pack(anchor="w", padx=16, pady=(12, 0))
+        CTkLabel(hm_card, text=f"ยอดและ GP รายเดือนจริง ปี {hm_year + 543} เทียบเป้ารายเดือน · เดือนปัจจุบันที่ยังไม่ปิดยอดแสดง \"รอ\" · "
+                               "GP รายเดือนของแถวทีม = ทีม active + inactive",
+                 font=CTkFont(size=11), text_color="#64748B").pack(anchor="w", padx=16, pady=(0, 6))
+        leg = CTkFrame(hm_card, fg_color="transparent")
+        leg.pack(anchor="w", padx=16, pady=(0, 6))
+        for lv_ in (5, 4, 3, 2, 1):
+            CTkLabel(leg, text=f"  {lv_} {LV_NAME[lv_]}  ", font=CTkFont(size=11, weight="bold"), text_color=LV_FG[lv_],
+                     fg_color=LV_BG[lv_], corner_radius=6, height=22).pack(side="left", padx=3)
+        CTkLabel(leg, text="  ·  กรอบแดง = ยอดดี (≥ 85%) แต่กำไรต่ำ (GP < 13%)  ·  กรอบเข้ม = รวมไตรมาส/ทั้งปี  ·  Incentive = ยอด ≥ 101% และ GP ≥ 15.00%",
+                 font=CTkFont(size=11), text_color="#64748B").pack(side="left", padx=6)
+
+        hm_wrap = tk.Frame(hm_card, bg="white")
+        hm_wrap.pack(fill="x", padx=12, pady=(0, 10))
+        # วาดทั้ง Heatmap บน Canvas ใบเดียว (เดิมใช้ widget ~900 ชิ้น ทำให้หน้าโหลดช้ามาก)
+        CW, GAPX, NAME_W = 96, 4, 175
+        RH, TOP_H = 78, 62
+        f_b = _cfnt(14, True)
+        f_s = _cfnt(10)
+        f_sb = _cfnt(10, True)
+        f_h = _cfnt(12, True)
+        Q_BG = "#EAF0F7"
+
+        col_map = []        # (kind, ref)   kind: 'm' เดือน / 'q' ไตรมาส / 'y' ปี
+        for qn in range(4):
+            for mm in (3 * qn + 1, 3 * qn + 2, 3 * qn + 3):
+                col_map.append(('m', mm))
+            col_map.append(('q', qn))
+        col_map.append(('y', 0))
+        n_rows = len(hm_rows) + (1 if inactive_name else 0) + 1
+        total_w = NAME_W + len(col_map) * (CW + GAPX) + 6
+        total_h = TOP_H + n_rows * RH + 8
+        hm_cv = tk.Canvas(hm_wrap, bg="white", highlightthickness=0, height=min(total_h, 600), width=10,
+                          scrollregion=(0, 0, total_w, total_h))
+        hm_sb = ttk.Scrollbar(hm_wrap, orient="horizontal", command=hm_cv.xview)
+        hm_cv.configure(xscrollcommand=hm_sb.set)
+        hm_cv.pack(fill="x")
+        hm_sb.pack(fill="x")
+
+        def _cx(ci):
+            return NAME_W + ci * (CW + GAPX)
+
+        # หัวคอลัมน์
+        hm_cv.create_text(4, TOP_H - 12, text="พนักงาน", font=f_h, fill="#1F4E79", anchor="sw")
+        for qn in range(4):
+            x1 = _cx(qn * 4)
+            x2 = _cx(qn * 4 + 3) + CW
+            hm_cv.create_text((x1 + x2) / 2, 18, text=f"ไตรมาส {qn + 1}", font=f_h, fill="#8A5A00" if qn == 3 else "#1E293B")
+            hm_cv.create_text((x1 + x2) / 2, 36, text=f"{SHORT_M[3 * qn]}–{SHORT_M[3 * qn + 2]}", font=f_s, fill="#64748B")
+        yx1 = _cx(16)
+        hm_cv.create_text(yx1 + CW / 2, 18, text=f"ทั้งปี {hm_year + 543}", font=f_h, fill="#1F4E79")
+        hm_cv.create_text(yx1 + CW / 2, 36, text="สะสม", font=f_s, fill="#64748B")
+        for ci, (kind, ref) in enumerate(col_map):
+            x = _cx(ci)
+            if kind == 'm':
+                hm_cv.create_text(x + CW / 2, TOP_H - 10, text=SHORT_M[ref - 1], font=f_h, fill="#334155")
+            else:
+                hm_cv.create_rectangle(x, 44, x + CW, TOP_H - 2, fill=Q_BG, outline="")
+                hm_cv.create_text(x + CW / 2, TOP_H - 12, text=(f"รวม Q{ref + 1}" if kind == 'q' else "ระดับปี"),
+                                  font=f_h, fill="#1F4E79")
+        # พื้นหลังจาง ๆ ของคอลัมน์รวมไตรมาส/ปี ตลอดแนวแถว
+        for ci, (kind, ref) in enumerate(col_map):
+            if kind in ('q', 'y'):
+                x = _cx(ci)
+                hm_cv.create_rectangle(x, TOP_H, x + CW, total_h - 4, fill="#F4F7FB", outline="")
+
+        def _draw_block(x, y, w_, h_, bg, text, fnt, fg):
+            hm_cv.create_rectangle(x, y, x + w_, y + h_, fill=bg, outline="")
+            hm_cv.create_text(x + w_ / 2, y + h_ / 2, text=text, font=fnt, fill=fg)
+
+        def _draw_cell(x, y, sales, target, gp, gp_base, is_team, closed, kind='m', incentive=True):
+            """ช่องเดียวของ Heatmap: บน = ระดับยอดขาย + % ต่อเป้า, ล่าง = GP% + ระดับ GP (+ สถานะ Incentive)"""
+            if not closed:
+                hm_cv.create_rectangle(x, y, x + CW, y + 40, fill="#F1F5F9", outline="#CBD5E1", dash=(3, 2))
+                hm_cv.create_text(x + CW / 2, y + 20, text="รอ", font=f_s, fill="#94A3B8")
+                return
+            h_total = 0
+            if target > 0:
+                pct = (sales / target * 100) if sales > 0 else 0.0
+                lv = _sales_level(pct, is_team=is_team)
+                hm_cv.create_rectangle(x, y, x + CW, y + 38, fill=LV_BG[lv], outline="")
+                hm_cv.create_text(x + CW / 2, y + 13, text=str(lv), font=f_b, fill=LV_FG[lv])
+                hm_cv.create_text(x + CW / 2, y + 29, text=f"{pct:.1f}%", font=f_s, fill=LV_FG[lv])
+            else:
+                pct = None
+                _draw_block(x, y, CW, 38, "#EEF0F3", _num(sales) if sales else "—", f_sb, "#475569")
+            h_total = 38
+            gp_pct = (gp / gp_base * 100) if gp_base > 0 else None
+            if gp_pct is not None:
+                glv = _gp_level(gp_pct)
+                _draw_block(x, y + 38, CW, 18, LV_BG[glv], f"GP {gp_pct:.1f}% · {glv}", f_s, LV_FG[glv])
+                h_total = 56
+                if kind == 'q' and incentive and pct is not None:
+                    gp_ok = round(gp_pct, 2) >= 15.0
+                    p2 = round(pct, 2)
+                    if p2 >= 115.0 and gp_ok:
+                        _draw_block(x, y + 56, CW, 16, "#1E7B4C", "ได้ INCENTIVE 2", f_sb, "#FFFFFF"); h_total = 72
+                    elif p2 >= 101.0 and gp_ok:
+                        _draw_block(x, y + 56, CW, 16, "#1E7B4C", "ได้ INCENTIVE 1", f_sb, "#FFFFFF"); h_total = 72
+                    elif p2 >= 101.0:
+                        _draw_block(x, y + 56, CW, 16, "#B42318", "ไม่ได้ · GP < 15%", f_sb, "#FFFFFF"); h_total = 72
+                    else:
+                        _draw_block(x, y + 56, CW, 16, "#FFFFFF", "ไม่ได้ · ยอด < 101%", f_s, "#64748B"); h_total = 72
+            else:
+                _draw_block(x, y + 38, CW, 18, "#EEF0F3", "GP —", f_s, "#64748B")
+                h_total = 56
+            if kind in ('q', 'y'):
+                hm_cv.create_rectangle(x, y, x + CW, y + h_total, outline="#1F4E79", width=2)
+            elif pct is not None and gp_pct is not None and round(pct, 2) >= PASS_PCT and round(gp_pct, 2) < 13.0:
+                hm_cv.create_rectangle(x, y, x + CW, y + h_total, outline="#B42318", width=2)
+
+        def _hm_row(row_i, label, sub, names, monthly_target, is_team=False, show_incentive=True, inactive_style=False):
+            y = TOP_H + row_i * RH + 4
+            if is_team:
+                hm_cv.create_rectangle(0, y - 4, NAME_W - 6, y + RH - 6, fill="#F1F5FA", outline="")
+            hm_cv.create_text(4, y + 10, text=label, font=f_h, fill="#1F4E79" if is_team else "#1E293B", anchor="w")
+            if sub:
+                hm_cv.create_text(4, y + 28, text=sub, font=f_s, fill="#B7791F", anchor="w", width=NAME_W - 12)
+            for ci, (kind, ref) in enumerate(col_map):
+                x = _cx(ci)
+                if kind == 'm':
+                    months, closed = [ref], ref <= last_closed
+                elif kind == 'q':
+                    months = [3 * ref + 1, 3 * ref + 2, 3 * ref + 3]
+                    closed = months[0] <= last_closed
+                else:
+                    months = list(range(1, last_closed + 1)) or [1]
+                    closed = last_closed > 0
+                use_months = [m_ for m_ in months if m_ <= last_closed] if kind in ('q', 'y') else months
+                sales_, gp_, gpb_ = _sum_cells(names, use_months)
+                target_ = monthly_target * len(use_months)
+                if inactive_style:
+                    if closed and sales_ > 0:
+                        txt = _num(sales_) + (f"\nGP {gp_ / gpb_ * 100:.1f}%" if gpb_ > 0 else "")
+                        hm_cv.create_rectangle(x, y, x + CW, y + 38, fill="white", outline="#E1E6ED")
+                        hm_cv.create_text(x + CW / 2, y + 19, text=txt, font=f_s, fill="#1E293B", justify="center")
+                    elif closed:
+                        hm_cv.create_rectangle(x, y, x + CW, y + 38, fill="white", outline="#E1E6ED")
+                        hm_cv.create_text(x + CW / 2, y + 19, text="—", font=f_s, fill="#94A3B8")
+                    else:
+                        hm_cv.create_rectangle(x, y, x + CW, y + 38, fill="#F1F5F9", outline="#CBD5E1", dash=(3, 2))
+                        hm_cv.create_text(x + CW / 2, y + 19, text="รอ", font=f_s, fill="#94A3B8")
+                    continue
+                _draw_cell(x, y, sales_, target_, gp_, gpb_, is_team, closed, kind,
+                           incentive=(show_incentive and kind == 'q' and months[-1] <= last_closed))
+
+        ri_ = 0
+        for nm, mt, _k in hm_rows:
+            _hm_row(ri_, nm, "เกณฑ์เซลล์", [nm], mt)
+            ri_ += 1
+        if inactive_name:
+            _hm_row(ri_, "ยอดขาย Inactive", "ไม่มีเป้า · นับรวมในทีม", [inactive_name], 0.0, inactive_style=True)
+            ri_ += 1
+        team_names = [nm for nm, _m, _k in hm_rows] + ([inactive_name] if inactive_name else [])
+        team_month_target = sum(mt for _n, mt, _k in hm_rows)
+        _hm_row(ri_, "ทีมขาย", "เกณฑ์ผู้จัดการ · รวมยอด inactive", team_names, team_month_target,
+                is_team=True, show_incentive=False)
+        CTkLabel(hm_card, text="", height=4).pack()
+
+        # ══ ส่วนผสมบิล 6 ระดับ (Tier Guest–T5) — ยอดสุทธิก่อน VAT ต่อบิล ══
+        try:
+            TIERS = [("Guest", "< 10,000", 0.0, 10_000.0), ("T1", "10,000 – 29,999", 10_000.0, 30_000.0),
+                     ("T2", "30,000 – 99,999", 30_000.0, 100_000.0), ("T3", "100,000 – 299,999", 100_000.0, 300_000.0),
+                     ("T4", "300,000 – 999,999", 300_000.0, 1_000_000.0), ("T5", "≥ 1,000,000", 1_000_000.0, float("inf"))]
+            sdt, edt = self.custom_target_start, self.custom_target_end
+            bills_df = pd.read_sql_query("""
+                SELECT c.so_number, c.sale_key, c.status, COALESCE(c.sales_service_amount, 0) AS amt, pl.project_id
+                FROM   commissions c
+                LEFT JOIN project_lots pl ON pl.so_number = c.so_number
+                WHERE  c.is_active = 1 AND c.bill_date::date BETWEEN %s AND %s
+                  AND  COALESCE(c.so_number, '') NOT ILIKE 'TEST%%'
+            """, self.pg_engine, params=(sdt.date(), edt.date()))
+            bills_df = bills_df[~bills_df['status'].isin(('Draft', 'Cancelled', 'Cancelled by PU', 'Rejected by SM', 'Rejected by HR'))]
+            bills_df = bills_df[~bills_df['sale_key'].isin(EXCLUDE) & (bills_df['sale_key'] != self.SALE_CENTER_KEY)]
+            # งาน Project ที่แบ่งส่งหลายล็อต รวมทุกล็อตเป็นดีลเดียวก่อนแบ่งระดับ
+            bills_df['_deal'] = bills_df.apply(
+                lambda rr: f"P{int(rr['project_id'])}" if pd.notna(rr['project_id']) else rr['so_number'], axis=1)
+            deals = bills_df.groupby('_deal').agg(amt=('amt', 'sum'), sale_key=('sale_key', 'first')).reset_index()
+            deals = deals[deals['amt'] > 0]
+
+            def _tier_of(v):
+                for ti_, (_n, _r, lo_, hi_) in enumerate(TIERS):
+                    if lo_ <= v < hi_:
+                        return ti_
+                return len(TIERS) - 1
+            deals['_tier'] = deals['amt'].apply(_tier_of)
+            n_total = len(deals)
+            amt_total = float(deals['amt'].sum())
+
+            # ข้อมูล QT จาก Express (นำเข้าด้วยปุ่ม "นำเข้า QT") → Conversion จริง ถ้ายังไม่เคยนำเข้าแสดง "—"
+            conv, qt_info = None, None
+            try:
+                qdf = pd.read_sql_query(
+                    "SELECT qt_number, qt_date, customer_code, seat_code, value_ex_vat FROM qt_header "
+                    "WHERE qt_date BETWEEN %s AND %s", self.pg_engine, params=(sdt.date(), edt.date()))
+                for c_ in ('value_ex_vat',):
+                    qdf[c_] = pd.to_numeric(qdf[c_], errors='coerce').fillna(0.0)
+                if not qdf.empty:
+                    conv = qcv.compute_conversion(qdf, bills_df.rename(columns={'_deal': 'deal'})[['so_number', 'amt', 'deal']])
+                    qt_info = pd.read_sql_query(
+                        "SELECT filename, imported_at, date_to FROM qt_import_log ORDER BY id DESC LIMIT 1", self.pg_engine)
+            except Exception:
+                conv = None
+
+            mix_card = CTkFrame(outer, fg_color="white", corner_radius=12, border_width=1, border_color="#E1E6ED")
+            mix_card.pack(fill="x", padx=16, pady=(8, 8))
+            ttl = CTkFrame(mix_card, fg_color="transparent")
+            ttl.pack(fill="x", padx=16, pady=(12, 0))
+            CTkLabel(ttl, text=f"Conversion ตามระดับบิล (ทั้งบริษัท {range_short} {e_dt.year + 543 if e_dt else ''})", font=CTkFont(size=15, weight="bold"),
+                     text_color="#0F172A").pack(side="left")
+            if conv:
+                try:
+                    inf = qt_info.iloc[0]
+                    note_txt = (f"QT จากไฟล์ Express ({inf['filename']}) นำเข้าล่าสุด {pd.to_datetime(inf['imported_at']):%d/%m/%Y %H:%M} · "
+                                "QT รวมจัดระดับตามมูลค่า QT (QT ฉบับแก้ไขนับเป็นดีลเดียว) · ปิดได้ / ยอด SO จัดระดับตามมูลค่า SO ที่จับคู่ด้วยเลขเอกสาร "
+                                "(SO ที่ไม่พบ QT ในไฟล์นับเป็นปิดได้) · ยอดสุทธิก่อน VAT ไม่รวมค่ารถ ค่าตัด ค่าเจาะ · งาน Project รวมทุกล็อตเป็นดีลเดียว")
+                except Exception:
+                    note_txt = "QT จากไฟล์ Express · จับคู่ QT↔SO ด้วยเลขเอกสาร"
+            else:
+                note_txt = ("ปิดได้ / ยอด SO / % ยอด SO = ข้อมูลจริงจากระบบ APLUS Smart (ยอดสุทธิก่อน VAT ไม่รวมค่ารถ ค่าตัด ค่าเจาะ · นับตามวันที่เอกสาร · "
+                            "งาน Project รวมทุกล็อตเป็นดีลเดียว) · QT รวม และ Conversion จะแสดงเมื่อนำเข้าไฟล์ QT จาก Express ด้วยปุ่ม \"📥 นำเข้า QT\" ด้านบน")
+            CTkLabel(mix_card, text=note_txt,
+                     font=CTkFont(size=11), text_color="#64748B", anchor="w", justify="left", wraplength=1150
+                     ).pack(anchor="w", padx=16, pady=(0, 8))
+            mix_body = CTkFrame(mix_card, fg_color="transparent")
+            mix_body.pack(fill="x", padx=12, pady=(0, 12))
+            mix_body.grid_columnconfigure(0, weight=3)
+            mix_body.grid_columnconfigure(1, weight=1)
+
+            # ── ตารางซ้าย: Conversion ตามระดับบิล (รูปแบบใหม่ตาม PM) ──
+            # ปิดได้ = จำนวน SO จริงในระบบ (ทุก SO ต้องมี QT) · ยอด SO = ยอดสุทธิจาก SO
+            # QT รวม / Conversion ต้องมีข้อมูลใบเสนอราคาจาก Express (Phase 2) จึงแสดง "—" ไว้ก่อน ไม่ใส่ตัวเลขสมมติ
+            left_t = CTkFrame(mix_body, fg_color="transparent")
+            left_t.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+            heads_t = ["ระดับ", "ยอด/ใบ", "QT\nรวม", "ปิดได้", "Conversion\nจำนวน", "Conversion\nมูลค่า", "ยอด SO", "% ยอด\nSO"]
+            wts_t = [1, 3, 1, 1, 2, 2, 2, 1]
+            for ci_, (h_, wt_) in enumerate(zip(heads_t, wts_t)):
+                left_t.grid_columnconfigure(ci_, weight=wt_)
+                hf_ = CTkFrame(left_t, fg_color="#F3F4F6", corner_radius=0)
+                hf_.grid(row=0, column=ci_, sticky="nsew")
+                CTkLabel(hf_, text=h_, font=CTkFont(size=12, weight="bold"), text_color="#1E293B", justify="left" if ci_ in (0, 1) else "right",
+                         anchor="w" if ci_ in (0, 1) else "e").pack(fill="x", padx=8, pady=8)
+            conv_so_total = sum(c_['so_value'] for c_ in conv) if conv else 0.0
+            for ti_, (nm_, rg_, _lo, _hi) in enumerate(TIERS):
+                sub_ = deals[deals['_tier'] == ti_]
+                cnt_, amt_ = len(sub_), float(sub_['amt'].sum())
+                p_amt = amt_ / amt_total * 100 if amt_total else 0.0
+                bg_ = "#F1F8F4" if nm_ == "T3" else "white"
+                bold_ = nm_ == "T3"
+                if conv:
+                    cv_ = conv[ti_]
+                    so_v = cv_['so_value']
+                    vals_ = [nm_, rg_, f"{cv_['qt']:,}", f"{cv_['closed']:,}",
+                             f"{cv_['closed'] / cv_['qt'] * 100:.1f}%" if cv_['qt'] else "—",
+                             f"{so_v / cv_['qt_value'] * 100:.1f}%" if cv_['qt_value'] else "—",
+                             f"{so_v / 1e6:.1f} ล้าน", f"{so_v / conv_so_total * 100:.1f}%" if conv_so_total else "—"]
+                else:
+                    vals_ = [nm_, rg_, "—", f"{cnt_:,}", "—", "—", f"{amt_ / 1e6:.1f} ล้าน", f"{p_amt:.1f}%"]
+                for ci_, txt_ in enumerate(vals_):
+                    f_ = CTkFrame(left_t, fg_color=bg_, corner_radius=0)
+                    f_.grid(row=ti_ + 1, column=ci_, sticky="nsew")
+                    CTkLabel(f_, text=txt_, font=CTkFont(size=13, weight="bold" if bold_ else "normal"),
+                             text_color="#94A3B8" if txt_ == "—" else "#1E293B",
+                             anchor="w" if ci_ in (0, 1) else "e").pack(fill="x", padx=8, pady=8)
+            if conv:
+                tq_ = sum(c_['qt'] for c_ in conv); tc_ = sum(c_['closed'] for c_ in conv)
+                tqv_ = sum(c_['qt_value'] for c_ in conv)
+                tot_vals = ["รวม", "", f"{tq_:,}", f"{tc_:,}", f"{tc_ / tq_ * 100:.1f}%" if tq_ else "—",
+                            f"{conv_so_total / tqv_ * 100:.1f}%" if tqv_ else "—", f"{conv_so_total / 1e6:.1f} ล้าน", "100%"]
+            else:
+                tot_vals = ["รวม", "", "—", f"{n_total:,}", "—", "—", f"{amt_total / 1e6:.1f} ล้าน", "100%"]
+            for ci_, txt_ in enumerate(tot_vals):
+                f_ = CTkFrame(left_t, fg_color="#F1F5FA", corner_radius=0)
+                f_.grid(row=7, column=ci_, sticky="nsew")
+                CTkLabel(f_, text=txt_, font=CTkFont(size=13, weight="bold"), text_color="#94A3B8" if txt_ == "—" else "#1F4E79",
+                         anchor="w" if ci_ in (0, 1) else "e").pack(fill="x", padx=8, pady=8)
+
+            # ── แผงขวา: บิล T3 ต่อเดือน ต่อคน ──
+            right_p = CTkFrame(mix_body, fg_color="white", corner_radius=10, border_width=1, border_color="#E1E6ED")
+            right_p.grid(row=0, column=1, sticky="nsew")
+            CTkLabel(right_p, text="บิล T3 ต่อเดือน ต่อคน", font=CTkFont(size=14, weight="bold"), text_color="#0F172A"
+                     ).pack(anchor="w", padx=14, pady=(12, 2))
+            t3_target = 52.0 / 12.0
+            CTkLabel(right_p, text=f"เป้า: อย่างน้อย 1 บิล/สัปดาห์ (~{t3_target:.1f}/เดือน) · เส้นดำ = เป้า",
+                     font=CTkFont(size=11), text_color="#64748B", wraplength=330, justify="left").pack(anchor="w", padx=14, pady=(0, 6))
+            seat_of_key = {}
+            for r_ in rows:
+                seat_of_key[r_['name']] = r_['name']
+            # แปลง sale_key → ชื่อที่นั่ง (รวมที่นั่งร่วม) ด้วยข้อมูลพนักงาน Active
+            ppl = pd.read_sql_query(
+                "SELECT sale_key, sale_name FROM sales_users WHERE role = 'Sale' AND status = 'Active'", self.pg_engine)
+            key2seat = {str(p_['sale_key']).lower().replace(' ', ''):
+                        (MERGE[p_['sale_key']][0] if p_['sale_key'] in MERGE else p_['sale_name'])
+                        for _, p_ in ppl.iterrows() if p_['sale_key'] not in EXCLUDE}
+            t3_deals = deals[deals['_tier'] == 3].copy()
+            t3_deals['_seat'] = t3_deals['sale_key'].map(lambda k_: key2seat.get(str(k_).lower().replace(' ', '')))
+            months_n = max(N, 1)
+            t3_rate = []
+            for r_ in rows:
+                cnt_ = int((t3_deals['_seat'] == r_['name']).sum())
+                t3_rate.append((r_['name'], cnt_ / months_n))
+            t3_rate.sort(key=lambda t_: -t_[1])
+            for nm_, rate_ in t3_rate:
+                ratio_ = rate_ / t3_target if t3_target else 0
+                col_ = "#1E7B4C" if ratio_ >= 1 else ("#8A5A00" if ratio_ >= 0.7 else "#B42318")
+                rw_ = CTkFrame(right_p, fg_color="transparent")
+                rw_.pack(fill="x", padx=14, pady=3)
+                CTkLabel(rw_, text=nm_, font=CTkFont(size=12), text_color="#1E293B", width=120, anchor="w").pack(side="left")
+                cvb_ = tk.Canvas(rw_, width=140, height=12, highlightthickness=0, bg="white")
+                cvb_.create_rectangle(0, 2, 140, 10, fill="#E9EDF2", outline="")
+                scale_ = 140 / (t3_target * 1.5)
+                cvb_.create_rectangle(0, 2, max(2, min(rate_ * scale_, 140)), 10, fill=col_, outline="")
+                mxl_ = t3_target * scale_
+                cvb_.create_line(mxl_, 0, mxl_, 12, fill="#111827", width=2)
+                cvb_.pack(side="left", padx=6)
+                CTkLabel(rw_, text=f"{rate_:.1f}", font=CTkFont(size=13, weight="bold"), text_color=col_, width=36, anchor="e"
+                         ).pack(side="right")
+            hi_amt = float(deals[deals['_tier'] >= 3]['amt'].sum())
+            hi_cnt = int((deals['_tier'] >= 3).sum())
+            t3_avg = float(deals[deals['_tier'] == 3]['amt'].mean()) if (deals['_tier'] == 3).any() else 0.0
+            CTkLabel(right_p, text=(f"บิล ≥ 100,000 = {hi_cnt / n_total * 100 if n_total else 0:.1f}% ของบิล แต่ "
+                                    f"{hi_amt / amt_total * 100 if amt_total else 0:.0f}% ของยอด · +1 บิล T3/สัปดาห์/คน ≈ "
+                                    f"+{t3_avg * 52 / 12 * max(len(rows), 1) / 1e6:.1f} ล้าน/เดือน"),
+                     font=CTkFont(size=11), text_color="#64748B", wraplength=330, justify="left").pack(anchor="w", padx=14, pady=(8, 12))
+        except Exception:
+            traceback.print_exc()
+
+        # ══ กล่องแจ้งเตือน + การ์ดทีม 4 ใบ (เติมหลังคำนวณ Heatmap เพราะใช้ข้อมูลรายเดือน) ══
+        try:
+            team_pct_all = (team_sales_all / total_t * 100) if total_t > 0 else None
+            mon_closed = last_closed if 1 <= last_closed <= 12 else 0
+            mon_txt = SHORT_M[mon_closed - 1] if mon_closed else ""
+            active_names = [nm for nm, _m, _k in hm_rows]
+
+            # ---------- การ์ดทีม ----------
+            def _team_card(col, title):
+                c = CTkFrame(cards_holder, fg_color="white", corner_radius=10, border_width=1, border_color="#E1E6ED")
+                c.grid(row=0, column=col, sticky="nsew", padx=5)
+                CTkLabel(c, text=title, font=CTkFont(size=11), text_color="#64748B", wraplength=300,
+                         justify="left").pack(anchor="w", padx=14, pady=(10, 0))
+                return c
+
+            def _card_sub(c, text):
+                CTkLabel(c, text=text, font=CTkFont(size=11), text_color="#64748B", wraplength=300, justify="left"
+                         ).pack(anchor="w", padx=14, pady=(2, 10))
+
+            c1 = _team_card(0, f"ยอดทีม vs เป้า ({range_short})")
+            if team_pct_all is not None:
+                lv1 = _sales_level(team_pct_all, is_team=True)
+                row1 = CTkFrame(c1, fg_color="transparent")
+                row1.pack(anchor="w", padx=14)
+                CTkLabel(row1, text=f"{team_pct_all:.2f}%", font=CTkFont(size=26, weight="bold"),
+                         text_color="#B42318" if team_pct_all < PASS_PCT else "#1E7B4C").pack(side="left")
+                _pill(row1, f"  ระดับ {lv1} · {'ผ่าน' if round(team_pct_all, 2) >= PASS_PCT else 'ไม่ผ่าน'}  ",
+                      LV_BG[lv1], LV_FG[lv1]).pack(side="left", padx=10)
+                gap100 = max(total_t - team_sales_all, 0.0)
+                gap85 = max(total_t * PASS_PCT / 100 - team_sales_all, 0.0)
+                _card_sub(c1, f"{team_sales_all:,.0f} ÷ {total_t:,.0f} · ขาดอีก {gap100:,.0f} บาทจะถึง 100%"
+                              + (f" (ถึงเกณฑ์ KPI 85% ขาด {gap85:,.0f})" if gap85 > 0 else " (ผ่านเกณฑ์ KPI 85% แล้ว)"))
+            else:
+                CTkLabel(c1, text="—", font=CTkFont(size=26, weight="bold")).pack(anchor="w", padx=14)
+                _card_sub(c1, "ยังไม่มีเป้า")
+
+            c2 = _team_card(1, f"GP ทีม ({range_short})")
+            if team_margin_all and team_margin_all > 0:
+                lv2 = _gp_level(team_margin_all)
+                row2 = CTkFrame(c2, fg_color="transparent")
+                row2.pack(anchor="w", padx=14)
+                CTkLabel(row2, text=f"{team_margin_all:.2f}%", font=CTkFont(size=26, weight="bold"),
+                         text_color="#1E7B4C" if lv2 >= 4 else "#B42318").pack(side="left")
+                _pill(row2, f"  ระดับ {lv2} · {LV_NAME[lv2]}  ", LV_BG[lv2], LV_FG[lv2]).pack(side="left", padx=10)
+                nxt = {1: 12.0, 2: 13.0, 3: 15.0, 4: 20.0}.get(lv2)
+                _card_sub(c2, f"อีก {nxt - team_margin_all + 0.005:.2f} pt ถึงระดับ {lv2 + 1} (> {nxt:.2f}%)"
+                          if nxt else "ระดับสูงสุดแล้ว")
+            else:
+                CTkLabel(c2, text="—", font=CTkFont(size=26, weight="bold")).pack(anchor="w", padx=14)
+                _card_sub(c2, "ยังไม่มีข้อมูล GP")
+
+            c3 = _team_card(2, f"ต้องทำต่อเดือน {rest_short} (เป้าปี {team_calc['annual'] / 1e6:,.1f} ล้าน)")
+            if L > 0 and team_calc['annual'] > 0:
+                need3 = max(team_calc['annual'] - team_sales_all, 0.0) / L
+                avg3 = total_s / N
+                inc3 = (need3 / avg3 - 1) * 100 if avg3 > 0 else None
+                CTkLabel(c3, text=f"{need3 / 1e6:.2f} ล้าน", font=CTkFont(size=26, weight="bold"),
+                         text_color="#B42318" if (inc3 or 0) > 30 else "#8A5A00").pack(anchor="w", padx=14)
+                _card_sub(c3, f"เพื่อถึง 100% เป้าปี · ทำได้เฉลี่ย {avg3 / 1e6:.2f} ล้าน/เดือน"
+                              + (f" ({inc3:+.1f}%)" if inc3 is not None else ""))
+            else:
+                CTkLabel(c3, text="—", font=CTkFont(size=26, weight="bold")).pack(anchor="w", padx=14)
+                _card_sub(c3, "ครบปีแล้ว" if L == 0 else "ยังไม่มีเป้า")
+
+            c4 = _team_card(3, "เงื่อนไข Incentive รายไตรมาส (2 ขั้น)")
+            CTkLabel(c4, text="ขั้นที่ 1: ยอด ≥ 101%  ·  ขั้นที่ 2: ยอด ≥ 115%", font=CTkFont(size=14, weight="bold"),
+                     text_color="#0F172A", wraplength=300, justify="left").pack(anchor="w", padx=14, pady=(4, 0))
+            _card_sub(c4, "ทั้ง 2 ขั้นต้องมี GP ≥ 15.00% · GP ต่ำกว่า 15% = ไม่ได้ · ไม่ยกยอดข้ามไตรมาส")
+
+            # ---------- กล่องแจ้งเตือน ----------
+            alerts = []        # (severity 0=แดง 1=เหลือง, หัวข้อ, รายละเอียด)
+            for nm_, gp_ in [(r_['name'], r_['actual_margin']) for r_ in rows + inactive_rows]:
+                if gp_ and 0 < gp_ < 10:
+                    alerts.append((0, "GP วิกฤต (< 10%)", f"{nm_} · GP {gp_:.2f}%"))
+            if team_pct_all is not None and team_pct_all < 100:
+                alerts.append((0 if team_pct_all < PASS_PCT else 1, f"ทีมห่างเป้า 100% ({range_short})",
+                               f"ทำได้ {team_pct_all:.2f}% · ขาดอีก {max(total_t - team_sales_all, 0):,.0f} บาท"))
+            if mon_closed:
+                ts_, tg_, tgb_ = _sum_cells(active_names, [mon_closed])
+                if tgb_ > 0 and tg_ / tgb_ * 100 < 15.0:
+                    alerts.append((0, f"GP ทีม {mon_txt} ต่ำกว่าจุดคุ้มทุน",
+                                   f"ทีม active {mon_txt} GP {tg_ / tgb_ * 100:.2f}% (ยอด {ts_:,.0f})"))
+                for nm_, mt_, _k in hm_rows:
+                    s_, g_, gb_ = _sum_cells([nm_], [mon_closed])
+                    if mt_ > 0 and gb_ > 0 and s_ / mt_ * 100 >= PASS_PCT and g_ / gb_ * 100 < 13.0:
+                        alerts.append((0, "ยอดดีแต่กำไรต่ำ",
+                                       f"{nm_} · {mon_txt} ยอด {s_ / mt_ * 100:.1f}% แต่ GP {g_ / gb_ * 100:.2f}%"))
+            for r_, d_ in sale_calc:
+                if d_['ytd_pct'] is not None and d_['ytd_pct'] < PASS_PCT and 0 < r_['actual_margin'] < 15.0:
+                    alerts.append((0, "ไม่ผ่านเกณฑ์ + GP ต่ำกว่า 15%",
+                                   f"{r_['name']} · ยอดสะสม {d_['ytd_pct']:.2f}% · GP {r_['actual_margin']:.2f}%"))
+            for qn_ in range(4):
+                if 3 * qn_ + 3 > last_closed:
+                    continue
+                for nm_, mt_, _k in hm_rows:
+                    s_, g_, gb_ = _sum_cells([nm_], [3 * qn_ + 1, 3 * qn_ + 2, 3 * qn_ + 3])
+                    if mt_ > 0 and gb_ > 0 and s_ / (mt_ * 3) * 100 >= 101.0 and g_ / gb_ * 100 < 15.0:
+                        alerts.append((0, "ไม่ได้ Incentive เพราะ GP < 15%",
+                                       f"{nm_} · Q{qn_ + 1} ยอด {s_ / (mt_ * 3) * 100:.1f}% แต่ GP {g_ / gb_ * 100:.2f}%"))
+            alerts.sort(key=lambda a_: a_[0])
+            if alerts:
+                abox = CTkFrame(alerts_holder, fg_color="white", corner_radius=12, border_width=1, border_color="#F3C6C1")
+                abox.pack(fill="x", padx=16, pady=(4, 8))
+                CTkLabel(abox, text=f"⚠  แจ้งเตือน ({len(alerts)})", font=CTkFont(size=14, weight="bold"),
+                         text_color="#B42318").pack(anchor="w", padx=16, pady=(10, 4))
+                agrid = CTkFrame(abox, fg_color="transparent")
+                agrid.pack(fill="x", padx=12, pady=(0, 10))
+                for i_ in range(4):
+                    agrid.grid_columnconfigure(i_, weight=1, uniform="al")
+                for k_, (sev_, ttl_, det_) in enumerate(alerts):
+                    ac = CTkFrame(agrid, fg_color="#FDE7E5" if sev_ == 0 else "#FFF1D6", corner_radius=8)
+                    ac.grid(row=k_ // 4, column=k_ % 4, sticky="nsew", padx=4, pady=4)
+                    CTkLabel(ac, text=ttl_, font=CTkFont(size=12, weight="bold"),
+                             text_color="#B42318" if sev_ == 0 else "#8A5A00", anchor="w", justify="left",
+                             wraplength=330).pack(anchor="w", padx=10, pady=(8, 0))
+                    CTkLabel(ac, text=det_, font=CTkFont(size=12), text_color="#1E293B", anchor="w", justify="left",
+                             wraplength=330).pack(anchor="w", padx=10, pady=(0, 8))
+        except Exception:
+            traceback.print_exc()
+
+        # ── Footer: สูตรย่อ + หมายเหตุ ──
+        notes = [
+            "สูตร: % ถึงเป้า YTD = ยอดขายจริง ÷ เป้า YTD · เป้าทั้งปี = เป้าช่วงที่เลือก ÷ เดือนที่เลือก × 12 (กรณีเป้ารายเดือนเท่ากัน) · "
+            "% ของเป้าปี = ยอดขายจริง ÷ เป้าทั้งปี · ยอดที่ยังขาด = เป้าทั้งปี − ยอดขายจริง · ต้องทำ/เดือน = ยอดที่ยังขาด ÷ เดือนที่เหลือ · "
+            "สถานะ Pace เทียบ % ของเป้าปีกับ % เวลาที่ผ่านไป",
+            "เป้ารวมบริษัทใช้เป้าบริษัทรายปีที่ตั้งไว้ (ไม่เท่ากับผลรวมเป้ารายคน) · เป้าหมายหลัก 100% · ผ่านเกณฑ์ KPI ≥ 85% = ระดับ 3 มาตรฐาน",
+        ]
+        if ct_rows:
+            notes.append("* Sale Center (CT) ไม่มีเป้ายอดขาย · GP เป็นประมาณการ = ยอดขาย − (ต้นทุน PO × 1.03) "
+                         "เฉพาะ SO ที่มี PO แล้ว ยังไม่ผ่านการตรวจของ HR")
+        for t in notes:
+            CTkLabel(outer, text=t, font=CTkFont(size=11), text_color="#64748B", anchor="w", justify="left",
+                     wraplength=1100).pack(anchor="w", padx=20, pady=(0, 2))
+        CTkLabel(outer, text="", height=8).pack()
+
+        if _ysc_saved is not None:
+            try:
+                outer._parent_canvas.configure(yscrollcommand=_ysc_saved)
+            except Exception:
+                pass
+        outer.pack(fill="both", expand=True, padx=10, pady=10)
 
     # ── Export Excel (แยกรายเดือน + สรุปรวม) ────────────────────────────────────
     def _export_sales_target_excel(self):
@@ -1448,3 +2418,111 @@ class SalesTargetWidget(CTkFrame):
 
         export_sales_target_to_excel(self, df_export, period_label)
 
+
+
+class QTImportDialog(CTkToplevel):
+    """นำเข้ารายงาน "ใบเสนอราคา แยกตามพนักงานขาย" จาก Express (ไฟล์ CSV ดิบ Windows-874) แล้วประมวลผลให้ทันที
+    นำเข้าซ้ำ/ไฟล์ช่วงทับกันได้ (upsert ตามเลข QT) · ไม่เก็บชื่อลูกค้า/ผู้ติดต่อ/เบอร์โทร"""
+
+    def __init__(self, master, app_container, on_done=None):
+        super().__init__(master)
+        self.app_container = app_container
+        self.on_done = on_done
+        self.df = None
+        self.warnings_ = []
+        self.path = None
+        self.title("นำเข้า QT จาก Express")
+        from project_screen import _center_and_style_popup
+        _center_and_style_popup(self, master, 760, 560)
+        self.transient(master.winfo_toplevel())
+        self.after(50, self.grab_set)
+
+        CTkLabel(self, text="นำเข้าใบเสนอราคา (QT) จาก Express", font=CTkFont(size=16, weight="bold")).pack(anchor="w", padx=18, pady=(14, 2))
+        CTkLabel(self, text="เลือกไฟล์รายงาน \"ใบเสนอราคา แยกตามพนักงานขาย\" (CSV) ได้เลยโดยไม่ต้องแปลงไฟล์ — ระบบอ่านภาษาไทย (Windows-874) เอง "
+                            "แล้วจับคู่กับ SO และคำนวณ Conversion ให้ทันที · ควรดึงรายงานด้วยเงื่อนไขกว้างสุด (ทุกรหัสลูกค้า ทุกสถานะ ทุกแผนก)",
+                 font=CTkFont(size=12), text_color="#64748B", wraplength=720, justify="left").pack(anchor="w", padx=18)
+        row = CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=18, pady=10)
+        CTkButton(row, text="📂 เลือกไฟล์ CSV", width=150, command=self._choose).pack(side="left")
+        self.file_lbl = CTkLabel(row, text="ยังไม่ได้เลือกไฟล์", font=CTkFont(size=12), text_color="#64748B")
+        self.file_lbl.pack(side="left", padx=10)
+        self.box = CTkTextbox(self, height=300, font=CTkFont(size=12))
+        self.box.pack(fill="both", expand=True, padx=18, pady=(0, 8))
+        self.box.configure(state="disabled")
+        bottom = CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", padx=18, pady=(0, 14))
+        CTkButton(bottom, text="ปิด", width=90, fg_color="#94A3B8", hover_color="#64748B", command=self.destroy).pack(side="right")
+        self.go_btn = CTkButton(bottom, text="✅ นำเข้าและประมวลผล", width=170, fg_color="#16A34A", hover_color="#15803D",
+                                state="disabled", command=self._import)
+        self.go_btn.pack(side="right", padx=8)
+
+    def _say(self, text):
+        self.box.configure(state="normal")
+        self.box.delete("1.0", "end")
+        self.box.insert("1.0", text)
+        self.box.configure(state="disabled")
+
+    def _choose(self):
+        path = filedialog.askopenfilename(parent=self, title="เลือกไฟล์รายงาน QT (CSV)",
+                                          filetypes=[("CSV", "*.csv"), ("ทุกไฟล์", "*.*")])
+        if not path:
+            return
+        try:
+            df, meta = qcv.parse_express_qt_csv(path)
+        except Exception as ex:
+            self.df = None
+            self.go_btn.configure(state="disabled")
+            self._say(f"อ่านไฟล์ไม่สำเร็จ: {ex}")
+            return
+        self.path = path
+        self.file_lbl.configure(text=os.path.basename(path))
+        if df.empty:
+            self.df = None
+            self.go_btn.configure(state="disabled")
+            self._say("ไม่พบแถวใบเสนอราคา (QT) ในไฟล์นี้ — ตรวจสอบว่าเป็นรายงาน \"ใบเสนอราคา แยกตามพนักงานขาย\" ของ Express")
+            return
+        self.df = df
+        self.warnings_ = qcv.coverage_warnings(df)
+        existing = 0
+        try:
+            ex_df = pd.read_sql_query("SELECT count(*) AS n FROM qt_header WHERE qt_number = ANY(%s)",
+                                      self.app_container.pg_engine, params=(df['qt_number'].tolist(),))
+            existing = int(ex_df.iloc[0]['n'])
+        except Exception:
+            existing = 0           # ยังไม่เคยนำเข้า (ตารางยังไม่ถูกสร้าง)
+        lines = [f"ไฟล์: {os.path.basename(path)}",
+                 f"ใบเสนอราคาในไฟล์: {meta['rows']:,} ใบ  ·  ช่วงวันที่ {meta.get('date_from')} ถึง {meta.get('date_to')}",
+                 f"มูลค่ารวมก่อน VAT: {df['value_ex_vat'].sum():,.0f} บาท  ·  มูลค่า 0: {(df['value_ex_vat'] <= 0).sum():,} ใบ",
+                 f"มีในระบบแล้ว (จะอัปเดต): {existing:,} ใบ  ·  ใหม่: {meta['rows'] - existing:,} ใบ", "",
+                 "จำนวนใบแยกตามที่นั่ง:"]
+        for seat, cnt in df['seat_code'].value_counts().items():
+            nm = df.loc[df['seat_code'] == seat, 'seat_name'].iloc[0]
+            lines.append(f"   {seat}  {nm}: {cnt:,} ใบ")
+        if self.warnings_:
+            lines += ["", "⚠ เลข QT ที่อาจหายไป (ไฟล์อาจไม่ครบ — ตรวจเงื่อนไขการดึงรายงาน):"] + [f"   {w_}" for w_ in self.warnings_[:25]]
+            if len(self.warnings_) > 25:
+                lines.append(f"   ... และอีก {len(self.warnings_) - 25} รายการ")
+        self._say("\n".join(lines))
+        self.go_btn.configure(state="normal")
+
+    def _import(self):
+        if self.df is None:
+            return
+        if self.warnings_ and not messagebox.askyesno(
+                "ไฟล์อาจไม่ครบ", f"พบเลข QT ที่อาจหายไป {len(self.warnings_)} รายการ\nต้องการนำเข้าต่อหรือไม่?", parent=self):
+            return
+        user = getattr(self.app_container, "current_user_key", None) or "-"
+        conn = self.app_container.get_connection()
+        try:
+            new, upd, _imp = qcv.import_to_db(conn, self.df, os.path.basename(self.path or ""), user, self.warnings_)
+        except Exception as ex:
+            conn.rollback()
+            messagebox.showerror("Error", f"นำเข้าไม่สำเร็จ: {ex}", parent=self)
+            return
+        finally:
+            self.app_container.release_connection(conn)
+        messagebox.showinfo("นำเข้าแล้ว", f"นำเข้า QT สำเร็จ — ใหม่ {new:,} ใบ · อัปเดต {upd:,} ใบ\nระบบประมวลผล Conversion ให้แล้ว", parent=self)
+        cb = self.on_done
+        self.destroy()
+        if cb:
+            cb()

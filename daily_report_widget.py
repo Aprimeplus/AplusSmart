@@ -71,10 +71,15 @@ class DailyReportWidget(CTkFrame):
         row1.pack(fill="x", padx=10, pady=5)
         
         self.use_date_var = tk.BooleanVar(value=True)
-        CTkCheckBox(row1, text="กรองเฉพาะวันที่:", variable=self.use_date_var, font=CTkFont(weight="bold")).pack(side="left", padx=(0, 10))
+        CTkCheckBox(row1, text="กรองช่วงวันที่ (SO):", variable=self.use_date_var, font=CTkFont(weight="bold")).pack(side="left", padx=(0, 10))
+        CTkLabel(row1, text="ตั้งแต่").pack(side="left", padx=(0, 4))
         self.date_selector = DateSelector(row1)
-        self.date_selector.pack(side="left", padx=(0, 20))
-        self.date_selector.set_date(datetime.now()) 
+        self.date_selector.pack(side="left", padx=(0, 8))
+        self.date_selector.set_date(datetime.now())
+        CTkLabel(row1, text="ถึง").pack(side="left", padx=(0, 4))
+        self.date_selector_to = DateSelector(row1)
+        self.date_selector_to.pack(side="left", padx=(0, 20))
+        self.date_selector_to.set_date(datetime.now())
 
         CTkLabel(row1, text="|  รอบคอมมิชชั่น:", font=CTkFont(weight="bold")).pack(side="left", padx=(10, 5))
         self.filter_month_var = tk.StringVar(value="ทั้งหมด")
@@ -265,9 +270,12 @@ class DailyReportWidget(CTkFrame):
 
             # 1. กรองตามวันที่ (ถ้าติ๊กเลือก)
             if self.use_date_var.get() and self.date_selector.get_date():
-                date_str = self.date_selector.get_date()
-                where_clauses.append("DATE(c.timestamp) = %s")
-                params.append(date_str)
+                date_from = self.date_selector.get_date()
+                date_to = self.date_selector_to.get_date() or date_from
+                if pd.Timestamp(date_from) > pd.Timestamp(date_to):
+                    date_from, date_to = date_to, date_from   # เลือกกลับด้าน → สลับให้เอง
+                where_clauses.append("DATE(c.timestamp) BETWEEN %s AND %s")
+                params.extend([date_from, date_to])
 
             # 2. กรองรอบคอมมิชชั่น
             month_val = self.filter_month_var.get()
