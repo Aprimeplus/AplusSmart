@@ -2727,6 +2727,72 @@ class CostBenchmarkScreen(CTkFrame):
         self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
 
     # ================================================================== #
+    def _paste_full_rows(self, clip_grid, is_frozen_origin):
+        """วาง "ทั้งแถว" (ข้อมูลที่ copy ทั้งแถวมาจากตารางนี้เอง ครบทุกคอลัมน์ ทั้งฝั่งตรึงและฝั่งเลื่อน)
+        • จับคู่ตามตำแหน่งคอลัมน์จริง (คอลัมน์ที่ j ของข้อมูล → คอลัมน์ที่ j ของตาราง) ไม่ว่าจะวางจากฝั่งไหน
+        • ข้ามคอลัมน์สูตรคำนวณ (คำนวณใหม่เอง)
+        • copy 1 แถวแล้วเลือกหลายแถว → วางให้ทุกแถวที่เลือก (เหมือน Excel)
+        คืน True ถ้าจัดการให้แล้ว"""
+        col_offset = self.frozen_col_count if self.sheet_frozen else 0
+        src_sheet = self.sheet_frozen if (is_frozen_origin and self.sheet_frozen) else self.sheet
+        rows_sel = set()
+        try:
+            rows_sel = {int(r) for r in (src_sheet.get_selected_rows() or [])}
+        except Exception:
+            pass
+        if not rows_sel:
+            try:
+                rows_sel = {int(r) for r, _c in (src_sheet.get_selected_cells() or [])}
+            except Exception:
+                pass
+        if not rows_sel:
+            try:
+                cur = src_sheet.get_currently_selected()
+                if cur:
+                    rows_sel = {int(cur[0])}
+            except Exception:
+                pass
+        if not rows_sel:
+            return False
+        total_rows = self.sheet.get_total_rows()
+        start = min(rows_sel)
+        if len(clip_grid) == 1 and len(rows_sel) > 1:
+            targets = [(r, clip_grid[0]) for r in sorted(rows_sel) if r < total_rows]
+        else:
+            targets = [(start + i, row) for i, row in enumerate(clip_grid) if start + i < total_rows]
+
+        truly_auto = set(self._get_auto_cols())
+        truly_auto.discard("Product SKU.")
+        modified_rows = set()
+        for r, row in targets:
+            for j in range(min(len(row), len(self.columns))):
+                if self.columns[j] in truly_auto:
+                    continue
+                val = row[j].strip()
+                if j < col_offset and self.sheet_frozen:
+                    self.sheet_frozen.set_cell_data(r, j, val, redraw=False)
+                else:
+                    self.sheet.set_cell_data(r, j - col_offset, val, redraw=False)
+            modified_rows.add(r)
+
+        def _calc_after_paste(rows=sorted(modified_rows)):
+            for row_idx in rows:
+                self._auto_calculate_sheet(row_idx)
+            self.sheet.redraw()
+            if self.sheet_frozen:
+                self.sheet_frozen.redraw()
+            self._push_undo(force=True)
+
+        self._sla_start_from_paste(sorted(modified_rows))
+        self.after(30, _calc_after_paste)
+        if self.auto_save_job_id:
+            self.after_cancel(self.auto_save_job_id)
+        self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
+        if hasattr(self, 'save_status_label'):
+            self.save_status_label.configure(
+                text=f"⏳ วางทั้งแถว {len(targets)} แถว รอการบันทึก...", text_color="#D97706")
+        return True
+
     def _smart_paste(self, event=None):
         """
         Ctrl+V แบบ smart สำหรับ Cost Benchmark:
@@ -2764,6 +2830,10 @@ class CostBenchmarkScreen(CTkFrame):
             
             reader = csv.reader(io.StringIO(clip_cleaned), delimiter='\t')
             clip_grid = list(reader)
+
+            # ข้อมูลที่ copy "ทั้งแถว" (ครบทุกคอลัมน์) → วางแบบทั้งแถวข้ามทั้งสองฝั่งที่ตรึง
+            if clip_grid and len(clip_grid[0]) == len(self.columns) and self._paste_full_rows(clip_grid, False):
+                return "break"
 
             modified_rows = set()
             sel_cells = self.sheet.get_selected_cells()
@@ -2871,6 +2941,10 @@ class CostBenchmarkScreen(CTkFrame):
             
             reader = csv.reader(io.StringIO(clip_cleaned), delimiter='\t')
             clip_grid = list(reader)
+
+            # ข้อมูลที่ copy "ทั้งแถว" (ครบทุกคอลัมน์) → วางแบบทั้งแถวข้ามทั้งสองฝั่งที่ตรึง
+            if clip_grid and len(clip_grid[0]) == len(self.columns) and self._paste_full_rows(clip_grid, True):
+                return "break"
 
             modified_rows = set()
             sel_cells = self.sheet_frozen.get_selected_cells()
