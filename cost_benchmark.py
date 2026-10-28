@@ -4053,8 +4053,9 @@ class CostBenchmarkScreen(CTkFrame):
         return data[:n]
 
     def _snapshot_state(self):
-        main = [list(r) for r in self.sheet.get_sheet_data()]
-        frozen = ([list(r) for r in self.sheet_frozen.get_sheet_data()]
+        # อ่านจาก MT.data ตรงๆ (เร็วกว่า get_sheet_data() ราว 30 เท่า — ตารางนี้หลักพันแถว x ~57 คอลัมน์)
+        main = [list(r) for r in self.sheet.MT.data]
+        frozen = ([list(r) for r in self.sheet_frozen.MT.data]
                   if getattr(self, 'sheet_frozen', None) else [])
         return (self._trim_rows(frozen), self._trim_rows(main))
 
@@ -4064,13 +4065,11 @@ class CostBenchmarkScreen(CTkFrame):
         self._push_undo_job = None
         if not force:
             # ถ้า user กำลังพิมพ์อยู่ ให้รอก่อน — ไม่อยากให้ get_sheet_data() block UI ระหว่างพิม
+            # (ห้ามจับสถานะตอน editor เปิดอยู่เด็ดขาด เพราะค่าที่พิมพ์ค้างถูกเขียนลงข้อมูลไปแล้ว
+            #  ถ้าจับไปจะได้ขั้นที่มีข้อความครึ่งๆ กลางๆ — รอจนกว่า editor จะปิด)
             if self._cell_editor_open():
-                _retries = getattr(self, '_push_undo_retries', 0) + 1
-                self._push_undo_retries = _retries
-                if _retries < 15:   # กันค้างถาวร ~3 วินาที
-                    self._push_undo_job = self.after(200, self._push_undo)
-                    return
-            self._push_undo_retries = 0
+                self._push_undo_job = self.after(250, self._push_undo)
+                return
         try:
             if not hasattr(self, '_history'):
                 self._history = []
