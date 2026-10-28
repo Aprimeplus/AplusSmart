@@ -2727,6 +2727,23 @@ class CostBenchmarkScreen(CTkFrame):
         self.auto_save_job_id = self.after(1500, lambda: self._save_to_db(show_msg=False))
 
     # ================================================================== #
+    @staticmethod
+    def _fix_clipboard_mojibake(text):
+        """ซ่อมตัวอักษรไทยที่เพี้ยนจากการส่งข้อมูลก้อนใหญ่ผ่าน clipboard ของ Tk (ข้อมูลหลายร้อยแถว:
+        ตัวอักษร UTF-8 3 ไบต์ถูกตัดคาบก้อน แล้วถูกอ่านเป็น Latin-1 เช่น 'ว' กลายเป็น 'à¸§')
+        ซ่อมเฉพาะช่วงที่ถอดเป็น UTF-8 ได้จริงเท่านั้น ข้อความปกติไม่ถูกแตะ"""
+        import re
+        def _fix(m):
+            seg = m.group(0)
+            try:
+                return seg.encode("latin-1").decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                return seg
+        return re.sub(r"[-ÿ]+", _fix, text)
+
+    def _get_clipboard_text(self):
+        return self._fix_clipboard_mojibake(self.clipboard_get())
+
     def _paste_full_rows(self, clip_grid, is_frozen_origin):
         """วาง "ทั้งแถว" (ข้อมูลที่ copy ทั้งแถวมาจากตารางนี้เอง ครบทุกคอลัมน์ ทั้งฝั่งตรึงและฝั่งเลื่อน)
         • จับคู่ตามตำแหน่งคอลัมน์จริง (คอลัมน์ที่ j ของข้อมูล → คอลัมน์ที่ j ของตาราง) ไม่ว่าจะวางจากฝั่งไหน
@@ -2756,8 +2773,10 @@ class CostBenchmarkScreen(CTkFrame):
             return False
         total_rows = self.sheet.get_total_rows()
         start = min(rows_sel)
-        if len(clip_grid) == 1 and len(rows_sel) > 1:
-            targets = [(r, clip_grid[0]) for r in sorted(rows_sel) if r < total_rows]
+        sel_sorted = sorted(r for r in rows_sel if r < total_rows)
+        if len(rows_sel) > 1 and len(rows_sel) % len(clip_grid) == 0:
+            # เลือกแถวปลายทางเป็นจำนวนเท่าของแถวที่ copy → วางวนซ้ำเป็นชุด (1 แถว → ทุกแถว, 3 แถว → 9 แถว = 3 ชุด)
+            targets = [(r, clip_grid[i % len(clip_grid)]) for i, r in enumerate(sel_sorted)]
         else:
             targets = [(start + i, row) for i, row in enumerate(clip_grid) if start + i < total_rows]
 
@@ -2802,7 +2821,7 @@ class CostBenchmarkScreen(CTkFrame):
         • รองรับ multi-row, multi-column paste จาก Excel/ไฟล์งานอื่น
         """
         try:
-            clip = self.clipboard_get()
+            clip = self._get_clipboard_text()
         except Exception:
             return "break"
 
@@ -2919,7 +2938,7 @@ class CostBenchmarkScreen(CTkFrame):
     def _smart_paste_frozen(self, event=None):
         """Ctrl+V สำหรับ frozen sheet — paste แล้ว auto-fill product SKU / supplier code"""
         try:
-            clip = self.clipboard_get()
+            clip = self._get_clipboard_text()
         except Exception:
             return "break"
             
@@ -3385,7 +3404,7 @@ class CostBenchmarkScreen(CTkFrame):
     def _clean_clipboard_quotes(self):
         """ล้างเครื่องหมาย Double Quote ที่เกิดจากระบบ CSV ตอน Copy"""
         try:
-            clip = self.clipboard_get()
+            clip = self._get_clipboard_text()
             if not clip: return
 
             import csv
