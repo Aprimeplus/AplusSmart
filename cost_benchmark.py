@@ -2688,32 +2688,35 @@ class CostBenchmarkScreen(CTkFrame):
         self._header_filter_values = {}
         self._apply_header_filters()
 
-    def _restore_snapshot(self, frozen_data, main_data):
-        col_offset = self.frozen_col_count
-        target_rows = max(len(main_data), len(frozen_data))
+    def _restore_snapshot(self, full_rows):
+        """เขียนสถานะ (แถวเต็ม) กลับลงตาราง โดยแบ่งฝั่งตรึง/เลื่อนตามจำนวนคอลัมน์ตรึงตอนนี้
+        เขียนเฉพาะช่องที่ต่างจากปัจจุบัน (เร็วขึ้นมาก)"""
+        n_froz = self.frozen_col_count if self.sheet_frozen else 0
+        target_rows = len(full_rows)
         current_rows = self.sheet.get_total_rows()
         if target_rows > current_rows:
             self.sheet.insert_rows(target_rows - current_rows)
-            if self.sheet_frozen:
-                self.sheet_frozen.insert_rows(target_rows - current_rows)
-        cur_main = self.sheet.get_sheet_data()
-        cur_frozen = self.sheet_frozen.get_sheet_data() if self.sheet_frozen else []
+        if self.sheet_frozen:
+            fr = self.sheet_frozen.get_total_rows()
+            tr = max(target_rows, self.sheet.get_total_rows())
+            if tr > fr:
+                self.sheet_frozen.insert_rows(tr - fr)
+        cur_main = self.sheet.MT.data
+        cur_frozen = self.sheet_frozen.MT.data if self.sheet_frozen else []
+        n_main_cols = self.sheet.get_total_columns()
 
         def _cur(data, r, c):
             return data[r][c] if r < len(data) and c < len(data[r]) else ""
 
-        total_rows = self.sheet.get_total_rows()
-        n_main_cols = self.sheet.get_total_columns()
-        for r in range(total_rows):
+        for r in range(self.sheet.get_total_rows()):
+            row = full_rows[r] if r < len(full_rows) else []
             if self.sheet_frozen:
-                src = frozen_data[r] if r < len(frozen_data) else []
-                for c in range(col_offset):
-                    v = src[c] if c < len(src) else ""
+                for c in range(n_froz):
+                    v = row[c] if c < len(row) else ""
                     if _cur(cur_frozen, r, c) != v:
                         self.sheet_frozen.set_cell_data(r, c, v, redraw=False)
-            src = main_data[r] if r < len(main_data) else []
             for c in range(n_main_cols):
-                v = src[c] if c < len(src) else ""
+                v = row[n_froz + c] if (n_froz + c) < len(row) else ""
                 if _cur(cur_main, r, c) != v:
                     self.sheet.set_cell_data(r, c, v, redraw=False)
         self.sheet.redraw()
@@ -4054,10 +4057,20 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _snapshot_state(self):
         # อ่านจาก MT.data ตรงๆ (เร็วกว่า get_sheet_data() ราว 30 เท่า — ตารางนี้หลักพันแถว x ~57 คอลัมน์)
-        main = [list(r) for r in self.sheet.MT.data]
-        frozen = ([list(r) for r in self.sheet_frozen.MT.data]
-                  if getattr(self, 'sheet_frozen', None) else [])
-        return (self._trim_rows(frozen), self._trim_rows(main))
+        # เก็บเป็น "แถวเต็ม" (ฝั่งตรึง + ฝั่งเลื่อน) ไม่แยกตามจำนวนคอลัมน์ตรึงตอนนั้น —
+        # ถ้า user เปลี่ยนจำนวนคอลัมน์ที่ตรึงระหว่างทาง ประวัติ undo ก็ยังใช้ได้
+        n_froz = self.frozen_col_count if getattr(self, 'sheet_frozen', None) else 0
+        n_main = len(self.columns) - n_froz
+        main = self.sheet.MT.data
+        frozen = self.sheet_frozen.MT.data if n_froz else []
+        full = []
+        for i in range(max(len(main), len(frozen))):
+            f_row = list(frozen[i]) if i < len(frozen) else []
+            m_row = list(main[i]) if i < len(main) else []
+            f_row += [""] * (n_froz - len(f_row))
+            m_row += [""] * (n_main - len(m_row))
+            full.append(f_row[:n_froz] + m_row[:n_main])
+        return self._trim_rows(full)
 
     def _push_undo(self, force=False):
         """จับสถานะตารางเป็นขั้น undo (ข้ามถ้าไม่ต่างจากขั้นล่าสุด)
@@ -4123,9 +4136,8 @@ class CostBenchmarkScreen(CTkFrame):
         return False
 
     def _goto_history(self, idx, label):
-        frozen_data, main_data = self._history[idx]
         self._history_idx = idx
-        self._restore_snapshot(frozen_data, main_data)
+        self._restore_snapshot(self._history[idx])
         # ทำให้ขั้นนี้ตรงกับสถานะจริงบนจอเป๊ะ (กันความต่างเล็กน้อยทำให้ขั้น redo หาย)
         try:
             self._history[idx] = self._snapshot_state()
