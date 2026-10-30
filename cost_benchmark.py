@@ -992,6 +992,18 @@ class CostBenchmarkScreen(CTkFrame):
         CTkButton(btn_frame, text="🔄 โหลดข้อมูล", fg_color="#3B82F6", hover_color="#2563EB", width=90,
                   command=self._load_from_db).pack(side="left", padx=(0, 20))
 
+        # 👁️ กรรมการ / ผู้จัดการจัดซื้อ: เลือกดูตารางของ user คนอื่นได้ (อ่านอย่างเดียว ห้ามแก้/บันทึก)
+        self.view_user = self.current_user
+        self._view_only = False
+        if getattr(self.app_container, 'current_user_role', None) in ('Director', 'Purchasing Manager'):
+            self._own_label = f"{self.current_user} (ของฉัน)"
+            self._viewer_var = tk.StringVar(value=self._own_label)
+            CTkLabel(btn_frame, text="👁️ ดูตารางของ:").pack(side="left", padx=(0, 5))
+            self._viewer_menu = CTkOptionMenu(btn_frame, variable=self._viewer_var,
+                                              values=self._get_viewable_users(), width=150,
+                                              command=self._on_view_user_changed)
+            self._viewer_menu.pack(side="left", padx=(0, 15))
+
         # 🔹 โซนที่ 2: ปุ่มเครื่องมือ
         CTkButton(btn_frame, text="🎨 สีหัวคอลัมน์", fg_color="#EC4899", hover_color="#DB2777",
                   width=110, height=30, font=CTkFont(size=12),
@@ -2813,6 +2825,7 @@ class CostBenchmarkScreen(CTkFrame):
         return True
 
     def _smart_paste(self, event=None):
+        if self._block_if_view_only(): return "break"
         """
         Ctrl+V แบบ smart สำหรับ Cost Benchmark:
         • paste ได้แม้คอลัมน์จะ readonly (เช่น Product SKU.)
@@ -2936,6 +2949,7 @@ class CostBenchmarkScreen(CTkFrame):
 
 
     def _smart_paste_frozen(self, event=None):
+        if self._block_if_view_only(): return "break"
         """Ctrl+V สำหรับ frozen sheet — paste แล้ว auto-fill product SKU / supplier code"""
         try:
             clip = self._get_clipboard_text()
@@ -4242,6 +4256,7 @@ class CostBenchmarkScreen(CTkFrame):
                 text_color="#6366F1")
 
     def _undo(self, event=None):
+        if self._view_only: return "break"
         if self._history_focus_blocked():
             return "break"
         if not hasattr(self, '_history'):
@@ -4262,6 +4277,7 @@ class CostBenchmarkScreen(CTkFrame):
         return "break"
 
     def _redo(self, event=None):
+        if self._view_only: return "break"
         if self._history_focus_blocked():
             return "break"
         if not hasattr(self, '_history'):
@@ -7611,6 +7627,7 @@ class CostBenchmarkScreen(CTkFrame):
         search_entry.focus_set()
 
     def _add_new_row(self):
+        if self._block_if_view_only(): return
         if not HAS_TKSHEET:
             return
         self._push_undo(force=True)
@@ -7633,6 +7650,7 @@ class CostBenchmarkScreen(CTkFrame):
             self._insert_selected_row(is_frozen=is_frozen, count=n)
 
     def _insert_selected_row(self, is_frozen=False, count=None):
+        if self._block_if_view_only(): return
         """แทรกบรรทัดว่างเหนือบรรทัดที่เลือก
         count=None → ถ้าเลือกไว้หลายบรรทัดให้แทรกเท่าจำนวนที่เลือก (เหมือน Excel) ไม่งั้นแทรก 1 บรรทัด"""
         if not HAS_TKSHEET:
@@ -7783,6 +7801,7 @@ class CostBenchmarkScreen(CTkFrame):
             print(f"_paste_selected_rows error: {e}")
 
     def _delete_selected_rows(self):
+        if self._block_if_view_only(): return
         if not HAS_TKSHEET: return
         self._push_undo(force=True)
         
@@ -7925,6 +7944,57 @@ class CostBenchmarkScreen(CTkFrame):
         if self.sheet_frozen: self.sheet_frozen.redraw()
         self._save_user_settings()
 
+    def _block_if_view_only(self):
+        """True ถ้าอยู่โหมดดูตารางของคนอื่น (แจ้งเตือนแล้วให้ผู้เรียก return)"""
+        if getattr(self, '_view_only', False):
+            messagebox.showinfo("โหมดดูอย่างเดียว",
+                                f"กำลังดูตารางของ {self.view_user} — แก้ไขไม่ได้\n"
+                                "เลือก 'ของฉัน' ที่ช่อง 👁️ ดูตารางของ เพื่อกลับไปแก้ตารางตัวเอง",
+                                parent=self)
+            return True
+        return False
+
+    _HIDDEN_VIEW_USERS = ('d', 'mp', 'p')
+
+    def _get_viewable_users(self):
+        """รายชื่อ user ที่มีข้อมูลในตารางเทียบราคา (ตัวเองอยู่บนสุด)"""
+        users = []
+        conn = self.app_container.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT created_by FROM cost_benchmarks WHERE created_by IS NOT NULL ORDER BY created_by")
+                users = [r[0] for r in cur.fetchall()
+                         if r[0] and r[0] != self.current_user and r[0] not in self._HIDDEN_VIEW_USERS]
+        except Exception as e:
+            print(f"Cannot load viewable users: {e}")
+        finally:
+            self.app_container.release_connection(conn)
+        # id ทดสอบ/ตรวจระบบของผู้พัฒนา ไม่ต้องแสดงในรายการ (รวมตัวเองถ้าเป็น id เหล่านี้)
+        return users if self.current_user in self._HIDDEN_VIEW_USERS else [self._own_label] + users
+
+    def _on_view_user_changed(self, choice):
+        own = (choice == self._own_label)
+        self.view_user = self.current_user if own else choice
+        self._view_only = not own
+        # ยกเลิก auto-save ที่ค้างอยู่ก่อนสลับ กันบันทึกข้อมูลคนอื่นเป็นของเรา
+        try:
+            if getattr(self, 'auto_save_job_id', None):
+                self.after_cancel(self.auto_save_job_id)
+                self.auto_save_job_id = None
+        except Exception:
+            pass
+        for sh in (self.sheet, self.sheet_frozen):
+            if sh is None:
+                continue
+            try:
+                if self._view_only:
+                    sh.disable_bindings("cut", "paste", "delete", "edit_cell", "row_drag_and_drop")
+                else:
+                    sh.enable_bindings("cut", "paste", "delete", "edit_cell", "row_drag_and_drop")
+            except Exception as e:
+                print(f"toggle view-only failed: {e}")
+        self._load_from_db()
+
     def _load_from_db(self, *args):
         if not HAS_TKSHEET: return
         month_val = self.month_var.get()
@@ -7933,7 +8003,7 @@ class CostBenchmarkScreen(CTkFrame):
         try:
             columns_sql = ", ".join([f'"{col.replace("%", "%%")}"' for col in self.columns])
             query = f'SELECT {columns_sql} FROM cost_benchmarks WHERE benchmark_month = %s AND benchmark_year = %s AND created_by = %s ORDER BY id ASC'
-            df = pd.read_sql_query(query, conn, params=(month_val, year_val, self.current_user))
+            df = pd.read_sql_query(query, conn, params=(month_val, year_val, getattr(self, 'view_user', self.current_user)))
 
             self.sheet.bind("<<SheetModified>>", lambda e: None)
             total_cols_main = len(self.columns) - self.frozen_col_count
@@ -8047,6 +8117,10 @@ class CostBenchmarkScreen(CTkFrame):
 
     def _save_to_db(self, show_msg=True):
         import threading
+
+        # โหมดดูตารางของคนอื่น: ห้ามบันทึกเด็ดขาด (ไม่งั้นจะลบ/เขียนทับข้อมูลของเจ้าของตัวเอง)
+        if getattr(self, '_view_only', False):
+            return
 
         # full recalc ทุก row — ทำเฉพาะ manual save (show_msg=True)
         # auto-save ข้ามขั้นตอนนี้เพื่อไม่ block UI
