@@ -73,7 +73,7 @@ setup_matplotlib_font()
 # <<< END >>>
 
 class NotificationPopup(CTkToplevel):
-    def __init__(self, master, title, message, details=""):
+    def __init__(self, master, title, message, details="", duration=7000, height=120):
         super().__init__(master)
         self.lift()
         self.attributes("-topmost", True)
@@ -82,11 +82,10 @@ class NotificationPopup(CTkToplevel):
         main_frame.pack(padx=2, pady=2, fill="both", expand=True)
         CTkLabel(main_frame, text=title, font=CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=(10, 2))
         CTkLabel(main_frame, text=message, font=CTkFont(size=14), wraplength=380, justify="left").pack(anchor="w", padx=15, pady=(0, 10))
-        self.after(7000, self._safe_destroy)
+        self.after(duration, self._safe_destroy)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         width = 400
-        height = 120
         x = screen_width - width - 20
         y = screen_height - height - 60
         self.geometry(f"{width}x{height}+{x}+{y}")
@@ -529,26 +528,49 @@ class AppContainer(CTk):
         try:
             conn = self.get_connection()
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                cursor.execute("SELECT id, message FROM notifications WHERE user_key_to_notify = %s AND is_read = FALSE", (self.current_user_key,))
-                new_notifications = cursor.fetchall()
-                
-                if new_notifications:
-                    for notif in new_notifications:
-                        # ข้าม [DEFER] notifications — จัดการโดย DeferralNoticeDialog ใน commission_app
-                        # ข้าม [HR_CANCEL] notifications — จัดการโดย SMNotificationDialog ใน sales_manager_screen
-                        if str(notif['message']).startswith('[DEFER]') or str(notif['message']).startswith('[HR_CANCEL]'):
-                            continue
-                        # --- [2] จุดตรวจสอบที่ 2: ก่อนเด้ง Popup ---
+                # ข้อความค้างอ่านสะสมได้เป็นร้อย/พัน (เช่น กรรมการไม่ได้เปิดโปรแกรมนาน) — ห้ามเด้ง popup ทีละข้อความ
+                # (เดิม 567 ข้อความ = 567 หน้าต่างพร้อมกัน เครื่องค้าง) → ≤3 ข้อความเด้งทีละใบเว้นจังหวะ, เกินนั้นเด้งใบเดียวสรุป
+                # แล้วมาร์คอ่านทั้งหมดในคำสั่งเดียว; [DEFER]/[HR_CANCEL] ยังคงให้หน้าจอของมันจัดการเอง
+                _not_special = "AND message NOT LIKE '[DEFER]%%' AND message NOT LIKE '[HR_CANCEL]%%'"
+                cursor.execute(
+                    "SELECT id, message FROM notifications WHERE user_key_to_notify = %s AND is_read = FALSE "
+                    + _not_special + " ORDER BY id DESC LIMIT 4", (self.current_user_key,))
+                latest = cursor.fetchall()
+
+                if latest:
+                    if len(latest) <= 3:
+                        shown = list(reversed(latest))          # เก่า → ใหม่
+                        for k, notif in enumerate(shown):
+                            def _pop(msg=notif['message']):
+                                try:
+                                    if self.winfo_exists():
+                                        NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=msg)
+                                except Exception:
+                                    pass
+                            self.after(k * 1500, _pop)
+                        cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = ANY(%s)",
+                                       ([n['id'] for n in shown],))
+                    else:
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM notifications WHERE user_key_to_notify = %s AND is_read = FALSE "
+                            + _not_special, (self.current_user_key,))
+                        total_unread = cursor.fetchone()[0]
+                        lines = []
+                        for n in latest[:3]:                    # ใหม่สุด 3 ข้อความ
+                            msg = " ".join(str(n['message']).split())
+                            lines.append("• " + (msg if len(msg) <= 60 else msg[:57] + "..."))
+                        lines.append(f"…และอีก {total_unread - 3:,} รายการ")
                         try:
                             if self.winfo_exists():
-                                NotificationPopup(self, title="📬 ท่านมีข้อความใหม่", message=notif['message'])
-                        except Exception:
-                            pass  # app destroyed between winfo_exists check and popup creation
-                        try:
-                            cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notif['id'],))
+                                NotificationPopup(self, title=f"📬 ท่านมีข้อความใหม่ {total_unread:,} รายการ",
+                                                  message="\n".join(lines), duration=10000, height=190)
                         except Exception:
                             pass
-                    
+                        cursor.execute(
+                            "UPDATE notifications SET is_read = TRUE WHERE user_key_to_notify = %s AND is_read = FALSE "
+                            + _not_special, (self.current_user_key,))
+
+                if latest:
                     conn.commit()
                     
                     # --- [3] จุดตรวจสอบที่ 3: ก่อนอัปเดตหน้าจออื่น ---
