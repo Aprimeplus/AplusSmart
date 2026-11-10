@@ -616,14 +616,20 @@ class SalesManagerScreen(CTkFrame):
             year_val = int(self.chart_year_var.get()) - 543
 
             # filter ด้วย bill_date (วันที่เปิด SO) แทน commission_month เพื่อให้ตรงกับเดือนจริงที่ถูกตีกลับ
+            # ⚠️ ห้ามกรอง is_active = 1: ใบที่ถูกตีกลับจะถูกปิด (is_active = 0) ตอน Sale ส่งใหม่ แล้วนับครั้งไว้ที่
+            # แถวเก่า — กรองแล้วจะนับไม่เจอเกือบทั้งหมด (ต.ค. 31 ใบอยู่ในแถว inactive มีแค่ 1 ใบที่ active)
+            # รวมทุกแถวของ SO เดียวกันเป็นครั้งสูงสุดครั้งเดียว กันนับซ้ำจากแถวซ้ำ
             query = """
-                SELECT u.sale_name, SUM(COALESCE(c.sm_reject_count, 0)) as reject_count
-                FROM commissions c
-                JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE EXTRACT(MONTH FROM c.bill_date) = %s
-                  AND EXTRACT(YEAR FROM c.bill_date) = %s
-                  AND c.is_active = 1
-                  AND c.sm_reject_count > 0
+                SELECT u.sale_name, SUM(t.rc) as reject_count, COUNT(*) as so_count
+                FROM (
+                    SELECT sale_key, so_number, MAX(sm_reject_count) AS rc, MIN(bill_date) AS bd
+                    FROM commissions
+                    WHERE sm_reject_count > 0
+                    GROUP BY sale_key, so_number
+                ) t
+                JOIN sales_users u ON t.sale_key = u.sale_key
+                WHERE EXTRACT(MONTH FROM t.bd) = %s
+                  AND EXTRACT(YEAR FROM t.bd) = %s
                 GROUP BY u.sale_name
                 ORDER BY reject_count ASC
             """
@@ -638,37 +644,59 @@ class SalesManagerScreen(CTkFrame):
                         font=CTkFont(size=15, weight="bold"), text_color="#16A34A").pack(pady=(5, 0))
                 return
 
+            # เรียงจากน้อยไปมาก (barh วาดจากล่างขึ้นบน) → คนที่ถูกตีกลับมากสุดอยู่บนสุด
+            df = df.sort_values(['reject_count', 'sale_name'], ascending=[True, False]).reset_index(drop=True)
             num_sales = len(df)
-            fig_height = max(2.0, min(3.5, num_sales * 0.8))  # จำกัดความสูงไว้ที่ 3.5 นิ้ว
-            fig, ax = plt.subplots(figsize=(9.5, fig_height), dpi=80)  # ลด dpi ลง
+            total_rej = int(df['reject_count'].sum())
+            total_so = int(df['so_count'].sum())
+            max_rej = max(int(df['reject_count'].max()), 1)
 
-            bars = ax.barh(df['sale_name'], df['reject_count'], color='#EF4444', height=0.65) # เปลี่ยนสีเป็นแดงสถิติ KPI
-            
-            ax.set_title(f"KPI สถิติความผิดพลาด (รอบ {self.chart_month_var.get()} {self.chart_year_var.get()})",
-                        fontweight='bold', fontsize=16, pad=15)
-            ax.set_xlabel("จำนวนครั้งที่ถูกตีกลับสะสม", fontsize=14, fontweight='bold')
-            ax.set_ylabel("เซลล์", fontsize=14, fontweight='bold')
-            
-            ax.tick_params(axis='both', which='major', labelsize=13)
+            fig_height = max(2.4, min(4.6, 1.3 + num_sales * 0.62))
+            fig, ax = plt.subplots(figsize=(9.5, fig_height), dpi=80)
+            fig.patch.set_facecolor('white')
+
+            # สีตามระดับ: มากสุด = แดงเข้ม, ครึ่งบน = ส้ม, น้อย = เหลืองอำพัน
+            def _bar_color(v):
+                ratio = v / max_rej
+                if ratio >= 0.999:
+                    return '#DC2626'
+                if ratio >= 0.5:
+                    return '#F97316'
+                return '#FBBF24'
+
+            colors = [_bar_color(v) for v in df['reject_count']]
+            ypos = range(num_sales)
+            # แท่งพื้นหลังสีจาง ให้เห็นสเกลเต็ม + ดูเป็นแท่งโปรเกรส
+            ax.barh(ypos, [max_rej * 1.25] * num_sales, color='#F3F4F6', height=0.62, zorder=1)
+            bars = ax.barh(ypos, df['reject_count'], color=colors, height=0.62, zorder=2)
+
+            ax.set_yticks(list(ypos))
+            ax.set_yticklabels(df['sale_name'], fontsize=14)
+            ax.set_xlim(0, max_rej * 1.25)
             ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-            
-            ax.grid(axis='x', alpha=0.3, linestyle='--', linewidth=1.2)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_linewidth(1.5)
-            ax.spines['bottom'].set_linewidth(1.5)
+            ax.tick_params(axis='y', length=0, pad=8)
+            ax.tick_params(axis='x', labelsize=11, colors='#6B7280', length=0)
+            for side in ('top', 'right', 'left', 'bottom'):
+                ax.spines[side].set_visible(False)
+            ax.grid(axis='x', alpha=0.35, linestyle=':', linewidth=1, zorder=0)
+            ax.set_axisbelow(True)
 
-            for bar in bars:
-                width = bar.get_width()
-                if width > 0:
-                    ax.text(width + 0.15, bar.get_y() + bar.get_height()/2,
-                           f'{int(width)} ครั้ง', va='center', fontsize=13, fontweight='bold')
+            for bar, rej, so_cnt in zip(bars, df['reject_count'], df['so_count']):
+                ax.text(bar.get_width() + max_rej * 0.02, bar.get_y() + bar.get_height() / 2,
+                        f"{int(rej)} ครั้ง  ({int(so_cnt)} SO)", va='center', ha='left',
+                        fontsize=13, fontweight='bold', color='#374151', zorder=3)
 
-            plt.tight_layout(pad=1.5)
+            fig.suptitle(f"KPI สถิติการถูกตีกลับ  •  รอบ {self.chart_month_var.get()} {self.chart_year_var.get()}",
+                         x=0.02, ha='left', fontsize=16, fontweight='bold', color='#111827')
+            fig.text(0.02, 0.01 if num_sales > 3 else 0.02,
+                     f"รวม {total_rej} ครั้ง จาก {total_so} SO  |  แดง = ถูกตีกลับมากที่สุด",
+                     ha='left', va='bottom', fontsize=11, color='#6B7280')
+
+            fig.tight_layout(rect=(0, 0.06, 1, 0.92), pad=1.2)
             canvas = FigureCanvasTkAgg(fig, master=self.chart_area)
             canvas.draw()
             canvas.get_tk_widget().pack(fill="x", expand=False, padx=10, pady=5)
-            
+
             plt.close(fig)
             
         except Exception as e:
@@ -680,21 +708,25 @@ class SalesManagerScreen(CTkFrame):
             month_idx = self.thai_months.index(self.chart_month_var.get()) + 1
             year_val = int(self.chart_year_var.get()) - 543
             
+            # ไม่กรอง is_active (ใบที่ถูกตีกลับถูกปิดตอนส่งใหม่) — เอาแถวที่ตีกลับมากครั้งสุดต่อ SO เพื่อไม่นับซ้ำ
             query = """
-                SELECT
-                    u.sale_name      AS sale_name,
-                    c.so_number      AS so_number,
-                    c.customer_name  AS customer_name,
-                    c.sales_service_amount AS sales_amount,
-                    c.sm_reject_count      AS reject_count,
-                    c.rejection_reason     AS rejection_reason
-                FROM commissions c
-                JOIN sales_users u ON c.sale_key = u.sale_key
-                WHERE EXTRACT(MONTH FROM c.bill_date) = %s
-                  AND EXTRACT(YEAR FROM c.bill_date) = %s
-                  AND c.is_active = 1
-                  AND c.sm_reject_count > 0
-                ORDER BY u.sale_name ASC, c.sm_reject_count DESC
+                SELECT sale_name, so_number, customer_name, sales_amount, reject_count, rejection_reason
+                FROM (
+                    SELECT DISTINCT ON (c.sale_key, c.so_number)
+                        u.sale_name      AS sale_name,
+                        c.so_number      AS so_number,
+                        c.customer_name  AS customer_name,
+                        c.sales_service_amount AS sales_amount,
+                        c.sm_reject_count      AS reject_count,
+                        c.rejection_reason     AS rejection_reason
+                    FROM commissions c
+                    JOIN sales_users u ON c.sale_key = u.sale_key
+                    WHERE EXTRACT(MONTH FROM c.bill_date) = %s
+                      AND EXTRACT(YEAR FROM c.bill_date) = %s
+                      AND c.sm_reject_count > 0
+                    ORDER BY c.sale_key, c.so_number, c.sm_reject_count DESC, c.id DESC
+                ) d
+                ORDER BY sale_name ASC, reject_count DESC
             """
 
             df_raw = pd.read_sql_query(query, self.pg_engine, params=(month_idx, year_val))
