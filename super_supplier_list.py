@@ -1444,6 +1444,18 @@ class SupplierDetailPopup(CTkToplevel):
                   font=F(size=12), fg_color=CLR["teal"], hover_color="#047481",
                   height=34, command=_open_map).grid(row=0, column=1)
 
+        # ── หมวดสินค้า (แก้ได้ กรณีเพิ่มซัพเข้าหมวดผิด) ─────────────────────────
+        CTkLabel(cf, text="หมวดสินค้า:", text_color=CLR["gray"],
+                 font=F(size=12), width=110, anchor="w").grid(
+            row=coord_row + 1, column=0, sticky="w", pady=5, padx=(0, 10))
+        _cur_cat = str(supplier.get("category", "") or "")
+        _cat_choices = list(db_get_categories()[1:])  # ข้าม "ทุกหมวด"
+        if _cur_cat and _cur_cat not in _cat_choices:
+            _cat_choices.insert(0, _cur_cat)
+        self._cat_edit_var = tk.StringVar(value=_cur_cat or (_cat_choices[0] if _cat_choices else ""))
+        CTkOptionMenu(cf, variable=self._cat_edit_var, values=_cat_choices or [""],
+                      font=F(size=13)).grid(row=coord_row + 1, column=1, sticky="w", pady=5)
+
         # ── สถานะ & Tier ──────────────────────────────────────────────────────
         sec_label(2, "สถานะและ Tier")
         sf = make_grid(3)
@@ -1926,6 +1938,7 @@ class SupplierDetailPopup(CTkToplevel):
                 return 0
 
         self.sup.update({
+            "category":     self._cat_edit_var.get() or self.sup.get("category", ""),
             "availability": self._avail_var.get(),
             "reopen_date":  self._reopen_entry.get().strip(),
             "tier":         self._tier_var.get(),
