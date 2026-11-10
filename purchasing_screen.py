@@ -4238,6 +4238,10 @@ class SLADashboard(CTkFrame):
                 LEFT JOIN sla_benchmark s ON s.so_number = cb.so_number
                 LEFT JOIN sla_memo m ON m.so_number = cb.so_number
                 WHERE 1=1
+                  -- เงื่อนไขเดียวกับ popup งานค้าง: ต้องเคยกด "เริ่มทำ" (มีแถว SLA) หรือติ๊ก ✔ แล้ว
+                  -- แถวร่างที่ยังไม่ติ๊ก ✔ และไม่มี SLA ไม่นับเป็นงาน (ไม่งั้นตารางโชว์ "รอ Copy" แต่ popup ไม่มี)
+                  AND (s.id IS NOT NULL OR cb.so_number IN (
+                        SELECT "Sale Order No." FROM cost_benchmarks WHERE "Select" = '✔'))
             """
 
             # date range filter — anchor = copied_at ถ้ามี, ถ้าไม่มีใช้ started_at, ถ้าไม่มีใช้ cb_date
