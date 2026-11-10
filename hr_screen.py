@@ -5727,7 +5727,8 @@ class HRScreen(CTkFrame):
                     sales_target=sales_target,
                     operating_fee=default_operating_fee,
                     incentives=None,
-                    additional_deductions=None
+                    additional_deductions=None,
+                    period=(year_ad, month_num)
                 )
             else:
                 self.initial_commission_result = {'type': 'error', 'message': f'ไม่รู้จัก Plan: {plan}'}
@@ -6303,7 +6304,8 @@ class HRScreen(CTkFrame):
                 operating_fee=operating_fee_val,
                 incentives=incentives_dict,
                 additional_deductions=deductions_dict,
-                min_sales_target=min_sales_val
+                min_sales_target=min_sales_val,
+                period=(getattr(self, 'selected_year', None), getattr(self, 'selected_month', None))
             )
 
             # [สำคัญ] บันทึกผลลัพธ์เก็บไว้ให้ปุ่ม Detail เรียกใช้
@@ -6526,17 +6528,24 @@ class HRScreen(CTkFrame):
             deductions_total = deductions_df['value'].sum()
             
             # คำนวณยอดขายรวม
+            # ตั้งแต่รอบ ธ.ค. 2026: ส่วนเกินค่าส่ง/ค่าตัด (PO > SO) หักที่ยอดขาย — ใบจ่ายต้องเก็บ "ยอดหลังหัก" ให้ตรงกับยอดที่ใช้
+            # คิดค่าคอมจริง (ยอดก่อนหัก/ส่วนที่หักของแต่ละ SO ยังอยู่ใน detail_json) และแดชบอร์ดเป้ายอดขายอ่านยอดนี้จากใบจ่าย
+            def _sales_for_log(df):
+                _s = pd.to_numeric(df['final_sales_amount'], errors='coerce').fillna(0.0)
+                if business_logic.excess_deducts_from_sales((self.selected_year, self.selected_month))                         and 'excess_deducted_from_sales' in df.columns:
+                    _s = _s - pd.to_numeric(df['excess_deducted_from_sales'], errors='coerce').fillna(0.0)
+                return _s
+
             real_total_sales = 0.0
             if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
-                s_amount = pd.to_numeric(self.current_comm_df['final_sales_amount'], errors='coerce').fillna(0.0)
-                real_total_sales = s_amount.sum()
+                real_total_sales = _sales_for_log(self.current_comm_df).sum()
             
             # [🔥 แก้ไข] คำนวณยอด Normal/Below จาก DataFrame โดยตรง
             val_normal_sales = 0.0
             val_below_sales = 0.0
             if hasattr(self, 'current_comm_df') and not self.current_comm_df.empty:
                 margin_col = pd.to_numeric(self.current_comm_df['margin'], errors='coerce').fillna(0)
-                sales_col = pd.to_numeric(self.current_comm_df['final_sales_amount'], errors='coerce').fillna(0)
+                sales_col = _sales_for_log(self.current_comm_df)
                 val_normal_sales = sales_col[margin_col >= 10].sum()
                 val_below_sales = sales_col[margin_col < 10].sum()
 

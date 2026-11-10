@@ -35,6 +35,15 @@ from project_screen import _center_and_style_popup
 import qt_conversion as qcv
 
 
+
+def _payout_new_rule_sql():
+    """เงื่อนไข SQL (alias pl = commission_payout_logs): ใบจ่ายรอบ ธ.ค. 2569 เป็นต้นไปใช้ยอดขายหลังหักส่วนเกินค่าส่ง/ค่าตัด
+    ให้ยอดขาย / GP% / สัดส่วน Normal-Below ในแดชบอร์ดอยู่บนฐานเดียวกัน (รอบเก่ายังใช้ยอดจากตาราง SO เหมือนเดิม)"""
+    import business_logic
+    y, m = business_logic.EXCESS_FROM_SALES_START
+    return f"(pl.commission_year * 12 + pl.commission_month) >= {int(y) * 12 + int(m)}"
+
+
 class SalesTargetWidget(CTkFrame):
     THAI_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
                    "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
@@ -478,13 +487,20 @@ class SalesTargetWidget(CTkFrame):
                    ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
                   AND {date_sql}
             LEFT JOIN (
-                SELECT payout_id,
-                       SUM(final_gp)            AS total_gp,
-                       SUM(final_sales_amount)  AS total_sales_amt,
-                       SUM(CASE WHEN final_margin >= 10 THEN final_sales_amount ELSE 0 END) AS sales_normal,
-                       SUM(CASE WHEN final_margin <  10 THEN final_sales_amount ELSE 0 END) AS sales_below
-                FROM   commissions
-                GROUP  BY payout_id
+                SELECT cm.payout_id,
+                       SUM(cm.final_gp) AS total_gp,
+                       CASE WHEN {_payout_new_rule_sql()}
+                            THEN COALESCE(MAX(pl.total_sales), SUM(cm.final_sales_amount))
+                            ELSE SUM(cm.final_sales_amount) END AS total_sales_amt,
+                       CASE WHEN {_payout_new_rule_sql()}
+                            THEN COALESCE(MAX(pl.total_normal_sales), 0)
+                            ELSE SUM(CASE WHEN cm.final_margin >= 10 THEN cm.final_sales_amount ELSE 0 END) END AS sales_normal,
+                       CASE WHEN {_payout_new_rule_sql()}
+                            THEN COALESCE(MAX(pl.total_below_sales), 0)
+                            ELSE SUM(CASE WHEN cm.final_margin <  10 THEN cm.final_sales_amount ELSE 0 END) END AS sales_below
+                FROM   commissions cm
+                JOIN   commission_payout_logs pl ON pl.id = cm.payout_id
+                GROUP  BY cm.payout_id, pl.commission_year, pl.commission_month
             ) cm_agg ON cm_agg.payout_id = c.id
             WHERE  1=1
                    {sale_filter}
@@ -1235,8 +1251,13 @@ class SalesTargetWidget(CTkFrame):
                    ON REPLACE(LOWER(su.sale_key), ' ', '') = REPLACE(LOWER(c.sale_key), ' ', '')
                   AND c.commission_year = %s
             LEFT JOIN (
-                SELECT payout_id, SUM(final_gp) AS total_gp, SUM(final_sales_amount) AS total_sales_amt
-                FROM   commissions GROUP BY payout_id
+                SELECT cm2.payout_id, SUM(cm2.final_gp) AS total_gp,
+                       CASE WHEN {_payout_new_rule_sql()}
+                            THEN COALESCE(MAX(pl.total_sales), SUM(cm2.final_sales_amount))
+                            ELSE SUM(cm2.final_sales_amount) END AS total_sales_amt
+                FROM   commissions cm2
+                JOIN   commission_payout_logs pl ON pl.id = cm2.payout_id
+                GROUP  BY cm2.payout_id, pl.commission_year, pl.commission_month
             ) cm ON cm.payout_id = c.id
             WHERE  1 = 1 {sale_filter}
             GROUP  BY su.sale_name, su.sale_key, su.status, c.commission_month

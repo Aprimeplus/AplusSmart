@@ -2669,9 +2669,18 @@ class PayoutCalculationViewer(CTkToplevel):
             lambda x: (x['profit'] / x['cost'] * 100) if x['cost'] != 0 else 0, axis=1
         )
 
-        final_columns = ['so_number', 'sales', 'cost', 'profit', 'margin', 'markup', 'status']
+        _b_col = next((c for c in ('ยอดขายก่อนหัก', 'sales_before_excess') if c in df_display.columns), None)
+        _x_col = next((c for c in ('หักส่วนเกินค่าส่ง/ค่าตัด (จากยอดขาย)', 'excess_deducted_from_sales')
+                       if c in df_display.columns), None)
+        _show_excess = bool(_b_col and _x_col)
+        if _show_excess:
+            df_display['sales_before'] = pd.to_numeric(df_display[_b_col], errors='coerce').fillna(0)
+            df_display['excess'] = pd.to_numeric(df_display[_x_col], errors='coerce').fillna(0)
+
+        final_columns = ['so_number'] + (['sales_before', 'excess'] if _show_excess else []) +                         ['sales', 'cost', 'profit', 'margin', 'markup', 'status']
         header_labels = {
-            'so_number': 'เลขที่ SO', 'sales': 'ยอดขาย', 'cost': cost_header,
+            'so_number': 'เลขที่ SO', 'sales_before': 'ขายก่อนหัก', 'excess': 'ส่วนเกินที่หัก',
+            'sales': 'ขายหลังหัก' if _show_excess else 'ยอดขาย', 'cost': cost_header,
             'profit': 'กำไร', 'margin': 'Gross Margin %', 'markup': 'Mark up %', 'status': 'สถานะ'
         }
 
@@ -2698,7 +2707,7 @@ class PayoutCalculationViewer(CTkToplevel):
         # Config Columns
         for col in final_columns:
             anchor = 'center' if col in ['so_number', 'status'] else 'e'
-            width = 150 if col == 'so_number' else 120
+            width = 170 if col == 'so_number' else (135 if col in ('sales_before', 'excess', 'sales', 'margin') else 125)
             tree.heading(col, text=header_labels.get(col, col))
             tree.column(col, width=width, anchor=anchor)
 
@@ -2714,6 +2723,9 @@ class PayoutCalculationViewer(CTkToplevel):
             elif 'Paid' in status_val: tag = 'Paid'
 
             values.append(row['so_number'])
+            if _show_excess:
+                values.append(f"{row['sales_before']:,.2f}")
+                values.append(f"-{row['excess']:,.2f}" if row['excess'] else "0.00")
             values.append(f"{row['sales']:,.2f}")
             values.append(f"{row['cost']:,.2f}")
             values.append(f"{row['profit']:,.2f}")
@@ -2736,15 +2748,18 @@ class PayoutCalculationViewer(CTkToplevel):
         tree.tag_configure('Total_Row', background='#CBD5E1', font=("Tahoma", 11, "bold"))
 
         # แทรกแถวลงไปท้ายสุดของ Treeview
-        tree.insert("", "end", values=(
-            f"รวมทั้งหมด ({total_so_count} รายการ)",  # ช่องเลขที่ SO
+        _tot_pre = []
+        if _show_excess:
+            _sx = df_display['excess'].sum()
+            _tot_pre = [f"{df_display['sales_before'].sum():,.2f}", f"-{_sx:,.2f}" if _sx else "0.00"]
+        tree.insert("", "end", values=tuple([f"รวมทั้งหมด ({total_so_count} รายการ)"] + _tot_pre + [  # ช่องเลขที่ SO (+ก่อนหัก/ส่วนเกิน)
             f"{sum_sales:,.2f}",                    # ช่องยอดขาย
             f"{sum_cost:,.2f}",                     # ช่องต้นทุน
             f"{sum_profit:,.2f}",                   # ช่องกำไร
             f"{avg_margin:,.2f}%",                  # ช่อง Avg Gross Margin
             f"{avg_markup:,.2f}%",                  # ช่อง Avg Mark up
             ""                                      # ช่องสถานะ
-        ), tags=('Total_Row',))
+        ]), tags=('Total_Row',))
         # Scrollbar
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
@@ -2772,7 +2787,16 @@ class CalculationDetailViewer(CTkToplevel):
         self.title(f"รายละเอียดการคำนวณ - {plan_name}")
         self.plan_name = plan_name
         self.comm_df = comm_df
-        _center_and_style_popup(self, master, 1100, 700)
+        # กว้างพอให้หัวคอลัมน์ไม่ขาด (มีคอลัมน์ยอดขายก่อนหัก/หักส่วนเกิน/ตัวคูณเพิ่ม) แต่ไม่เกินความกว้างจอ
+        _w = min(1580, max(1100, self.winfo_screenwidth() - 80))
+        self._popup_w = _w
+        _center_and_style_popup(self, master, _w, 700)
+        try:
+            _root = master.winfo_toplevel()
+            _x = _root.winfo_x() + max(0, (_root.winfo_width() - _w) // 2)   # แคบกว่า popup → ชิดซ้ายหน้าต่างหลัก
+            self.geometry(f"{_w}x700+{_x}+{_root.winfo_y() + 30}")
+        except Exception:
+            pass
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -2970,6 +2994,22 @@ class CalculationDetailViewer(CTkToplevel):
         except Exception:
             pass   # ถ้า DB ใช้งานไม่ได้ → ใช้ค่า default ที่มีอยู่
 
+        # 1.6 วิธีคิดใหม่ (ตั้งแต่ ธ.ค. 2026): ส่วนเกินค่าส่ง/ค่าตัดหักที่ "ยอดขาย" — โชว์ยอดก่อนหัก/ส่วนที่หัก/ยอดหลังหัก
+        _before_col = next((c for c in ('ยอดขายก่อนหัก', 'sales_before_excess') if c in df_display.columns), None)
+        _excess_col = next((c for c in ('หักส่วนเกินค่าส่ง/ค่าตัด (จากยอดขาย)', 'excess_deducted_from_sales')
+                            if c in df_display.columns), None)
+        _show_excess = bool(_before_col and _excess_col)
+        if _show_excess:
+            df_display['sales_before'] = pd.to_numeric(df_display[_before_col], errors='coerce').fillna(0)
+            df_display['excess'] = pd.to_numeric(df_display[_excess_col], errors='coerce').fillna(0)
+
+        # 1.7 กรรมการเห็น "ค่าคอมของแต่ละ SO" — Plan A คิดค่าคอมต่อ SO ได้ตรงๆ (กำไร × 35% / 17.5%) ส่วน Plan B/C/D คิดรวมเป็นก้อน
+        #     ไม่มีค่าคอมต่อ SO ใน breakdown จึงไม่แสดงคอลัมน์นี้
+        _comm_col = next((c for c in ('ค่าคอมฯ (ก่อนหัก)', 'commission_amount') if c in df_display.columns), None)
+        _show_comm = bool(_comm_col and getattr(self, 'user_role', None) == 'Director')
+        if _show_comm:
+            df_display['commission'] = pd.to_numeric(df_display[_comm_col], errors='coerce').fillna(0)
+
         # 2. คำนวณต้นทุนรวมตัวคูณ (เพื่อการแสดงผล)
         df_display['cost_raw'] = df_display['cost'].copy()   # เก็บต้นทุนดิบ (ก่อนคูณ) ไว้ใช้ตอน Director แก้ multiplier
         cost_header = "ต้นทุน (Net)"
@@ -2998,17 +3038,20 @@ class CalculationDetailViewer(CTkToplevel):
 
         # เฉพาะ Director เท่านั้นที่เห็น column "ตัวคูณ"
         _is_director = getattr(self, 'user_role', None) == 'Director'
-        final_columns = ['so_number', 'sales', 'cost']
+        final_columns = ['so_number'] + (['sales_before', 'excess'] if _show_excess else []) + ['sales', 'cost']
         if _is_director:
             final_columns.append('multiplier_display')
-        final_columns += ['profit', 'margin', 'markup', 'status']
+        final_columns += ['profit'] + (['commission'] if _show_comm else []) + ['margin', 'markup', 'status']
 
         header_labels = {
             'so_number':          'เลขที่ SO',
-            'sales':              'ยอดขาย',
+            'sales_before':       'ขายก่อนหัก',
+            'excess':             'ส่วนเกินที่หัก',
+            'sales':              'ขายหลังหัก' if _show_excess else 'ยอดขาย',
             'cost':               cost_header,
             'multiplier_display': 'ตัวคูณ',
             'profit':             'กำไร',
+            'commission':         'ค่าคอม SO นี้',
             'margin':             'Gross Margin %',
             'markup':             'Mark up %',
             'status':             'สถานะ',
@@ -3031,13 +3074,39 @@ class CalculationDetailViewer(CTkToplevel):
         tree.tag_configure('Default', background='white')
 
         col_widths = {
-            'so_number': 150, 'sales': 120, 'cost': 130,
-            'multiplier_display': 80, 'profit': 110, 'margin': 100, 'markup': 100, 'status': 160,
+            'so_number': 150, 'sales_before': 135, 'excess': 165, 'sales': 135, 'cost': 150,
+            'multiplier_display': 85, 'profit': 115, 'margin': 135, 'markup': 110, 'status': 170,
         }
+        # ความกว้างคอลัมน์คำนวณจากข้อความจริง (ไทยกว้างกว่าที่เดา) — ถ้ารวมแล้วเกินความกว้าง popup ลดฟอนต์หัวตาราง
+        import tkinter.font as _tkf
+        _avail = getattr(self, '_popup_w', 1100)
+        _widths = {}
+        # ตัวอย่างข้อความในเซลล์ของแต่ละคอลัมน์ (วัดด้วยฟอนต์ตัวหนา เพราะแถวรวมเป็นตัวหนา)
+        _cf = _tkf.Font(family="Tahoma", size=11, weight="bold")
+        _samples = {c: [] for c in final_columns}
+        _fmt = {'sales_before': '{:,.2f}', 'sales': '{:,.2f}', 'cost': '{:,.2f}', 'profit': '{:,.2f}', 'commission': '{:,.2f}',
+                'excess': '-{:,.2f}', 'margin': '{:,.2f}%', 'markup': '{:,.2f}%'}
+        for c, f in _fmt.items():
+            if c in _samples:
+                _col_vals = list(df_display[c]) + [df_display[c].sum()]
+                _samples[c] = [f.format(abs(v) if c == 'excess' else v) for v in _col_vals]
+        _samples['so_number'] = [str(v) for v in df_display['so_number']] + [f"รวมทั้งหมด ({len(df_display)} รายการ)"]
+        _samples['status'] = [str(v) for v in df_display['status']]
+        _samples['multiplier_display'] = ['×1.03 🖊']
+        for _hs in (11, 10, 9):
+            _hf = _tkf.Font(family="Tahoma", size=_hs, weight="bold")
+            _widths = {c: max(_hf.measure(header_labels.get(c, c)) + 22,
+                              max([_cf.measure(t) for t in _samples.get(c, [''])] or [0]) + 18)
+                       for c in final_columns}
+            if sum(_widths.values()) <= _avail - 50:
+                break
+        style.configure("Breakdown.Treeview.Heading", font=("Tahoma", _hs, "bold"),
+                        background="#3B82F6", foreground="white", relief="flat")
         for col in final_columns:
             anchor = 'center' if col in ['so_number', 'status', 'multiplier_display'] else 'e'
             tree.heading(col, text=header_labels.get(col, col))
-            tree.column(col, width=col_widths.get(col, 110), anchor=anchor)
+            tree.column(col, width=_widths[col], minwidth=_widths[col] - 10, anchor=anchor,
+                        stretch=(col == 'status'))
 
         for _, row in df_display.iterrows():
             mult_val = float(row.get('multiplier', 1.03))
@@ -3049,15 +3118,19 @@ class CalculationDetailViewer(CTkToplevel):
             elif any(x in status_val for x in ['Below', 'ต่ำกว่า', '<']): tag = 'Below Tier'
             elif 'Paid' in status_val: tag = 'Paid'
 
-            values = [
-                row['so_number'],
+            values = [row['so_number']]
+            if _show_excess:
+                values += [f"{row['sales_before']:,.2f}", f"-{row['excess']:,.2f}" if row['excess'] else "0.00"]
+            values += [
                 f"{row['sales']:,.2f}",
                 f"{row['cost']:,.2f}",
             ]
             if _is_director:
                 values.append(mult_str)
+            values += [f"{row['profit']:,.2f}"]
+            if _show_comm:
+                values.append(f"{row['commission']:,.2f}")
             values += [
-                f"{row['profit']:,.2f}",
                 f"{row['margin']:,.2f}%",
                 f"{row['markup']:,.2f}%",
                 status_val,
@@ -3074,15 +3147,23 @@ class CalculationDetailViewer(CTkToplevel):
 
         tree.tag_configure('Total_Row', background='#CBD5E1', font=("Tahoma", 11, "bold"))
         # แถว Total — จำนวน columns ต้องตรงกับ final_columns
-        total_vals = [f"รวมทั้งหมด ({total_so_count} รายการ)", f"{sum_sales:,.2f}", f"{sum_cost:,.2f}"]
+        total_vals = [f"รวมทั้งหมด ({total_so_count} รายการ)"]
+        if _show_excess:
+            _sum_excess = df_display['excess'].sum()
+            total_vals += [f"{df_display['sales_before'].sum():,.2f}", f"-{_sum_excess:,.2f}" if _sum_excess else "0.00"]
+        total_vals += [f"{sum_sales:,.2f}", f"{sum_cost:,.2f}"]
         if _is_director:
             total_vals.append("")          # ช่องตัวคูณ (ไม่แสดงรวม)
-        total_vals += [f"{sum_profit:,.2f}", f"{avg_margin:,.2f}%", f"{avg_markup:,.2f}%", ""]
+        total_vals += [f"{sum_profit:,.2f}"]
+        if _show_comm:
+            total_vals.append(f"{df_display['commission'].sum():,.2f}")
+        total_vals += [f"{avg_margin:,.2f}%", f"{avg_markup:,.2f}%", ""]
         tree.insert("", "end", values=tuple(total_vals), tags=('Total_Row',))
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=vsb.set)
+
 
         # ── Director: คลิกช่อง "ตัวคูณ" เพื่อแก้ไขทีละ SO ────────────────
         if _is_director:

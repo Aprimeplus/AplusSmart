@@ -2942,7 +2942,49 @@ class SOPopupWindow(CTkToplevel):
         vat_label = CTkLabel(item_frame, textvariable=self.so_shared_vars[vat_display_var_key], font=CTkFont(size=12), text_color="gray50")
         vat_label.pack(side="left", padx=(10, 0))
             
+    def _payout_excess_info(self):
+        """ข้อความอ่านอย่างเดียว: ยอดขายที่ใช้คิดค่าคอมหลังหักส่วนเกินค่าส่ง/ค่าตัด (ตั้งแต่รอบ ธ.ค. 2569)
+        อ่านจากใบจ่ายที่แช่ไว้ (detail_json) — ตัวเลขไม่เปลี่ยนแม้ PO ถูกแก้ภายหลัง; รอบเก่า/SO ที่ยังไม่จ่าย/ไม่มีส่วนเกิน = None"""
+        try:
+            sd = self.sales_data
+            get = sd.get if hasattr(sd, 'get') else (lambda k, d=None: d)
+            payout_id, so = get('payout_id'), str(get('so_number') or '')
+            if not so or payout_id is None or pd.isna(payout_id):
+                return None
+            conn = self.app_container.get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT detail_json, commission_month, commission_year FROM commission_payout_logs WHERE id = %s",
+                                (int(payout_id),))
+                    row = cur.fetchone()
+            finally:
+                self.app_container.release_connection(conn)
+            if not row or not row[0]:
+                return None
+            breakdown = (json.loads(row[0]) or {}).get('breakdown') or []
+            for b in breakdown:
+                so_cell = str(b.get('SO Number') or b.get('so_number') or '')
+                if so not in [x.strip() for x in so_cell.split(',')]:
+                    continue
+                before = b.get('ยอดขายก่อนหัก')
+                excess = b.get('หักส่วนเกินค่าส่ง/ค่าตัด (จากยอดขาย)')
+                after = b.get('ยอดขาย', b.get('ยอดขายรวม'))
+                if before is None or excess is None or after is None:
+                    return None       # รอบเก่า (ก่อนใช้วิธีหักที่ยอดขาย)
+                group = " (ยอดรวมของกลุ่ม PO เดียวกัน)" if ',' in so_cell else ""
+                return (f"💡 ยอดขายที่ใช้คิดค่าคอม (หลังหัก): {float(after):,.2f} บาท{group}\n"
+                f"   = ยอดขายจริง {float(before):,.2f} − ส่วนเกินค่าส่ง/ค่าตัด (PO > SO) {float(excess):,.2f}  "
+                f"(รอบ {int(row[1])}/{int(row[2])}, ใบจ่าย #{int(payout_id)})\n"
+                f"   ยอดขายในฟอร์มด้านล่างเป็นยอดจริง ไม่ถูกแก้ไข")
+        except Exception as e:
+            print(f"[SOPopup] payout excess info error: {e}")
+        return None
+
     def _create_so_data_form_content(self, parent_frame):
+        _info = self._payout_excess_info()
+        if _info:
+            CTkLabel(parent_frame, text=_info, justify="left", anchor="w", wraplength=620, font=CTkFont(size=13),
+                     text_color="#92400E", fg_color="#FEF3C7", corner_radius=8).pack(fill="x", padx=5, pady=(8, 0), ipady=6, ipadx=8)
         # Section 1: Sales Details
         f1 = self._create_so_section_frame(parent_frame, "รายละเอียดการขาย")
         self._add_form_row(f1, "วันที่เปิด SO:", DateSelector(f1, dropdown_style=self.dropdown_style), 'bill_date_selector', 1)

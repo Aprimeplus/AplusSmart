@@ -270,7 +270,8 @@ def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
         
         # 1. ดึงข้อมูล Log
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-            cursor.execute("SELECT so_ids_json, sale_key FROM commission_payout_logs WHERE id = %s", (payout_id,))
+            cursor.execute("SELECT so_ids_json, sale_key, detail_json, commission_year, commission_month "
+                           "FROM commission_payout_logs WHERE id = %s", (payout_id,))
             log_data = cursor.fetchone()
 
         if not log_data:
@@ -361,6 +362,50 @@ def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
         final_cols = [c for c in export_cols if c in df.columns]
         df_export = df[final_cols]
 
+        # 4.5 รอบ ธ.ค. 2569 เป็นต้นไป: ใช้ตัวเลขที่แช่ไว้ในใบจ่าย (ตรงกับที่ใช้คิดค่าคอมจริง) — ยอดก่อนหัก / ส่วนเกินที่หัก /
+        #     ยอดหลังหัก และ Margin/Mark up ตามสูตรคิดค่าคอม (สูตรเดิมข้างบนไม่แยกค่าตัดและไม่หักส่วนเกิน ตัวเลขจะไม่ตรงกับที่จ่ายจริง)
+        notes_df = None
+        try:
+            import business_logic
+            if business_logic.excess_deducts_from_sales((log_data['commission_year'], log_data['commission_month'])):
+                stored = (json.loads(log_data['detail_json']) or {}).get('breakdown') or []
+                rows_new = []
+                for b in stored:
+                    before = b.get('ยอดขายก่อนหัก')
+                    excess = b.get('หักส่วนเกินค่าส่ง/ค่าตัด (จากยอดขาย)')
+                    after = b.get('ยอดขาย', b.get('ยอดขายรวม'))
+                    if before is None or excess is None or after is None:
+                        continue
+                    profit = b.get('กำไรสุทธิ', b.get('กำไร'))
+                    cost = b.get('ต้นทุนสินค้า', b.get('ต้นทุนรวม'))
+                    mult = b.get('cost_multiplier') or 1.03
+                    markup = None
+                    try:
+                        if profit is not None and cost and float(cost) * float(mult) != 0:
+                            markup = float(profit) / (float(cost) * float(mult)) * 100
+                    except Exception:
+                        markup = None
+                    rows_new.append({
+                        'SO Number': b.get('SO Number', b.get('so_number')),
+                        'สถานะ (Status)': b.get('Status'),
+                        'ยอดขายก่อนหัก (ยอดจริงของ SO)': before,
+                        'หักส่วนเกินค่าส่ง/ค่าตัด (PO > SO)': excess,
+                        'ยอดขายหลังหัก (ใช้คิดค่าคอม)': after,
+                        'กำไรสุทธิ': profit,
+                        'Gross Margin (%)': b.get('Margin (%)'),
+                        'Mark up (%)': markup,
+                    })
+                if rows_new:
+                    df_export = pd.DataFrame(rows_new)
+                    notes_df = pd.DataFrame({'หมายเหตุวิธีคิด (ตั้งแต่รอบค่าคอม ธ.ค. 2569)': [
+                        "ถ้าต้นทุนค่าส่ง/ค่าตัด/เจาะใน PO มากกว่าที่เก็บลูกค้าใน SO (= ส่วนเกิน) ระบบหักส่วนเกินออกจากยอดขายของ SO นั้น",
+                        "ยอดขายหลังหักใช้คิด Margin, ค่าคอม และยอดนับเป้า KPI   |   กำไรสุทธิเท่าเดิม (หักที่ยอดขายหรือกำไรได้กำไรเท่ากัน)",
+                        "ยอดขายจริงของ SO ในระบบไม่ถูกแก้ไข   |   ตัวเลขในไฟล์นี้คือค่าที่บันทึกไว้ ณ วันที่จ่าย (ไม่เปลี่ยนแม้ PO ถูกแก้ภายหลัง)",
+                        "Plan B คิดเป็นกลุ่ม PO: ถ้าแถวมีหลาย SO คั่นด้วยจุลภาค ตัวเลขเป็นยอดรวมของกลุ่ม",
+                    ]})
+        except Exception as _e:
+            print(f"export: stored breakdown unavailable, using recalculated values: {_e}")
+
         # 5. ถามที่บันทึกไฟล์
         default_filename = f"Payout_{payout_id}_{sale_key}_SOs_{datetime.now().strftime('%Y%m%d')}.xlsx"
         save_path = filedialog.asksaveasfilename(
@@ -373,7 +418,12 @@ def export_payout_so_list_to_excel(parent_window, app_container, payout_id):
 
         # 6. บันทึก
         if save_path:
-            df_export.to_excel(save_path, index=False)
+            if notes_df is not None:
+                with pd.ExcelWriter(save_path) as _xw:
+                    df_export.to_excel(_xw, index=False, sheet_name='รายการ SO')
+                    notes_df.to_excel(_xw, index=False, sheet_name='วิธีคิด')
+            else:
+                df_export.to_excel(save_path, index=False)
             messagebox.showinfo("สำเร็จ", f"Export รายการ SO สำเร็จ! (ตรงกับหน้าจอ)\nบันทึกที่: {save_path}", parent=parent_window)
 
     except Exception as e:

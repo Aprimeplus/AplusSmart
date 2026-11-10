@@ -131,14 +131,68 @@ def apply_project_lot_reserve_split(calculated_commission, comm_df, lot_commissi
     return pay_now, reserve, True, commission_project
 
 
+# ตั้งแต่รอบค่าคอม ธ.ค. 2569 (ค.ศ. 2026-12) เป็นต้นไป ส่วนเกินค่าส่ง/ค่าย้าย (ต้นทุน > ที่เก็บลูกค้า) และค่าตัด/เจาะ
+# (PO > SO) ถูกหักที่ "ยอดขาย" แทนการหักที่กำไร ตามมติกรรมการ — เดิมหักกำไรทำให้ Margin ลดแต่ Plan B ที่คิดค่าคอม
+# จากยอดขายยังได้ค่าคอมเต็ม กำไรสุทธิเท่าเดิมทั้ง 2 วิธี แต่ยอดขาย (ตัวหาร Margin / ฐานค่าคอม / ยอดนับเป้า KPI) ลดลง
+EXCESS_FROM_SALES_START = (2026, 12)  # (ปี ค.ศ., เดือน)
+
+
+def excess_deducts_from_sales(period):
+    """period = (ปี ค.ศ., เดือน) ของรอบค่าคอม — None (ไม่ระบุรอบ) = ใช้วิธีเดิม (หักกำไร)"""
+    if not period:
+        return False
+    try:
+        return (int(period[0]), int(period[1])) >= EXCESS_FROM_SALES_START
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
+_EXCESS_SRC_COLS = ['sales_before_excess', 'excess_deducted_from_sales']
+_EXCESS_LABELS = {
+    'sales_before_excess': 'ยอดขายก่อนหัก',
+    'excess_deducted_from_sales': 'หักส่วนเกินค่าส่ง/ค่าตัด (จากยอดขาย)',
+}
+
+
+def _excess_cols(src_df):
+    """คอลัมน์แสดงวิธีคิดใหม่ (หักที่ยอดขาย) — มีเฉพาะรอบที่ใช้กฎใหม่ (ตั้งแต่ ธ.ค. 2026)"""
+    return [c for c in _EXCESS_SRC_COLS if c in src_df.columns]
+
+
+def _place_excess_cols(bd_df, sales_label):
+    """ย้ายคอลัมน์ 'ยอดขายก่อนหัก' และ 'หักส่วนเกิน...' ไปไว้ถัดจากคอลัมน์ยอดขาย ให้อ่านต่อกันเป็นวิธีคิด"""
+    extra = [_EXCESS_LABELS[c] for c in _EXCESS_SRC_COLS if _EXCESS_LABELS[c] in bd_df.columns]
+    if not extra or sales_label not in bd_df.columns:
+        return bd_df
+    cols = [c for c in bd_df.columns if c not in extra]
+    i = cols.index(sales_label)
+    # ลำดับที่อ่าน: ยอดขายก่อนหัก → หักส่วนเกิน → ยอดขาย (หลังหัก)
+    return bd_df[cols[:i] + extra + cols[i:]]
+
+
+def _excess_debug_rows(df, label_key, label_val):
+    """แถวอธิบายในหน้า "ขั้นตอนการคำนวณ": ยอดขายก่อนหัก → ส่วนเกินที่หัก → (ยอดขายหลังหักคือบรรทัดยอดขายรวมที่ตามมา)
+    มีเฉพาะรอบที่ใช้กฎใหม่ (ตั้งแต่ ธ.ค. 2026)"""
+    if 'sales_before_excess' not in df.columns or 'excess_deducted_from_sales' not in df.columns:
+        return []
+    before = float(pd.to_numeric(df['sales_before_excess'], errors='coerce').fillna(0).sum())
+    excess = float(pd.to_numeric(df['excess_deducted_from_sales'], errors='coerce').fillna(0).sum())
+    return [
+        {label_key: "ยอดขายรวมก่อนหัก (ยอดขายจริงของ SO)", label_val: f"{before:,.2f}"},
+        {label_key: "(-) หักส่วนเกินค่าส่ง/ค่าตัด-เจาะ (PO > SO) ออกจากยอดขาย", label_val: f"{excess:,.2f}"},
+    ]
+
+
 def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_fee=None,
-                                 additional_deductions=None, incentives=None, 
-                                 min_sales_target=500000):
+                                 additional_deductions=None, incentives=None,
+                                 min_sales_target=500000, period=None):
     """
     Calculates the monthly commission based on the specified plan.
     (Updated: Correct Mapping for Relocation Cost from Delivery Note)
+    period = (ปี ค.ศ., เดือน) ของรอบค่าคอม ใช้ตัดสินว่าส่วนเกินค่าส่ง/ค่าตัดหักที่ยอดขาย (ตั้งแต่ ธ.ค. 2026) หรือหักกำไร (เดิม)
     """
     total_brokerage_fee = 0.0
+    excess_from_sales = excess_deducts_from_sales(period)
 
     # --- เตรียมตัวแปรสำหรับสรุปผลสุดท้าย (Incentive/Deduction) ---
     if incentives is None: incentives = {}
@@ -206,10 +260,19 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         # --- C. คำนวณกำไรสุทธิ (Final Profit) ---
         # Revenue = ยอดขายสินค้า (cutting เป็น pass-through ไม่นับใน margin)
         # excess_cutting = ส่วนที่ PO cutting เกิน SO cutting → หักกำไรโดยตรง (ไม่ × multiplier)
-        df['profit'] = (df['sales_service_amount'] - total_cost_calculated) \
-                        + df['difference_amount'] \
-                        - deduct_shipping_total \
-                        - df['excess_cutting']
+        if excess_from_sales:
+            # หักส่วนเกินที่ "ยอดขาย" (ไม่หักกำไรซ้ำ) — เก็บยอดขายเดิมไว้ใน sales_before_excess ครั้งเดียว
+            # (df ถูกแก้ในที่เดิมและเรียกคำนวณซ้ำได้ ต้องไม่หักซ้ำ)
+            if 'sales_before_excess' not in df.columns:
+                df['sales_before_excess'] = df['sales_service_amount']
+            df['excess_deducted_from_sales'] = deduct_shipping_total + df['excess_cutting']
+            df['sales_service_amount'] = df['sales_before_excess'] - df['excess_deducted_from_sales']
+            df['profit'] = (df['sales_service_amount'] - total_cost_calculated) + df['difference_amount']
+        else:
+            df['profit'] = (df['sales_service_amount'] - total_cost_calculated) \
+                            + df['difference_amount'] \
+                            - deduct_shipping_total \
+                            - df['excess_cutting']
 
         df['margin'] = (df['profit'] / df['sales_service_amount'].replace(0, np.nan)) * 100
         df['margin'] = df['margin'].fillna(0)
@@ -284,7 +347,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         debug_info = []
         debug_info.append({"รายการ": "## 1. ข้อมูลภาพรวม (Plan A)", "ค่า": ""})
-        debug_info.append({"รายการ": "ยอดขายรวม (ทั้งหมด)", "ค่า": f"{total_sales:,.2f}"})
+        debug_info.extend(_excess_debug_rows(comm_df, "รายการ", "ค่า"))
+        debug_info.append({"รายการ": "ยอดขายรวม (หลังหัก)" if 'sales_before_excess' in comm_df.columns else "ยอดขายรวม (ทั้งหมด)", "ค่า": f"{total_sales:,.2f}"})
         
         debug_info.append({"รายการ": "เป้าหมายการขาย (KPI Target)", "ค่า": f"{sales_target:,.2f}"})
         if sales_target > 0:
@@ -345,7 +409,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'so_number', 'sales_service_amount', 'final_cost_amount', 
             'shipping_to_stock_cost', 'shipping_to_site_cost', 
             'profit', 'margin', 'commission_amount', 'cost_multiplier'
-        ]].copy()
+        ] + _excess_cols(comm_df)].copy()
         
         so_breakdown_df['Status'] = np.where(so_breakdown_df['margin'] >= 10, 'Normal (>=10%)', 'Below Tier (<10%)')
         
@@ -361,8 +425,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'shipping_to_site_cost': 'ค่ารถ(Site)',
             'profit': 'กำไรสุทธิ', 
             'margin': 'Margin (%)', 
-            'commission_amount': 'ค่าคอมฯ (ก่อนหัก)'
+            'commission_amount': 'ค่าคอมฯ (ก่อนหัก)',
+            **_EXCESS_LABELS
         }, inplace=True)
+        so_breakdown_df = _place_excess_cols(so_breakdown_df, 'ยอดขาย')
         
         summary_desc = [
             "ยอดขาย Normal", "ยอดขาย Below Tier", "รวมยอดคอมมิชชั่นจาก Profit",
@@ -429,6 +495,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'excess_stock_shipping': 'sum',
             'excess_cutting': 'sum',          # ค่าตัด/เจาะ excess
             'is_project_lot': 'max',          # ถ้ามีแถวไหนใน po_number กลุ่มนี้เป็น Lot ให้ทั้งกลุ่มเป็น Lot
+            'sales_before_excess': 'sum',     # วิธีคิดใหม่ (หักที่ยอดขาย) — มีเฉพาะรอบ ธ.ค. 2026 เป็นต้นไป
+            'excess_deducted_from_sales': 'sum',
         }
 
         valid_agg_rules = {k: v for k, v in agg_rules.items() if k in comm_df.columns}
@@ -522,7 +590,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         debug_info = []
         debug_info.append({"รายการ": "## 1. ข้อมูลภาพรวม (Plan B)", "ค่า": ""})
-        debug_info.append({"รายการ": "ยอดขายรวม (ทั้งหมด)", "ค่า": f"{total_monthly_sales:,.2f}"})
+        debug_info.extend(_excess_debug_rows(comm_df, "รายการ", "ค่า"))
+        debug_info.append({"รายการ": "ยอดขายรวม (หลังหัก)" if 'sales_before_excess' in comm_df.columns else "ยอดขายรวม (ทั้งหมด)", "ค่า": f"{total_monthly_sales:,.2f}"})
         
         debug_info.append({"รายการ": "เป้าหมายการขาย (KPI Target)", "ค่า": f"{sales_target:,.2f}"})
         if sales_target > 0:
@@ -610,7 +679,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'shipping_to_stock_cost', 'shipping_to_site_cost',
             'excess_stock_shipping', 'excess_site_shipping',
             'profit', 'margin', 'cost_multiplier'
-        ]].copy()
+        ] + _excess_cols(po_grouped_df)].copy()
         
         def assign_b_tier_status(margin):
             if margin >= 10: return 'Normal (>=10%)'
@@ -633,8 +702,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'excess_stock_shipping': 'หักส่วนต่างStock',
             'excess_site_shipping': 'หักส่วนต่างSite',
             'profit': 'กำไรสุทธิ',
-            'margin': 'Margin (%)'
+            'margin': 'Margin (%)',
+            **_EXCESS_LABELS
         }, inplace=True)
+        so_breakdown_df = _place_excess_cols(so_breakdown_df, 'ยอดขายรวม')
 
         return {
             'type': 'summary_other',
@@ -705,7 +776,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
 
         debug_details = []
         debug_details.append({"รายการ": "## 1. ข้อมูลภาพรวม (Plan C)", "ค่า": ""})
-        debug_details.append({"รายการ": "ยอดขายรวม (ทั้งหมด)", "ค่า": f"{total_sales:,.2f}"})
+        debug_details.extend(_excess_debug_rows(comm_df, "รายการ", "ค่า"))
+        debug_details.append({"รายการ": "ยอดขายรวม (หลังหัก)" if 'sales_before_excess' in comm_df.columns else "ยอดขายรวม (ทั้งหมด)", "ค่า": f"{total_sales:,.2f}"})
         
         debug_details.append({"รายการ": "เป้าหมายการขาย (KPI Target)", "ค่า": f"{sales_target:,.2f}"})
         if sales_target > 0:
@@ -785,7 +857,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'shipping_to_stock_cost', 'shipping_to_site_cost',
             'excess_stock_shipping', 'excess_site_shipping',
             'profit', 'margin', 'cost_multiplier'
-        ]].copy()
+        ] + _excess_cols(comm_df)].copy()
         
         def assign_c_tier_status(margin):
             if margin >= 10: return 'Tier 1 (>=10%)'
@@ -809,8 +881,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'excess_stock_shipping': 'หักส่วนต่างStock',
             'excess_site_shipping': 'หักส่วนต่างSite',
             'profit': 'กำไร', 
-            'margin': 'Margin (%)'
+            'margin': 'Margin (%)',
+            **_EXCESS_LABELS
         }, inplace=True)
+        so_breakdown_df = _place_excess_cols(so_breakdown_df, 'ยอดขาย')
         
         return {
             'type': 'summary_other',
@@ -876,7 +950,8 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
         debug_details = []
         debug_details.append({'รายการ': '## 1. สรุปยอดขาย (Sale Summary) ##', 'ค่า': ''})
         debug_details.append({'รายการ': 'Commission Plan', 'ค่า': plan_name})
-        debug_details.append({'รายการ': 'สรุปยอดขายประจำเดือน (Sales Base)', 'ค่า': f"{total_sales:,.2f}"})
+        debug_details.extend(_excess_debug_rows(comm_df, 'รายการ', 'ค่า'))
+        debug_details.append({'รายการ': ('สรุปยอดขายประจำเดือน (ยอดหลังหัก)' if 'sales_before_excess' in comm_df.columns else 'สรุปยอดขายประจำเดือน (Sales Base)'), 'ค่า': f"{total_sales:,.2f}"})
         
         debug_details.append({"รายการ": "เป้าหมายการขาย (KPI Target)", "ค่า": f"{sales_target:,.2f}"})
         if sales_target > 0:
@@ -925,7 +1000,7 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'shipping_to_stock_cost', 'shipping_to_site_cost',
             'excess_stock_shipping', 'excess_site_shipping',
             'profit', 'margin', 'cost_multiplier'
-        ]].copy()
+        ] + _excess_cols(comm_df)].copy()
         
         so_breakdown_df['Status'] = np.where(so_breakdown_df['margin'] >= 10, 'Normal (>=10%)', 'Below Tier (<10%)')
         
@@ -944,8 +1019,10 @@ def calculate_monthly_commission(plan_name, comm_df, sales_target=0, operating_f
             'excess_stock_shipping': 'หักส่วนต่างStock',
             'excess_site_shipping': 'หักส่วนต่างSite',
             'profit': 'กำไร', 
-            'margin': 'Margin (%)'
+            'margin': 'Margin (%)',
+            **_EXCESS_LABELS
         }, inplace=True)
+        so_breakdown_df = _place_excess_cols(so_breakdown_df, 'ยอดขาย')
         
         summary_desc = ["ยอดขาย Normal", "ยอดขาย Below Tier", "(-) หัก ค่าดำเนินการ/นายหน้า", "ฐานคอม Normal", "ยอดรวมค่าคอมที่คำนวณได้"]
         summary_val = [total_normal_sales, total_below_sales, total_deduction_to_cascade if total_sales >= min_sales_target else 0, commission_base_normal, calculated_commission]
