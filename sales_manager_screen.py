@@ -25,6 +25,7 @@ matplotlib.use('TkAgg')
 # --- นำเข้า Class ที่จำเป็น ---
 from history_windows import SOPopupWindow, DeferralHistoryWindow, ManagerDeferApprovalDialog
 from daily_report_widget import DailyReportWidget
+from daily_report_sales import SalesDailyBoard
 from customer_monitoring import CustomerMonitoringWidget
 from project_screen import ProjectScreen, _center_and_style_popup
 from so_change_logic import (revert_change_request, complete_change_request, compute_so_diff,
@@ -1254,7 +1255,20 @@ class SalesManagerScreen(CTkFrame):
     def _create_daily_report_widget(self, parent):
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(0, weight=1)
-        self.daily_report_widget = DailyReportWidget(parent, self.app_container)
+        # Daily Report: มุมมองฝ่ายขายใหม่ (ตามต้นแบบ PM) + รายงานเดิม แยก 2 แท็บย่อย
+        inner = CTkTabview(parent, text_color="black")
+        inner.pack(fill="both", expand=True)
+        inner.add("ภาพรวมฝ่ายขาย (ใหม่)")
+        inner.add("รายงานเดิม")
+        new_tab = inner.tab("ภาพรวมฝ่ายขาย (ใหม่)")
+        new_tab.grid_columnconfigure(0, weight=1)
+        new_tab.grid_rowconfigure(0, weight=1)
+        self.sales_daily_board = SalesDailyBoard(new_tab, self.app_container)
+        self.sales_daily_board.grid(row=0, column=0, sticky="nsew")
+        old_tab = inner.tab("รายงานเดิม")
+        old_tab.grid_columnconfigure(0, weight=1)
+        old_tab.grid_rowconfigure(0, weight=1)
+        self.daily_report_widget = DailyReportWidget(old_tab, self.app_container)
         self.daily_report_widget.pack(fill="both", expand=True)
 
     # =========================================================================

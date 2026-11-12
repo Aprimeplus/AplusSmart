@@ -17,6 +17,7 @@ import utils
 from export_utils import DateRangeDialog
 from tkinter import ttk
 from daily_report_widget import DailyReportWidget
+from daily_report_sales import SalesDailyBoard
 from outstanding_dashboard_tab import OutstandingDashboardTab
 from customer_monitoring import CustomerMonitoringWidget
 from project_screen import ProjectScreen, _center_and_style_popup
@@ -1535,8 +1536,21 @@ class CommissionApp(CTkFrame):
         else:
             filter_key = self.sale_key
 
+        # Daily Report: มุมมองฝ่ายขายใหม่ (ตามต้นแบบ PM) + รายงานเดิม แยก 2 แท็บย่อย — Sale เห็นเฉพาะ SO ของตัวเอง (filter_key)
+        report_inner = CTkTabview(self.tab_report, text_color="black")
+        report_inner.pack(fill="both", expand=True)
+        report_inner.add("ภาพรวมฝ่ายขาย (ใหม่)")
+        report_inner.add("รายงานเดิม")
+        new_tab = report_inner.tab("ภาพรวมฝ่ายขาย (ใหม่)")
+        new_tab.grid_columnconfigure(0, weight=1)
+        new_tab.grid_rowconfigure(0, weight=1)
+        self.sales_daily_board = SalesDailyBoard(new_tab, self.app_container, sale_key_filter=filter_key)
+        self.sales_daily_board.grid(row=0, column=0, sticky="nsew")
+        old_tab = report_inner.tab("รายงานเดิม")
+        old_tab.grid_columnconfigure(0, weight=1)
+        old_tab.grid_rowconfigure(0, weight=1)
         self.daily_report_view = DailyReportWidget(
-            self.tab_report, 
+            old_tab,
             app_container=self.app_container,
             sale_key_filter=filter_key  # 🟢 เปลี่ยนมาใช้ตัวแปรที่เช็คสิทธิ์แล้ว
         )

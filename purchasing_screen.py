@@ -39,6 +39,7 @@ from custom_widgets import NumericEntry, DateSelector, AutoCompleteEntry
 from simple_async import SimpleAsyncHelper, show_loading_message, hide_loading_message
 from purchasing_windows import SOFinderDialog
 from daily_report_widget import DailyReportWidget
+from daily_report_purchasing import PurchasingDailyBoard
 from cost_benchmark import CostBenchmarkScreen
 from dashboard_cost import DashboardCostScreen
 from pdf_utils import export_approved_pos_to_pdf
@@ -1367,7 +1368,20 @@ class PurchasingScreen(CTkFrame):
         report_tab.grid_columnconfigure(0, weight=1)
         report_tab.grid_rowconfigure(0, weight=1)
         
-        self.daily_report = DailyReportWidget(report_tab, self.app_container)
+        # Daily Report: กระดานงานจัดซื้อ (ใหม่ ตามต้นแบบของ PM) + รายงานเดิม (ตารางเต็ม) แยก 2 แท็บย่อย
+        report_inner = CTkTabview(report_tab, text_color="black")
+        report_inner.pack(fill="both", expand=True)
+        report_inner.add("กระดานงานจัดซื้อ (ใหม่)")
+        report_inner.add("รายงานเดิม")
+        board_tab = report_inner.tab("กระดานงานจัดซื้อ (ใหม่)")
+        board_tab.grid_columnconfigure(0, weight=1)
+        board_tab.grid_rowconfigure(0, weight=1)
+        self.daily_board = PurchasingDailyBoard(board_tab, self.app_container)
+        self.daily_board.grid(row=0, column=0, sticky="nsew")
+        old_tab = report_inner.tab("รายงานเดิม")
+        old_tab.grid_columnconfigure(0, weight=1)
+        old_tab.grid_rowconfigure(0, weight=1)
+        self.daily_report = DailyReportWidget(old_tab, self.app_container)
         self.daily_report.pack(fill="both", expand=True)
 
         self.tab_view.add("เทียบราคา (Cost Benchmark)")
