@@ -262,7 +262,8 @@ def db_get_all_suppliers() -> list:
 
 
 def db_get_categories() -> list:
-    """ดึง category ที่มีใน DB จริงๆ เท่านั้น ไม่ hardcode"""
+    """ดึง category ที่ Supplier ใช้อยู่จริง + หมวดที่อนุมัติแล้วในตาราง supplier_categories (ยังไม่มีซัพใช้ก็ขึ้น)
+    เพิ่มหมวดใหม่ที่ฐานข้อมูลได้เลยไม่ต้อง build ใหม่: python -m tools.add_supplier_category "ชื่อหมวด"""
     conn, use_pool = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -273,6 +274,11 @@ def db_get_categories() -> list:
                 ORDER  BY category
             """)
             cats = [r[0] for r in cur.fetchall()]
+            try:
+                cur.execute("SELECT category_name FROM supplier_categories WHERE category_name IS NOT NULL AND category_name != ''")
+                cats = sorted(set(cats) | {r[0] for r in cur.fetchall()})
+            except Exception:
+                conn.rollback()      # ยังไม่มีตาราง supplier_categories (ยังไม่รัน migration) — ใช้เฉพาะหมวดที่ซัพใช้อยู่
         return ["ทุกหมวด"] + cats if cats else ["ทุกหมวด"]
     except Exception as e:
         print(f"[SSL] db_get_categories error: {e}")
