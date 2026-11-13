@@ -7,6 +7,7 @@
 #   เป้ารวม = COMPANY_TARGET ถ้าตั้งไว้ ไม่งั้นใช้ผลรวม sales_target ของเซลส์ที่ Active · เป้าวัน = เป้ารวม ÷ วันทำงานในรอบ
 #   วันทำงาน = WORK_WEEKDAYS (จันทร์–เสาร์) ไม่รวมวันหยุดบริษัท (ตาราง company_holidays) · ยอดที่ "ควรได้" นับตามวันทำงานเช่นเดียวกัน
 #   เงินรับวันนี้ = เงินที่บันทึกรับในวันที่รายงานจริง (งวดแรก payment1 + งวดหลัง payment2) ไม่ใช่ยอดชำระสะสมของงานค้าง
+#   Blended GM (forecast) = ถ่วงน้ำหนักด้วยยอดขาย: SO ที่ PO ครบใช้ (ขาย−ต้นทุน PO) จริง, SO ที่ยังไม่เปิด PO ครบประมาณด้วย GM ของส่วนที่ยืนยัน (ต้นทุน PO ไม่รวมค่าคอม/ค่าธรรมเนียมอื่น)
 #   ยอดต่าง (DQ-01) ใช้สูตรที่รวมค่าขนส่ง (ต้นแบบ PM ลืมค่าขนส่ง ทำให้ติดป้ายผิดทุกใบที่มีค่าขนส่ง)
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -34,6 +35,41 @@ SELECT COALESCE(SUM(CASE WHEN payment1_date = %(d)s THEN payment1_amount ELSE 0 
 FROM commissions
 WHERE is_active = 1 AND status NOT IN ('Cancelled', 'Cancelled by PU')
 """
+
+# ต้นทุนจาก PO (ไม่รวมใบที่ยกเลิก/ถูกตีกลับ) ต่อ SO ที่บันทึกในรอบ — ใช้คำนวณ Gross Margin
+_SQL_GM = """
+SELECT x.so_number, x.status, x.goods, COALESCE(po.cost, 0) AS cost
+FROM (SELECT DISTINCT ON (c.so_number) c.so_number, c.status, COALESCE(c.sales_service_amount, 0) AS goods
+      FROM commissions c
+      WHERE c.is_active = 1 AND c.status NOT IN (__EXCL__)
+        AND c.timestamp::date BETWEEN %(d1)s AND %(d2)s
+      ORDER BY c.so_number, c.id DESC) x
+LEFT JOIN (SELECT so_number, SUM(total_cost) AS cost FROM purchase_orders
+            WHERE status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
+            GROUP BY so_number) po ON po.so_number = x.so_number
+""".replace("__EXCL__", drs._EXCL_SQL)
+GM_OPEN_STATUSES = ("Pending PU", "PO In Progress")   # ยังเปิด PO ไม่ครบ → ต้นทุนยังไม่นิ่ง ใช้ประมาณการ
+
+
+def blend_gm(rows):
+    """Blended Gross Margin (forecast) ของ SO ที่จองในรอบ. rows = [(สถานะ, ยอดขาย, ต้นทุน PO)]
+    ยืนยันแล้ว = SO ที่ PO ครบ (ไม่ใช่ Pending PU/PO In Progress) และมีต้นทุน → ใช้ margin จริง
+    ที่เหลือ (ยังไม่เปิด PO/เปิดไม่ครบ) → ประมาณด้วย margin ของส่วนที่ยืนยันแล้ว แล้วถ่วงน้ำหนักด้วยยอดขาย
+    คืน dict: blended, confirmed_gm, coverage, sales_total, sales_conf, gp_conf, gp_forecast, n_conf, n_fc"""
+    sc = gc = sf = 0.0
+    nc = nf = 0
+    for st, sales, cost in rows:
+        sales, cost = float(sales or 0), float(cost or 0)
+        if st not in GM_OPEN_STATUSES and cost > 0 and sales > 0:
+            sc += sales; gc += sales - cost; nc += 1
+        elif sales > 0:
+            sf += sales; nf += 1
+    total = sc + sf
+    conf_gm = (gc / sc) if sc > 0 else None
+    gp_f = sf * conf_gm if conf_gm is not None else 0.0
+    blended = ((gc + gp_f) / total) if (total > 0 and conf_gm is not None) else None
+    return dict(blended=blended, confirmed_gm=conf_gm, coverage=(sc / total) if total > 0 else 0.0,
+                sales_total=total, sales_conf=sc, gp_conf=gc, gp_forecast=gp_f, n_conf=nc, n_fc=nf)
 
 
 # ----------------------------------------------------------------------------- ฟังก์ชันล้วน (มีเทสต์)
@@ -88,6 +124,7 @@ class ExecutiveDailyBoard(CTkFrame):
         self.sold = pd.DataFrame()
         self.today_df = pd.DataFrame()
         self.cash = {"p1": 0.0, "p2": 0.0, "n": 0}
+        self.gm = blend_gm([])
         self.total_target = 0.0
         self.work_days = []
         self._stale_hidden = 0
@@ -151,6 +188,9 @@ class ExecutiveDailyBoard(CTkFrame):
                 holidays = []
             self.work_days = working_days(start, end, holidays)
 
+            gm = pd.read_sql_query(_SQL_GM, self.pg_engine, params={"d1": start, "d2": min(rep, end)})
+            self.gm = blend_gm(zip(gm["status"], gm["goods"], gm["cost"]))
+
             c = pd.read_sql_query(_SQL_CASH, self.pg_engine, params={"d": rep})
             self.cash = {"p1": float(c["p1"].iloc[0] or 0), "p2": float(c["p2"].iloc[0] or 0), "n": int(c["n"].iloc[0] or 0)}
             self.cycle_lbl.configure(text=f"{start.day} {_TH[start.month]} – {end.day} {_TH[end.month]} {end.year + 543}")
@@ -170,6 +210,7 @@ class ExecutiveDailyBoard(CTkFrame):
         rep = self._report_date()
         y = M
         y = self._draw_kpis(M, y, W - 2 * M, G) + G
+        y = self._draw_gm(M, y, W - 2 * M) + G
         left_w = (W - 2 * M - G) * 0.64
         right_w = (W - 2 * M - G) - left_w
         rx = M + left_w + G
@@ -248,6 +289,35 @@ class ExecutiveDailyBoard(CTkFrame):
                     bc.line(mx, y + S(62), mx, y + S(77), fill="#111827", width=2)
             bc.text(cx + S(14), y + S(82), c["sub"], size=8, fill="#B91C1C" if alert else "#6B7280", width=cw - S(28))
         return y + ch
+
+    # ---- Blended Gross Margin (forecast) ----
+    def _draw_gm(self, x, y, w):
+        bc = self.board
+        S = bc.S
+        g = self.gm
+        h = S(112)
+        self._card(x, y, w, h)
+        bc.text(x + S(16), y + S(12), "Blended Gross Margin (forecast)", size=13, bold=True)
+        bc.text(x + S(16), y + S(34), "SO ที่จองในรอบนี้ · ยืนยันด้วยต้นทุน PO จริง + ประมาณส่วนที่ยังไม่เปิด PO ด้วย margin ที่ยืนยันแล้ว",
+                size=8, fill="#6B7280")
+        if g["blended"] is None:
+            bc.text(x + S(16), y + S(60), "ยังไม่มี SO ที่เปิด PO ครบในรอบนี้ จึงยังประมาณ margin ไม่ได้", size=10, fill="#9CA3AF")
+            return y + h
+        gp_total = g["gp_conf"] + g["gp_forecast"]
+        cols = [
+            ("Blended GM", f"{g['blended'] * 100:.1f}%", "#1D4ED8", f"GP รวม ≈ {gp_total:,.0f} จากยอด {g['sales_total']:,.0f}"),
+            ("ยืนยันแล้ว (มี PO ครบ)", f"{g['confirmed_gm'] * 100:.1f}%", "#166534", f"{g['n_conf']} SO · GP {g['gp_conf']:,.0f}"),
+            ("ประมาณการ (ยังไม่เปิด PO ครบ)", f"≈ {g['gp_forecast']:,.0f}", "#B45309",
+             f"{g['n_fc']} SO · ยอด {g['sales_total'] - g['sales_conf']:,.0f}"),
+            ("ความน่าเชื่อถือ (สัดส่วนยอดที่ยืนยัน)", f"{g['coverage'] * 100:.0f}%", "#111827", "ยิ่งต่ำ ตัวเลขยิ่งเป็นการประมาณมาก"),
+        ]
+        cw = (w - S(32)) / len(cols)
+        for i, (t, big, color, sub) in enumerate(cols):
+            cx = x + S(16) + i * cw
+            bc.text(cx, y + S(56), t, size=9, fill="#6B7280")
+            bc.text(cx, y + S(70), big, size=17, bold=True, fill=color)
+            bc.text(cx, y + S(94), sub, size=8, fill="#6B7280", width=cw - S(12))
+        return y + h
 
     # ---- ต้องทำวันนี้ ----
     def _draw_todo(self, x, y, w):
@@ -442,6 +512,9 @@ class ExecutiveDailyBoard(CTkFrame):
             ("ยอดที่ควรได้ถึงวันนี้ (ตามวันทำงาน)", exp),
             ("เงินรับวันนี้ (รวม VAT)", self.cash["p1"] + self.cash["p2"]),
             ("ค้างชำระ (งานในรายการ)", float(self.df["outstanding"].sum())),
+            ("Blended Gross Margin (forecast)", self.gm["blended"]),
+            ("GM ยืนยันแล้ว (SO ที่ PO ครบ)", self.gm["confirmed_gm"]),
+            ("สัดส่วนยอดที่ยืนยันแล้ว", self.gm["coverage"]),
         ], columns=["รายการ", "ค่า"])
         lvname = {"urgent": "ด่วน", "watch": "เฝ้าระวัง", "normal": "ปกติ"}
         todo = self.df[self.df["level"].isin(["urgent", "watch"])]

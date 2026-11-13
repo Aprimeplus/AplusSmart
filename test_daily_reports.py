@@ -131,3 +131,12 @@ def test_exec_targets_and_concentration():
     share, rest, tot = ex.concentration([50, 30, 10, 5, 5], 3)
     assert abs(share - 0.9) < 1e-9 and rest == 10 and tot == 100
     assert ex.concentration([], 3) == (0.0, 0.0, 0.0)
+
+
+def test_blend_gm():
+    import daily_report_executive as ex
+    r = ex.blend_gm([("PO Sent", 1000, 800), ("Paid", 1000, 700), ("Pending PU", 500, 0), ("PO In Progress", 500, 999)])
+    assert abs(r["confirmed_gm"] - 0.25) < 1e-9          # (200+300)/2000
+    assert abs(r["blended"] - 0.25) < 1e-9               # ส่วนที่เหลือประมาณด้วย 25%
+    assert r["n_conf"] == 2 and r["n_fc"] == 2 and abs(r["coverage"] - 2000 / 3000) < 1e-9
+    assert ex.blend_gm([("Pending PU", 100, 0)])["blended"] is None
