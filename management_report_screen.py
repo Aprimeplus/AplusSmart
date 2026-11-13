@@ -14,6 +14,7 @@ except Exception:
 from daily_report_widget import DailyReportWidget
 from daily_report_sales import SalesDailyBoard
 from daily_report_purchasing import PurchasingDailyBoard
+from daily_report_executive import ExecutiveDailyBoard
 # Sale Revenue Report ใช้ widget เดียวกับหน้า "เป้าการขาย" ของ Sales Manager แล้ว
 # (เดิมเป็นโค้ดคนละก้อนที่ port มาแยกกัน ทำให้แก้บัคแล้วลืมแก้อีกจุด — รวมเป็นไฟล์กลางที่ sales_target_widget.py)
 from sales_target_widget import SalesTargetWidget
@@ -43,11 +44,12 @@ class ManagementReportScreen(CTkFrame):
         # มุมมองใหม่ตามต้นแบบ PM: ฝ่ายขาย + ฝ่ายจัดซื้อ (ผู้บริหารเห็นทุกคน) และรายงานเดิม แยกเป็นแท็บย่อย
         daily_inner = CTkTabview(tab_daily, text_color="black")
         daily_inner.grid(row=0, column=0, sticky="nsew")
-        for _name in ("ภาพรวมฝ่ายขาย (ใหม่)", "กระดานงานจัดซื้อ (ใหม่)", "รายงานเดิม"):
+        for _name in ("ภาพรวมผู้บริหาร (ใหม่)", "ภาพรวมฝ่ายขาย (ใหม่)", "กระดานงานจัดซื้อ (ใหม่)", "รายงานเดิม"):
             daily_inner.add(_name)
             _t = daily_inner.tab(_name)
             _t.grid_columnconfigure(0, weight=1)
             _t.grid_rowconfigure(0, weight=1)
+        ExecutiveDailyBoard(daily_inner.tab("ภาพรวมผู้บริหาร (ใหม่)"), app_container).grid(row=0, column=0, sticky="nsew")
         SalesDailyBoard(daily_inner.tab("ภาพรวมฝ่ายขาย (ใหม่)"), app_container).grid(row=0, column=0, sticky="nsew")
         PurchasingDailyBoard(daily_inner.tab("กระดานงานจัดซื้อ (ใหม่)"), app_container).grid(row=0, column=0, sticky="nsew")
         daily_widget = DailyReportWidget(

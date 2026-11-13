@@ -105,6 +105,34 @@ def risk_reasons(r):
     return [(c, out[c]) for c in RISK_ORDER if c in out]
 
 
+def load_scope(engine, rep):
+    """โหลดขอบเขต SO ของรายงาน (งานเปิด + PO Sent ที่ยังไม่ผ่านวันส่ง) พร้อมคำนวณ D-x, ยอดต่าง, เหตุความเสี่ยง, ระดับ
+    ใช้ร่วมกันทั้งกระดานฝ่ายขายและภาพรวมผู้บริหาร เพื่อให้ตัวเลขตรงกันทุกหน้า — คืน (DataFrame, จำนวนงานเปิดค้างเก่าที่ซ่อน)"""
+    raw = pd.read_sql_query(_SQL_SCOPE, engine)
+    raw["delivery"] = pd.to_datetime(raw["delivery"]).dt.date
+    raw["n"] = raw["delivery"].apply(lambda d: (d - rep).days)
+    raw["pu"] = raw["pu"].apply(lambda v: v if isinstance(v, str) and v.strip() else None)
+    for c in ("goods", "service", "ship", "paid", "diff"):
+        raw[c] = pd.to_numeric(raw[c], errors="coerce").fillna(0.0)
+    raw["required"] = raw["paid"] - raw["diff"]                      # ยอดที่ต้องชำระตามระบบ
+    raw["outstanding"] = (-raw["diff"]).clip(lower=0)
+
+    base = raw["goods"] + raw["service"] + raw["ship"]
+    exp_vat, exp_cash = base * VAT, base
+    ok = ((raw["required"] - exp_vat).abs() <= TOL) | ((raw["required"] - exp_cash).abs() <= TOL) | (raw["required"] <= TOL)
+    raw["dq_diff"] = (raw["required"] - exp_vat).where(~ok, None)           # เก็บส่วนต่างเฉพาะแถวที่ไม่ตรงสูตร
+    raw["dq_diff"] = raw["dq_diff"].apply(lambda v: None if pd.isna(v) else float(v))
+
+    is_open = raw["status"].isin(["Pending PU", "PO In Progress"])
+    stale = is_open & (raw["n"] < -STALE_DAYS)
+    keep = (~stale) & (is_open | (raw["n"] >= 0))
+    df = raw[keep].reset_index(drop=True)
+    df["reasons"] = df.apply(risk_reasons, axis=1)
+    df["level"] = df["reasons"].apply(
+        lambda rs: "urgent" if any(RISK_LEVEL[c] == "urgent" for c, _ in rs) else ("watch" if rs else "normal"))
+    return df, int(stale.sum())
+
+
 class SalesDailyBoard(CTkFrame):
     def __init__(self, master, app_container, sale_key_filter=None, **kwargs):
         super().__init__(master, fg_color="#F3F4F6", **kwargs)
@@ -165,29 +193,7 @@ class SalesDailyBoard(CTkFrame):
     def load_data(self, silent=False):
         try:
             rep = self._report_date()
-            raw = pd.read_sql_query(_SQL_SCOPE, self.pg_engine)
-            raw["delivery"] = pd.to_datetime(raw["delivery"]).dt.date
-            raw["n"] = raw["delivery"].apply(lambda d: (d - rep).days)
-            raw["pu"] = raw["pu"].apply(lambda v: v if isinstance(v, str) and v.strip() else None)
-            for c in ("goods", "service", "ship", "paid", "diff"):
-                raw[c] = pd.to_numeric(raw[c], errors="coerce").fillna(0.0)
-            raw["required"] = raw["paid"] - raw["diff"]                      # ยอดที่ต้องชำระตามระบบ
-            raw["outstanding"] = (-raw["diff"]).clip(lower=0)
-
-            base = raw["goods"] + raw["service"] + raw["ship"]
-            exp_vat, exp_cash = base * VAT, base
-            ok = ((raw["required"] - exp_vat).abs() <= TOL) | ((raw["required"] - exp_cash).abs() <= TOL) | (raw["required"] <= TOL)
-            raw["dq_diff"] = (raw["required"] - exp_vat).where(~ok, None)           # เก็บส่วนต่างเฉพาะแถวที่ไม่ตรงสูตร
-            raw["dq_diff"] = raw["dq_diff"].apply(lambda v: None if pd.isna(v) else float(v))
-
-            is_open = raw["status"].isin(["Pending PU", "PO In Progress"])
-            stale = is_open & (raw["n"] < -STALE_DAYS)
-            self._stale_hidden = int(stale.sum())
-            keep = (~stale) & (is_open | (raw["n"] >= 0))
-            self.df = raw[keep].reset_index(drop=True)
-            self.df["reasons"] = self.df.apply(risk_reasons, axis=1)
-            self.df["level"] = self.df["reasons"].apply(
-                lambda rs: "urgent" if any(RISK_LEVEL[c] == "urgent" for c, _ in rs) else ("watch" if rs else "normal"))
+            self.df, self._stale_hidden = load_scope(self.pg_engine, rep)
 
             sold = pd.read_sql_query(_SQL_SOLD, self.pg_engine, params={"d1": _cycle_start(rep), "d2": rep})
             sold["goods"] = pd.to_numeric(sold["goods"], errors="coerce").fillna(0.0)

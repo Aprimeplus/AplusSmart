@@ -107,3 +107,27 @@ def test_clean_text_removes_private_use_but_keeps_thai():
     assert clean_text("เอ็นจิเนียริ\U001000c9ง") == "เอ็นจิเนียริง"
     assert clean_text("เอ็นจิเนียริ่ง") == "เอ็นจิเนียริ่ง"
     assert clean_text(None) is None
+
+
+# ---- executive board helpers
+def test_exec_cycle_and_workdays():
+    from datetime import date
+    import daily_report_executive as ex
+    s, e = ex.cycle_bounds(date(2026, 11, 13))
+    assert (s, e) == (date(2026, 10, 26), date(2026, 11, 25))
+    s, e = ex.cycle_bounds(date(2026, 12, 30))
+    assert (s, e) == (date(2026, 12, 26), date(2027, 1, 25))
+    wd = ex.working_days(s, date(2027, 1, 1), holidays=[date(2026, 12, 31), date(2027, 1, 1)])
+    assert date(2026, 12, 31) not in wd and date(2026, 12, 27) not in wd  # 27 ธ.ค. = อาทิตย์
+
+
+def test_exec_targets_and_concentration():
+    from datetime import date
+    import daily_report_executive as ex
+    wd = [date(2026, 11, d) for d in (2, 3, 4, 5)]
+    assert ex.daily_target(400, wd) == 100
+    assert ex.daily_target(400, []) == 0
+    assert ex.expected_to_date(400, wd, date(2026, 11, 3)) == 200
+    share, rest, tot = ex.concentration([50, 30, 10, 5, 5], 3)
+    assert abs(share - 0.9) < 1e-9 and rest == 10 and tot == 100
+    assert ex.concentration([], 3) == (0.0, 0.0, 0.0)
