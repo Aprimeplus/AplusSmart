@@ -363,34 +363,31 @@ class ExecutiveDailyBoard(CTkFrame):
             bc.text(cx + S(14), y + S(82), c["sub"], size=8, fill="#B91C1C" if alert else "#6B7280", width=cw - S(28))
         return y + ch
 
-    # ---- Blended Gross Margin (forecast) ----
+    # ---- Gross Margin คาดการณ์ (หลังหักค่าคอม) ----
     def _draw_gm(self, x, y, w):
         bc = self.board
         S = bc.S
         g = self.gm
-        h = S(138)
+        h = S(118)
         self._card(x, y, w, h)
-        bc.text(x + S(16), y + S(12), "Blended Gross Margin (forecast)", size=13, bold=True)
-        bc.text(x + S(16), y + S(38), "SO ที่จ่ายค่าคอมแล้วใช้ตัวเลขที่ล็อกตอนจ่าย · ที่เหลือคิดจากต้นทุน PO และประมาณค่าคอมด้วยอัตราที่จ่ายจริง 3 รอบล่าสุด",
-                size=8, fill="#6B7280")
+        bc.text(x + S(16), y + S(12), "Gross Margin คาดการณ์ (รอบนี้)", size=13, bold=True)
         if g["before"] is None:
-            bc.text(x + S(16), y + S(60), "ยังไม่มี SO ที่เปิด PO ครบในรอบนี้ จึงยังประมาณ margin ไม่ได้", size=10, fill="#9CA3AF")
+            bc.text(x + S(16), y + S(48), "ยังไม่มี SO ที่เปิด PO ครบในรอบนี้ จึงยังประมาณ margin ไม่ได้", size=10, fill="#9CA3AF")
             return y + h
-        rate = self.comm_rate
-        cols = []
-        if g["after"] is not None:
-            cols.append(("GM หลังคอม", f"{g['after'] * 100:.1f}%", "#1D4ED8", f"GP หลังคอม ≈ {g['gp_after']:,.0f} จากยอด {g['sales_total']:,.0f}"))
-        cols.append(("GM ก่อนคอม", f"{g['before'] * 100:.1f}%", "#111827", f"GP ≈ {g['gp_before']:,.0f}"))
-        cols.append(("นิ่งแล้ว (จ่ายค่าคอมแล้ว)", f"{g['locked_share'] * 100:.0f}%", "#166534",
-                     f"{g['n_locked']} SO · ตัวเลขล็อกตามที่จ่าย ไม่เปลี่ยนอีก"))
-        cols.append(("ยังขยับได้ / ประมาณ", f"{(1 - g['locked_share']) * 100:.0f}%", "#B45309",
-                     f"{g['n_conf']} SO PO ครบ · {g['n_fc']} SO ประมาณ" + (f" · ค่าคอมประมาณ {rate * 100:.2f}% ของยอด" if rate is not None else "")))
-        cw = (w - S(32)) / len(cols)
-        for i, (t, big, color, sub) in enumerate(cols):
-            cx = x + S(16) + i * cw
-            bc.text(cx, y + S(64), t, size=9, fill="#6B7280")
-            bc.text(cx, y + S(82), big, size=17, bold=True, fill=color)
-            bc.text(cx, y + S(114), sub, size=8, fill="#6B7280", width=cw - S(12))
+        main = g["after"] if g["after"] is not None else g["before"]
+        label = "หลังหักค่าคอม" if g["after"] is not None else "ก่อนหักค่าคอม"
+        bc.text(x + S(16), y + S(40), f"{main * 100:.1f}%", size=26, bold=True, fill="#1D4ED8")
+        bc.text(x + S(16), y + S(84), f"{label} · กำไร ≈ {(g['gp_after'] if g['after'] is not None else g['gp_before']):,.0f} บาท จากยอดขาย {g['sales_total']:,.0f}",
+                size=9, fill="#6B7280")
+        mx = x + w * 0.42
+        bc.text(mx, y + S(44), "ก่อนหักค่าคอม", size=9, fill="#6B7280")
+        bc.text(mx, y + S(60), f"{g['before'] * 100:.1f}%", size=16, bold=True, fill="#111827")
+        bx = x + w * 0.62
+        bw = w * 0.34
+        bc.text(bx, y + S(44), "ความนิ่งของตัวเลข", size=9, fill="#6B7280")
+        bc.bar(bx, y + S(66), bw, S(9), g["locked_share"], color="#166534")
+        bc.text(bx, y + S(82), f"นิ่งแล้ว {g['locked_share'] * 100:.0f}% (จ่ายค่าคอมแล้ว) · ที่เหลือยังเปลี่ยนได้",
+                size=9, fill="#6B7280", width=bw)
         return y + h
 
     # ---- ต้องทำวันนี้ ----
