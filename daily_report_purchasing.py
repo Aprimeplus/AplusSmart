@@ -221,8 +221,9 @@ class PurchasingDailyBoard(CTkFrame):
         if df.empty:
             today_no_po = overdue = df
         else:
-            today_no_po = df[(df["col"] != "done") & (df["n"] == 0)]
-            overdue = df[(df["col"] != "done") & (df["n"] < 0)]
+            no_po = df["col"].isin(["wait", "work"])                      # ยังไม่มี PO (PO ที่รอ MP อนุมัติ/เปิดแล้ว ไม่นับ)
+            today_no_po = df[no_po & (df["n"] == 0)]
+            overdue = df[no_po & (df["n"] < 0)]
         sub4 = " · ".join(_short_so(s) for s in list(today_no_po["so_number"])[:4]) if len(today_no_po) else "ไม่มี"
         if len(today_no_po) > 4:
             sub4 += f" +{len(today_no_po) - 4}"
@@ -243,18 +244,14 @@ class PurchasingDailyBoard(CTkFrame):
             bc.text(x + S(14), y + S(68), sub, size=9, fill="#6B7280", width=cw - S(28))
         y += ch + G * 1.5
 
-        # ---- กระดาน 3 คอลัมน์ + ภาระงาน ----
+        # ---- แถบภาระงานต่อผู้รับงาน (แนวนอน อยู่เหนือกระดาน) + กระดานเต็มความกว้าง ----
         total_w = W - 2 * M
-        unit = (total_w - len(COLS) * G) / (3 * len(COLS) + 2)
-        widths = [3 * unit] * len(COLS) + [2 * unit]
-        xs = [M]
-        for w in widths[:-1]:
-            xs.append(xs[-1] + w + G)
+        y = self._draw_workload(M, y, total_w, self.df if self.pu_var.get() == "ทั้งหมด" else df) + G * 1.5
+        cwid = (total_w - (len(COLS) - 1) * G) / len(COLS)
         bottoms = []
         for ci, (key, title, color) in enumerate(COLS):
-            bottoms.append(self._draw_column(xs[ci], y, widths[ci], key, title, color,
+            bottoms.append(self._draw_column(M + ci * (cwid + G), y, cwid, key, title, color,
                                              df[df["col"] == key] if not df.empty else df))
-        bottoms.append(self._draw_workload(xs[len(COLS)], y, widths[3], self.df if self.pu_var.get() == "ทั้งหมด" else df))
         bc.set_height(max(bottoms) + M)
 
         rep = self._report_date()
@@ -312,34 +309,36 @@ class PurchasingDailyBoard(CTkFrame):
         return h
 
     def _draw_workload(self, x, y, w, df):
+        """แถบแนวนอน: ภาระงานต่อผู้รับงาน เป็นป้ายชื่อ + จำนวน (ยังไม่มีผู้รับเป็นสีแดง) ขึ้นบรรทัดใหม่เองเมื่อไม่พอ"""
         bc = self.board
         S = bc.S
         bg = bc.rrect(x, y, x + w, y + 10, r=S(10), fill="white", outline="#E5E7EB")
         pad = S(14)
-        bc.text(x + pad, y + S(12), "ภาระงานต่อผู้รับงาน", size=12, bold=True)
-        cy = y + S(40)
+        bc.text(x + pad, y + S(10), "ภาระงานต่อผู้รับงาน", size=11, bold=True)
         if df is None or len(df) == 0:
-            bc.text(x + w / 2, cy + S(10), "— ไม่มีงาน —", size=10, fill="#9CA3AF", anchor="n")
-            bc.set_rrect(bg, x, y, x + w, cy + S(50), r=S(10))
-            return cy + S(50)
+            bc.text(x + pad, y + S(34), "— ไม่มีงาน —", size=10, fill="#9CA3AF")
+            bc.set_rrect(bg, x, y, x + w, y + S(64), r=S(10))
+            return y + S(64)
         counts = df["pu"].fillna(UNASSIGNED).value_counts()
         n_pu = int((counts.index != UNASSIGNED).sum())
-        team = (f"ทีมจัดซื้อ {n_pu} จาก {self._pu_staff_total} คน · ใช้เกลี่ยงานและดูคอขวด"
-                if self._pu_staff_total else "ใช้เกลี่ยงานและดูคอขวด")
-        _, bb = bc.text(x + pad, cy, team, size=9, fill="#6B7280", width=w - 2 * pad)
-        cy = bb[3] + S(10)
+        if self._pu_staff_total:
+            bc.text(x + w - pad, y + S(12), f"ทีมจัดซื้อ {n_pu} จาก {self._pu_staff_total} คน · ใช้เกลี่ยงานและดูคอขวด",
+                    size=9, fill="#6B7280", anchor="ne")
         order = ([UNASSIGNED] if UNASSIGNED in counts.index else []) + [k for k in counts.index if k != UNASSIGNED]
-        mx = max(int(counts.max()), 1)
+        cx, cy = x + pad, y + S(38)
+        rowh = bc.font(10, True).metrics("linespace") + S(14)
         for name in order:
             c = int(counts[name])
             red = name == UNASSIGNED
-            bc.text(x + pad, cy, name, size=10, bold=red, fill="#B91C1C" if red else "#111827")
-            bc.text(x + w - pad, cy, f"{c} ใบ", size=10, fill="#B91C1C" if red else "#374151", anchor="ne")
-            cy += bc.font(10).metrics("linespace") + S(4)
-            bc.bar(x + pad, cy, w - 2 * pad, S(8), max(c / mx, 0.04), color="#C2410C" if red else "#1D4ED8")
-            cy += S(18)
-        bc.set_rrect(bg, x, y, x + w, cy + S(4), r=S(10))
-        return cy + S(4)
+            label = f"{name}  {c} ใบ"
+            tw = bc.font(10, True).measure(label) + S(24)
+            if cx + tw > x + w - pad:
+                cx, cy = x + pad, cy + rowh + S(6)
+            bc.badge(cx, cy, label, "#FEE2E2" if red else "#EEF2FF", "#B91C1C" if red else "#1E3A8A", size=10, padx=12, pady=4)
+            cx += tw + S(8)
+        bottom = cy + rowh + S(10)
+        bc.set_rrect(bg, x, y, x + w, bottom, r=S(10))
+        return bottom
 
     # ---------------------------------------------------------------- export
     def export_excel(self):
