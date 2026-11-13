@@ -57,6 +57,12 @@ GROUP BY commission_year, commission_month
 ORDER BY commission_year DESC, commission_month DESC
 LIMIT 3
 """
+# ตัวเลขที่ "นิ่งแล้ว" ของ SO ที่จ่ายค่าคอมแล้ว = ที่บันทึกไว้ในประวัติการจ่ายตอนปิดรอบ (ยอดขายหลังหักส่วนเกิน, กำไรสุทธิ)
+_SQL_FROZEN = """
+SELECT id, final_commission, detail_json
+FROM commission_payout_logs
+WHERE commission_year IS NOT NULL AND (commission_year * 12 + commission_month) >= %(ym)s
+"""
 GM_OPEN_STATUSES = ("Pending PU", "PO In Progress")   # ยังเปิด PO ไม่ครบ → ต้นทุนยังไม่นิ่ง ใช้ประมาณการ
 
 
@@ -68,25 +74,62 @@ def commission_rate(rounds):
     return (comm / sales) if sales > 0 else None
 
 
-def blend_gm(rows):
-    """Blended Gross Margin (forecast) ของ SO ที่จองในรอบ. rows = [(สถานะ, ยอดขาย, ต้นทุน PO)]
-    ยืนยันแล้ว = SO ที่ PO ครบ (ไม่ใช่ Pending PU/PO In Progress) และมีต้นทุน → ใช้ margin จริง
-    ที่เหลือ (ยังไม่เปิด PO/เปิดไม่ครบ) → ประมาณด้วย margin ของส่วนที่ยืนยันแล้ว แล้วถ่วงน้ำหนักด้วยยอดขาย
-    คืน dict: blended, confirmed_gm, coverage, sales_total, sales_conf, gp_conf, gp_forecast, n_conf, n_fc"""
-    sc = gc = sf = 0.0
-    nc = nf = 0
-    for st, sales, cost in rows:
+def frozen_from_logs(logs):
+    """logs = [(final_commission, detail_json)] → {so_number: (ยอดขาย, กำไรสุทธิ, ค่าคอมที่แบ่งให้ SO นี้)}
+    ค่าคอมของแต่ละใบจ่าย (ต่อเซลส์ต่อรอบ) แบ่งให้แต่ละ SO ตามสัดส่วนยอดขายใน SO ของใบจ่ายนั้น (Plan A มีค่าคอมต่อ SO อยู่แล้ว แต่ใช้วิธีเดียวกันเพื่อให้ผลรวมตรงกับที่จ่ายจริง)"""
+    import json
+    out = {}
+    for comm, dj in logs:
+        try:
+            o = dj if isinstance(dj, dict) else json.loads(dj)
+            bd = o.get("breakdown") or []
+        except Exception:
+            continue
+        items = []
+        for r in bd:
+            so = r.get("SO Number") or r.get("so_number")
+            sales = r.get("ยอดขาย", r.get("ยอดขายรวม"))
+            profit = r.get("กำไรสุทธิ")
+            if so and sales is not None and profit is not None:
+                items.append((str(so), float(sales), float(profit)))
+        tot = sum(a for _, a, _ in items)
+        for so, sales, profit in items:
+            out[so] = (sales, profit, (float(comm or 0) * sales / tot) if tot > 0 else 0.0)
+    return out
+
+
+def blend_gm(rows, rate=None, frozen=None):
+    """Blended Gross Margin (forecast) ของ SO ที่จองในรอบ. rows = [(เลข SO, สถานะ, ยอดขาย, ต้นทุน PO)]
+    3 กลุ่ม:
+      นิ่งแล้ว  = SO ที่จ่ายค่าคอมแล้ว (อยู่ใน frozen) ใช้ยอดขาย/กำไรสุทธิ/ค่าคอมที่บันทึกตอนจ่าย — ไม่เปลี่ยนอีก
+      ยืนยัน   = PO ครบ ยังไม่จ่ายคอม ใช้ ยอดขาย−ต้นทุน PO และประมาณค่าคอมด้วย rate
+      ประมาณ  = ยังไม่เปิด PO ครบ ใช้ GM ของสองกลุ่มบน
+    คืนค่าก่อนคอม (before) และหลังคอม (after) เป็นสัดส่วน None ถ้าประมาณไม่ได้"""
+    frozen = frozen or {}
+    sf = pf = cf = 0.0          # นิ่ง: ยอดขาย กำไร ค่าคอม
+    sc = gc = 0.0               # ยืนยัน
+    sp = 0.0                    # ประมาณ
+    nf = nc = np_ = 0
+    for so, st, sales, cost in rows:
         sales, cost = float(sales or 0), float(cost or 0)
-        if st not in GM_OPEN_STATUSES and cost > 0 and sales > 0:
+        if so in frozen:
+            fs, fp, fc = frozen[so]
+            sf += fs; pf += fp; cf += fc; nf += 1
+        elif st not in GM_OPEN_STATUSES and cost > 0 and sales > 0:
             sc += sales; gc += sales - cost; nc += 1
         elif sales > 0:
-            sf += sales; nf += 1
-    total = sc + sf
-    conf_gm = (gc / sc) if sc > 0 else None
-    gp_f = sf * conf_gm if conf_gm is not None else 0.0
-    blended = ((gc + gp_f) / total) if (total > 0 and conf_gm is not None) else None
-    return dict(blended=blended, confirmed_gm=conf_gm, coverage=(sc / total) if total > 0 else 0.0,
-                sales_total=total, sales_conf=sc, gp_conf=gc, gp_forecast=gp_f, n_conf=nc, n_fc=nf)
+            sp += sales; np_ += 1
+    total = sf + sc + sp
+    known = sf + sc
+    gm_known = ((pf + gc) / known) if known > 0 else None
+    if total <= 0 or gm_known is None:
+        return dict(before=None, after=None, locked_share=0.0, coverage=0.0, sales_total=total, n_locked=nf, n_conf=nc, n_fc=np_,
+                    gp_before=0.0, gp_after=None)
+    gp_before = pf + gc + sp * gm_known
+    comm = cf + ((rate or 0.0) * (sc + sp))
+    return dict(before=gp_before / total, after=((gp_before - comm) / total) if rate is not None or cf > 0 else None,
+                locked_share=sf / total, coverage=known / total, sales_total=total, n_locked=nf, n_conf=nc, n_fc=np_,
+                gp_before=gp_before, gp_after=gp_before - comm)
 
 
 # ----------------------------------------------------------------------------- ฟังก์ชันล้วน (มีเทสต์)
@@ -207,12 +250,19 @@ class ExecutiveDailyBoard(CTkFrame):
             self.work_days = working_days(start, end, holidays)
 
             gm = pd.read_sql_query(_SQL_GM, self.pg_engine, params={"d1": start, "d2": min(rep, end)})
-            self.gm = blend_gm(zip(gm["status"], gm["goods"], gm["cost"]))
             try:
                 cr = pd.read_sql_query(_SQL_COMM_RATE, self.pg_engine)
                 self.comm_rate = commission_rate(zip(cr["sales"], cr["comm"]))
             except Exception:
                 self.comm_rate = None
+            try:
+                ym = start.year * 12 + start.month - 1          # ใบจ่ายของรอบก่อนหน้า 1 เดือนเป็นต้นไป
+                fl = pd.read_sql_query(_SQL_FROZEN, self.pg_engine, params={"ym": ym})
+                frozen = frozen_from_logs(zip(fl["final_commission"], fl["detail_json"]))
+            except Exception:
+                traceback.print_exc()
+                frozen = {}
+            self.gm = blend_gm(zip(gm["so_number"], gm["status"], gm["goods"], gm["cost"]), rate=self.comm_rate, frozen=frozen)
 
             c = pd.read_sql_query(_SQL_CASH, self.pg_engine, params={"d": rep})
             self.cash = {"p1": float(c["p1"].iloc[0] or 0), "p2": float(c["p2"].iloc[0] or 0), "n": int(c["n"].iloc[0] or 0)}
@@ -321,23 +371,20 @@ class ExecutiveDailyBoard(CTkFrame):
         h = S(138)
         self._card(x, y, w, h)
         bc.text(x + S(16), y + S(12), "Blended Gross Margin (forecast)", size=13, bold=True)
-        bc.text(x + S(16), y + S(38), "SO ที่จองในรอบนี้ · ต้นทุน PO จริง + ประมาณส่วนที่ยังไม่เปิด PO · หลังคอม = ก่อนคอม − อัตราค่าคอมที่จ่ายจริงเฉลี่ย 3 รอบล่าสุด",
+        bc.text(x + S(16), y + S(38), "SO ที่จ่ายค่าคอมแล้วใช้ตัวเลขที่ล็อกตอนจ่าย · ที่เหลือคิดจากต้นทุน PO และประมาณค่าคอมด้วยอัตราที่จ่ายจริง 3 รอบล่าสุด",
                 size=8, fill="#6B7280")
-        if g["blended"] is None:
+        if g["before"] is None:
             bc.text(x + S(16), y + S(60), "ยังไม่มี SO ที่เปิด PO ครบในรอบนี้ จึงยังประมาณ margin ไม่ได้", size=10, fill="#9CA3AF")
             return y + h
-        gp_total = g["gp_conf"] + g["gp_forecast"]
         rate = self.comm_rate
-        if rate is None:
-            cols = [("GM ก่อนคอม (ประมาณ)", f"{g['blended'] * 100:.1f}%", "#1D4ED8", f"GP ≈ {gp_total:,.0f} จากยอด {g['sales_total']:,.0f}")]
-        else:
-            after = g["blended"] - rate
-            cols = [("GM หลังคอม (ประมาณ)", f"{after * 100:.1f}%", "#1D4ED8",
-                     f"GP หลังคอม ≈ {gp_total - rate * g['sales_total']:,.0f} จากยอด {g['sales_total']:,.0f}"),
-                    ("GM ก่อนคอม", f"{g['blended'] * 100:.1f}%", "#111827", f"GP ≈ {gp_total:,.0f}"),
-                    ("อัตราค่าคอมเฉลี่ย (จ่ายจริง 3 รอบล่าสุด)", f"{rate * 100:.2f}%", "#B45309", "ค่าคอมที่จ่าย ÷ ยอดขายที่ใช้คิดคอม")]
-        cols.append(("ความน่าเชื่อถือ (ยอดที่ PO ครบแล้ว)", f"{g['coverage'] * 100:.0f}%", "#166534",
-                     f"{g['n_conf']} SO ยืนยัน · {g['n_fc']} SO ประมาณ"))
+        cols = []
+        if g["after"] is not None:
+            cols.append(("GM หลังคอม", f"{g['after'] * 100:.1f}%", "#1D4ED8", f"GP หลังคอม ≈ {g['gp_after']:,.0f} จากยอด {g['sales_total']:,.0f}"))
+        cols.append(("GM ก่อนคอม", f"{g['before'] * 100:.1f}%", "#111827", f"GP ≈ {g['gp_before']:,.0f}"))
+        cols.append(("นิ่งแล้ว (จ่ายค่าคอมแล้ว)", f"{g['locked_share'] * 100:.0f}%", "#166534",
+                     f"{g['n_locked']} SO · ตัวเลขล็อกตามที่จ่าย ไม่เปลี่ยนอีก"))
+        cols.append(("ยังขยับได้ / ประมาณ", f"{(1 - g['locked_share']) * 100:.0f}%", "#B45309",
+                     f"{g['n_conf']} SO PO ครบ · {g['n_fc']} SO ประมาณ" + (f" · ค่าคอมประมาณ {rate * 100:.2f}% ของยอด" if rate is not None else "")))
         cw = (w - S(32)) / len(cols)
         for i, (t, big, color, sub) in enumerate(cols):
             cx = x + S(16) + i * cw
@@ -539,11 +586,11 @@ class ExecutiveDailyBoard(CTkFrame):
             ("ยอดที่ควรได้ถึงวันนี้ (ตามวันทำงาน)", exp),
             ("เงินรับวันนี้ (รวม VAT)", self.cash["p1"] + self.cash["p2"]),
             ("ค้างชำระ (งานในรายการ)", float(self.df["outstanding"].sum())),
-            ("Blended GM ก่อนคอม (forecast)", self.gm["blended"]),
-            ("อัตราค่าคอมเฉลี่ย (3 รอบล่าสุด)", self.comm_rate),
-            ("Blended GM หลังคอม (forecast)", (self.gm["blended"] - self.comm_rate) if (self.gm["blended"] is not None and self.comm_rate is not None) else None),
-            ("GM ยืนยันแล้ว (SO ที่ PO ครบ)", self.gm["confirmed_gm"]),
-            ("สัดส่วนยอดที่ยืนยันแล้ว", self.gm["coverage"]),
+            ("GM ก่อนคอม (forecast)", self.gm["before"]),
+            ("GM หลังคอม (forecast)", self.gm["after"]),
+            ("อัตราค่าคอมประมาณ (3 รอบล่าสุด)", self.comm_rate),
+            ("สัดส่วนยอดที่นิ่งแล้ว (จ่ายคอมแล้ว)", self.gm["locked_share"]),
+            ("สัดส่วนยอดที่มีต้นทุนจริงแล้ว", self.gm["coverage"]),
         ], columns=["รายการ", "ค่า"])
         lvname = {"urgent": "ด่วน", "watch": "เฝ้าระวัง", "normal": "ปกติ"}
         todo = self.df[self.df["level"].isin(["urgent", "watch"])]

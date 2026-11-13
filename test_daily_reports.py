@@ -133,13 +133,27 @@ def test_exec_targets_and_concentration():
     assert ex.concentration([], 3) == (0.0, 0.0, 0.0)
 
 
-def test_blend_gm():
+def test_blend_gm_frozen_and_after_commission():
     import daily_report_executive as ex
-    r = ex.blend_gm([("PO Sent", 1000, 800), ("Paid", 1000, 700), ("Pending PU", 500, 0), ("PO In Progress", 500, 999)])
-    assert abs(r["confirmed_gm"] - 0.25) < 1e-9          # (200+300)/2000
-    assert abs(r["blended"] - 0.25) < 1e-9               # ส่วนที่เหลือประมาณด้วย 25%
-    assert r["n_conf"] == 2 and r["n_fc"] == 2 and abs(r["coverage"] - 2000 / 3000) < 1e-9
-    assert ex.blend_gm([("Pending PU", 100, 0)])["blended"] is None
+    rows = [("A", "Paid", 1000, 999), ("B", "PO Sent", 1000, 800), ("C", "Pending PU", 1000, 0)]
+    frozen = {"A": (950, 190, 20)}                      # ยอดขายหลังหัก 950 กำไร 190 ค่าคอมที่จ่าย 20
+    r = ex.blend_gm(rows, rate=0.01, frozen=frozen)
+    # known: ขาย 950+1000, กำไร 190+200 → GM known = 390/1950 = 20%
+    assert abs(r["before"] - (190 + 200 + 1000 * 0.2) / 2950) < 1e-9
+    comm = 20 + 0.01 * 2000
+    assert abs(r["after"] - ((190 + 200 + 200) - comm) / 2950) < 1e-9
+    assert abs(r["locked_share"] - 950 / 2950) < 1e-9 and r["n_locked"] == 1
+    # ค่านิ่งต้องไม่ขยับเมื่อต้นทุน PO ของ SO ที่จ่ายแล้วเปลี่ยน
+    rows2 = [("A", "Paid", 1000, 123456)] + rows[1:]
+    assert ex.blend_gm(rows2, rate=0.01, frozen=frozen)["after"] == r["after"]
+    assert ex.blend_gm([("X", "Pending PU", 100, 0)])["before"] is None
+
+
+def test_frozen_from_logs_allocates_commission():
+    import daily_report_executive as ex
+    d = {"breakdown": [{"SO Number": "S1", "ยอดขาย": 100.0, "กำไรสุทธิ": 20.0}, {"so_number": "S2", "ยอดขายรวม": 300.0, "กำไรสุทธิ": 60.0}]}
+    f = ex.frozen_from_logs([(40.0, d)])
+    assert f["S1"] == (100.0, 20.0, 10.0) and f["S2"] == (300.0, 60.0, 30.0)
 
 
 def test_commission_rate():
