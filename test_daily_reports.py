@@ -140,3 +140,10 @@ def test_blend_gm():
     assert abs(r["blended"] - 0.25) < 1e-9               # ส่วนที่เหลือประมาณด้วย 25%
     assert r["n_conf"] == 2 and r["n_fc"] == 2 and abs(r["coverage"] - 2000 / 3000) < 1e-9
     assert ex.blend_gm([("Pending PU", 100, 0)])["blended"] is None
+
+
+def test_commission_rate():
+    import daily_report_executive as ex
+    assert abs(ex.commission_rate([(1000, 20), (3000, 40)]) - 0.015) < 1e-9
+    assert abs(ex.commission_rate(zip([1000, 3000], [20, 40])) - 0.015) < 1e-9
+    assert ex.commission_rate([]) is None and ex.commission_rate([(0, 5)]) is None

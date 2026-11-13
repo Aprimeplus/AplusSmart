@@ -48,7 +48,24 @@ LEFT JOIN (SELECT so_number, SUM(total_cost) AS cost FROM purchase_orders
             WHERE status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
             GROUP BY so_number) po ON po.so_number = x.so_number
 """.replace("__EXCL__", drs._EXCL_SQL)
+# อัตราค่าคอมจริงเฉลี่ยจากรอบจ่ายล่าสุด 3 รอบ = ค่าคอมที่จ่ายจริง ÷ ยอดขายที่ใช้คิดคอม (นิ่งแล้ว เพราะจ่ายไปแล้ว)
+_SQL_COMM_RATE = """
+SELECT commission_year AS y, commission_month AS m, SUM(total_sales) AS sales, SUM(final_commission) AS comm
+FROM commission_payout_logs
+WHERE commission_year IS NOT NULL AND commission_month IS NOT NULL
+GROUP BY commission_year, commission_month
+ORDER BY commission_year DESC, commission_month DESC
+LIMIT 3
+"""
 GM_OPEN_STATUSES = ("Pending PU", "PO In Progress")   # ยังเปิด PO ไม่ครบ → ต้นทุนยังไม่นิ่ง ใช้ประมาณการ
+
+
+def commission_rate(rounds):
+    """อัตราค่าคอมเฉลี่ยถ่วงน้ำหนัก = Σค่าคอมที่จ่าย ÷ Σยอดขายที่ใช้คิด ของรอบที่ส่งมา [(ยอดขาย, ค่าคอม)] ; ไม่มีข้อมูล = None"""
+    rounds = list(rounds)                      # รับ iterator ได้ (zip) — วนสองรอบ
+    sales = sum(float(a or 0) for a, _ in rounds)
+    comm = sum(float(b or 0) for _, b in rounds)
+    return (comm / sales) if sales > 0 else None
 
 
 def blend_gm(rows):
@@ -125,6 +142,7 @@ class ExecutiveDailyBoard(CTkFrame):
         self.today_df = pd.DataFrame()
         self.cash = {"p1": 0.0, "p2": 0.0, "n": 0}
         self.gm = blend_gm([])
+        self.comm_rate = None
         self.total_target = 0.0
         self.work_days = []
         self._stale_hidden = 0
@@ -190,6 +208,11 @@ class ExecutiveDailyBoard(CTkFrame):
 
             gm = pd.read_sql_query(_SQL_GM, self.pg_engine, params={"d1": start, "d2": min(rep, end)})
             self.gm = blend_gm(zip(gm["status"], gm["goods"], gm["cost"]))
+            try:
+                cr = pd.read_sql_query(_SQL_COMM_RATE, self.pg_engine)
+                self.comm_rate = commission_rate(zip(cr["sales"], cr["comm"]))
+            except Exception:
+                self.comm_rate = None
 
             c = pd.read_sql_query(_SQL_CASH, self.pg_engine, params={"d": rep})
             self.cash = {"p1": float(c["p1"].iloc[0] or 0), "p2": float(c["p2"].iloc[0] or 0), "n": int(c["n"].iloc[0] or 0)}
@@ -298,19 +321,23 @@ class ExecutiveDailyBoard(CTkFrame):
         h = S(138)
         self._card(x, y, w, h)
         bc.text(x + S(16), y + S(12), "Blended Gross Margin (forecast)", size=13, bold=True)
-        bc.text(x + S(16), y + S(38), "SO ที่จองในรอบนี้ · ยืนยันด้วยต้นทุน PO จริง + ประมาณส่วนที่ยังไม่เปิด PO ด้วย margin ที่ยืนยันแล้ว",
+        bc.text(x + S(16), y + S(38), "SO ที่จองในรอบนี้ · ต้นทุน PO จริง + ประมาณส่วนที่ยังไม่เปิด PO · หลังคอม = ก่อนคอม − อัตราค่าคอมที่จ่ายจริงเฉลี่ย 3 รอบล่าสุด",
                 size=8, fill="#6B7280")
         if g["blended"] is None:
             bc.text(x + S(16), y + S(60), "ยังไม่มี SO ที่เปิด PO ครบในรอบนี้ จึงยังประมาณ margin ไม่ได้", size=10, fill="#9CA3AF")
             return y + h
         gp_total = g["gp_conf"] + g["gp_forecast"]
-        cols = [
-            ("Blended GM", f"{g['blended'] * 100:.1f}%", "#1D4ED8", f"GP รวม ≈ {gp_total:,.0f} จากยอด {g['sales_total']:,.0f}"),
-            ("ยืนยันแล้ว (มี PO ครบ)", f"{g['confirmed_gm'] * 100:.1f}%", "#166534", f"{g['n_conf']} SO · GP {g['gp_conf']:,.0f}"),
-            ("ประมาณการ (ยังไม่เปิด PO ครบ)", f"≈ {g['gp_forecast']:,.0f}", "#B45309",
-             f"{g['n_fc']} SO · ยอด {g['sales_total'] - g['sales_conf']:,.0f}"),
-            ("ความน่าเชื่อถือ (สัดส่วนยอดที่ยืนยัน)", f"{g['coverage'] * 100:.0f}%", "#111827", "ยิ่งต่ำ ตัวเลขยิ่งเป็นการประมาณมาก"),
-        ]
+        rate = self.comm_rate
+        if rate is None:
+            cols = [("GM ก่อนคอม (ประมาณ)", f"{g['blended'] * 100:.1f}%", "#1D4ED8", f"GP ≈ {gp_total:,.0f} จากยอด {g['sales_total']:,.0f}")]
+        else:
+            after = g["blended"] - rate
+            cols = [("GM หลังคอม (ประมาณ)", f"{after * 100:.1f}%", "#1D4ED8",
+                     f"GP หลังคอม ≈ {gp_total - rate * g['sales_total']:,.0f} จากยอด {g['sales_total']:,.0f}"),
+                    ("GM ก่อนคอม", f"{g['blended'] * 100:.1f}%", "#111827", f"GP ≈ {gp_total:,.0f}"),
+                    ("อัตราค่าคอมเฉลี่ย (จ่ายจริง 3 รอบล่าสุด)", f"{rate * 100:.2f}%", "#B45309", "ค่าคอมที่จ่าย ÷ ยอดขายที่ใช้คิดคอม")]
+        cols.append(("ความน่าเชื่อถือ (ยอดที่ PO ครบแล้ว)", f"{g['coverage'] * 100:.0f}%", "#166534",
+                     f"{g['n_conf']} SO ยืนยัน · {g['n_fc']} SO ประมาณ"))
         cw = (w - S(32)) / len(cols)
         for i, (t, big, color, sub) in enumerate(cols):
             cx = x + S(16) + i * cw
@@ -512,7 +539,9 @@ class ExecutiveDailyBoard(CTkFrame):
             ("ยอดที่ควรได้ถึงวันนี้ (ตามวันทำงาน)", exp),
             ("เงินรับวันนี้ (รวม VAT)", self.cash["p1"] + self.cash["p2"]),
             ("ค้างชำระ (งานในรายการ)", float(self.df["outstanding"].sum())),
-            ("Blended Gross Margin (forecast)", self.gm["blended"]),
+            ("Blended GM ก่อนคอม (forecast)", self.gm["blended"]),
+            ("อัตราค่าคอมเฉลี่ย (3 รอบล่าสุด)", self.comm_rate),
+            ("Blended GM หลังคอม (forecast)", (self.gm["blended"] - self.comm_rate) if (self.gm["blended"] is not None and self.comm_rate is not None) else None),
             ("GM ยืนยันแล้ว (SO ที่ PO ครบ)", self.gm["confirmed_gm"]),
             ("สัดส่วนยอดที่ยืนยันแล้ว", self.gm["coverage"]),
         ], columns=["รายการ", "ค่า"])
