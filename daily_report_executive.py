@@ -295,10 +295,10 @@ class ExecutiveDailyBoard(CTkFrame):
         bc = self.board
         S = bc.S
         g = self.gm
-        h = S(112)
+        h = S(138)
         self._card(x, y, w, h)
         bc.text(x + S(16), y + S(12), "Blended Gross Margin (forecast)", size=13, bold=True)
-        bc.text(x + S(16), y + S(34), "SO ที่จองในรอบนี้ · ยืนยันด้วยต้นทุน PO จริง + ประมาณส่วนที่ยังไม่เปิด PO ด้วย margin ที่ยืนยันแล้ว",
+        bc.text(x + S(16), y + S(38), "SO ที่จองในรอบนี้ · ยืนยันด้วยต้นทุน PO จริง + ประมาณส่วนที่ยังไม่เปิด PO ด้วย margin ที่ยืนยันแล้ว",
                 size=8, fill="#6B7280")
         if g["blended"] is None:
             bc.text(x + S(16), y + S(60), "ยังไม่มี SO ที่เปิด PO ครบในรอบนี้ จึงยังประมาณ margin ไม่ได้", size=10, fill="#9CA3AF")
@@ -314,9 +314,9 @@ class ExecutiveDailyBoard(CTkFrame):
         cw = (w - S(32)) / len(cols)
         for i, (t, big, color, sub) in enumerate(cols):
             cx = x + S(16) + i * cw
-            bc.text(cx, y + S(56), t, size=9, fill="#6B7280")
-            bc.text(cx, y + S(70), big, size=17, bold=True, fill=color)
-            bc.text(cx, y + S(94), sub, size=8, fill="#6B7280", width=cw - S(12))
+            bc.text(cx, y + S(64), t, size=9, fill="#6B7280")
+            bc.text(cx, y + S(82), big, size=17, bold=True, fill=color)
+            bc.text(cx, y + S(114), sub, size=8, fill="#6B7280", width=cw - S(12))
         return y + h
 
     # ---- ต้องทำวันนี้ ----
