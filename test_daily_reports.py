@@ -154,6 +154,8 @@ def test_frozen_from_logs_allocates_commission():
     d = {"breakdown": [{"SO Number": "S1", "ยอดขาย": 100.0, "กำไรสุทธิ": 20.0}, {"so_number": "S2", "ยอดขายรวม": 300.0, "กำไรสุทธิ": 60.0}]}
     f = ex.frozen_from_logs([(40.0, d)])
     assert f["S1"] == (100.0, 20.0, 10.0) and f["S2"] == (300.0, 60.0, 30.0)
+    c = ex.frozen_from_logs([(10.0, {"breakdown": [{"SO Number": "C1", "ยอดขาย": 50.0, "กำไร": 5.0}]})])   # Plan C
+    assert c["C1"] == (50.0, 5.0, 10.0)
 
 
 def test_commission_rate():

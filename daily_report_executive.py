@@ -89,7 +89,7 @@ def frozen_from_logs(logs):
         for r in bd:
             so = r.get("SO Number") or r.get("so_number")
             sales = r.get("ยอดขาย", r.get("ยอดขายรวม"))
-            profit = r.get("กำไรสุทธิ")
+            profit = r.get("กำไรสุทธิ", r.get("กำไร"))      # Plan C เก็บเป็น "กำไร"
             if so and sales is not None and profit is not None:
                 items.append((str(so), float(sales), float(profit)))
         tot = sum(a for _, a, _ in items)
