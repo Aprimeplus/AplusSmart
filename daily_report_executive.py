@@ -368,7 +368,7 @@ class ExecutiveDailyBoard(CTkFrame):
         bc = self.board
         S = bc.S
         g = self.gm
-        h = S(118)
+        h = S(138)
         self._card(x, y, w, h)
         bc.text(x + S(16), y + S(12), "Gross Margin คาดการณ์ (รอบนี้)", size=13, bold=True)
         if g["before"] is None:
@@ -384,10 +384,27 @@ class ExecutiveDailyBoard(CTkFrame):
         bc.text(mx, y + S(60), f"{g['before'] * 100:.1f}%", size=16, bold=True, fill="#111827")
         bx = x + w * 0.62
         bw = w * 0.34
-        bc.text(bx, y + S(44), "ความนิ่งของตัวเลข", size=9, fill="#6B7280")
-        bc.bar(bx, y + S(66), bw, S(9), g["locked_share"], color="#166534")
-        bc.text(bx, y + S(82), f"นิ่งแล้ว {g['locked_share'] * 100:.0f}% (จ่ายค่าคอมแล้ว) · ที่เหลือยังเปลี่ยนได้",
-                size=9, fill="#6B7280", width=bw)
+        bc.text(bx, y + S(44), "ตัวเลขนี้เชื่อถือได้แค่ไหน (สัดส่วนยอดขาย)", size=9, fill="#6B7280")
+        lock = g["locked_share"]
+        conf = max(g["coverage"] - g["locked_share"], 0.0)
+        est = max(1.0 - lock - conf, 0.0)
+        parts = [(lock, "#166534", "นิ่งแล้ว (จ่ายค่าคอมแล้ว)"), (conf, "#86B99A", "ต้นทุนจริงแล้ว ยังไม่จ่ายคอม"),
+                 (est, "#F0B25B", "ประมาณการ (ยังไม่เปิด PO ครบ)")]
+        by, bh = y + S(64), S(12)
+        bc.rrect(bx, by, bx + bw, by + bh, r=bh / 2, fill="#E5E7EB")
+        acc = 0.0
+        for k, (share, color, _t) in enumerate(parts):
+            if share <= 0:
+                continue
+            x1, x2 = bx + bw * acc, bx + bw * (acc + share)
+            bc.rect(x1, by, x2, by + bh, fill=color)
+            acc += share
+        ly = y + S(84)
+        for share, color, label in parts:
+            bc.text(bx, ly, "■", size=9, fill=color)
+            bc.text(bx + S(16), ly, label, size=9)
+            bc.text(bx + bw, ly, f"{share * 100:.0f}%", size=9, bold=True, anchor="ne")
+            ly += S(16)
         return y + h
 
     # ---- ต้องทำวันนี้ ----
