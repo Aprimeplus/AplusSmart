@@ -27,7 +27,7 @@ UNASSIGNED = "ยังไม่มีผู้รับ"
 COLS = [
     ("wait", "รอจัดซื้อรับงาน", "#B45309"),
     ("work", "อยู่ระหว่างจัดซื้อ", "#F0B25B"),
-    ("mp", "PO รอ MP อนุมัติ", "#7C3AED"),
+    ("mp", "รออนุมัติ PO", "#7C3AED"),
     ("done", "เปิด PO สำเร็จ", "#166534"),
 ]
 STATUS_TO_COL = {"Pending PU": "wait", "PO In Progress": "work", "PO Sent": "done"}
@@ -177,7 +177,7 @@ class PurchasingDailyBoard(CTkFrame):
     def _hint(r):
         n, col = int(r["n"]), r["col"]
         if col == "mp":
-            return "เลยกำหนด" if n < 0 else ("ส่งวันนี้" if n == 0 else "รอ MP")
+            return "เลยกำหนด" if n < 0 else ("ส่งวันนี้" if n == 0 else "รออนุมัติ")
         if col != "done" and n < 0:
             return "เลยกำหนด"
         if n == 0:
