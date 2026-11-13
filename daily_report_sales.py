@@ -511,11 +511,7 @@ class SalesDailyBoard(CTkFrame):
                 f"ชำระแล้ว {shown['paid'].sum() if len(shown) else 0:,.2f} · ค้างชำระ {shown['outstanding'].sum() if len(shown) else 0:,.2f}",
                 size=10, bold=True, fill="#166534", anchor="ne")
         cy += S(30)
-        _, bb2 = bc.text(x + S(16), cy,
-                         "ด่วน = เลยกำหนดส่ง หรือส่งวันนี้/พรุ่งนี้ แต่ยังไม่มี PO  ·  เฝ้าระวัง = ยังไม่ชำระแต่จัดซื้อเริ่มแล้ว / ไม่มีผู้รับงาน / "
-                         "ยอดรวมไม่ตรงกับยอดสินค้า+บริการ+ขนส่ง (ป้าย “ต่าง”)",
-                         size=9, fill="#6B7280", width=w - S(32))
-        bottom = bb2[3] + S(14)
+        bottom = cy + S(10)
         bc.set_rrect(bg, x, y, x + w, bottom, r=S(12))
         return bottom
 
