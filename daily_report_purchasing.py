@@ -27,6 +27,7 @@ UNASSIGNED = "ยังไม่มีผู้รับ"
 COLS = [
     ("wait", "รอจัดซื้อรับงาน", "#B45309"),
     ("work", "อยู่ระหว่างจัดซื้อ", "#F0B25B"),
+    ("mp", "PO รอ MP อนุมัติ", "#7C3AED"),
     ("done", "เปิด PO สำเร็จ", "#166534"),
 ]
 STATUS_TO_COL = {"Pending PU": "wait", "PO In Progress": "work", "PO Sent": "done"}
@@ -45,7 +46,9 @@ SELECT c.so_number, c.customer_name, c.status, c.sale_key,
                   WHERE po.so_number = c.so_number
                     AND po.status NOT IN ('Cancelled', 'Cancelled by PU', 'Rejected', 'Rejected by SM')
                   ORDER BY po.id LIMIT 1)) AS pu,
-       c.sales_service_amount, c.total_payment_amount, c.difference_amount
+       c.sales_service_amount, c.total_payment_amount, c.difference_amount,
+       EXISTS (SELECT 1 FROM purchase_orders pp
+                WHERE pp.so_number = c.so_number AND pp.status = 'Pending Approval') AS mp_pending
 FROM commissions c
 WHERE c.is_active = 1
   AND c.status IN ('Pending PU', 'PO In Progress', 'PO Sent')
@@ -70,6 +73,27 @@ def _d_label(n):
 
 def _severity(n):
     return "red" if n <= 0 else ("orange" if n <= 2 else "gray")
+
+
+def load_board(engine, rep):
+    """โหลดงานบนกระดานจัดซื้อ ณ วันที่รายงาน → (DataFrame ที่มีคอลัมน์ col/n/pu/pct/mp_pending, จำนวนงานค้างเก่าที่ซ่อน)
+    ใช้ร่วมกับหน้าภาพรวมผู้บริหาร เพื่อให้ตัวเลขสถานะตรงกัน"""
+    raw = pd.read_sql_query(_SQL, engine)
+    raw["delivery"] = pd.to_datetime(raw["delivery"]).dt.date
+    raw["col"] = raw["status"].map(STATUS_TO_COL)
+    raw["col"] = raw.apply(lambda r: "mp" if r["mp_pending"] else r["col"], axis=1)   # มี PO ที่รอ MP อนุมัติ → คอลัมน์ "รอ MP อนุมัติ"
+    raw["n"] = raw["delivery"].apply(lambda d: (d - rep).days)
+    raw["pu"] = raw["pu"].apply(lambda v: v if isinstance(v, str) and v.strip() else None)
+    for c in ("sales_service_amount", "total_payment_amount", "difference_amount"):
+        raw[c] = pd.to_numeric(raw[c], errors="coerce").fillna(0.0)
+    raw["required"] = raw["total_payment_amount"] - raw["difference_amount"]   # ยอดที่ต้องชำระ = ชำระแล้ว − ส่วนต่าง (ติดลบ = ขาด)
+    raw["pct"] = raw.apply(lambda r: (r["total_payment_amount"] / r["required"]) if r["required"] > 0.5 else None, axis=1)
+
+    is_open = raw["col"].isin(["wait", "work", "mp"])
+    stale = is_open & (raw["n"] < -STALE_DAYS)
+    keep = (~stale) & ((raw["col"] != "done") | (raw["n"] >= 0))   # เปิด PO แล้ว: โชว์เฉพาะที่ยังไม่ผ่านวันส่ง
+    df = raw[keep].reset_index(drop=True)
+    return df, int(stale.sum())
 
 
 class PurchasingDailyBoard(CTkFrame):
@@ -126,7 +150,6 @@ class PurchasingDailyBoard(CTkFrame):
 
     def load_data(self, silent=False):
         try:
-            raw = pd.read_sql_query(_SQL, self.pg_engine)
             try:
                 staff = pd.read_sql_query(
                     "SELECT count(*) AS n FROM sales_users WHERE role = 'Purchasing Staff' AND status = 'Active'",
@@ -135,21 +158,7 @@ class PurchasingDailyBoard(CTkFrame):
             except Exception:
                 self._pu_staff_total = 0
 
-            rep = self._report_date()
-            raw["delivery"] = pd.to_datetime(raw["delivery"]).dt.date
-            raw["col"] = raw["status"].map(STATUS_TO_COL)
-            raw["n"] = raw["delivery"].apply(lambda d: (d - rep).days)
-            raw["pu"] = raw["pu"].apply(lambda v: v if isinstance(v, str) and v.strip() else None)
-            for c in ("sales_service_amount", "total_payment_amount", "difference_amount"):
-                raw[c] = pd.to_numeric(raw[c], errors="coerce").fillna(0.0)
-            raw["required"] = raw["total_payment_amount"] - raw["difference_amount"]   # ยอดที่ต้องชำระ = ชำระแล้ว − ส่วนต่าง (ติดลบ = ขาด)
-            raw["pct"] = raw.apply(lambda r: (r["total_payment_amount"] / r["required"]) if r["required"] > 0.5 else None, axis=1)
-
-            is_open = raw["col"].isin(["wait", "work"])
-            stale = is_open & (raw["n"] < -STALE_DAYS)
-            self._stale_hidden = int(stale.sum())
-            keep = (~stale) & ((raw["col"] != "done") | (raw["n"] >= 0))   # เปิด PO แล้ว: โชว์เฉพาะที่ยังไม่ผ่านวันส่ง
-            self.df = raw[keep].reset_index(drop=True)
+            self.df, self._stale_hidden = load_board(self.pg_engine, self._report_date())
             self.df["hint"] = self.df.apply(self._hint, axis=1)
 
             pus = sorted({p for p in self.df["pu"].dropna()})
@@ -167,6 +176,8 @@ class PurchasingDailyBoard(CTkFrame):
     @staticmethod
     def _hint(r):
         n, col = int(r["n"]), r["col"]
+        if col == "mp":
+            return "เลยกำหนด" if n < 0 else ("ส่งวันนี้" if n == 0 else "รอ MP")
         if col != "done" and n < 0:
             return "เลยกำหนด"
         if n == 0:
@@ -221,7 +232,7 @@ class PurchasingDailyBoard(CTkFrame):
         stats.append(("ส่งวันนี้ ยังไม่มี PO", len(today_no_po), sub4, "#B91C1C", len(today_no_po) > 0))
         stats.append(("เลยวันส่ง", len(overdue), sub5, "#B91C1C", len(overdue) > 0))
 
-        cw = (W - 2 * M - 4 * G) / 5
+        cw = (W - 2 * M - (len(stats) - 1) * G) / len(stats)
         ch = S(96)
         for i, (title, big, sub, color, alert) in enumerate(stats):
             x = M + i * (cw + G)
@@ -234,8 +245,8 @@ class PurchasingDailyBoard(CTkFrame):
 
         # ---- กระดาน 3 คอลัมน์ + ภาระงาน ----
         total_w = W - 2 * M
-        unit = (total_w - 3 * G) / 11
-        widths = [3 * unit, 3 * unit, 3 * unit, 2 * unit]
+        unit = (total_w - len(COLS) * G) / (3 * len(COLS) + 2)
+        widths = [3 * unit] * len(COLS) + [2 * unit]
         xs = [M]
         for w in widths[:-1]:
             xs.append(xs[-1] + w + G)
@@ -243,7 +254,7 @@ class PurchasingDailyBoard(CTkFrame):
         for ci, (key, title, color) in enumerate(COLS):
             bottoms.append(self._draw_column(xs[ci], y, widths[ci], key, title, color,
                                              df[df["col"] == key] if not df.empty else df))
-        bottoms.append(self._draw_workload(xs[3], y, widths[3], self.df if self.pu_var.get() == "ทั้งหมด" else df))
+        bottoms.append(self._draw_workload(xs[len(COLS)], y, widths[3], self.df if self.pu_var.get() == "ทั้งหมด" else df))
         bc.set_height(max(bottoms) + M)
 
         rep = self._report_date()
@@ -336,7 +347,7 @@ class PurchasingDailyBoard(CTkFrame):
         if df is None or df.empty:
             messagebox.showinfo("ไม่มีข้อมูล", "ไม่มีงานบนกระดานให้ Export", parent=self)
             return
-        names = {"wait": "รอจัดซื้อรับงาน", "work": "อยู่ระหว่างจัดซื้อ", "done": "เปิด PO สำเร็จ"}
+        names = {k: t for k, t, _c in COLS}
         out = pd.DataFrame({
             "เลขที่ SO": df["so_number"], "สถานะงาน": df["col"].map(names), "ลูกค้า": df["customer_name"],
             "เซลส์": df["sale_key"], "ผู้รับงาน (PU)": df["pu"].fillna(UNASSIGNED),

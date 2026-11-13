@@ -21,7 +21,7 @@ from custom_widgets import DateSelector
 from canvas_board import BoardCanvas, clean_text
 import daily_report_sales as drs
 from daily_report_sales import load_scope, LEVEL_STYLE, _SQL_SOLD, _SQL_TARGETS, _cycle_start, _fmt
-from daily_report_purchasing import COLS, UNASSIGNED, _d_label
+from daily_report_purchasing import COLS, UNASSIGNED, _d_label, load_board
 
 COMPANY_TARGET = None                    # None = ใช้ผลรวม sales_target ของเซลส์ Active ; ใส่ตัวเลข เช่น 11_000_000 เพื่อกำหนดเอง
 WORK_WEEKDAYS = (0, 1, 2, 3, 4, 5)       # จันทร์=0 … เสาร์=5 (ตัดเสาร์ออกถ้าบริษัทไม่ทำงานเสาร์)
@@ -181,6 +181,7 @@ class ExecutiveDailyBoard(CTkFrame):
         self.app_container = app_container
         self.pg_engine = app_container.pg_engine
         self.df = pd.DataFrame()
+        self.board_df = pd.DataFrame()          # งานบนกระดานจัดซื้อ (นับสถานะ/รอ MP)
         self.sold = pd.DataFrame()
         self.today_df = pd.DataFrame()
         self.cash = {"p1": 0.0, "p2": 0.0, "n": 0}
@@ -232,6 +233,7 @@ class ExecutiveDailyBoard(CTkFrame):
             rep = self._report_date()
             start, end = cycle_bounds(rep)
             self.df, self._stale_hidden = load_scope(self.pg_engine, rep)
+            self.board_df, _ = load_board(self.pg_engine, rep)
 
             sold = pd.read_sql_query(_SQL_SOLD, self.pg_engine, params={"d1": start, "d2": min(rep, end)})
             sold["goods"] = pd.to_numeric(sold["goods"], errors="coerce").fillna(0.0)
@@ -323,7 +325,7 @@ class ExecutiveDailyBoard(CTkFrame):
         owe = df[df["outstanding"] > drs.TOL] if len(df) else df
         n_part = int(((owe["paid"] > 0.005)).sum()) if len(owe) else 0
         n_unpaid = int(((owe["paid"] <= 0.005)).sum()) if len(owe) else 0
-        wait = df[df["status"] == "Pending PU"] if len(df) else df
+        wait = self.board_df[self.board_df["col"] == "wait"] if len(self.board_df) else self.board_df
         reasons = df["reasons"] if len(df) else pd.Series([], dtype=object)
         n_dl04 = int(reasons.apply(lambda rs: any(c == "DL-04" for c, _ in rs)).sum()) if len(df) else 0
         n_dl03 = int(reasons.apply(lambda rs: any(c == "DL-03" for c, _ in rs)).sum()) if len(df) else 0
@@ -343,7 +345,7 @@ class ExecutiveDailyBoard(CTkFrame):
             dict(title="ค้างชำระ", big=_fmt(float(owe["outstanding"].sum()) if len(owe) else 0.0, 0), color="#B45309", bar=None,
                  sub=f"{len(owe)} SO · มัดจำแล้ว {n_part} · ยังไม่ชำระ {n_unpaid}"),
             dict(title="รอจัดซื้อรับงาน", big=f"{len(wait)} ใบ", color="#B45309", bar=None,
-                 sub=f"มูลค่า {float(wait['goods'].sum()) if len(wait) else 0:,.0f}"),
+                 sub=f"มูลค่า {float(wait['sales_service_amount'].sum()) if len(wait) else 0:,.0f}"),
             dict(title="เสี่ยงส่งไม่ทัน", big=f"{n_dl04 + n_dl03} ใบ", color="#B91C1C", bar=None,
                  alert=(n_dl04 + n_dl03) > 0, sub=f"ส่งภายใน D-1 ยังไม่มี PO {n_dl04} · เลยกำหนด {n_dl03}"),
         ]
@@ -464,9 +466,10 @@ class ExecutiveDailyBoard(CTkFrame):
         S = bc.S
         df = self.df
         bg = self._card(x, y, w, 10)
-        bc.text(x + S(16), y + S(14), f"สถานะงานจัดซื้อ ({len(df)} SO)", size=13, bold=True)
+        bc.text(x + S(16), y + S(14), f"สถานะงานจัดซื้อ ({len(self.board_df)} SO)", size=13, bold=True)
         cy = y + S(48)
-        counts = [int((df["status"] == st).sum()) if len(df) else 0 for st in ("Pending PU", "PO In Progress", "PO Sent")]
+        bd = self.board_df
+        counts = [int((bd["col"] == k).sum()) if len(bd) else 0 for k, _t, _c in COLS]
         tot = sum(counts)
         bx, bw, bh = x + S(16), w - S(32), S(26)
         if tot:

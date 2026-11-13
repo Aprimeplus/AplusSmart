@@ -52,7 +52,9 @@ SELECT c.so_number, c.customer_name, c.status, c.sale_key,
        COALESCE(c.cutting_drilling_fee, 0) + COALESCE(c.other_service_fee, 0)    AS service,
        COALESCE(c.shipping_cost, 0) + COALESCE(c.relocation_cost, 0)             AS ship,
        COALESCE(c.total_payment_amount, 0)                                       AS paid,
-       COALESCE(c.difference_amount, 0)                                          AS diff
+       COALESCE(c.difference_amount, 0)                                          AS diff,
+       EXISTS (SELECT 1 FROM purchase_orders pp
+                WHERE pp.so_number = c.so_number AND pp.status = 'Pending Approval') AS mp_pending
 FROM commissions c
 WHERE c.is_active = 1
   AND c.status IN ('Pending PU', 'PO In Progress', 'PO Sent')
