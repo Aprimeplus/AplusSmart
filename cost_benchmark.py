@@ -3405,7 +3405,7 @@ class CostBenchmarkScreen(CTkFrame):
             so_numbers = set()
             for r in sorted(rows):
                 sel_val = str(self._sheet_get(r, "Select") or "").strip()
-                if sel_val not in ("✔", "เทียบเพื่อชุบ ✔"):
+                if sel_val not in ("✔", "เทียบ ✔", "เทียบเพื่อชุบ ✔"):
                     continue
                 so_val = str(self._sheet_get(r, "Sale Order No.") or "").strip()
                 if so_val:
@@ -6755,7 +6755,7 @@ class CostBenchmarkScreen(CTkFrame):
             for r in range(total_rows):
                 so_val  = str(self._sheet_get(r, "Sale Order No.") or "").strip()
                 sel_val = str(self._sheet_get(r, "Select") or "").strip()
-                if so_val == so_number and sel_val in ("✔", "เทียบเพื่อชุบ ✔"):
+                if so_val == so_number and sel_val in ("✔", "เทียบ ✔", "เทียบเพื่อชุบ ✔"):
                     pri = str(self._sheet_get(r, "PRIORITY") or "").strip().upper()
                     if pri in TEMP_RANK:
                         if best_temp is None or TEMP_RANK[pri] > TEMP_RANK[best_temp]:
@@ -7159,6 +7159,8 @@ class CostBenchmarkScreen(CTkFrame):
             # รายการที่เสนอเทียบให้ลูกค้า (Select = "เทียบ ✔") แสดงแยกใต้หัวข้อ "เสนอเทียบเพื่อพิจารณา" — ไม่นับรวมยอด/น้ำหนัก
             compare_items = [r for r in all_rows
                              if r["so"] == chosen_so and r["select"] == "เทียบ ✔"]
+            if not items and compare_items:        # SO ที่มีแต่ "เทียบ ✔" → ใช้เป็นรายการหลัก (ขึ้นเหมือน ✔)
+                items, compare_items = compare_items, []
             if not items:
                 return f"⚠️  ไม่มีรายการที่ติ๊ก Select ใน {chosen_so}"
 
