@@ -4410,7 +4410,7 @@ class CostBenchmarkScreen(CTkFrame):
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
                 "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "WARM-ด่วนราคา", "COLD-ด่วนราคา", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
-                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
+                "Select":         ["✔", "เทียบ", "เทียบ ✔", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
                                    "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"],
             }
 
@@ -4885,7 +4885,7 @@ class CostBenchmarkScreen(CTkFrame):
                 # ชื่อ Supplier / รายการสินค้า / รหัส Sale จัดการโดย begin_edit_cell แล้ว
                 "PRIORITY":       ["HOT", "WARM", "COLD", "HOT-สั่งผลิต", "WARM-สั่งผลิต", "COLD-สั่งผลิต", "WARM-ด่วนราคา", "COLD-ด่วนราคา", "ไม่แจ้ง"],
                 "สถานะ":          status_opts,
-                "Select":         ["✔", "เทียบ", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
+                "Select":         ["✔", "เทียบ", "เทียบ ✔", "เทียบเพื่อชุบ", "เทียบเพื่อชุบ ✔",
                                    "คู่แข่ง-มีใบเสนอราคา", "คู่แข่ง-ไม่มีใบเสนอราคา"],
             }
 
@@ -7156,6 +7156,9 @@ class CostBenchmarkScreen(CTkFrame):
                         vehicle: str = "-") -> str:
             items = [r for r in all_rows
                      if r["so"] == chosen_so and r["select"] == "✔"]
+            # รายการที่เสนอเทียบให้ลูกค้า (Select = "เทียบ ✔") แสดงแยกใต้หัวข้อ "เสนอเทียบเพื่อพิจารณา" — ไม่นับรวมยอด/น้ำหนัก
+            compare_items = [r for r in all_rows
+                             if r["so"] == chosen_so and r["select"] == "เทียบ ✔"]
             if not items:
                 return f"⚠️  ไม่มีรายการที่ติ๊ก Select ใน {chosen_so}"
 
@@ -7206,6 +7209,22 @@ class CostBenchmarkScreen(CTkFrame):
             ))
             note1_str = ", ".join(note1_vals) if note1_vals else ""
             lines.append("─" * 15)
+            if compare_items:
+                lines.append("*เสนอเทียบเพื่อพิจารณา*")
+                for it in compare_items:
+                    spec      = it["note1"]
+                    prod_line = f"{it['product']} {spec}".strip() if spec else it["product"]
+                    parts = [prod_line]
+                    if it["qty"]:
+                        parts.append(it["qty"])
+                    wt_str = _fmt_weight(it["weight_unit"])
+                    if wt_str:
+                        parts.append(wt_str)
+                    price_str = _fmt_price(it["unit_price"])
+                    if price_str:
+                        parts.append(price_str)
+                    lines.append("  ".join(parts))
+                lines.append("")
             lines.append("สถานะ :")
             lines.append(f"ยืนราคา {days} วัน")
             lines.append(f"จุดรับ : {dest_str}")
