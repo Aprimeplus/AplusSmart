@@ -1289,6 +1289,8 @@ class ProductEditDialog(CTkToplevel):
             if conn: self.app_container.release_connection(conn)
 
 class PurchasingScreen(CTkFrame):
+    PO_PREFIXES = ("PO", "ST", "MT")      # ชนิดเลขที่เอกสารที่เลือกได้ในฟอร์มสั่งซื้อ
+
     
     def __init__(self, master, app_container, user_key=None, user_name=None, user_role=None, initial_so_number=None):
         self.master = master
@@ -2176,7 +2178,7 @@ class PurchasingScreen(CTkFrame):
         po_st_frame.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
         po_st_frame.grid_columnconfigure(1, weight=1)
         self.po_number_type_var = tk.StringVar(value="PO"); self.po_number_type_var.trace_add("write", self._on_po_number_type_changed)
-        self.po_type_dropdown = CTkOptionMenu(po_st_frame, variable=self.po_number_type_var, values=["PO", "ST"], width=80, **self.dropdown_style)
+        self.po_type_dropdown = CTkOptionMenu(po_st_frame, variable=self.po_number_type_var, values=list(self.PO_PREFIXES), width=80, **self.dropdown_style)
         self.po_type_dropdown.grid(row=0, column=0, sticky="w", padx=(0,5))
         self.po_number_input_var = tk.StringVar(); self.po_number_input_var.trace_add("write", self._validate_po_input)
         self.po_number_entry = CTkEntry(po_st_frame, font=self.entry_font, textvariable=self.po_number_input_var)
@@ -2237,7 +2239,7 @@ class PurchasingScreen(CTkFrame):
         current_text = self.po_number_input_var.get(); selected_type = self.po_number_type_var.get(); new_text = current_text.upper()
         if not new_text: new_text = selected_type
         elif new_text.startswith(selected_type): pass
-        elif (selected_type == "PO" and new_text.startswith("ST")) or (selected_type == "ST" and new_text.startswith("PO")): new_text = selected_type + new_text[2:]
+        elif new_text[:2] in self.PO_PREFIXES: new_text = selected_type + new_text[2:]      # พิมพ์/วางเลขที่ขึ้นต้นด้วยชนิดอื่น → สลับเป็นชนิดที่เลือก
         else: new_text = selected_type + new_text
         if new_text != current_text: self.po_number_input_var.set(new_text); self.after(10, lambda: self.po_number_entry.icursor(tk.END))
 
@@ -3462,7 +3464,7 @@ class PurchasingScreen(CTkFrame):
                 self._on_supplier_selected(supplier_dict_to_load)
 
             po_full_number = po_data.get("po_number", "PO")
-            self.po_number_type_var.set("ST" if po_full_number.startswith("ST") else "PO")
+            self.po_number_type_var.set(po_full_number[:2] if po_full_number[:2] in self.PO_PREFIXES else "PO")
             self.po_number_input_var.set(po_full_number)
             self.rr_number_var.set(po_data.get("rr_number", ""))
             utils.set_entry_text(self.department_entry, po_data.get("department", ""))
