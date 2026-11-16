@@ -4143,7 +4143,7 @@ class SLADashboard(CTkFrame):
                     SELECT DISTINCT cb."รหัส Sale" AS sale_key
                     FROM cost_benchmarks cb
                     JOIN sla_benchmark s ON cb."Sale Order No." = s.so_number
-                    WHERE cb."Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                    WHERE cb."Select" IN ('✔', 'เทียบ ✔', 'เทียบเพื่อชุบ ✔')
                       AND cb."รหัส Sale" IS NOT NULL
                       AND cb."รหัส Sale" <> ''
                     ORDER BY cb."รหัส Sale"
@@ -4257,7 +4257,7 @@ class SLADashboard(CTkFrame):
                   -- เงื่อนไขเดียวกับ popup งานค้าง: ต้องเคยกด "เริ่มทำ" (มีแถว SLA) หรือติ๊ก ✔ แล้ว
                   -- แถวร่างที่ยังไม่ติ๊ก ✔ และไม่มี SLA ไม่นับเป็นงาน (ไม่งั้นตารางโชว์ "รอ Copy" แต่ popup ไม่มี)
                   AND (s.id IS NOT NULL OR cb.so_number IN (
-                        SELECT "Sale Order No." FROM cost_benchmarks WHERE "Select" = '✔'))
+                        SELECT "Sale Order No." FROM cost_benchmarks WHERE "Select" IN ('✔', 'เทียบ ✔')))
             """
 
             # date range filter — anchor = copied_at ถ้ามี, ถ้าไม่มีใช้ started_at, ถ้าไม่มีใช้ cb_date
@@ -4870,7 +4870,7 @@ class SLADashboard(CTkFrame):
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT DISTINCT "สถานะ" FROM cost_benchmarks
-                WHERE "Sale Order No." = %s AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                WHERE "Sale Order No." = %s AND "Select" IN ('✔', 'เทียบ ✔', 'เทียบเพื่อชุบ ✔')
             """, (so_number,))
             existing = {str(r[0]).strip() for r in cursor.fetchall() if r[0] and str(r[0]).strip()}
             if len(existing) > 1:
@@ -4885,7 +4885,7 @@ class SLADashboard(CTkFrame):
                 UPDATE cost_benchmarks
                 SET    "สถานะ" = %s
                 WHERE  "Sale Order No." = %s
-                       AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                       AND "Select" IN ('✔', 'เทียบ ✔', 'เทียบเพื่อชุบ ✔')
             """, (new_status, so_number))
             updated = cursor.rowcount
             conn.commit()
@@ -4944,7 +4944,7 @@ class SLADashboard(CTkFrame):
 
             cursor.execute("""
                 SELECT DISTINCT "PRIORITY" FROM cost_benchmarks
-                WHERE "Sale Order No." = %s AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                WHERE "Sale Order No." = %s AND "Select" IN ('✔', 'เทียบ ✔', 'เทียบเพื่อชุบ ✔')
             """, (so_number,))
             existing = {str(r[0]).strip() for r in cursor.fetchall() if r[0] and str(r[0]).strip()}
             cb_updated = 0
@@ -4953,7 +4953,7 @@ class SLADashboard(CTkFrame):
                     UPDATE cost_benchmarks
                     SET    "PRIORITY" = %s
                     WHERE  "Sale Order No." = %s
-                           AND "Select" IN ('✔', 'เทียบเพื่อชุบ ✔')
+                           AND "Select" IN ('✔', 'เทียบ ✔', 'เทียบเพื่อชุบ ✔')
                 """, (new_temp, so_number))
                 cb_updated = cursor.rowcount
             conn.commit()
